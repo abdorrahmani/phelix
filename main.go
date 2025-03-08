@@ -23,6 +23,7 @@ func main() {
 	rootCmd.AddCommand(cmd.StatusCmd)
 	rootCmd.AddCommand(cmd.StopCmd)
 	rootCmd.AddCommand(cmd.ListCmd)
+	rootCmd.AddCommand(cmd.AuthCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
