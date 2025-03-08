@@ -29,3 +29,13 @@ func StartApplication(id string) {
 	}
 	apps[id] = cmd
 }
+
+func StopApplication(id string) {
+	appsLock.Lock()
+	defer appsLock.Unlock()
+
+	if cmd, exists := apps[id]; exists {
+		cmd.Process.Kill()
+		delete(apps, id)
+	}
+}
