@@ -155,7 +155,7 @@ func (m *AppManager) ListApplications() []struct {
 		var uptime string
 		if app.Status == "running" {
 			duration := time.Since(app.Start)
-			uptime = formatDuration(duration)
+			uptime = FormatDuration(duration)
 		} else {
 			uptime = "N/A"
 		}
@@ -175,7 +175,7 @@ func (m *AppManager) ListApplications() []struct {
 	return appList
 }
 
-func formatDuration(d time.Duration) string {
+func FormatDuration(d time.Duration) string {
 	d = d.Round(time.Second)
 	h := d / time.Hour
 	d -= h * time.Hour
