@@ -2,6 +2,7 @@ package app
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
@@ -61,4 +62,17 @@ func RestartApplication(id string) error {
 	}
 	apps[id] = cmd
 	return nil
+}
+
+func StatusApplication(id string) (string, error) {
+	appsLock.Lock()
+	defer appsLock.Unlock()
+
+	if cmd, exists := apps[id]; exists {
+		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+			return "stopped", nil
+		}
+		return "running", nil
+	}
+	return "", errors.New("application not found")
 }
