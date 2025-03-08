@@ -14,6 +14,6 @@ var StartCmd = &cobra.Command{
 		id := args[0]
 		fmt.Printf("Starting application %s\n", id)
 
-		app.StartApplication(id)
+		app.Manager.StartApplication(id)
 	},
 }

@@ -13,7 +13,7 @@ var RestartCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		id := args[0]
 		fmt.Printf("Restarting Application %s\n", id)
-		if err := app.RestartApplication(id); err != nil {
+		if err := app.Manager.RestartApplication(id); err != nil {
 			fmt.Printf("Restart failed: %s\n", err)
 			return
 		}

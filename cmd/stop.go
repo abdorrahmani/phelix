@@ -14,7 +14,7 @@ var StopCmd = &cobra.Command{
 		id := args[0]
 		fmt.Printf("Stopping application %s\n", id)
 
-		app.StopApplication(id)
+		app.Manager.StopApplication(id)
 		fmt.Printf("Application %s stopped successfully\n", id)
 	},
 }

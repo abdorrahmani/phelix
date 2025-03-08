@@ -12,7 +12,7 @@ var ListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Lists all applications with their ID, status, PID, and uptime",
 	Run: func(cmd *cobra.Command, args []string) {
-		apps := app.ListApplications()
+		apps := app.Manager.ListApplications()
 		if len(apps) == 0 {
 			fmt.Println("No applications found.")
 			return
@@ -23,7 +23,7 @@ var ListCmd = &cobra.Command{
 		fmt.Fprintln(w, "------\t------\t------\t------")
 
 		for _, app := range apps {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", app.ID, app.Status, app.PID, app.Uptime)
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", app.ID, app.Status, app.PID, app.Uptime)
 		}
 		w.Flush()
 	},

@@ -12,7 +12,7 @@ var StatusCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		id := args[0]
-		status, err := app.StatusApplication(id)
+		status, err := app.Manager.StatusApplication(id)
 		if err != nil {
 			fmt.Println("Error getting status:", err)
 			return

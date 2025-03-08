@@ -12,7 +12,7 @@ var BuildCmd = &cobra.Command{
 	Short: "Builds and runs a Go application",
 	Long:  "Compiles a Go application from the current directory and starts it immediately",
 	Run: func(cmd *cobra.Command, args []string) {
-		id := app.GenerateAppID()
+		id := app.Manager.GenerateAppID()
 		fmt.Printf("Building application, ID: %s\n", id)
 
 		// Build the Go application
@@ -22,6 +22,6 @@ var BuildCmd = &cobra.Command{
 		}
 
 		// Run the application
-		app.StartApplication(id)
+		app.Manager.StartApplication(id)
 	},
 }

@@ -16,7 +16,7 @@ var RebuildCmd = &cobra.Command{
 		fmt.Printf("Rebuilding application %s\n", id)
 
 		// Stop the existing app
-		app.StopApplication(id)
+		app.Manager.StopApplication(id)
 
 		if err := exec.Command("go", "get", "-o", fmt.Sprintf("app_%s", id)).Run(); err != nil {
 			fmt.Println("Rebuild failed", err)
@@ -24,6 +24,6 @@ var RebuildCmd = &cobra.Command{
 		}
 
 		// Restart
-		app.StartApplication(id)
+		app.Manager.StartApplication(id)
 	},
 }
