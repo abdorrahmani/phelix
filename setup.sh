@@ -8,7 +8,7 @@ echo "Building gophel..."
 go build -o gophel
 
 echo "Moving gophel to /usr/local/bin/..."
-sudo mv gophel /usr/lcoal/bin/
+sudo mv gophel /usr/local/bin/
 
 echo "Setting executable permission"
 sudo chmod +x /usr/local/bin/gophel
