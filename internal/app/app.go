@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/shirou/gopsutil/process"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +18,7 @@ type AppManagerInterface interface {
 	StartApplication(id string)
 	StopApplication(id string)
 	RestartApplication(id string) error
-	StatusApplication(id string) (string, error)
+	StatusApplication(id string) (AppStatus, error)
 	ListApplications() []struct {
 		ID     string
 		Status string
@@ -34,6 +35,15 @@ type AppInfo struct {
 	PID    int
 	Status string
 	Start  time.Time
+}
+
+type AppStatus struct {
+	ID       string
+	Status   string
+	PID      int
+	Uptime   string
+	RAMUsage uint64  // in bytes
+	CPUUsage float64 // in percentage
 }
 
 type AppManager struct {
@@ -133,20 +143,55 @@ func (m *AppManager) RestartApplication(id string) error {
 }
 
 // StatusApplication returns the status of an application by its ID.
-func (m *AppManager) StatusApplication(id string) (string, error) {
+func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if app, exists := m.Apps[id]; exists {
-		if app.Cmd != nil && app.Cmd.ProcessState != nil && app.Cmd.ProcessState.Exited() {
-			app.Status = "stopped"
-			if err := m.SaveState(); err != nil {
-				fmt.Println("Failed to save state:", err)
-			}
-		}
-		return app.Status, nil
+	if err := m.LoadState(); err != nil {
+		return AppStatus{}, fmt.Errorf("failed to load state: %v", err)
 	}
-	return "", errors.New("application not found")
+	app, exists := m.Apps[id]
+	if !exists {
+		return AppStatus{}, errors.New("application not found")
+	}
+	if app.Cmd != nil && app.Cmd.ProcessState != nil && app.Cmd.ProcessState.Exited() {
+		app.Status = "stopped"
+		if err := m.SaveState(); err != nil {
+			fmt.Println("Failed to save state:", err)
+		}
+	}
+
+	// Calculate uptime
+	var uptime string
+	if app.Status == "running" {
+		duration := time.Since(app.Start)
+		uptime = FormatDuration(duration)
+	} else {
+		uptime = "N/A"
+	}
+
+	// Get RAM and CPU usage
+	var ramUsage uint64
+	var cpuUsage float64
+	if app.Status == "running" {
+		p, err := process.NewProcess(int32(app.PID))
+		if err == nil {
+			memInfo, _ := p.MemoryInfo()
+			if memInfo != nil {
+				ramUsage = memInfo.RSS
+			}
+			cpuUsage, _ = p.CPUPercent()
+		}
+	}
+
+	return AppStatus{
+		ID:       id,
+		Status:   app.Status,
+		PID:      app.PID,
+		Uptime:   uptime,
+		RAMUsage: ramUsage,
+		CPUUsage: cpuUsage,
+	}, nil
 }
 
 // ListApplications returns a list of all applications with their details.
