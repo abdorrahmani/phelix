@@ -1,4 +1,4 @@
-package Gophel
+package main
 
 import (
 	"fmt"
