@@ -14,7 +14,8 @@ var StopCmd = &cobra.Command{
 		id := args[0]
 		fmt.Printf("Stopping application %s\n", id)
 
-		app.Manager.StopApplication(id)
-		fmt.Printf("Application %s stopped successfully\n", id)
+		if err := app.Manager.StopApplication(id); err != nil {
+			fmt.Printf("Failed to stop application %s: %v\n", id, err)
+		}
 	},
 }

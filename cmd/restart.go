@@ -15,8 +15,6 @@ var RestartCmd = &cobra.Command{
 		fmt.Printf("Restarting Application %s\n", id)
 		if err := app.Manager.RestartApplication(id); err != nil {
 			fmt.Printf("Restart failed: %s\n", err)
-			return
 		}
-		fmt.Printf("Application %s restarted Successfully\n", id)
 	},
 }

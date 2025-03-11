@@ -15,8 +15,8 @@ import (
 
 type AppManagerInterface interface {
 	GenerateAppID() string
-	StartApplication(id string, port int)
-	StopApplication(id string)
+	StartApplication(id string, port int) error
+	StopApplication(id string) error
 	RestartApplication(id string) error
 	StatusApplication(id string) (AppStatus, error)
 	ListApplications() []struct {
@@ -65,20 +65,24 @@ func (m *AppManager) GenerateAppID() string {
 	return fmt.Sprintf("%x", b)
 }
 
-// StartApplication starts an application by its ID.
-func (m *AppManager) StartApplication(id string, port int) {
+// StartApplication starts an application by its ID with a specified port.
+func (m *AppManager) StartApplication(id string, port int) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if app, exists := m.Apps[id]; exists && app.Status == "running" {
-		fmt.Printf("Application %s is already running\n", id)
-		return
+	if err := m.LoadState(); err != nil {
+		return fmt.Errorf("failed to load state: %v", err)
 	}
+
+	if app, exists := m.Apps[id]; exists && app.Status == "running" {
+		return fmt.Errorf("application %s is already running on PID %d", id, app.PID)
+	}
+
 	cmd := exec.Command(fmt.Sprintf("./app_%s", id))
 	if err := cmd.Start(); err != nil {
-		fmt.Println("Start failed:", err)
-		return
+		return fmt.Errorf("start failed: %v", err)
 	}
+
 	m.Apps[id] = &AppInfo{
 		ID:     id,
 		Cmd:    cmd,
@@ -87,34 +91,58 @@ func (m *AppManager) StartApplication(id string, port int) {
 		Start:  time.Now(),
 		Port:   port,
 	}
-	fmt.Printf("Application %s started successfully on port %d\n", id, port)
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
 	}
+	fmt.Printf("Application %s started successfully on port %d\n", id, port)
+	return nil
 }
 
 // StopApplication stops an application by its ID.
-func (m *AppManager) StopApplication(id string) {
+func (m *AppManager) StopApplication(id string) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if app, exists := m.Apps[id]; exists && app.Status == "running" {
-		if app.Cmd != nil && app.Cmd.Process != nil {
-			// Send SIGINT to allow graceful shutdown
-			if err := app.Cmd.Process.Signal(os.Interrupt); err != nil {
-				fmt.Println("Failed to send interrupt:", err)
-				app.Cmd.Process.Kill() // Fallback to SIGKILL
-			}
-
-			app.Cmd.Wait()
-		}
-		app.Status = "stopped"
-		if err := m.SaveState(); err != nil {
-			fmt.Println("Failed to save state:", err)
-		}
-	} else {
-		fmt.Printf("Application %s not found or not running\n", id)
+	if err := m.LoadState(); err != nil {
+		return fmt.Errorf("failed to load state: %v", err)
 	}
+
+	app, exists := m.Apps[id]
+	if !exists {
+		return fmt.Errorf("application %s not found", id)
+	}
+	if app.Status != "running" {
+		return fmt.Errorf("application %s is not running", id)
+	}
+
+	if app.Cmd != nil && app.Cmd.Process != nil {
+		// Try SIGINT for graceful shutdown
+		if err := app.Cmd.Process.Signal(os.Interrupt); err != nil {
+			fmt.Println("Failed to send interrupt:", err)
+		}
+		// Wait for process to exit or timeout
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Cmd.Wait()
+		}()
+		select {
+		case <-time.After(5 * time.Second):
+			fmt.Println("Process did not stop gracefully, killing it")
+			app.Cmd.Process.Kill()
+		case err := <-done:
+			if err != nil {
+				fmt.Println("Process exited with error:", err)
+			}
+		}
+	}
+
+	app.Status = "stopped"
+	app.Cmd = nil // Clear Cmd to avoid reuse
+	if err := m.SaveState(); err != nil {
+		fmt.Println("Failed to save state:", err)
+	}
+	fmt.Printf("Application %s stopped successfully\n", id)
+	return nil
 }
 
 // RestartApplication restarts an application by its ID.
@@ -122,20 +150,33 @@ func (m *AppManager) RestartApplication(id string) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
+	if err := m.LoadState(); err != nil {
+		return fmt.Errorf("failed to load state: %v", err)
+	}
+
 	app, exists := m.Apps[id]
 	if !exists {
 		return fmt.Errorf("application %s not found", id)
 	}
 
+	fmt.Printf("Restarting Application %s\n", id)
 	if app.Status == "running" && app.Cmd != nil && app.Cmd.Process != nil {
-		// Gracefully stop the old process
 		if err := app.Cmd.Process.Signal(os.Interrupt); err != nil {
 			fmt.Println("Failed to send interrupt:", err)
-			app.Cmd.Process.Kill() // Fallback to SIGKILL
+			app.Cmd.Process.Kill()
 		}
-
-		if err := app.Cmd.Wait(); err != nil {
-			fmt.Println("Process did not exit cleanly:", err)
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Cmd.Wait()
+		}()
+		select {
+		case <-time.After(5 * time.Second):
+			fmt.Println("Process did not stop gracefully, killing it")
+			app.Cmd.Process.Kill()
+		case err := <-done:
+			if err != nil {
+				fmt.Println("Process exited with error:", err)
+			}
 		}
 		app.Status = "stopped"
 	}
