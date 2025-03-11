@@ -42,7 +42,7 @@ type AppStatus struct {
 	Status   string
 	PID      int
 	Uptime   string
-	RAMUsage uint64  // in bytes
+	RAMUsage uint64  // in bytes (will be converted to MB in status command)
 	CPUUsage float64 // in percentage
 }
 
@@ -116,8 +116,10 @@ func (m *AppManager) RestartApplication(id string) error {
 	defer m.Lock.Unlock()
 
 	if app, exists := m.Apps[id]; exists && app.Status == "running" {
-		if err := app.Cmd.Process.Kill(); err != nil {
-			return fmt.Errorf("failed to stop application %s: %v", id, err)
+		if app.Cmd != nil {
+			if err := app.Cmd.Process.Kill(); err != nil {
+				return fmt.Errorf("failed to stop application %s: %v", id, err)
+			}
 		}
 		app.Status = "stopped"
 	} else {
@@ -139,6 +141,7 @@ func (m *AppManager) RestartApplication(id string) error {
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
 	}
+	fmt.Printf("Application %s restarted successfully\n", id)
 	return nil
 }
 
@@ -150,10 +153,12 @@ func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 	if err := m.LoadState(); err != nil {
 		return AppStatus{}, fmt.Errorf("failed to load state: %v", err)
 	}
+
 	app, exists := m.Apps[id]
 	if !exists {
 		return AppStatus{}, errors.New("application not found")
 	}
+
 	if app.Cmd != nil && app.Cmd.ProcessState != nil && app.Cmd.ProcessState.Exited() {
 		app.Status = "stopped"
 		if err := m.SaveState(); err != nil {
@@ -170,7 +175,7 @@ func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 		uptime = "N/A"
 	}
 
-	// Get RAM and CPU usage
+	// Get RAM and CPU usage for running apps by querying the PID directly
 	var ramUsage uint64
 	var cpuUsage float64
 	if app.Status == "running" {

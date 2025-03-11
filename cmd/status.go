@@ -20,11 +20,14 @@ var StatusCmd = &cobra.Command{
 			return
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.AlignRight)
-		fmt.Fprintln(w, "ID\tStatus\tPID\tUptime\tRAM Usage (bytes)\tCPU Usage (%)")
+		// Convert RAM usage from bytes to MB
+		ramUsageMB := float64(status.RAMUsage) / (1024 * 1024)
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "ID\tStatus\tPID\tUptime\tRAM Usage (MB)\tCPU Usage (%)")
 		fmt.Fprintln(w, "----\t------\t----\t------\t-----------------\t-------------")
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%d\t%.2f\n",
-			status.ID, status.Status, status.PID, status.Uptime, status.RAMUsage, status.CPUUsage)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%.2f\t%.2f\n",
+			status.ID, status.Status, status.PID, status.Uptime, ramUsageMB, status.CPUUsage)
 		w.Flush()
 	},
 }
