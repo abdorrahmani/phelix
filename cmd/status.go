@@ -3,9 +3,10 @@ package cmd
 import (
 	"fmt"
 	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/fatih/color"
+	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"os"
-	"text/tabwriter"
 )
 
 var StatusCmd = &cobra.Command{
@@ -23,11 +24,26 @@ var StatusCmd = &cobra.Command{
 		// Convert RAM usage from bytes to MB
 		ramUsageMB := float64(status.RAMUsage) / (1024 * 1024)
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "ID\tStatus\tPID\tUptime\tRAM Usage (MB)\tCPU Usage (%)")
-		fmt.Fprintln(w, "----\t------\t----\t------\t-----------------\t-------------")
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%.2f\t%.2f\n",
-			status.ID, status.Status, status.PID, status.Uptime, ramUsageMB, status.CPUUsage)
-		w.Flush()
+		statusText := status.Status
+		if status.Status == "running" {
+			statusText = color.GreenString("running")
+		} else if status.Status == "stopped" {
+			statusText = color.RedString("stopped")
+		}
+
+		table := tablewriter.NewWriter(os.Stdout)
+		table.SetHeader([]string{"ID", "Status", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
+		table.SetBorder(true)
+		table.SetRowLine(true)
+
+		table.Append([]string{
+			status.ID,
+			statusText,
+			fmt.Sprintf("%d", status.PID),
+			status.Uptime,
+			fmt.Sprintf("%.2f", ramUsageMB),
+			fmt.Sprintf("%.2f", status.CPUUsage),
+		})
+		table.Render()
 	},
 }

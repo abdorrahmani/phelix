@@ -3,9 +3,10 @@ package cmd
 import (
 	"fmt"
 	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/fatih/color"
+	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"os"
-	"text/tabwriter"
 )
 
 var ListCmd = &cobra.Command{
@@ -18,13 +19,23 @@ var ListCmd = &cobra.Command{
 			return
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.AlignRight)
-		fmt.Fprintln(w, "ID\tStatus\tPID\tUptime")
-		fmt.Fprintln(w, "------\t------\t------\t------")
+		table := tablewriter.NewWriter(os.Stdout)
+		table.SetHeader([]string{"ID", "Status", "PID", "Uptime"})
+		table.SetBorder(true)
+		table.SetRowLine(true)
+
+		table.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER, tablewriter.ALIGN_CENTER, tablewriter.ALIGN_CENTER})
 
 		for _, app := range apps {
-			fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", app.ID, app.Status, app.PID, app.Uptime)
+			status := app.Status
+			if status == "running" {
+				status = color.GreenString("running")
+			} else if status == "stopped" {
+				status = color.RedString("stopped")
+			}
+
+			table.Append([]string{app.ID, status, fmt.Sprintf("%d", app.PID), app.Uptime})
 		}
-		w.Flush()
+		table.Render()
 	},
 }
