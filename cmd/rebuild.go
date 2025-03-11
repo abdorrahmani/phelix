@@ -23,7 +23,16 @@ var RebuildCmd = &cobra.Command{
 			return
 		}
 
-		// Restart
-		app.Manager.StartApplication(id)
+		// Get the port from the app's state
+		_, err := app.Manager.StatusApplication(id)
+		if err != nil {
+			fmt.Println("Failed to get app status:", err)
+			return
+		}
+		port := 8080 // Default port if not found
+		if appInfo, exists := app.Manager.(*app.AppManager).Apps[id]; exists {
+			port = appInfo.Port
+		}
+		app.Manager.StartApplication(id, port)
 	},
 }

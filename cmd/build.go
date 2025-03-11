@@ -7,6 +7,10 @@ import (
 	"os/exec"
 )
 
+var port int
+
+//gophel build --port <PORT>
+
 var BuildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Builds and runs a Go application",
@@ -22,6 +26,10 @@ var BuildCmd = &cobra.Command{
 		}
 
 		// Run the application
-		app.Manager.StartApplication(id)
+		app.Manager.StartApplication(id, port)
 	},
+}
+
+func init() {
+	BuildCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the application on")
 }

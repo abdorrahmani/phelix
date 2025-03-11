@@ -14,6 +14,10 @@ var StartCmd = &cobra.Command{
 		id := args[0]
 		fmt.Printf("Starting application %s\n", id)
 
-		app.Manager.StartApplication(id)
+		app.Manager.StartApplication(id, port)
 	},
+}
+
+func init() {
+	StartCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the application on")
 }

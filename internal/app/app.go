@@ -15,7 +15,7 @@ import (
 
 type AppManagerInterface interface {
 	GenerateAppID() string
-	StartApplication(id string)
+	StartApplication(id string, port int)
 	StopApplication(id string)
 	RestartApplication(id string) error
 	StatusApplication(id string) (AppStatus, error)
@@ -35,6 +35,7 @@ type AppInfo struct {
 	PID    int
 	Status string
 	Start  time.Time
+	Port   int
 }
 
 type AppStatus struct {
@@ -65,7 +66,7 @@ func (m *AppManager) GenerateAppID() string {
 }
 
 // StartApplication starts an application by its ID.
-func (m *AppManager) StartApplication(id string) {
+func (m *AppManager) StartApplication(id string, port int) {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
@@ -84,8 +85,9 @@ func (m *AppManager) StartApplication(id string) {
 		PID:    cmd.Process.Pid,
 		Status: "running",
 		Start:  time.Now(),
+		Port:   port,
 	}
-	fmt.Printf("Application %s started successfully\n", id)
+	fmt.Printf("Application %s started successfully on port %d\n", id, port)
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
 	}
@@ -97,9 +99,14 @@ func (m *AppManager) StopApplication(id string) {
 	defer m.Lock.Unlock()
 
 	if app, exists := m.Apps[id]; exists && app.Status == "running" {
-		if err := app.Cmd.Process.Kill(); err != nil {
-			fmt.Println("Failed to stop application:", err)
-			return
+		if app.Cmd != nil && app.Cmd.Process != nil {
+			// Send SIGINT to allow graceful shutdown
+			if err := app.Cmd.Process.Signal(os.Interrupt); err != nil {
+				fmt.Println("Failed to send interrupt:", err)
+				app.Cmd.Process.Kill() // Fallback to SIGKILL
+			}
+
+			app.Cmd.Wait()
 		}
 		app.Status = "stopped"
 		if err := m.SaveState(); err != nil {
@@ -115,15 +122,22 @@ func (m *AppManager) RestartApplication(id string) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if app, exists := m.Apps[id]; exists && app.Status == "running" {
-		if app.Cmd != nil {
-			if err := app.Cmd.Process.Kill(); err != nil {
-				return fmt.Errorf("failed to stop application %s: %v", id, err)
-			}
+	app, exists := m.Apps[id]
+	if !exists {
+		return fmt.Errorf("application %s not found", id)
+	}
+
+	if app.Status == "running" && app.Cmd != nil && app.Cmd.Process != nil {
+		// Gracefully stop the old process
+		if err := app.Cmd.Process.Signal(os.Interrupt); err != nil {
+			fmt.Println("Failed to send interrupt:", err)
+			app.Cmd.Process.Kill() // Fallback to SIGKILL
+		}
+
+		if err := app.Cmd.Wait(); err != nil {
+			fmt.Println("Process did not exit cleanly:", err)
 		}
 		app.Status = "stopped"
-	} else {
-		fmt.Printf("Application %s was not running, starting it now\n", id)
 	}
 
 	cmd := exec.Command(fmt.Sprintf("./app_%s", id))
@@ -131,17 +145,14 @@ func (m *AppManager) RestartApplication(id string) error {
 		return fmt.Errorf("failed to restart application %s: %v", id, err)
 	}
 
-	m.Apps[id] = &AppInfo{
-		ID:     id,
-		Cmd:    cmd,
-		PID:    cmd.Process.Pid,
-		Status: "running",
-		Start:  time.Now(),
-	}
+	app.Cmd = cmd
+	app.PID = cmd.Process.Pid
+	app.Status = "running"
+	app.Start = time.Now()
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
 	}
-	fmt.Printf("Application %s restarted successfully\n", id)
+	fmt.Printf("Application %s restarted successfully on port %d\n", id, app.Port)
 	return nil
 }
 
@@ -181,11 +192,24 @@ func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 	if app.Status == "running" {
 		p, err := process.NewProcess(int32(app.PID))
 		if err == nil {
-			memInfo, _ := p.MemoryInfo()
-			if memInfo != nil {
-				ramUsage = memInfo.RSS
+			// Retry mechanism to ensure non-zero CPU usage
+			for i := 0; i < 3; i++ {
+				time.Sleep(200 * time.Millisecond) // Wait for process to stabilize
+				memInfo, _ := p.MemoryInfo()
+				if memInfo != nil {
+					ramUsage = memInfo.RSS
+				}
+				cpuUsage, _ = p.CPUPercent()
+				if cpuUsage > 0 {
+					break // Exit retry if we get a non-zero value
+				}
 			}
-			cpuUsage, _ = p.CPUPercent()
+		} else {
+			// If process not found, mark as stopped
+			app.Status = "stopped"
+			if err := m.SaveState(); err != nil {
+				fmt.Println("Failed to save state:", err)
+			}
 		}
 	}
 
@@ -263,6 +287,7 @@ func (m *AppManager) SaveState() error {
 		PID    int       `json:"pid"`
 		Status string    `json:"status"`
 		Start  time.Time `json:"start"`
+		Port   int       `json:"port"`
 	}
 	savedApps := make(map[string]SavedApp)
 	for id, app := range m.Apps {
@@ -271,6 +296,7 @@ func (m *AppManager) SaveState() error {
 			PID:    app.PID,
 			Status: app.Status,
 			Start:  app.Start,
+			Port:   app.Port,
 		}
 	}
 
@@ -295,6 +321,7 @@ func (m *AppManager) LoadState() error {
 		PID    int       `json:"pid"`
 		Status string    `json:"status"`
 		Start  time.Time `json:"start"`
+		Port   int       `json:"port"`
 	}
 	savedApps := make(map[string]SavedApp)
 	if err := json.Unmarshal(data, &savedApps); err != nil {
@@ -302,12 +329,12 @@ func (m *AppManager) LoadState() error {
 	}
 
 	for id, saved := range savedApps {
-		// Only load, don’t restart processes; assume they’re gone unless running
 		m.Apps[id] = &AppInfo{
 			ID:     id,
 			PID:    saved.PID,
 			Status: saved.Status,
 			Start:  saved.Start,
+			Port:   saved.Port,
 			Cmd:    nil,
 		}
 	}

@@ -116,7 +116,7 @@ func listenForCommands() {
 		switch msg.Command {
 		case "build":
 			id := app.Manager.GenerateAppID()
-			app.Manager.StartApplication(id)
+			app.Manager.StartApplication(id, 8080)
 			sendResponse(id, "build", map[string]string{"id": id}, nil)
 
 		case "rebuild":
@@ -134,7 +134,7 @@ func listenForCommands() {
 			}
 
 		case "start":
-			app.Manager.StartApplication(msg.ID)
+			app.Manager.StartApplication(msg.ID, 8080)
 			sendResponse(msg.ID, "start", "success", nil)
 
 		case "stop":
