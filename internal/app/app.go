@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -116,19 +117,25 @@ func (m *AppManager) StopApplication(id string) error {
 	}
 
 	if app.Cmd != nil && app.Cmd.Process != nil {
-		// Try SIGINT for graceful shutdown
-		if err := app.Cmd.Process.Signal(os.Interrupt); err != nil {
-			fmt.Println("Failed to send interrupt:", err)
+		if stdin, _ := app.Cmd.StdinPipe(); stdin != nil {
+			stdin.Close()
 		}
-		// Wait for process to exit or timeout
+
+		if err := app.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			fmt.Println("Failed to send SIGTERM:", err)
+		}
+
 		done := make(chan error, 1)
 		go func() {
 			done <- app.Cmd.Wait()
 		}()
+
 		select {
 		case <-time.After(5 * time.Second):
-			fmt.Println("Process did not stop gracefully, killing it")
-			app.Cmd.Process.Kill()
+			fmt.Println("Process did not stop gracefully, attempting SIGKILL")
+			if err := app.Cmd.Process.Kill(); err != nil {
+				return fmt.Errorf("failed to force kill process: %v", err)
+			}
 		case err := <-done:
 			if err != nil {
 				fmt.Println("Process exited with error:", err)
@@ -136,8 +143,27 @@ func (m *AppManager) StopApplication(id string) error {
 		}
 	}
 
+	time.Sleep(2 * time.Second)
+	p, err := process.NewProcess(int32(app.PID))
+	if err == nil {
+		alive, _ := p.IsRunning()
+		if alive {
+			fmt.Println("Process is still running, using system kill command")
+			exec.Command("kill", "-9", fmt.Sprintf("%d", app.PID)).Run()
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	p, err = process.NewProcess(int32(app.PID))
+	if err == nil {
+		alive, _ := p.IsRunning()
+		if alive {
+			return fmt.Errorf("failed to stop application %s: process still running", id)
+		}
+	}
+
 	app.Status = "stopped"
-	app.Cmd = nil // Clear Cmd to avoid reuse
+	app.Cmd = nil
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
 	}
