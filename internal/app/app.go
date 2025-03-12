@@ -186,25 +186,11 @@ func (m *AppManager) RestartApplication(id string) error {
 	}
 
 	fmt.Printf("Restarting Application %s\n", id)
-	if app.Status == "running" && app.Cmd != nil && app.Cmd.Process != nil {
-		if err := app.Cmd.Process.Signal(os.Interrupt); err != nil {
-			fmt.Println("Failed to send interrupt:", err)
-			app.Cmd.Process.Kill()
+
+	if app.Status == "running" {
+		if err := m.stopApplicationUnlocked(id); err != nil {
+			return fmt.Errorf("failed to stop application %s: %v", id, err)
 		}
-		done := make(chan error, 1)
-		go func() {
-			done <- app.Cmd.Wait()
-		}()
-		select {
-		case <-time.After(5 * time.Second):
-			fmt.Println("Process did not stop gracefully, killing it")
-			app.Cmd.Process.Kill()
-		case err := <-done:
-			if err != nil {
-				fmt.Println("Process exited with error:", err)
-			}
-		}
-		app.Status = "stopped"
 	}
 
 	cmd := exec.Command(fmt.Sprintf("./app_%s", id))
@@ -216,10 +202,63 @@ func (m *AppManager) RestartApplication(id string) error {
 	app.PID = cmd.Process.Pid
 	app.Status = "running"
 	app.Start = time.Now()
+
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
 	}
+
 	fmt.Printf("Application %s restarted successfully on port %d\n", id, app.Port)
+	return nil
+}
+
+// stopApplicationUnlocked stops an application without locking (to prevent deadlock)
+func (m *AppManager) stopApplicationUnlocked(id string) error {
+	app, exists := m.Apps[id]
+	if !exists {
+		return fmt.Errorf("application %s not found", id)
+	}
+
+	if app.Status != "running" {
+		return fmt.Errorf("application %s is not running", id)
+	}
+
+	if app.Cmd != nil && app.Cmd.Process != nil {
+		if err := app.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			fmt.Println("Failed to send SIGTERM:", err)
+		}
+
+		done := make(chan error, 1)
+		go func() {
+			done <- app.Cmd.Wait()
+		}()
+
+		select {
+		case <-time.After(5 * time.Second):
+			fmt.Println("Process did not stop gracefully, using SIGKILL")
+			_ = app.Cmd.Process.Kill()
+		case err := <-done:
+			if err != nil {
+				fmt.Println("Process exited with error:", err)
+			}
+		}
+	}
+
+	time.Sleep(1 * time.Second)
+	p, err := process.NewProcess(int32(app.PID))
+	if err == nil {
+		if alive, _ := p.IsRunning(); alive {
+			exec.Command("kill", "-9", fmt.Sprintf("%d", app.PID)).Run()
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	app.Status = "stopped"
+	app.Cmd = nil
+	if err := m.SaveState(); err != nil {
+		fmt.Println("Failed to save state:", err)
+	}
+
+	fmt.Printf("Application %s stopped successfully\n", id)
 	return nil
 }
 
