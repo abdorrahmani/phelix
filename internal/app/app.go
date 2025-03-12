@@ -16,12 +16,13 @@ import (
 
 type AppManagerInterface interface {
 	GenerateAppID() string
-	StartApplication(id string, port int) error
+	StartApplication(id string, port int, name string) error
 	StopApplication(id string) error
 	RestartApplication(id string) error
 	StatusApplication(id string) (AppStatus, error)
 	ListApplications() []struct {
 		ID     string
+		Name   string
 		Status string
 		PID    int
 		Uptime string
@@ -32,6 +33,7 @@ type AppManagerInterface interface {
 
 type AppInfo struct {
 	ID      string
+	Name    string
 	Cmd     *exec.Cmd
 	PID     int
 	Status  string
@@ -42,6 +44,7 @@ type AppInfo struct {
 
 type AppStatus struct {
 	ID       string
+	Name     string
 	Status   string
 	PID      int
 	Uptime   string
@@ -71,7 +74,7 @@ func (m *AppManager) GenerateAppID() string {
 }
 
 // StartApplication starts an application by its ID with a specified port.
-func (m *AppManager) StartApplication(id string, port int) error {
+func (m *AppManager) StartApplication(id string, port int, name string) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
@@ -79,8 +82,13 @@ func (m *AppManager) StartApplication(id string, port int) error {
 		return fmt.Errorf("failed to load state: %v", err)
 	}
 
-	if app, exists := m.Apps[id]; exists && app.Status == "running" {
-		return fmt.Errorf("application %s is already running on PID %d", id, app.PID)
+	if app, exists := m.Apps[id]; exists {
+		if app.Status == "running" {
+			return fmt.Errorf("application '%s' (ID: %s) is already running on PID %d", app.Name, id, app.PID)
+		}
+		if app.Name != "" {
+			name = app.Name
+		}
 	}
 
 	if err := os.MkdirAll(logDir, 0755); err != nil {
@@ -103,6 +111,7 @@ func (m *AppManager) StartApplication(id string, port int) error {
 	m.Apps[id] = &AppInfo{
 		ID:      id,
 		Cmd:     cmd,
+		Name:    name,
 		PID:     cmd.Process.Pid,
 		Status:  "running",
 		Start:   time.Now(),
@@ -112,7 +121,7 @@ func (m *AppManager) StartApplication(id string, port int) error {
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
 	}
-	fmt.Printf("Application %s started successfully on port %d\n", id, port)
+	fmt.Printf("Application '%s' (ID: %s) started successfully on port %d\n", name, id, port)
 	return nil
 }
 
@@ -130,7 +139,7 @@ func (m *AppManager) StopApplication(id string) error {
 		return fmt.Errorf("application %s not found", id)
 	}
 	if app.Status != "running" {
-		return fmt.Errorf("application %s is not running", id)
+		return fmt.Errorf("application '%s' (ID: %s) is not running", app.Name, id)
 	}
 
 	if app.Cmd != nil && app.Cmd.Process != nil {
@@ -175,7 +184,7 @@ func (m *AppManager) StopApplication(id string) error {
 	if err == nil {
 		alive, _ := p.IsRunning()
 		if alive {
-			return fmt.Errorf("failed to stop application %s: process still running", id)
+			return fmt.Errorf("failed to stop application '%s' (ID: %s): process still running", app.Name, id)
 		}
 	}
 
@@ -184,7 +193,7 @@ func (m *AppManager) StopApplication(id string) error {
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
 	}
-	fmt.Printf("Application %s stopped successfully\n", id)
+	fmt.Printf("Application '%s' (ID: %s) stopped successfully\n", app.Name, id)
 	return nil
 }
 
@@ -202,11 +211,11 @@ func (m *AppManager) RestartApplication(id string) error {
 		return fmt.Errorf("application %s not found", id)
 	}
 
-	fmt.Printf("Restarting Application %s\n", id)
+	fmt.Printf("Restarting Application '%s' (ID: %s)\n", app.Name, id)
 
 	if app.Status == "running" {
 		if err := m.stopApplicationUnlocked(id); err != nil {
-			return fmt.Errorf("failed to stop application %s: %v", id, err)
+			return fmt.Errorf("failed to stop application '%s' (ID: %s): %v", app.Name, id, err)
 		}
 	}
 
@@ -221,7 +230,7 @@ func (m *AppManager) RestartApplication(id string) error {
 	cmd.Stderr = f
 	if err := cmd.Start(); err != nil {
 		f.Close()
-		return fmt.Errorf("failed to restart application %s: %v", id, err)
+		return fmt.Errorf("failed to restart application '%s' (ID: %s): %v", app.Name, id, err)
 	}
 
 	app.Cmd = cmd
@@ -234,7 +243,7 @@ func (m *AppManager) RestartApplication(id string) error {
 		fmt.Println("Failed to save state:", err)
 	}
 
-	fmt.Printf("Application %s restarted successfully on port %d\n", id, app.Port)
+	fmt.Printf("Application '%s' (ID: %s) restarted successfully on port %d\n", app.Name, id, app.Port)
 	return nil
 }
 
@@ -242,11 +251,11 @@ func (m *AppManager) RestartApplication(id string) error {
 func (m *AppManager) stopApplicationUnlocked(id string) error {
 	app, exists := m.Apps[id]
 	if !exists {
-		return fmt.Errorf("application %s not found", id)
+		return fmt.Errorf("application with ID %s not found", id)
 	}
 
 	if app.Status != "running" {
-		return fmt.Errorf("application %s is not running", id)
+		return fmt.Errorf("application '%s' (ID: %s) is not running", app.Name, id)
 	}
 
 	if app.Cmd != nil && app.Cmd.Process != nil {
@@ -285,7 +294,7 @@ func (m *AppManager) stopApplicationUnlocked(id string) error {
 		fmt.Println("Failed to save state:", err)
 	}
 
-	fmt.Printf("Application %s stopped successfully\n", id)
+	fmt.Printf("Application '%s' (ID: %s) stopped successfully\n", app.Name, id)
 	return nil
 }
 
@@ -348,6 +357,7 @@ func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 
 	return AppStatus{
 		ID:       id,
+		Name:     app.Name,
 		Status:   app.Status,
 		PID:      app.PID,
 		Uptime:   uptime,
@@ -359,6 +369,7 @@ func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 // ListApplications returns a list of all applications with their details.
 func (m *AppManager) ListApplications() []struct {
 	ID     string
+	Name   string
 	Status string
 	PID    int
 	Uptime string
@@ -372,6 +383,7 @@ func (m *AppManager) ListApplications() []struct {
 
 	var appList []struct {
 		ID     string
+		Name   string
 		Status string
 		PID    int
 		Uptime string
@@ -395,11 +407,13 @@ func (m *AppManager) ListApplications() []struct {
 
 		appList = append(appList, struct {
 			ID     string
+			Name   string
 			Status string
 			PID    int
 			Uptime string
 		}{
 			ID:     id,
+			Name:   app.Name,
 			Status: app.Status,
 			PID:    app.PID,
 			Uptime: uptime,
@@ -417,6 +431,7 @@ func (m *AppManager) SaveState() error {
 	// Simplified state: only save ID, PID, Status, and Start time
 	type SavedApp struct {
 		ID      string    `json:"id"`
+		Name    string    `json:"name"`
 		PID     int       `json:"pid"`
 		Status  string    `json:"status"`
 		Start   time.Time `json:"start"`
@@ -427,6 +442,7 @@ func (m *AppManager) SaveState() error {
 	for id, app := range m.Apps {
 		savedApps[id] = SavedApp{
 			ID:      id,
+			Name:    app.Name,
 			PID:     app.PID,
 			Status:  app.Status,
 			Start:   app.Start,
@@ -453,6 +469,7 @@ func (m *AppManager) LoadState() error {
 
 	type SavedApp struct {
 		ID      string    `json:"id"`
+		Name    string    `json:"name"`
 		PID     int       `json:"pid"`
 		Status  string    `json:"status"`
 		Start   time.Time `json:"start"`
@@ -467,6 +484,7 @@ func (m *AppManager) LoadState() error {
 	for id, saved := range savedApps {
 		m.Apps[id] = &AppInfo{
 			ID:      id,
+			Name:    saved.Name,
 			PID:     saved.PID,
 			Status:  saved.Status,
 			Start:   saved.Start,

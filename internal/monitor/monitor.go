@@ -13,6 +13,7 @@ import (
 // AppStats holds monitoring data for a single application.
 type AppStats struct {
 	ID        string  `json:"id"`
+	Name      string  `json:"name"`
 	PID       int     `json:"pid"`
 	Status    string  `json:"status"`
 	Uptime    string  `json:"uptime"`
@@ -64,6 +65,7 @@ func collectSystemStats() SystemStats {
 
 func collectAppStats(appInfo struct {
 	ID     string
+	Name   string
 	Status string
 	PID    int
 	Uptime string
@@ -72,6 +74,7 @@ func collectAppStats(appInfo struct {
 	if err != nil || appInfo.Status != "running" {
 		return AppStats{
 			ID:        appInfo.ID,
+			Name:      appInfo.Name,
 			PID:       appInfo.PID,
 			Status:    appInfo.Status,
 			Uptime:    appInfo.Uptime,
@@ -87,6 +90,7 @@ func collectAppStats(appInfo struct {
 
 	return AppStats{
 		ID:        appInfo.ID,
+		Name:      appInfo.Name,
 		PID:       appInfo.PID,
 		Status:    appInfo.Status,
 		Uptime:    appInfo.Uptime,

@@ -20,7 +20,7 @@ var ListCmd = &cobra.Command{
 		}
 
 		table := tablewriter.NewWriter(os.Stdout)
-		table.SetHeader([]string{"ID", "Status", "PID", "Uptime"})
+		table.SetHeader([]string{"ID", "Name", "Status", "PID", "Uptime"})
 		table.SetBorder(true)
 		table.SetRowLine(true)
 
@@ -34,7 +34,7 @@ var ListCmd = &cobra.Command{
 				status = color.RedString("stopped")
 			}
 
-			table.Append([]string{app.ID, status, fmt.Sprintf("%d", app.PID), app.Uptime})
+			table.Append([]string{app.ID, color.BlueString(app.Name), status, fmt.Sprintf("%d", app.PID), app.Uptime})
 		}
 		table.Render()
 	},

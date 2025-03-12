@@ -32,12 +32,13 @@ var StatusCmd = &cobra.Command{
 		}
 
 		table := tablewriter.NewWriter(os.Stdout)
-		table.SetHeader([]string{"ID", "Status", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
+		table.SetHeader([]string{"ID", "Name", "Status", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
 		table.SetBorder(true)
 		table.SetRowLine(true)
 
 		table.Append([]string{
 			status.ID,
+			color.BlueString(status.Name),
 			statusText,
 			fmt.Sprintf("%d", status.PID),
 			status.Uptime,
