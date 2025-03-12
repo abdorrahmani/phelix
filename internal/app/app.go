@@ -31,12 +31,13 @@ type AppManagerInterface interface {
 }
 
 type AppInfo struct {
-	ID     string
-	Cmd    *exec.Cmd
-	PID    int
-	Status string
-	Start  time.Time
-	Port   int
+	ID      string
+	Cmd     *exec.Cmd
+	PID     int
+	Status  string
+	Start   time.Time
+	Port    int
+	LogFile string
 }
 
 type AppStatus struct {
@@ -57,7 +58,10 @@ var Manager AppManagerInterface = &AppManager{
 	Apps: make(map[string]*AppInfo),
 }
 
-const stateFile = "/var/lib/gophel/apps.json"
+const (
+	stateFile = "/var/lib/gophel/apps.json"
+	logDir    = "/var/log/gophel"
+)
 
 // GenerateAppID generates a unique ID for an application.
 func (m *AppManager) GenerateAppID() string {
@@ -79,18 +83,31 @@ func (m *AppManager) StartApplication(id string, port int) error {
 		return fmt.Errorf("application %s is already running on PID %d", id, app.PID)
 	}
 
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create log directory: %v", err)
+	}
+	logFile := filepath.Join(logDir, fmt.Sprintf("%s.log", id))
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %v", err)
+	}
+
 	cmd := exec.Command(fmt.Sprintf("./app_%s", id))
+	cmd.Stdout = f
+	cmd.Stderr = f
 	if err := cmd.Start(); err != nil {
+		f.Close()
 		return fmt.Errorf("start failed: %v", err)
 	}
 
 	m.Apps[id] = &AppInfo{
-		ID:     id,
-		Cmd:    cmd,
-		PID:    cmd.Process.Pid,
-		Status: "running",
-		Start:  time.Now(),
-		Port:   port,
+		ID:      id,
+		Cmd:     cmd,
+		PID:     cmd.Process.Pid,
+		Status:  "running",
+		Start:   time.Now(),
+		Port:    port,
+		LogFile: logFile,
 	}
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
@@ -193,8 +210,17 @@ func (m *AppManager) RestartApplication(id string) error {
 		}
 	}
 
+	logFile := filepath.Join(logDir, fmt.Sprintf("%s.log", id))
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %v", err)
+	}
+
 	cmd := exec.Command(fmt.Sprintf("./app_%s", id))
+	cmd.Stdout = f
+	cmd.Stderr = f
 	if err := cmd.Start(); err != nil {
+		f.Close()
 		return fmt.Errorf("failed to restart application %s: %v", id, err)
 	}
 
@@ -202,6 +228,7 @@ func (m *AppManager) RestartApplication(id string) error {
 	app.PID = cmd.Process.Pid
 	app.Status = "running"
 	app.Start = time.Now()
+	app.LogFile = logFile
 
 	if err := m.SaveState(); err != nil {
 		fmt.Println("Failed to save state:", err)
@@ -389,20 +416,22 @@ func (m *AppManager) SaveState() error {
 
 	// Simplified state: only save ID, PID, Status, and Start time
 	type SavedApp struct {
-		ID     string    `json:"id"`
-		PID    int       `json:"pid"`
-		Status string    `json:"status"`
-		Start  time.Time `json:"start"`
-		Port   int       `json:"port"`
+		ID      string    `json:"id"`
+		PID     int       `json:"pid"`
+		Status  string    `json:"status"`
+		Start   time.Time `json:"start"`
+		Port    int       `json:"port"`
+		LogFile string    `json:"log_file"`
 	}
 	savedApps := make(map[string]SavedApp)
 	for id, app := range m.Apps {
 		savedApps[id] = SavedApp{
-			ID:     id,
-			PID:    app.PID,
-			Status: app.Status,
-			Start:  app.Start,
-			Port:   app.Port,
+			ID:      id,
+			PID:     app.PID,
+			Status:  app.Status,
+			Start:   app.Start,
+			Port:    app.Port,
+			LogFile: app.LogFile,
 		}
 	}
 
@@ -423,11 +452,12 @@ func (m *AppManager) LoadState() error {
 	}
 
 	type SavedApp struct {
-		ID     string    `json:"id"`
-		PID    int       `json:"pid"`
-		Status string    `json:"status"`
-		Start  time.Time `json:"start"`
-		Port   int       `json:"port"`
+		ID      string    `json:"id"`
+		PID     int       `json:"pid"`
+		Status  string    `json:"status"`
+		Start   time.Time `json:"start"`
+		Port    int       `json:"port"`
+		LogFile string    `json:"log_file"`
 	}
 	savedApps := make(map[string]SavedApp)
 	if err := json.Unmarshal(data, &savedApps); err != nil {
@@ -436,12 +466,13 @@ func (m *AppManager) LoadState() error {
 
 	for id, saved := range savedApps {
 		m.Apps[id] = &AppInfo{
-			ID:     id,
-			PID:    saved.PID,
-			Status: saved.Status,
-			Start:  saved.Start,
-			Port:   saved.Port,
-			Cmd:    nil,
+			ID:      id,
+			PID:     saved.PID,
+			Status:  saved.Status,
+			Start:   saved.Start,
+			Port:    saved.Port,
+			LogFile: saved.LogFile,
+			Cmd:     nil,
 		}
 	}
 	return nil
