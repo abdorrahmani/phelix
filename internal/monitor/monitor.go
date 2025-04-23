@@ -1,102 +1,135 @@
 package monitor
 
 import (
-	"github.com/abdorrahmani/gophel/internal/app"
-	"github.com/abdorrahmani/gophel/internal/websocket"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/disk"
-	"github.com/shirou/gopsutil/mem"
-	"github.com/shirou/gopsutil/process"
+	"fmt"
+	"log"
 	"time"
+
+	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/gorilla/websocket"
 )
 
-// AppStats holds monitoring data for a single application.
-type AppStats struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	PID       int     `json:"pid"`
-	Status    string  `json:"status"`
-	Uptime    string  `json:"uptime"`
-	CPU       float64 `json:"cpu_usage"`
-	RAM       uint64  `json:"ram_usage"`
-	Logs      string  `json:"logs"` // Placeholder for logs
-	Timestamp int64   `json:"timestamp"`
+type AppMetrics struct {
+	AppName     string    `json:"appName"`
+	CPUUsage    float64   `json:"cpuUsage"`
+	MemoryUsage float64   `json:"memoryUsage"`
+	Status      string    `json:"status"`
+	Timestamp   time.Time `json:"timestamp"`
+	PID         int       `json:"pid"`
+	Uptime      string    `json:"uptime"`
 }
 
-// SystemStats holds system-wide monitoring data.
-type SystemStats struct {
-	CPU       float64 `json:"cpu_usage"`
-	RAM       uint64  `json:"ram_usage"`
-	HDD       uint64  `json:"hdd_usage"`
-	Timestamp int64   `json:"timestamp"`
+type Command struct {
+	Type    string `json:"type"` // "start", "stop", "restart"
+	AppName string `json:"appName"`
 }
 
-func StartMonitoring() {
-	go func() {
-		for {
-			// Collect and send system stats
-			sysStats := collectSystemStats()
-			websocket.SendStats("system", sysStats)
+var (
+	wsConn *websocket.Conn
+)
 
-			// Collect and send stats for each app
-			apps := app.Manager.ListApplications()
-			for _, appInfo := range apps {
-				stats := collectAppStats(appInfo)
-				websocket.SendStats(appInfo.ID, stats)
+func StartMonitoring(apiKey string) {
+	// Connect to WebSocket server
+	wsURL := fmt.Sprintf("wss://gophel.anophel.com/api/v1/gophel/ws?apiKey=%s", apiKey)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		log.Printf("Failed to connect to WebSocket: %v", err)
+		return
+	}
+	wsConn = conn
+	defer conn.Close()
+
+	// Start goroutine to handle incoming commands
+	go handleCommands(conn)
+
+	// Start sending metrics
+	for {
+		metrics := collectMetrics()
+		err := conn.WriteJSON(metrics)
+		if err != nil {
+			log.Printf("Error sending metrics: %v", err)
+			break
+		}
+		time.Sleep(5 * time.Second) // Send metrics every 5 seconds
+	}
+}
+
+func collectMetrics() []AppMetrics {
+	var metrics []AppMetrics
+
+	// Get list of all apps
+	apps := app.Manager.ListApplications()
+
+	for _, appInfo := range apps {
+		// Get detailed status for each app
+		status, err := app.Manager.StatusApplication(appInfo.ID)
+		if err != nil {
+			log.Printf("Error getting status for app %s: %v", appInfo.Name, err)
+			continue
+		}
+
+		// Create metrics for the app
+		appMetrics := AppMetrics{
+			AppName:     appInfo.Name,
+			Status:      appInfo.Status,
+			PID:         appInfo.PID,
+			Uptime:      appInfo.Uptime,
+			Timestamp:   time.Now(),
+			CPUUsage:    status.CPUUsage,
+			MemoryUsage: float64(status.RAMUsage) / (1024 * 1024), // Convert to MB
+		}
+
+		metrics = append(metrics, appMetrics)
+	}
+
+	return metrics
+}
+
+func handleCommands(conn *websocket.Conn) {
+	for {
+		var cmd Command
+		err := conn.ReadJSON(&cmd)
+		if err != nil {
+			log.Printf("Error reading command: %v", err)
+			continue
+		}
+
+		// Find the app by name
+		apps := app.Manager.ListApplications()
+		var targetAppID string
+		for _, app := range apps {
+			if app.Name == cmd.AppName {
+				targetAppID = app.ID
+				break
 			}
-
-			time.Sleep(5 * time.Second)
 		}
-	}()
-}
 
-func collectSystemStats() SystemStats {
-	c, _ := cpu.Percent(time.Second, false)
-	m, _ := mem.VirtualMemory()
-	d, _ := disk.Usage("/")
+		if targetAppID == "" {
+			log.Printf("App not found: %s", cmd.AppName)
+			continue
+		}
 
-	return SystemStats{
-		CPU:       c[0],
-		RAM:       m.Used,
-		HDD:       d.Used,
-		Timestamp: time.Now().Unix(),
-	}
-}
+		switch cmd.Type {
+		case "start":
+			err = app.Manager.StartApplication(targetAppID, 0, cmd.AppName)
+		case "stop":
+			err = app.Manager.StopApplication(targetAppID)
+		case "restart":
+			err = app.Manager.RestartApplication(targetAppID)
+		default:
+			log.Printf("Unknown command type: %s", cmd.Type)
+			continue
+		}
 
-func collectAppStats(appInfo struct {
-	ID     string
-	Name   string
-	Status string
-	PID    int
-	Uptime string
-}) AppStats {
-	p, err := process.NewProcess(int32(appInfo.PID))
-	if err != nil || appInfo.Status != "running" {
-		return AppStats{
-			ID:        appInfo.ID,
-			Name:      appInfo.Name,
-			PID:       appInfo.PID,
-			Status:    appInfo.Status,
-			Uptime:    appInfo.Uptime,
-			CPU:       0,
-			RAM:       0,
-			Logs:      "N/A",
-			Timestamp: time.Now().Unix(),
+		if err != nil {
+			log.Printf("Error executing command %s on app %s: %v", cmd.Type, cmd.AppName, err)
 		}
 	}
+}
 
-	cpuPercent, _ := p.CPUPercent()
-	memInfo, _ := p.MemoryInfo()
-
-	return AppStats{
-		ID:        appInfo.ID,
-		Name:      appInfo.Name,
-		PID:       appInfo.PID,
-		Status:    appInfo.Status,
-		Uptime:    appInfo.Uptime,
-		CPU:       cpuPercent,
-		RAM:       memInfo.RSS,
-		Logs:      "N/A", // Implement log collection if needed
-		Timestamp: time.Now().Unix(),
+func SendCommand(cmd Command) error {
+	if wsConn == nil {
+		return fmt.Errorf("WebSocket connection not established")
 	}
+	return wsConn.WriteJSON(cmd)
 }

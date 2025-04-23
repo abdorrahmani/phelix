@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -516,4 +517,18 @@ func FormatDuration(d time.Duration) string {
 	d -= m * time.Minute
 	s := d / time.Second
 	return fmt.Sprintf("%02dh %02dm %02ds", h, m, s)
+}
+
+// GetGophelApps returns a list of apps that start with "gophel"
+func GetGophelApps() ([]string, error) {
+	apps := Manager.ListApplications()
+	var gophelApps []string
+
+	for _, app := range apps {
+		if strings.HasPrefix(app.Name, "gophel") {
+			gophelApps = append(gophelApps, app.Name)
+		}
+	}
+
+	return gophelApps, nil
 }
