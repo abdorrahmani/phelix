@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/shirou/gopsutil/process"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/shirou/gopsutil/process"
 )
 
 type AppManagerInterface interface {
@@ -390,6 +391,17 @@ func (m *AppManager) ListApplications() []struct {
 	}
 
 	for id, app := range m.Apps {
+		// Check if the application binary exists
+		binaryPath := fmt.Sprintf("./app_%s", id)
+		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+			// If binary doesn't exist, remove the app from the manager
+			delete(m.Apps, id)
+			if err := m.SaveState(); err != nil {
+				fmt.Println("Failed to save state:", err)
+			}
+			continue
+		}
+
 		if app.Cmd != nil && app.Cmd.ProcessState != nil && app.Cmd.ProcessState.Exited() {
 			app.Status = "stopped"
 			if err := m.SaveState(); err != nil {
