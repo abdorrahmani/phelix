@@ -3,12 +3,27 @@ package monitor
 import (
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/abdorrahmani/gophel/internal/app"
 	"github.com/gorilla/websocket"
 )
 
+// MonitorService defines the interface for monitoring operations
+type MonitorService interface {
+	StartMonitoring(apiKey string) error
+	StopMonitoring() error
+	SendCommand(cmd Command) error
+}
+
+// Command represents a remote command to be executed
+type Command struct {
+	Type    string `json:"type"` // "start", "stop", "restart"
+	AppName string `json:"appName"`
+}
+
+// AppMetrics represents the metrics collected for an application
 type AppMetrics struct {
 	AppName     string    `json:"appName"`
 	CPUUsage    float64   `json:"cpuUsage"`
@@ -19,57 +34,155 @@ type AppMetrics struct {
 	Uptime      string    `json:"uptime"`
 }
 
-type Command struct {
-	Type    string `json:"type"` // "start", "stop", "restart"
-	AppName string `json:"appName"`
+// monitorService implements the MonitorService interface
+type monitorService struct {
+	conn     *websocket.Conn
+	stopChan chan struct{}
+	mu       sync.Mutex
 }
 
-var (
-	wsConn *websocket.Conn
-)
+// NewMonitorService creates a new instance of MonitorService
+func NewMonitorService() MonitorService {
+	return &monitorService{
+		stopChan: make(chan struct{}),
+	}
+}
 
-func StartMonitoring(apiKey string) {
-	// Connect to WebSocket server
+// StartMonitoring establishes a WebSocket connection and starts monitoring
+func (m *monitorService) StartMonitoring(apiKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.conn != nil {
+		return fmt.Errorf("monitoring already started")
+	}
+
 	wsURL := fmt.Sprintf("wss://gophel.anophel.com/api/v1/gophel/ws?apiKey=%s", apiKey)
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
-		log.Printf("Failed to connect to WebSocket: %v", err)
-		return
+		return fmt.Errorf("failed to connect to WebSocket: %w", err)
 	}
-	wsConn = conn
-	defer conn.Close()
 
-	// Start goroutine to handle incoming commands
-	go handleCommands(conn)
+	m.conn = conn
 
-	// Start sending metrics
+	// Start goroutines for handling commands and sending metrics
+	go m.handleCommands()
+	go m.sendMetrics()
+
+	return nil
+}
+
+// StopMonitoring closes the WebSocket connection and stops monitoring
+func (m *monitorService) StopMonitoring() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.conn == nil {
+		return fmt.Errorf("monitoring not started")
+	}
+
+	close(m.stopChan)
+	if err := m.conn.Close(); err != nil {
+		return fmt.Errorf("failed to close WebSocket connection: %w", err)
+	}
+
+	m.conn = nil
+	return nil
+}
+
+// SendCommand sends a command to the server
+func (m *monitorService) SendCommand(cmd Command) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.conn == nil {
+		return fmt.Errorf("WebSocket connection not established")
+	}
+
+	return m.conn.WriteJSON(cmd)
+}
+
+// handleCommands processes incoming commands from the server
+func (m *monitorService) handleCommands() {
 	for {
-		metrics := collectMetrics()
-		err := conn.WriteJSON(metrics)
-		if err != nil {
-			log.Printf("Error sending metrics: %v", err)
-			break
+		select {
+		case <-m.stopChan:
+			return
+		default:
+			var cmd Command
+			if err := m.conn.ReadJSON(&cmd); err != nil {
+				log.Printf("Error reading command: %v", err)
+				continue
+			}
+
+			if err := m.executeCommand(cmd); err != nil {
+				log.Printf("Error executing command: %v", err)
+			}
 		}
-		time.Sleep(5 * time.Second) // Send metrics every 5 seconds
 	}
 }
 
-func collectMetrics() []AppMetrics {
-	var metrics []AppMetrics
+// executeCommand executes a received command
+func (m *monitorService) executeCommand(cmd Command) error {
+	apps := app.Manager.ListApplications()
+	var targetAppID string
+	for _, app := range apps {
+		if app.Name == cmd.AppName {
+			targetAppID = app.ID
+			break
+		}
+	}
 
-	// Get list of all apps
+	if targetAppID == "" {
+		return fmt.Errorf("app not found: %s", cmd.AppName)
+	}
+
+	var err error
+	switch cmd.Type {
+	case "start":
+		err = app.Manager.StartApplication(targetAppID, 0, cmd.AppName)
+	case "stop":
+		err = app.Manager.StopApplication(targetAppID)
+	case "restart":
+		err = app.Manager.RestartApplication(targetAppID)
+	default:
+		return fmt.Errorf("unknown command type: %s", cmd.Type)
+	}
+
+	return err
+}
+
+// sendMetrics collects and sends metrics to the server
+func (m *monitorService) sendMetrics() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		case <-ticker.C:
+			metrics := m.collectMetrics()
+			if err := m.conn.WriteJSON(metrics); err != nil {
+				log.Printf("Error sending metrics: %v", err)
+			}
+		}
+	}
+}
+
+// collectMetrics collects metrics for all applications
+func (m *monitorService) collectMetrics() []AppMetrics {
+	var metrics []AppMetrics
 	apps := app.Manager.ListApplications()
 
 	for _, appInfo := range apps {
-		// Get detailed status for each app
 		status, err := app.Manager.StatusApplication(appInfo.ID)
 		if err != nil {
 			log.Printf("Error getting status for app %s: %v", appInfo.Name, err)
 			continue
 		}
 
-		// Create metrics for the app
-		appMetrics := AppMetrics{
+		metrics = append(metrics, AppMetrics{
 			AppName:     appInfo.Name,
 			Status:      appInfo.Status,
 			PID:         appInfo.PID,
@@ -77,59 +190,8 @@ func collectMetrics() []AppMetrics {
 			Timestamp:   time.Now(),
 			CPUUsage:    status.CPUUsage,
 			MemoryUsage: float64(status.RAMUsage) / (1024 * 1024), // Convert to MB
-		}
-
-		metrics = append(metrics, appMetrics)
+		})
 	}
 
 	return metrics
-}
-
-func handleCommands(conn *websocket.Conn) {
-	for {
-		var cmd Command
-		err := conn.ReadJSON(&cmd)
-		if err != nil {
-			log.Printf("Error reading command: %v", err)
-			continue
-		}
-
-		// Find the app by name
-		apps := app.Manager.ListApplications()
-		var targetAppID string
-		for _, app := range apps {
-			if app.Name == cmd.AppName {
-				targetAppID = app.ID
-				break
-			}
-		}
-
-		if targetAppID == "" {
-			log.Printf("App not found: %s", cmd.AppName)
-			continue
-		}
-
-		switch cmd.Type {
-		case "start":
-			err = app.Manager.StartApplication(targetAppID, 0, cmd.AppName)
-		case "stop":
-			err = app.Manager.StopApplication(targetAppID)
-		case "restart":
-			err = app.Manager.RestartApplication(targetAppID)
-		default:
-			log.Printf("Unknown command type: %s", cmd.Type)
-			continue
-		}
-
-		if err != nil {
-			log.Printf("Error executing command %s on app %s: %v", cmd.Type, cmd.AppName, err)
-		}
-	}
-}
-
-func SendCommand(cmd Command) error {
-	if wsConn == nil {
-		return fmt.Errorf("WebSocket connection not established")
-	}
-	return wsConn.WriteJSON(cmd)
 }
