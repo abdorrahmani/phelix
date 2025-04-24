@@ -13,8 +13,9 @@ func main() {
 	checkGoInstallation()
 
 	rootCmd := &cobra.Command{
-		Use:   "gophel",
-		Short: "Gophel - Go Application Manager",
+		Use:     "gophel",
+		Short:   "Gophel - Go Application Manager",
+		Version: cmd.Version,
 	}
 	rootCmd.AddCommand(cmd.BuildCmd)
 	rootCmd.AddCommand(cmd.RebuildCmd)
@@ -25,6 +26,7 @@ func main() {
 	rootCmd.AddCommand(cmd.ListCmd)
 	rootCmd.AddCommand(cmd.LogCmd)
 	rootCmd.AddCommand(cmd.AuthCmd)
+	rootCmd.AddCommand(cmd.VersionCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
