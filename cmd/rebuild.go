@@ -2,65 +2,72 @@ package cmd
 
 import (
 	"fmt"
+	"os/exec"
+	"path/filepath"
+
 	"github.com/abdorrahmani/gophel/internal/app"
 	"github.com/spf13/cobra"
-	"os/exec"
 )
 
 var rebuildPort int
 
 var RebuildCmd = &cobra.Command{
-	Use:   "rebuild <ID> --port<PORT>",
+	Use:   "rebuild <ID> --port <PORT>",
 	Short: "Rebuilds and runs a Go Application by its ID",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			fmt.Printf("Failed to load state: %v\n", err)
-			return
-		}
-		appInfo, exists := app.Manager.(*app.AppManager).Apps[id]
-		name := id
-		portToUse := rebuildPort
-
-		if exists {
-			if appInfo.Name != "" {
-				name = appInfo.Name
-			}
-
-			if !cmd.Flags().Changed("port") && appInfo.Port != 0 {
-				portToUse = appInfo.Port
-			}
-		} else {
-			fmt.Printf("Application with ID %s not found in state\n", id)
-			return
+			return fmt.Errorf("failed to load state: %v", err)
 		}
 
+		appInfo, err := GetAppInfo(id)
+		if err != nil {
+			return err
+		}
+
+		name, portToUse := DetermineAppParameters(appInfo, cmd, rebuildPort)
 		fmt.Printf("Rebuilding application '%s' (ID: %s)\n", name, id)
 
-		if err := app.Manager.StopApplication(id); err != nil {
-
-			if !exists || appInfo.Status != "running" {
-				fmt.Printf("Note: Application '%s' (ID: %s) was not running\n", name, id)
-			} else {
-				fmt.Printf("Failed to stop application '%s' (ID: %s): %v\n", name, id, err)
-				return
-			}
+		if err := stopExistingApp(appInfo); err != nil {
+			return err
 		}
 
-		if err := exec.Command("go", "build", "-o", fmt.Sprintf("app_%s", id)).Run(); err != nil {
-			fmt.Printf("Rebuild failed for '%s' (ID: %s): %v\n", name, id, err)
-			return
+		if err := rebuildApp(id); err != nil {
+			return err
 		}
 
 		if err := app.Manager.StartApplication(id, portToUse, name); err != nil {
-			fmt.Printf("Failed to start rebuilt application '%s' (ID: %s): %v\n", name, id, err)
-			return
+			return fmt.Errorf("failed to start rebuilt application '%s' (ID: %s): %v", name, id, err)
 		}
+
+		fmt.Printf("Application '%s' (ID: %s) rebuilt and started successfully on port %d\n", name, id, portToUse)
+		return nil
 	},
 }
 
 func init() {
 	RebuildCmd.Flags().IntVarP(&rebuildPort, "port", "p", 8080, "Port to run the application on (defaults to previous port if unspecified)")
+}
+
+func stopExistingApp(appInfo *app.AppInfo) error {
+	if appInfo.Status != "running" {
+		fmt.Printf("Note: Application '%s' (ID: %s) was not running\n", appInfo.Name, appInfo.ID)
+		return nil
+	}
+
+	if err := app.Manager.StopApplication(appInfo.ID); err != nil {
+		return fmt.Errorf("failed to stop application '%s' (ID: %s): %v", appInfo.Name, appInfo.ID, err)
+	}
+	return nil
+}
+
+func rebuildApp(id string) error {
+	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
+	cmd := exec.Command("go", "build", "-o", outputPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("rebuild failed: %v\nOutput: %s", err, string(output))
+	}
+	return nil
 }

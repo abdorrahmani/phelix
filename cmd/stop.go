@@ -2,20 +2,27 @@ package cmd
 
 import (
 	"fmt"
+
 	"github.com/abdorrahmani/gophel/internal/app"
 	"github.com/spf13/cobra"
 )
 
 var StopCmd = &cobra.Command{
 	Use:   "stop <ID>",
-	Short: "Stops a specific application by its ID",
+	Short: "Stop a running application by its ID",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
-		fmt.Printf("Stopping application %s\n", id)
+
+		if err := app.Manager.LoadState(); err != nil {
+			return fmt.Errorf("failed to load app state: %v", err)
+		}
 
 		if err := app.Manager.StopApplication(id); err != nil {
-			fmt.Printf("Failed to stop application %s: %v\n", id, err)
+			return fmt.Errorf("failed to stop application: %v", err)
 		}
+
+		fmt.Printf("Gophel: Application %s stopped successfully\n", id)
+		return nil
 	},
 }
