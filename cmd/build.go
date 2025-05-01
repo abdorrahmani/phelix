@@ -85,7 +85,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		// Send apps to server
-		if err := sendAppsToServer(session.Token); err != nil {
+		if err := sendAppsToServer(); err != nil {
 			log.Printf("Error sending apps to server: %v", err)
 			fmt.Printf("Warning: Failed to send app information to server: %v\n", err)
 		}

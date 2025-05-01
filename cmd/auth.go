@@ -318,7 +318,7 @@ func startMonitoringAndSendApps(apiKey string) error {
 	log.Printf("Found %d apps to register", len(apps))
 
 	// Send apps to server
-	if err := sendAppsToServer(apiKey); err != nil {
+	if err := sendAppsToServer(); err != nil {
 		log.Printf("Error sending apps to server: %v", err)
 		return fmt.Errorf("error sending apps to server: %w", err)
 	}
@@ -335,13 +335,33 @@ func startMonitoringAndSendApps(apiKey string) error {
 	return nil
 }
 
-func sendAppsToServer(apiKey string) error {
+func sendAppsToServer() error {
+	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
+	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+		return fmt.Errorf("authentication required. Please run 'gophel auth' first")
+	}
+
+	data, err := os.ReadFile(sessionFile)
+	if err != nil {
+		return fmt.Errorf("error reading session file:%w", err)
+	}
+
+	var session struct {
+		SessionID string    `json:"sessionID"`
+		Token     string    `json:"token"`
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+
+	if err := json.Unmarshal(data, &session); err != nil {
+		return fmt.Errorf("error parsing session file: %w", err)
+	}
+
 	client := &http.Client{}
 
 	// Get all app details
 	appList := app.Manager.ListApplications()
 	var appDetails []struct {
-		ID          uint    `json:"id"`
+		ID          uint      `json:"id"`
 		Name        string    `json:"name"`
 		Status      string    `json:"status"`
 		PID         int       `json:"pid"`
@@ -352,10 +372,10 @@ func sendAppsToServer(apiKey string) error {
 	}
 
 	for _, app := range appList {
-		u64,_:=strconv.ParseUint(app.ID,10,32)
-		id:= uint(u64)
+		u64, _ := strconv.ParseUint(app.ID, 10, 32)
+		id := uint(u64)
 		appDetails = append(appDetails, struct {
-			ID          uint    `json:"id"`
+			ID          uint      `json:"id"`
 			Name        string    `json:"name"`
 			Status      string    `json:"status"`
 			PID         int       `json:"pid"`
@@ -377,7 +397,7 @@ func sendAppsToServer(apiKey string) error {
 
 	body := struct {
 		Apps []struct {
-			ID          uint    `json:"id"`
+			ID          uint      `json:"id"`
 			Name        string    `json:"name"`
 			Status      string    `json:"status"`
 			PID         int       `json:"pid"`
@@ -402,7 +422,8 @@ func sendAppsToServer(apiKey string) error {
 		return fmt.Errorf("error creating request: %w", err)
 	}
 
-	req.Header.Set("X-API-Key", apiKey)
+	req.Header.Set("X-Session-ID", session.SessionID)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
 	req.Header.Set("Content-Type", "application/json")
 
 	log.Printf("Sending apps to server: %s", string(jsonBody))
@@ -414,7 +435,7 @@ func sendAppsToServer(apiKey string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes,_:= io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(resp.Body)
 		errMsg := string(bodyBytes)
 		log.Printf("server returned status code %d: %s", resp.StatusCode, errMsg)
 		return fmt.Errorf("server returned status code %d: %s", resp.StatusCode, errMsg)
