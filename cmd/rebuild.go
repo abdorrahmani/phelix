@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/abdorrahmani/gophel/internal/app"
 	"github.com/spf13/cobra"
@@ -67,7 +68,22 @@ func rebuildApp(id string) error {
 	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
 	cmd := exec.Command("go", "build", "-o", outputPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
+		if appManager, ok := app.Manager.(*app.AppManager); ok {
+			if app, exists := appManager.Apps[id]; exists {
+				app.BuildStatus = "failed"
+				app.UpdatedAt = time.Now()
+				appManager.SaveState()
+			}
+		}
 		return fmt.Errorf("rebuild failed: %v\nOutput: %s", err, string(output))
+	}
+
+	if appManager, ok := app.Manager.(*app.AppManager); ok {
+		if app, exists := appManager.Apps[id]; exists {
+			app.BuildStatus = "success"
+			app.UpdatedAt = time.Now()
+			appManager.SaveState()
+		}
 	}
 	return nil
 }

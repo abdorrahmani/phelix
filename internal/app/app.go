@@ -1,13 +1,13 @@
 package app
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -30,44 +30,55 @@ type AppManagerInterface interface {
 
 // AppInfo represents the state of a single application
 type AppInfo struct {
-	ID      string
-	Name    string
-	Cmd     *exec.Cmd
-	PID     int
-	Status  string
-	Start   time.Time
-	Port    int
-	LogFile string
+	ID          string
+	Name        string
+	Cmd         *exec.Cmd
+	PID         int
+	Status      string
+	Start       time.Time
+	Port        int
+	LogFile     string
+	BuildStatus string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // AppStatus represents the current status of an application
 type AppStatus struct {
-	ID       string
-	Name     string
-	Status   string
-	PID      int
-	Uptime   string
-	RAMUsage uint64
-	CPUUsage float64
+	ID          string
+	Name        string
+	Status      string
+	PID         int
+	Uptime      string
+	RAMUsage    uint64
+	CPUUsage    float64
+	BuildStatus string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // AppListItem represents a simplified view of an application for listing
 type AppListItem struct {
-	ID     string
-	Name   string
-	Status string
-	PID    int
-	Uptime string
+	ID          string
+	Name        string
+	Status      string
+	PID         int
+	Uptime      string
+	BuildStatus string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // AppManager manages the lifecycle of applications
 type AppManager struct {
-	Apps map[string]*AppInfo
-	Lock sync.Mutex
+	Apps   map[string]*AppInfo
+	Lock   sync.Mutex
+	NextID uint
 }
 
 var Manager AppManagerInterface = &AppManager{
-	Apps: make(map[string]*AppInfo),
+	Apps:   make(map[string]*AppInfo),
+	NextID: 1,
 }
 
 const (
@@ -75,11 +86,14 @@ const (
 	logDir    = "/var/log/gophel"
 )
 
-// GenerateAppID generates a unique ID for an application
+// GenerateAppID generates a sequential numeric ID for an application
 func (m *AppManager) GenerateAppID() string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return fmt.Sprintf("%x", b)
+	m.Lock.Lock()
+	defer m.Lock.Unlock()
+
+	id := fmt.Sprintf("%d", m.NextID)
+	m.NextID++
+	return id
 }
 
 // StartApplication starts an application with the given parameters
@@ -211,16 +225,23 @@ func (m *AppManager) ListApplications() []AppListItem {
 
 	var appList []AppListItem
 	for id, app := range m.Apps {
-		if !m.verifyApplicationBinary(id) {
-			continue
+		// Only verify binary if the app is running
+		if app.Status == "running" && !m.verifyApplicationBinary(id) {
+			// If binary is missing for a running app, mark it as stopped
+			app.Status = "stopped"
+			app.UpdatedAt = time.Now()
+			m.SaveState()
 		}
 
 		appList = append(appList, AppListItem{
-			ID:     id,
-			Name:   app.Name,
-			Status: app.Status,
-			PID:    app.PID,
-			Uptime: m.calculateUptime(app),
+			ID:          id,
+			Name:        app.Name,
+			Status:      app.Status,
+			PID:         app.PID,
+			Uptime:      m.calculateUptime(app),
+			BuildStatus: app.BuildStatus,
+			CreatedAt:   app.CreatedAt,
+			UpdatedAt:   app.UpdatedAt,
 		})
 	}
 	return appList
@@ -233,25 +254,31 @@ func (m *AppManager) SaveState() error {
 	}
 
 	type SavedApp struct {
-		ID      string    `json:"id"`
-		Name    string    `json:"name"`
-		PID     int       `json:"pid"`
-		Status  string    `json:"status"`
-		Start   time.Time `json:"start"`
-		Port    int       `json:"port"`
-		LogFile string    `json:"log_file"`
+		ID          string    `json:"id"`
+		Name        string    `json:"name"`
+		PID         int       `json:"pid"`
+		Status      string    `json:"status"`
+		Start       time.Time `json:"start"`
+		Port        int       `json:"port"`
+		LogFile     string    `json:"log_file"`
+		BuildStatus string    `json:"build_status"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
 	}
 
 	savedApps := make(map[string]SavedApp)
 	for id, app := range m.Apps {
 		savedApps[id] = SavedApp{
-			ID:      id,
-			Name:    app.Name,
-			PID:     app.PID,
-			Status:  app.Status,
-			Start:   app.Start,
-			Port:    app.Port,
-			LogFile: app.LogFile,
+			ID:          id,
+			Name:        app.Name,
+			PID:         app.PID,
+			Status:      app.Status,
+			Start:       app.Start,
+			Port:        app.Port,
+			LogFile:     app.LogFile,
+			BuildStatus: app.BuildStatus,
+			CreatedAt:   app.CreatedAt,
+			UpdatedAt:   app.UpdatedAt,
 		}
 	}
 
@@ -266,19 +293,26 @@ func (m *AppManager) SaveState() error {
 func (m *AppManager) LoadState() error {
 	data, err := os.ReadFile(stateFile)
 	if os.IsNotExist(err) {
-		return nil
+		// If file doesn't exist, create it with empty state
+		if err := os.MkdirAll(filepath.Dir(stateFile), 0755); err != nil {
+			return err
+		}
+		return os.WriteFile(stateFile, []byte("{}"), 0644)
 	} else if err != nil {
 		return err
 	}
 
 	type SavedApp struct {
-		ID      string    `json:"id"`
-		Name    string    `json:"name"`
-		PID     int       `json:"pid"`
-		Status  string    `json:"status"`
-		Start   time.Time `json:"start"`
-		Port    int       `json:"port"`
-		LogFile string    `json:"log_file"`
+		ID          string    `json:"id"`
+		Name        string    `json:"name"`
+		PID         int       `json:"pid"`
+		Status      string    `json:"status"`
+		Start       time.Time `json:"start"`
+		Port        int       `json:"port"`
+		LogFile     string    `json:"log_file"`
+		BuildStatus string    `json:"build_status"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
 	}
 
 	var savedApps map[string]SavedApp
@@ -286,19 +320,70 @@ func (m *AppManager) LoadState() error {
 		return err
 	}
 
-	for id, saved := range savedApps {
-		m.Apps[id] = &AppInfo{
-			ID:      id,
-			Name:    saved.Name,
-			PID:     saved.PID,
-			Status:  saved.Status,
-			Start:   saved.Start,
-			Port:    saved.Port,
-			LogFile: saved.LogFile,
-			Cmd:     nil,
+	// Find the highest ID to set NextID
+	maxID := uint(0)
+	for id := range savedApps {
+		if idNum, err := strconv.ParseUint(id, 10, 64); err == nil {
+			if uint(idNum) > maxID {
+				maxID = uint(idNum)
+			}
 		}
 	}
-	return nil
+	m.NextID = maxID + 1
+
+	// Clear existing apps and load from saved state
+	m.Apps = make(map[string]*AppInfo)
+	for id, saved := range savedApps {
+		// Check if process is still running
+		isRunning := false
+		if saved.PID > 0 {
+			// Try multiple methods to check if process is running
+			if p, err := process.NewProcess(int32(saved.PID)); err == nil {
+				if running, _ := p.IsRunning(); running {
+					isRunning = true
+				}
+			}
+			// Fallback to system command if gopsutil fails
+			if !isRunning {
+				cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", saved.PID))
+				if err := cmd.Run(); err == nil {
+					isRunning = true
+				}
+			}
+		}
+
+		// Create app info with appropriate status
+		appInfo := &AppInfo{
+			ID:          id,
+			Name:        saved.Name,
+			PID:         saved.PID,
+			Status:      saved.Status,
+			Start:       saved.Start,
+			Port:        saved.Port,
+			LogFile:     saved.LogFile,
+			BuildStatus: saved.BuildStatus,
+			CreatedAt:   saved.CreatedAt,
+			UpdatedAt:   saved.UpdatedAt,
+			Cmd:         nil,
+		}
+
+		// Update status based on process state
+		if isRunning {
+			appInfo.Status = "running"
+		} else if saved.Status == "running" {
+			appInfo.Status = "stopped"
+		}
+
+		// Only update timestamp if status changed
+		if appInfo.Status != saved.Status {
+			appInfo.UpdatedAt = time.Now()
+		}
+
+		m.Apps[id] = appInfo
+	}
+
+	// Save the updated state
+	return m.SaveState()
 }
 
 // Helper methods
@@ -323,14 +408,17 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	}
 
 	m.Apps[id] = &AppInfo{
-		ID:      id,
-		Cmd:     cmd,
-		Name:    name,
-		PID:     cmd.Process.Pid,
-		Status:  "running",
-		Start:   time.Now(),
-		Port:    port,
-		LogFile: logFile,
+		ID:          id,
+		Cmd:         cmd,
+		Name:        name,
+		PID:         cmd.Process.Pid,
+		Status:      "running",
+		Start:       time.Now(),
+		Port:        port,
+		LogFile:     logFile,
+		BuildStatus: "built",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 
 	return nil
@@ -421,8 +509,6 @@ func (m *AppManager) getProcessMetrics(pid int) (uint64, float64, error) {
 func (m *AppManager) verifyApplicationBinary(id string) bool {
 	binaryPath := fmt.Sprintf("./app_%s", id)
 	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		delete(m.Apps, id)
-		m.SaveState()
 		return false
 	}
 	return true
