@@ -18,9 +18,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	sessionFile = "session.json"
+	logFile     = "gophel.log"
+)
+
 var (
 	monitorService monitor.MonitorService
-	logFile        *os.File
+	logFileHandle  *os.File
 )
 
 func init() {
@@ -35,49 +40,23 @@ func setupLogging() {
 		return
 	}
 
-	logPath := filepath.Join(logDir, "gophel.log")
+	logPath := filepath.Join(logDir, logFile)
 	var err error
-	logFile, err = os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	logFileHandle, err = os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Printf("Error opening log file: %v\n", err)
 		return
 	}
 
-	log.SetOutput(logFile)
+	log.SetOutput(logFileHandle)
 }
 
 var AuthCmd = &cobra.Command{
 	Use:   "auth",
 	Short: "Authenticates user with gophel.anophel.com",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Check if already authenticated
-		sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
-		if _, err := os.Stat(sessionFile); err == nil {
-			// Read session file to check if it's valid
-			data, err := os.ReadFile(sessionFile)
-			if err == nil {
-				var session struct {
-					SessionID string    `json:"sessionID"`
-					Token     string    `json:"token"`
-					ExpiresAt time.Time `json:"expiresAt"`
-				}
-				if err := json.Unmarshal(data, &session); err == nil {
-					if time.Now().Before(session.ExpiresAt) {
-						// Verify session with server
-						client := &http.Client{}
-						req, err := http.NewRequest("GET", "https://gophel.anophel.com/api/v1/gophel/auth/status", nil)
-						if err == nil {
-							req.Header.Set("X-Session-ID", session.SessionID)
-							req.Header.Set("Authorization", "Bearer "+session.Token)
-							resp, err := client.Do(req)
-							if err == nil && resp.StatusCode == http.StatusOK {
-								fmt.Println("You are already authenticated. Use 'gophel auth logout' to logout first.")
-								return nil
-							}
-						}
-					}
-				}
-			}
+		if err := checkExistingSession(); err != nil {
+			return err
 		}
 
 		var username, apiKey string
@@ -91,157 +70,211 @@ var AuthCmd = &cobra.Command{
 			return fmt.Errorf("authentication failed: %w", err)
 		}
 
-		// Print welcome message
-		green := color.New(color.FgGreen).SprintFunc()
-		bold := color.New(color.Bold).SprintFunc()
-		fmt.Printf("\nHi %s to Gophel!\n", bold(username))
-		fmt.Printf("You can monitor your apps at %s\n", green("gophel.anophel.com"))
-		fmt.Printf("%s\n\n", green("Authentication successful!"))
-		log.Printf("Authentication successful!")
-
-		// Start monitoring and send app information
-		go func() {
-			log.Printf("Starting monitoring and app registration process...")
-
-			if err := startMonitoringAndSendApps(apiKey); err != nil {
-				log.Printf("Error in monitoring and app registration: %v", err)
-				fmt.Printf("Error in monitoring and app registration: %v\n", err)
-				return
-			}
-
-			log.Printf("Monitoring and app registration completed successfully")
-		}()
+		printWelcomeMessage(username)
+		startMonitoringAsync(apiKey)
 
 		return nil
 	},
+}
+
+func checkExistingSession() error {
+	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", sessionFile)
+	if _, err := os.Stat(sessionFile); err == nil {
+		session, err := readSessionFile(sessionFile)
+		if err == nil && time.Now().Before(session.ExpiresAt) {
+			if err := verifySession(session); err == nil {
+				fmt.Println("You are already authenticated. Use 'gophel auth logout' to logout first.")
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+func readSessionFile(path string) (*Session, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("error reading session file: %w", err)
+	}
+
+	var session Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, fmt.Errorf("error parsing session file: %w", err)
+	}
+
+	return &session, nil
+}
+
+func verifySession(session *Session) error {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", "https://gophel.anophel.com/api/v1/gophel/auth/status", nil)
+	if err != nil {
+		return fmt.Errorf("error creating request: %w", err)
+	}
+
+	req.Header.Set("X-Session-ID", session.SessionID)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("error checking session status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("invalid session status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func printWelcomeMessage(username string) {
+	green := color.New(color.FgGreen).SprintFunc()
+	bold := color.New(color.Bold).SprintFunc()
+	fmt.Printf("\nHi %s to Gophel!\n", bold(username))
+	fmt.Printf("You can monitor your apps at %s\n", green("gophel.anophel.com"))
+	fmt.Printf("%s\n\n", green("Authentication successful!"))
+	log.Printf("Authentication successful!")
+}
+
+func startMonitoringAsync(apiKey string) {
+	go func() {
+		log.Printf("Starting monitoring and app registration process...")
+
+		if err := startMonitoringAndSendApps(apiKey); err != nil {
+			log.Printf("Error in monitoring and app registration: %v", err)
+			fmt.Printf("Error in monitoring and app registration: %v\n", err)
+			return
+		}
+
+		log.Printf("Monitoring and app registration completed successfully")
+	}()
 }
 
 var AuthStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Shows authentication status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Check if session file exists
-		sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
-		if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
-			fmt.Println("No active session found. Please run 'gophel auth' first.")
-			return nil
-		}
-
-		// Read session file
-		data, err := os.ReadFile(sessionFile)
+		session, err := getValidSession()
 		if err != nil {
-			return fmt.Errorf("error reading session file: %w", err)
+			return err
 		}
 
-		var session struct {
-			SessionID string    `json:"sessionID"`
-			Token     string    `json:"token"`
-			ExpiresAt time.Time `json:"expiresAt"`
-		}
-
-		if err := json.Unmarshal(data, &session); err != nil {
-			return fmt.Errorf("error parsing session file: %w", err)
-		}
-
-		// Check if session is expired
-		if time.Now().After(session.ExpiresAt) {
-			fmt.Println("Session has expired. Please run 'gophel auth' again.")
-			return nil
-		}
-
-		// Verify session with server
-		client := &http.Client{}
-		req, err := http.NewRequest("GET", "https://gophel.anophel.com/api/v1/gophel/auth/status", nil)
+		status, err := getSessionStatus(session)
 		if err != nil {
-			return fmt.Errorf("error creating request: %w", err)
+			return err
 		}
 
-		req.Header.Set("X-Session-ID", session.SessionID)
-		req.Header.Set("Authorization", "Bearer "+session.Token)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return fmt.Errorf("error checking session status: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			fmt.Println("Session is invalid. Please run 'gophel auth' again.")
-			return nil
-		}
-
-		var status struct {
-			User      string `json:"user"`
-			SessionID string `json:"sessionID"`
-			ExpiresAt string `json:"expiresAt"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-			return fmt.Errorf("error decoding response: %w", err)
-		}
-
-		green := color.New(color.FgGreen).SprintFunc()
-		fmt.Printf("Authenticated as: %s\n", green(status.User))
-		fmt.Printf("Session ID: %s\n", status.SessionID)
-		fmt.Printf("Expires at: %s\n", status.ExpiresAt)
+		printSessionStatus(status)
 		return nil
 	},
+}
+
+func getValidSession() (*Session, error) {
+	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", sessionFile)
+	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+		return nil, fmt.Errorf("no active session found. Please run 'gophel auth' first")
+	}
+
+	session, err := readSessionFile(sessionFile)
+	if err != nil {
+		return nil, err
+	}
+
+	if time.Now().After(session.ExpiresAt) {
+		return nil, fmt.Errorf("session has expired. Please run 'gophel auth' again")
+	}
+
+	return session, nil
+}
+
+func getSessionStatus(session *Session) (*SessionStatus, error) {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", "https://gophel.anophel.com/api/v1/gophel/auth/status", nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating request: %w", err)
+	}
+
+	req.Header.Set("X-Session-ID", session.SessionID)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error checking session status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("session is invalid. Please run 'gophel auth' again")
+	}
+
+	var status SessionStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return nil, fmt.Errorf("error decoding response: %w", err)
+	}
+
+	return &status, nil
+}
+
+func printSessionStatus(status *SessionStatus) {
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("Authenticated as: %s\n", green(status.User))
+	fmt.Printf("Session ID: %s\n", status.SessionID)
+	fmt.Printf("Expires at: %s\n", status.ExpiresAt)
 }
 
 var AuthLogoutCmd = &cobra.Command{
 	Use:   "logout",
 	Short: "Logs out the current user",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
-		if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+		session, err := getValidSession()
+		if err != nil {
 			fmt.Println("No active session found.")
 			return nil
 		}
 
-		// Read session file
-		data, err := os.ReadFile(sessionFile)
-		if err != nil {
-			return fmt.Errorf("error reading session file: %w", err)
+		if err := performLogout(session); err != nil {
+			return err
 		}
 
-		var session struct {
-			SessionID string    `json:"sessionID"`
-			Token     string    `json:"token"`
-			ExpiresAt time.Time `json:"expiresAt"`
-		}
-
-		if err := json.Unmarshal(data, &session); err != nil {
-			return fmt.Errorf("error parsing session file: %w", err)
-		}
-
-		// Call logout endpoint
-		client := &http.Client{}
-		req, err := http.NewRequest("POST", "https://gophel.anophel.com/api/v1/gophel/auth/logout", nil)
-		if err != nil {
-			return fmt.Errorf("error creating request: %w", err)
-		}
-
-		req.Header.Set("X-Session-ID", session.SessionID)
-		req.Header.Set("Authorization", "Bearer "+session.Token)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return fmt.Errorf("error sending logout request: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("logout failed with status code %d", resp.StatusCode)
-		}
-
-		// Remove session file
-		if err := os.Remove(sessionFile); err != nil {
-			return fmt.Errorf("error removing session file: %w", err)
+		if err := removeSessionFile(); err != nil {
+			return err
 		}
 
 		fmt.Println("Successfully logged out.")
 		return nil
 	},
+}
+
+func performLogout(session *Session) error {
+	client := &http.Client{}
+	req, err := http.NewRequest("POST", "https://gophel.anophel.com/api/v1/gophel/auth/logout", nil)
+	if err != nil {
+		return fmt.Errorf("error creating request: %w", err)
+	}
+
+	req.Header.Set("X-Session-ID", session.SessionID)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("error sending logout request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("logout failed with status code %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func removeSessionFile() error {
+	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", sessionFile)
+	if err := os.Remove(sessionFile); err != nil {
+		return fmt.Errorf("error removing session file: %w", err)
+	}
+	return nil
 }
 
 func authenticate(username, apiKey string) error {
@@ -274,12 +307,7 @@ func authenticate(username, apiKey string) error {
 		return fmt.Errorf("error decoding response: %w", err)
 	}
 
-	// Store the session information
-	if err := storeSession(response.SessionID, response.Token); err != nil {
-		return fmt.Errorf("error storing session: %w", err)
-	}
-
-	return nil
+	return storeSession(response.SessionID, response.Token)
 }
 
 func storeSession(sessionID, token string) error {
@@ -288,12 +316,8 @@ func storeSession(sessionID, token string) error {
 		return err
 	}
 
-	sessionFile := filepath.Join(sessionDir, "session.json")
-	session := struct {
-		SessionID string    `json:"sessionID"`
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expiresAt"`
-	}{
+	sessionFile := filepath.Join(sessionDir, sessionFile)
+	session := Session{
 		SessionID: sessionID,
 		Token:     token,
 		ExpiresAt: time.Now().Add(24 * time.Hour),
@@ -308,16 +332,12 @@ func storeSession(sessionID, token string) error {
 }
 
 func startMonitoringAndSendApps(apiKey string) error {
-	// Get list of apps
 	apps, err := app.GetGophelApps()
 	if err != nil {
 		log.Printf("Error getting apps: %v", err)
 		return fmt.Errorf("error getting apps: %w", err)
 	}
 
-	log.Printf("Found %d apps to register", len(apps))
-
-	// Send apps to server
 	if err := sendAppsToServer(); err != nil {
 		log.Printf("Error sending apps to server: %v", err)
 		return fmt.Errorf("error sending apps to server: %w", err)
@@ -325,7 +345,6 @@ func startMonitoringAndSendApps(apiKey string) error {
 
 	log.Printf("Successfully registered %d apps", len(apps))
 
-	// Start WebSocket monitoring
 	if err := monitorService.StartMonitoring(apiKey); err != nil {
 		log.Printf("Error starting WebSocket monitoring: %v", err)
 		return fmt.Errorf("error starting monitoring: %w", err)
@@ -336,54 +355,18 @@ func startMonitoringAndSendApps(apiKey string) error {
 }
 
 func sendAppsToServer() error {
-	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
-	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+	session, err := getValidSession()
+	if err != nil {
 		return fmt.Errorf("authentication required. Please run 'gophel auth' first")
 	}
 
-	data, err := os.ReadFile(sessionFile)
-	if err != nil {
-		return fmt.Errorf("error reading session file:%w", err)
-	}
-
-	var session struct {
-		SessionID string    `json:"sessionID"`
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expiresAt"`
-	}
-
-	if err := json.Unmarshal(data, &session); err != nil {
-		return fmt.Errorf("error parsing session file: %w", err)
-	}
-
-	client := &http.Client{}
-
-	// Get all app details
 	appList := app.Manager.ListApplications()
-	var appDetails []struct {
-		ID          uint      `json:"id"`
-		Name        string    `json:"name"`
-		Status      string    `json:"status"`
-		PID         int       `json:"pid"`
-		Uptime      string    `json:"uptime"`
-		BuildStatus string    `json:"buildStatus"`
-		CreatedAt   time.Time `json:"createdAt"`
-		UpdatedAt   time.Time `json:"updatedAt"`
-	}
+	var appDetails []AppDetail
 
 	for _, app := range appList {
 		u64, _ := strconv.ParseUint(app.ID, 10, 32)
 		id := uint(u64)
-		appDetails = append(appDetails, struct {
-			ID          uint      `json:"id"`
-			Name        string    `json:"name"`
-			Status      string    `json:"status"`
-			PID         int       `json:"pid"`
-			Uptime      string    `json:"uptime"`
-			BuildStatus string    `json:"buildStatus"`
-			CreatedAt   time.Time `json:"createdAt"`
-			UpdatedAt   time.Time `json:"updatedAt"`
-		}{
+		appDetails = append(appDetails, AppDetail{
 			ID:          id,
 			Name:        app.Name,
 			Status:      app.Status,
@@ -396,29 +379,19 @@ func sendAppsToServer() error {
 	}
 
 	body := struct {
-		Apps []struct {
-			ID          uint      `json:"id"`
-			Name        string    `json:"name"`
-			Status      string    `json:"status"`
-			PID         int       `json:"pid"`
-			Uptime      string    `json:"uptime"`
-			BuildStatus string    `json:"buildStatus"`
-			CreatedAt   time.Time `json:"createdAt"`
-			UpdatedAt   time.Time `json:"updatedAt"`
-		} `json:"apps"`
+		Apps []AppDetail `json:"apps"`
 	}{
 		Apps: appDetails,
 	}
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		log.Printf("error marshaling apps %s", err.Error())
 		return fmt.Errorf("error marshaling apps: %w", err)
 	}
 
+	client := &http.Client{}
 	req, err := http.NewRequest("POST", "https://gophel.anophel.com/api/v1/gophel/apps", bytes.NewBuffer(jsonBody))
 	if err != nil {
-		log.Printf("Failed to send apps to server: %s", err.Error())
 		return fmt.Errorf("error creating request: %w", err)
 	}
 
@@ -426,23 +399,44 @@ func sendAppsToServer() error {
 	req.Header.Set("Authorization", "Bearer "+session.Token)
 	req.Header.Set("Content-Type", "application/json")
 
-	log.Printf("Sending apps to server: %s", string(jsonBody))
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Failed to send apps to server: %s", err.Error())
 		return fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		errMsg := string(bodyBytes)
-		log.Printf("server returned status code %d: %s", resp.StatusCode, errMsg)
-		return fmt.Errorf("server returned status code %d: %s", resp.StatusCode, errMsg)
+		return fmt.Errorf("server returned status code %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	log.Printf("apps sent to server successfully")
 	return nil
+}
+
+// Session represents the user's session information
+type Session struct {
+	SessionID string    `json:"sessionID"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// SessionStatus represents the current session status
+type SessionStatus struct {
+	User      string `json:"user"`
+	SessionID string `json:"sessionID"`
+	ExpiresAt string `json:"expiresAt"`
+}
+
+// AppDetail represents the details of an application
+type AppDetail struct {
+	ID          uint      `json:"id"`
+	Name        string    `json:"name"`
+	Status      string    `json:"status"`
+	PID         int       `json:"pid"`
+	Uptime      string    `json:"uptime"`
+	BuildStatus string    `json:"buildStatus"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 func init() {

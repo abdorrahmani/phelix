@@ -13,37 +13,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	defaultPort = 8080
+)
+
+var (
+	buildPort int
+)
+
 var BuildCmd = &cobra.Command{
 	Use:   "build <NAME> --port <PORT>",
 	Short: "Builds and runs a Go application with a specified name",
 	Long:  "Compiles a Go application from the current directory with the given name and starts it immediately",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Check authentication
-		sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
-		if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
-			return fmt.Errorf("authentication required. Please run 'gophel auth' first")
-		}
-
-		// Read session file
-		data, err := os.ReadFile(sessionFile)
-		if err != nil {
-			return fmt.Errorf("error reading session file: %w", err)
-		}
-
-		var session struct {
-			SessionID string    `json:"sessionID"`
-			Token     string    `json:"token"`
-			ExpiresAt time.Time `json:"expiresAt"`
-		}
-
-		if err := json.Unmarshal(data, &session); err != nil {
-			return fmt.Errorf("error parsing session file: %w", err)
-		}
-
-		// Check if session is expired
-		if time.Now().After(session.ExpiresAt) {
-			return fmt.Errorf("session expired. Please run 'gophel auth' again")
+		if err := validateSession(); err != nil {
+			return err
 		}
 
 		name := args[0]
@@ -52,7 +37,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load state: %v", err)
+			return fmt.Errorf("failed to load state: %w", err)
 		}
 
 		if err := validateUniqueName(name); err != nil {
@@ -62,41 +47,58 @@ var BuildCmd = &cobra.Command{
 		id := app.Manager.GenerateAppID()
 		fmt.Printf("Building application '%s', ID: %s\n", name, id)
 
-		// Create initial app entry with timestamps
-		if appManager, ok := app.Manager.(*app.AppManager); ok {
-			now := time.Now()
-			appManager.Apps[id] = &app.AppInfo{
-				ID:          id,
-				Name:        name,
-				Status:      "initializing",
-				BuildStatus: "building",
-				CreatedAt:   now,
-				UpdatedAt:   now,
-			}
-			appManager.SaveState()
+		if err := createAppEntry(id, name); err != nil {
+			return err
 		}
 
 		if err := buildApplication(id); err != nil {
 			return err
 		}
 
-		if err := app.Manager.StartApplication(id, port, name); err != nil {
-			return fmt.Errorf("failed to start application: %v", err)
+		if err := startApplication(id, name); err != nil {
+			return err
 		}
 
-		// Send apps to server
 		if err := sendAppsToServer(); err != nil {
 			log.Printf("Error sending apps to server: %v", err)
 			fmt.Printf("Warning: Failed to send app information to server: %v\n", err)
 		}
 
-		fmt.Printf("Application '%s' (ID: %s) started successfully on port %d\n", name, id, port)
+		fmt.Printf("Application '%s' (ID: %s) started successfully on port %d\n", name, id, buildPort)
 		return nil
 	},
 }
 
 func init() {
-	BuildCmd.Flags().IntVarP(&port, "port", "p", 8080, "Port to run the application on")
+	BuildCmd.Flags().IntVarP(&buildPort, "port", "p", defaultPort, "Port to run the application on")
+}
+
+func validateSession() error {
+	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
+	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+		return fmt.Errorf("authentication required. Please run 'gophel auth' first")
+	}
+
+	data, err := os.ReadFile(sessionFile)
+	if err != nil {
+		return fmt.Errorf("error reading session file: %w", err)
+	}
+
+	var session struct {
+		SessionID string    `json:"sessionID"`
+		Token     string    `json:"token"`
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+
+	if err := json.Unmarshal(data, &session); err != nil {
+		return fmt.Errorf("error parsing session file: %w", err)
+	}
+
+	if time.Now().After(session.ExpiresAt) {
+		return fmt.Errorf("session expired. Please run 'gophel auth' again")
+	}
+
+	return nil
 }
 
 func validateName(name string) error {
@@ -113,6 +115,22 @@ func validateUniqueName(name string) error {
 		}
 	}
 	return nil
+}
+
+func createAppEntry(id, name string) error {
+	if appManager, ok := app.Manager.(*app.AppManager); ok {
+		now := time.Now()
+		appManager.Apps[id] = &app.AppInfo{
+			ID:          id,
+			Name:        name,
+			Status:      "initializing",
+			BuildStatus: "building",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		return appManager.SaveState()
+	}
+	return fmt.Errorf("invalid app manager type")
 }
 
 func buildApplication(id string) error {
@@ -135,6 +153,13 @@ func buildApplication(id string) error {
 			app.UpdatedAt = time.Now()
 			appManager.SaveState()
 		}
+	}
+	return nil
+}
+
+func startApplication(id, name string) error {
+	if err := app.Manager.StartApplication(id, buildPort, name); err != nil {
+		return fmt.Errorf("failed to start application: %w", err)
 	}
 	return nil
 }
