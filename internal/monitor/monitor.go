@@ -1,11 +1,8 @@
 package monitor
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,15 +16,11 @@ const (
 	metricsInterval      = 5 * time.Second
 	reconnectDelay       = 5 * time.Second
 	maxReconnectAttempts = 3
-
-	// WebSocket message types
-	messageTypePing = "ping"
-	messageTypePong = "pong"
 )
 
 // MonitorService defines the interface for monitoring operations
 type MonitorService interface {
-	StartMonitoring(apiKey string) error
+	StartMonitoring() error
 	StopMonitoring() error
 	SendCommand(cmd Command) error
 }
@@ -40,16 +33,12 @@ type Command struct {
 
 // AppMetrics represents the metrics collected for an application
 type AppMetrics struct {
+	AppID       string    `json:"appID"`
 	AppName     string    `json:"appName"`
 	CPUUsage    float64   `json:"cpuUsage"`
-	MemoryUsage float64   `json:"memoryUsage"`
-	Status      string    `json:"status"`
+	MemoryUsage uint64   `json:"memoryUsage"`
 	Timestamp   time.Time `json:"timestamp"`
-	PID         int       `json:"pid"`
-	Uptime      string    `json:"uptime"`
-	BuildStatus string    `json:"buildStatus"`
 	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 // monitorService implements the MonitorService interface
@@ -57,7 +46,6 @@ type monitorService struct {
 	conn              *websocket.Conn
 	stopChan          chan struct{}
 	mu                sync.Mutex
-	apiKey            string
 	reconnectAttempts int
 }
 
@@ -69,26 +57,12 @@ func NewMonitorService() MonitorService {
 }
 
 // StartMonitoring establishes a WebSocket connection and starts monitoring
-func (m *monitorService) StartMonitoring(apiKey string) error {
+func (m *monitorService) StartMonitoring() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.conn != nil {
 		return fmt.Errorf("monitoring already started")
-	}
-
-	// Get API key from session file if not provided
-	if apiKey == "" {
-		var err error
-		apiKey, err = m.getAPIKeyFromSession()
-		if err != nil {
-			return fmt.Errorf("failed to get API key: %w", err)
-		}
-	}
-
-	m.apiKey = apiKey
-	if err := m.connect(); err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
 	}
 
 	// Start goroutines for handling commands and sending metrics
@@ -99,34 +73,15 @@ func (m *monitorService) StartMonitoring(apiKey string) error {
 	return nil
 }
 
-// getAPIKeyFromSession retrieves the API key from the session file
-func (m *monitorService) getAPIKeyFromSession() (string, error) {
-	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
-	data, err := os.ReadFile(sessionFile)
-	if err != nil {
-		return "", fmt.Errorf("error reading session file: %w", err)
-	}
-
-	var session struct {
-		SessionID string    `json:"sessionID"`
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expiresAt"`
-	}
-
-	if err := json.Unmarshal(data, &session); err != nil {
-		return "", fmt.Errorf("error parsing session file: %w", err)
-	}
-
-	if time.Now().After(session.ExpiresAt) {
-		return "", fmt.Errorf("session expired, please authenticate again")
-	}
-
-	return session.Token, nil
+var session struct {
+	SessionID string    `json:"sessionID"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 // connect establishes a WebSocket connection
 func (m *monitorService) connect() error {
-	wsURL := fmt.Sprintf("wss://gophel.anophel.com/api/v1/gophel/ws?apiKey=%s", m.apiKey)
+	wsURL := fmt.Sprintf("wss://gophel.anophel.com/api/v1/gophel/ws?token=%s&sessionID=%s", session.Token, session.SessionID)
 	log.Printf("Attempting to connect to WebSocket at %s", wsURL)
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -315,16 +270,12 @@ func (m *monitorService) collectMetrics() []AppMetrics {
 		}
 
 		metrics = append(metrics, AppMetrics{
+			AppID:       appInfo.ID,
 			AppName:     appInfo.Name,
-			Status:      appInfo.Status,
-			PID:         appInfo.PID,
-			Uptime:      appInfo.Uptime,
 			Timestamp:   time.Now(),
 			CPUUsage:    status.CPUUsage,
-			MemoryUsage: float64(status.RAMUsage) / (1024 * 1024), // Convert to MB
-			BuildStatus: appInfo.BuildStatus,
+			MemoryUsage: status.RAMUsage,
 			CreatedAt:   appInfo.CreatedAt,
-			UpdatedAt:   appInfo.UpdatedAt,
 		})
 	}
 

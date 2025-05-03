@@ -345,7 +345,7 @@ func startMonitoringAndSendApps(apiKey string) error {
 
 	log.Printf("Successfully registered %d apps", len(apps))
 
-	if err := monitorService.StartMonitoring(apiKey); err != nil {
+	if err := monitorService.StartMonitoring(); err != nil {
 		log.Printf("Error starting WebSocket monitoring: %v", err)
 		return fmt.Errorf("error starting monitoring: %w", err)
 	}
