@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/abdorrahmani/gophel/cmd"
@@ -17,16 +20,33 @@ import (
 
 var (
 	monitorService monitor.MonitorService
+	done           = make(chan struct{})
+	isMonitorMode  bool
 )
 
 func main() {
-	if err := checkGoInstallation(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+	// Check if running in monitor mode
+	isMonitorMode = len(os.Args) > 1 && os.Args[1] == "monitor"
+
+	// Skip Go installation check for monitor command
+	if !isMonitorMode {
+		if err := checkGoInstallation(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
 	}
 
 	// Initialize monitor service
 	monitorService = monitor.NewMonitorService()
+
+	// Setup signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		close(done)
+		os.Exit(0)
+	}()
 
 	rootCmd := &cobra.Command{
 		Use:     "gophel",
@@ -44,6 +64,43 @@ func main() {
 		},
 	}
 
+	// Add monitor command
+	monitorCmd := &cobra.Command{
+		Use:   "monitor",
+		Short: "Start the WebSocket monitoring service",
+		Run: func(cobraCmd *cobra.Command, args []string) {
+			// Start WebSocket monitoring
+			go func() {
+				for {
+					select {
+					case <-done:
+						return
+					default:
+						session, err := cmd.GetValidSession()
+						if err != nil {
+							log.Printf("[WebSocket] No valid session found: %v", err)
+							time.Sleep(5 * time.Second)
+							continue
+						}
+
+						log.Printf("[WebSocket] Starting monitoring with session ID: %s", session.SessionID)
+						if err := monitorService.StartMonitoring(); err != nil {
+							log.Printf("[WebSocket] Error starting monitoring: %v", err)
+							time.Sleep(5 * time.Second)
+							continue
+						}
+
+						// Keep the goroutine running
+						time.Sleep(24 * time.Hour)
+					}
+				}
+			}()
+
+			// Keep the main process running
+			<-done
+		},
+	}
+
 	// Add commands
 	rootCmd.AddCommand(cmd.BuildCmd)
 	rootCmd.AddCommand(cmd.RebuildCmd)
@@ -55,6 +112,7 @@ func main() {
 	rootCmd.AddCommand(cmd.LogCmd)
 	rootCmd.AddCommand(cmd.AuthCmd)
 	rootCmd.AddCommand(cmd.VersionCmd)
+	rootCmd.AddCommand(monitorCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)

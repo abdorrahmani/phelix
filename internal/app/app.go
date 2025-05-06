@@ -63,6 +63,7 @@ type AppListItem struct {
 	Name        string
 	Status      string
 	PID         int
+	Port        int
 	Uptime      string
 	BuildStatus string
 	CreatedAt   time.Time
@@ -179,38 +180,28 @@ func (m *AppManager) RestartApplication(id string) error {
 	return m.SaveState()
 }
 
-// StatusApplication returns the status of an application
-func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
-	m.Lock.Lock()
-	defer m.Lock.Unlock()
-
-	if err := m.LoadState(); err != nil {
-		return AppStatus{}, fmt.Errorf("failed to load state: %v", err)
+// verifyProcessStatus checks if a process is running and updates its status
+func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
+	if app.Status != "running" || app.PID <= 0 {
+		return false
 	}
 
-	app, exists := m.Apps[id]
-	if !exists {
-		return AppStatus{}, errors.New("application not found")
-	}
-
-	status := AppStatus{
-		ID:     id,
-		Name:   app.Name,
-		Status: app.Status,
-		PID:    app.PID,
-		Uptime: m.calculateUptime(app),
-	}
-
-	if app.Status == "running" {
-		ramUsage, cpuUsage, err := m.getProcessMetrics(app.PID)
-		if err != nil {
-			return status, fmt.Errorf("failed to get process metrics: %v", err)
+	// Try using gopsutil first
+	if p, err := process.NewProcess(int32(app.PID)); err == nil {
+		if running, _ := p.IsRunning(); running {
+			// Additional verification using ps command
+			cmd := exec.Command("sh", "-c", fmt.Sprintf("ps -p %d -o pid= > /dev/null 2>&1", app.PID))
+			if err := cmd.Run(); err == nil {
+				return true
+			}
 		}
-		status.RAMUsage = ramUsage
-		status.CPUUsage = cpuUsage
 	}
 
-	return status, nil
+	// If we get here, the process is not running
+	app.Status = "stopped"
+	app.UpdatedAt = time.Now()
+	m.SaveState()
+	return false
 }
 
 // ListApplications returns a list of all applications
@@ -225,12 +216,9 @@ func (m *AppManager) ListApplications() []AppListItem {
 
 	var appList []AppListItem
 	for id, app := range m.Apps {
-		// Only verify binary if the app is running
-		if app.Status == "running" && !m.verifyApplicationBinary(id) {
-			// If binary is missing for a running app, mark it as stopped
-			app.Status = "stopped"
-			app.UpdatedAt = time.Now()
-			m.SaveState()
+		// Verify process status for running applications
+		if app.Status == "running" {
+			m.verifyProcessStatus(app)
 		}
 
 		appList = append(appList, AppListItem{
@@ -238,6 +226,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 			Name:        app.Name,
 			Status:      app.Status,
 			PID:         app.PID,
+			Port:        app.Port,
 			Uptime:      m.calculateUptime(app),
 			BuildStatus: app.BuildStatus,
 			CreatedAt:   app.CreatedAt,
@@ -245,6 +234,48 @@ func (m *AppManager) ListApplications() []AppListItem {
 		})
 	}
 	return appList
+}
+
+// StatusApplication returns the status of an application
+func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
+	m.Lock.Lock()
+	defer m.Lock.Unlock()
+
+	if err := m.LoadState(); err != nil {
+		return AppStatus{}, fmt.Errorf("failed to load state: %v", err)
+	}
+
+	app, exists := m.Apps[id]
+	if !exists {
+		return AppStatus{}, errors.New("application not found")
+	}
+
+	// Verify process status
+	if app.Status == "running" {
+		m.verifyProcessStatus(app)
+	}
+
+	status := AppStatus{
+		ID:          id,
+		Name:        app.Name,
+		Status:      app.Status,
+		PID:         app.PID,
+		Uptime:      m.calculateUptime(app),
+		BuildStatus: app.BuildStatus,
+		CreatedAt:   app.CreatedAt,
+		UpdatedAt:   app.UpdatedAt,
+	}
+
+	if app.Status == "running" {
+		ramUsage, cpuUsage, err := m.getProcessMetrics(app.PID)
+		if err != nil {
+			return status, fmt.Errorf("failed to get process metrics: %v", err)
+		}
+		status.RAMUsage = ramUsage
+		status.CPUUsage = cpuUsage
+	}
+
+	return status, nil
 }
 
 // SaveState saves the current state to disk
@@ -537,4 +568,26 @@ func GetGophelApps() ([]string, error) {
 	}
 
 	return gophelApps, nil
+}
+
+// isProcessRunning checks if a process is running using multiple methods
+func (m *AppManager) isProcessRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+
+	// Try using gopsutil first
+	if p, err := process.NewProcess(int32(pid)); err == nil {
+		if running, _ := p.IsRunning(); running {
+			// Additional verification using ps command
+			cmd := exec.Command("sh", "-c", fmt.Sprintf("ps -p %d -o pid= > /dev/null 2>&1", pid))
+			if err := cmd.Run(); err == nil {
+				return true
+			}
+		}
+	}
+
+	// Fallback to system command with more detailed check
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("ps -p %d -o pid= > /dev/null 2>&1", pid))
+	return cmd.Run() == nil
 }

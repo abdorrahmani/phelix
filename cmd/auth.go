@@ -71,8 +71,6 @@ var AuthCmd = &cobra.Command{
 		}
 
 		printWelcomeMessage(username)
-		startMonitoringAsync(apiKey)
-
 		return nil
 	},
 }
@@ -137,25 +135,11 @@ func printWelcomeMessage(username string) {
 	log.Printf("Authentication successful!")
 }
 
-func startMonitoringAsync(apiKey string) {
-	go func() {
-		log.Printf("Starting monitoring and app registration process...")
-
-		if err := startMonitoringAndSendApps(apiKey); err != nil {
-			log.Printf("Error in monitoring and app registration: %v", err)
-			fmt.Printf("Error in monitoring and app registration: %v\n", err)
-			return
-		}
-
-		log.Printf("Monitoring and app registration completed successfully")
-	}()
-}
-
 var AuthStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Shows authentication status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		session, err := getValidSession()
+		session, err := GetValidSession()
 		if err != nil {
 			return err
 		}
@@ -170,7 +154,8 @@ var AuthStatusCmd = &cobra.Command{
 	},
 }
 
-func getValidSession() (*Session, error) {
+// GetValidSession returns a valid session if one exists
+func GetValidSession() (*Session, error) {
 	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", sessionFile)
 	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
 		return nil, fmt.Errorf("no active session found. Please run 'gophel auth' first")
@@ -227,7 +212,7 @@ var AuthLogoutCmd = &cobra.Command{
 	Use:   "logout",
 	Short: "Logs out the current user",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		session, err := getValidSession()
+		session, err := GetValidSession()
 		if err != nil {
 			fmt.Println("No active session found.")
 			return nil
@@ -331,36 +316,34 @@ func storeSession(sessionID, token string) error {
 	return os.WriteFile(sessionFile, data, 0600)
 }
 
-func startMonitoringAndSendApps(apiKey string) error {
+func startMonitoringAndSendApps() error {
 	apps, err := app.GetGophelApps()
 	if err != nil {
-		log.Printf("Error getting apps: %v", err)
+		log.Printf("[Monitor] Error getting apps: %v", err)
 		return fmt.Errorf("error getting apps: %w", err)
 	}
 
+	log.Printf("[Monitor] Found %d apps to register", len(apps))
+
 	if err := sendAppsToServer(); err != nil {
-		log.Printf("Error sending apps to server: %v", err)
+		log.Printf("[Monitor] Error sending apps to server: %v", err)
 		return fmt.Errorf("error sending apps to server: %w", err)
 	}
 
-	log.Printf("Successfully registered %d apps", len(apps))
-
-	if err := monitorService.StartMonitoring(); err != nil {
-		log.Printf("Error starting WebSocket monitoring: %v", err)
-		return fmt.Errorf("error starting monitoring: %w", err)
-	}
-
-	log.Println("WebSocket monitoring started successfully")
+	log.Printf("[Monitor] Successfully registered %d apps", len(apps))
 	return nil
 }
 
 func sendAppsToServer() error {
-	session, err := getValidSession()
+	session, err := GetValidSession()
 	if err != nil {
+		log.Printf("[Monitor] Authentication required: %v", err)
 		return fmt.Errorf("authentication required. Please run 'gophel auth' first")
 	}
 
 	appList := app.Manager.ListApplications()
+	log.Printf("[Monitor] Preparing to send %d apps to server", len(appList))
+
 	var appDetails []AppDetail
 
 	for _, app := range appList {
@@ -376,6 +359,7 @@ func sendAppsToServer() error {
 			CreatedAt:   app.CreatedAt,
 			UpdatedAt:   app.UpdatedAt,
 		})
+		log.Printf("[Monitor] Prepared app details for %s (ID: %d)", app.Name, id)
 	}
 
 	body := struct {
@@ -386,12 +370,14 @@ func sendAppsToServer() error {
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
+		log.Printf("[Monitor] Error marshaling apps: %v", err)
 		return fmt.Errorf("error marshaling apps: %w", err)
 	}
 
 	client := &http.Client{}
 	req, err := http.NewRequest("POST", "https://gophel.anophel.com/api/v1/gophel/apps", bytes.NewBuffer(jsonBody))
 	if err != nil {
+		log.Printf("[Monitor] Error creating request: %v", err)
 		return fmt.Errorf("error creating request: %w", err)
 	}
 
@@ -399,17 +385,21 @@ func sendAppsToServer() error {
 	req.Header.Set("Authorization", "Bearer "+session.Token)
 	req.Header.Set("Content-Type", "application/json")
 
+	log.Printf("[Monitor] Sending apps to server...")
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[Monitor] Error sending request: %v", err)
 		return fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("[Monitor] Server returned error status %d: %s", resp.StatusCode, string(bodyBytes))
 		return fmt.Errorf("server returned status code %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
+	log.Printf("[Monitor] Successfully sent apps to server")
 	return nil
 }
 
