@@ -316,24 +316,6 @@ func storeSession(sessionID, token string) error {
 	return os.WriteFile(sessionFile, data, 0600)
 }
 
-func startMonitoringAndSendApps() error {
-	apps, err := app.GetGophelApps()
-	if err != nil {
-		log.Printf("[Monitor] Error getting apps: %v", err)
-		return fmt.Errorf("error getting apps: %w", err)
-	}
-
-	log.Printf("[Monitor] Found %d apps to register", len(apps))
-
-	if err := sendAppsToServer(); err != nil {
-		log.Printf("[Monitor] Error sending apps to server: %v", err)
-		return fmt.Errorf("error sending apps to server: %w", err)
-	}
-
-	log.Printf("[Monitor] Successfully registered %d apps", len(apps))
-	return nil
-}
-
 func sendAppsToServer() error {
 	session, err := GetValidSession()
 	if err != nil {
