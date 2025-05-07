@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -45,15 +46,24 @@ type ServerMetrics struct {
 }
 
 var (
-	serverID   string
-	serverInfo *ServerInfo
+	serverID     string
+	serverInfo   *ServerInfo
+	serverIDFile string
 )
+
+func init() {
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		homeDir = os.Getenv("USERPROFILE") // For Windows
+	}
+	serverIDFile = filepath.Join(homeDir, ".gophel", "server_id")
+}
 
 // Initialize initializes the server information
 func Initialize() error {
-	// Generate server ID if not exists
-	if serverID == "" {
-		serverID = uuid.New().String()
+	// Load or generate server ID
+	if err := loadOrGenerateServerID(); err != nil {
+		return fmt.Errorf("failed to load/generate server ID: %w", err)
 	}
 
 	// Get hostname
@@ -202,4 +212,31 @@ func CollectMetrics() (*ServerMetrics, error) {
 		FreeStorage:     diskInfo.Free,
 		Timestamp:       time.Now(),
 	}, nil
+}
+
+// loadOrGenerateServerID loads the server ID from file or generates a new one
+func loadOrGenerateServerID() error {
+	// Create .gophel directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(serverIDFile), 0755); err != nil {
+		return fmt.Errorf("failed to create .gophel directory: %w", err)
+	}
+
+	// Try to read existing server ID
+	data, err := os.ReadFile(serverIDFile)
+	if err == nil {
+		serverID = string(data)
+		return nil
+	}
+
+	// If file doesn't exist or can't be read, generate new ID
+	if os.IsNotExist(err) {
+		serverID = uuid.New().String()
+		// Save the new ID
+		if err := os.WriteFile(serverIDFile, []byte(serverID), 0600); err != nil {
+			return fmt.Errorf("failed to save server ID: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("failed to read server ID file: %w", err)
 }
