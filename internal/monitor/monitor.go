@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/abdorrahmani/gophel/internal/server"
 	"github.com/gorilla/websocket"
 )
 
@@ -37,6 +38,7 @@ type Command struct {
 // AppMetrics represents the metrics collected for an application
 type AppMetrics struct {
 	AppID       string  `json:"appID"`
+	ServerID    string  `json:"server_id"`
 	CPUUsage    float64 `json:"cpuUsage"`
 	MemoryUsage uint64  `json:"memoryUsage"`
 }
@@ -44,6 +46,7 @@ type AppMetrics struct {
 // AppDetails represents the application details
 type AppDetails struct {
 	ID          string    `json:"id"`
+	ServerID    string    `json:"server_id"`
 	Name        string    `json:"name"`
 	Status      string    `json:"status"`
 	Port        int       `json:"port"`
@@ -86,6 +89,13 @@ func (m *monitorService) StartMonitoring() error {
 		return fmt.Errorf("monitoring already started")
 	}
 
+	// Initialize server information
+	if err := server.Initialize(); err != nil {
+		log.Printf("[WebSocket] Failed to initialize server info: %v", err)
+		return fmt.Errorf("failed to initialize server info: %w", err)
+	}
+	log.Printf("[WebSocket] Server info initialized successfully")
+
 	// Get session from file
 	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
 	data, err := os.ReadFile(sessionFile)
@@ -106,6 +116,19 @@ func (m *monitorService) StartMonitoring() error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
+	// Send server information
+	log.Printf("[WebSocket] Sending server information...")
+	serverInfo := server.GetServerInfo()
+	message := map[string]interface{}{
+		"type":    "servers",
+		"payload": serverInfo,
+	}
+	if err := m.conn.WriteJSON(message); err != nil {
+		log.Printf("[WebSocket] Failed to send server info: %v", err)
+	} else {
+		log.Printf("[WebSocket] Server info sent successfully")
+	}
+
 	// Start goroutines for handling commands and sending metrics
 	go m.handleCommands()
 	go m.sendMetrics()
@@ -122,11 +145,30 @@ func (m *monitorService) connect() error {
 	wsURL := fmt.Sprintf("wss://gophel.anophel.com/api/v1/gophel/ws?token=%s&sessionID=%s", m.session.Token, m.session.SessionID)
 	log.Printf("[WebSocket] Attempting to connect to %s", wsURL)
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 45 * time.Second,
+	}
+
+	conn, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		log.Printf("[WebSocket] Connection failed: %v", err)
 		return fmt.Errorf("failed to connect to WebSocket: %w", err)
 	}
+
+	// Set read deadline
+	if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		log.Printf("[WebSocket] Error setting read deadline: %v", err)
+	}
+
+	// Set write deadline
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		log.Printf("[WebSocket] Error setting write deadline: %v", err)
+	}
+
+	// Set pong handler
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	})
 
 	m.conn = conn
 	log.Printf("[WebSocket] Connection established successfully")
@@ -149,12 +191,24 @@ func (m *monitorService) keepAlive() {
 			m.mu.Lock()
 			if m.conn != nil {
 				log.Printf("[WebSocket] Sending ping")
+				if err := m.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+					log.Printf("[WebSocket] Error setting write deadline: %v", err)
+					m.mu.Unlock()
+					m.reconnect()
+					continue
+				}
+
 				if err := m.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					log.Printf("[WebSocket] Error sending ping: %v", err)
 					m.mu.Unlock()
 					m.reconnect()
 					continue
 				}
+
+				if err := m.conn.SetWriteDeadline(time.Time{}); err != nil {
+					log.Printf("[WebSocket] Error resetting write deadline: %v", err)
+				}
+
 				log.Printf("[WebSocket] Ping sent successfully")
 			}
 			m.mu.Unlock()
@@ -285,6 +339,7 @@ func (m *monitorService) executeCommand(cmd Command) error {
 func (m *monitorService) collectMetrics() []AppMetrics {
 	var metrics []AppMetrics
 	apps := app.Manager.ListApplications()
+	serverID := server.GetServerID()
 
 	for _, appInfo := range apps {
 		status, err := app.Manager.StatusApplication(appInfo.ID)
@@ -295,6 +350,7 @@ func (m *monitorService) collectMetrics() []AppMetrics {
 
 		metrics = append(metrics, AppMetrics{
 			AppID:       appInfo.ID,
+			ServerID:    serverID,
 			CPUUsage:    status.CPUUsage,
 			MemoryUsage: status.RAMUsage,
 		})
@@ -307,10 +363,12 @@ func (m *monitorService) collectMetrics() []AppMetrics {
 func (m *monitorService) collectApps() []AppDetails {
 	var apps []AppDetails
 	appList := app.Manager.ListApplications()
+	serverID := server.GetServerID()
 
 	for _, appInfo := range appList {
 		apps = append(apps, AppDetails{
 			ID:          appInfo.ID,
+			ServerID:    serverID,
 			Name:        appInfo.Name,
 			Status:      appInfo.Status,
 			BuildStatus: appInfo.BuildStatus,
@@ -337,7 +395,25 @@ func (m *monitorService) sendMetrics() {
 			log.Printf("[WebSocket] Stopping metrics sender")
 			return
 		case <-ticker.C:
-			// Send metrics
+			// Send server metrics
+			serverMetrics, err := server.CollectMetrics()
+			log.Printf("server: %v", serverMetrics)
+
+			if err == nil {
+				message := map[string]interface{}{
+					"type":    "server_metrics",
+					"payload": serverMetrics,
+				}
+				m.mu.Lock()
+				if m.conn != nil {
+					if err := m.conn.WriteJSON(message); err != nil {
+						log.Printf("[WebSocket] Error sending server metrics: %v", err)
+					}
+				}
+				m.mu.Unlock()
+			}
+
+			// Send app metrics
 			metrics := m.collectMetrics()
 			log.Printf("[WebSocket] Collected metrics for %d apps", len(metrics))
 
