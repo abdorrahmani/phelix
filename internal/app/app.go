@@ -82,10 +82,46 @@ var Manager AppManagerInterface = &AppManager{
 	NextID: 1,
 }
 
-const (
-	stateFile = "/var/lib/gophel/apps.json"
-	logDir    = "/var/log/gophel"
+var (
+	stateFile string
+	logDir    string
 )
+
+func init() {
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		homeDir = os.Getenv("USERPROFILE") // For Windows
+	}
+	stateFile = filepath.Join(homeDir, ".gophel", "apps.json")
+	logDir = filepath.Join(homeDir, ".gophel", "logs")
+
+	// Ensure directories exist
+	if err := ensureDirectories(); err != nil {
+		fmt.Printf("Warning: Failed to create required directories: %v\n", err)
+	}
+}
+
+func ensureDirectories() error {
+	// Create .gophel directory
+	gophelDir := filepath.Dir(stateFile)
+	if err := os.MkdirAll(gophelDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .gophel directory: %w", err)
+	}
+
+	// Create logs directory
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create logs directory: %w", err)
+	}
+
+	// Initialize state file if it doesn't exist
+	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
+		if err := os.WriteFile(stateFile, []byte("{}"), 0644); err != nil {
+			return fmt.Errorf("failed to initialize state file: %w", err)
+		}
+	}
+
+	return nil
+}
 
 // GenerateAppID generates a sequential numeric ID for an application
 func (m *AppManager) GenerateAppID() string {
