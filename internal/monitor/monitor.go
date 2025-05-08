@@ -334,6 +334,27 @@ func (m *monitorService) handleCommands() {
 				continue
 			}
 
+			err := m.commandExecutor.Execute(cmd)
+
+			response := map[string]interface{}{
+				"type":      "command_response",
+				"appName":   cmd.AppName,
+				"status":    "success",
+				"timestamp": time.Now(),
+			}
+
+			if err != nil {
+				response["status"] = "error"
+				response["error"] = err.Error()
+			}
+
+			m.mu.Lock()
+			if err := m.connector.WriteJSON(response); err != nil {
+				log.Printf("Error sending command response: %v", err)
+				m.reconnect()
+			}
+			m.mu.Unlock()
+
 			if err := m.commandExecutor.Execute(cmd); err != nil {
 				log.Printf("Error executing command: %v", err)
 			}
