@@ -21,6 +21,9 @@ const (
 	reconnectDelay       = 5 * time.Second
 	maxReconnectAttempts = 3
 	wsURL                = "wss://gophel.anophel.com/api/v1/gophel/ws"
+	readTimeout          = 60 * time.Second
+	writeTimeout         = 10 * time.Second
+	handshakeTimeout     = 45 * time.Second
 )
 
 // Interfaces following Interface Segregation Principle
@@ -90,7 +93,9 @@ type websocketConn struct {
 
 func (w *websocketConn) Connect(token, sessionID string) error {
 	dialer := websocket.Dialer{
-		HandshakeTimeout: 45 * time.Second,
+		HandshakeTimeout: handshakeTimeout,
+		ReadBufferSize:   32768,
+		WriteBufferSize:  32768,
 	}
 	url := fmt.Sprintf("%s?token=%s&sessionID=%s", wsURL, token, sessionID)
 	conn, _, err := dialer.Dial(url, nil)
@@ -283,16 +288,19 @@ func (m *monitorService) connect() error {
 		return err
 	}
 
-	if err := m.connector.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+	// Set initial read deadline
+	if err := m.connector.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 		return fmt.Errorf("error setting read deadline: %w", err)
 	}
 
-	if err := m.connector.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	// Set initial write deadline
+	if err := m.connector.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return fmt.Errorf("error setting write deadline: %w", err)
 	}
 
+	// Set pong handler to extend read deadline
 	m.connector.SetPongHandler(func(string) error {
-		return m.connector.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return m.connector.SetReadDeadline(time.Now().Add(readTimeout))
 	})
 
 	return nil
@@ -329,34 +337,78 @@ func (m *monitorService) handleCommands() {
 		default:
 			var cmd Command
 			if err := m.connector.ReadJSON(&cmd); err != nil {
-				log.Printf("Error reading command: %v", err)
-				m.reconnect()
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("WebSocket connection closed unexpectedly: %v", err)
+					m.reconnect()
+				} else {
+					log.Printf("Error reading command: %v", err)
+				}
 				continue
 			}
 
-			err := m.commandExecutor.Execute(cmd)
+			// Log received command for debugging
+			log.Printf("Received command: type=%s, appName=%s", cmd.Type, cmd.AppName)
 
-			response := map[string]interface{}{
-				"type":      "command_response",
-				"appName":   cmd.AppName,
-				"status":    "success",
-				"timestamp": time.Now(),
-			}
+			// Handle different command types
+			switch cmd.Type {
+			case "start", "stop", "restart":
+				// These are control commands that require appName
+				if cmd.AppName == "" {
+					log.Printf("Invalid control command: empty app name for command type: %s", cmd.Type)
+					response := map[string]interface{}{
+						"type":      "command_response",
+						"status":    "error",
+						"error":     "empty app name",
+						"timestamp": time.Now(),
+					}
+					m.mu.Lock()
+					if err := m.connector.WriteJSON(response); err != nil {
+						log.Printf("Error sending command response: %v", err)
+						m.reconnect()
+					}
+					m.mu.Unlock()
+					continue
+				}
 
-			if err != nil {
-				response["status"] = "error"
-				response["error"] = err.Error()
-			}
+				err := m.commandExecutor.Execute(cmd)
+				response := map[string]interface{}{
+					"type":      "command_response",
+					"appName":   cmd.AppName,
+					"status":    "success",
+					"timestamp": time.Now(),
+				}
 
-			m.mu.Lock()
-			if err := m.connector.WriteJSON(response); err != nil {
-				log.Printf("Error sending command response: %v", err)
-				m.reconnect()
-			}
-			m.mu.Unlock()
+				if err != nil {
+					response["status"] = "error"
+					response["error"] = err.Error()
+				}
 
-			if err := m.commandExecutor.Execute(cmd); err != nil {
-				log.Printf("Error executing command: %v", err)
+				m.mu.Lock()
+				if err := m.connector.WriteJSON(response); err != nil {
+					log.Printf("Error sending command response: %v", err)
+					m.reconnect()
+				}
+				m.mu.Unlock()
+
+			case "apps", "metrics", "servers", "server_metrics":
+				// These are data request commands, no appName required
+				// They are handled by the metrics collector
+				continue
+
+			case "ping":
+				response := map[string]interface{}{
+					"type":      "pong",
+					"timestamp": time.Now(),
+				}
+				m.mu.Lock()
+				if err := m.connector.WriteJSON(response); err != nil {
+					log.Printf("Error sending pong response: %v", err)
+					m.reconnect()
+				}
+				m.mu.Unlock()
+
+			default:
+				log.Printf("Unknown command type: %s", cmd.Type)
 			}
 		}
 	}
@@ -372,13 +424,19 @@ func (m *monitorService) keepAlive() {
 			return
 		case <-ticker.C:
 			m.mu.Lock()
-			if err := m.connector.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			if err := m.connector.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 				m.mu.Unlock()
 				m.reconnect()
 				continue
 			}
 
-			if err := m.connector.WriteMessage(websocket.PingMessage, nil); err != nil {
+			// Send a ping message with timestamp
+			pingMsg := map[string]interface{}{
+				"type":      "ping",
+				"timestamp": time.Now(),
+			}
+
+			if err := m.connector.WriteJSON(pingMsg); err != nil {
 				m.mu.Unlock()
 				m.reconnect()
 				continue
@@ -397,7 +455,8 @@ func (m *monitorService) reconnect() {
 	defer m.mu.Unlock()
 
 	if m.reconnectAttempts >= maxReconnectAttempts {
-		time.Sleep(reconnectDelay)
+		log.Printf("Max reconnection attempts reached, waiting before retry")
+		time.Sleep(reconnectDelay * 2) // Double the delay after max attempts
 		m.reconnectAttempts = 0
 	}
 
@@ -412,6 +471,7 @@ func (m *monitorService) reconnect() {
 		return
 	}
 
+	log.Printf("Successfully reconnected to WebSocket server")
 	m.reconnectAttempts = 0
 }
 
