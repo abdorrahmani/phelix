@@ -55,9 +55,14 @@ type CommandExecutor interface {
 }
 
 // Core types
-type Command struct {
+type CommandPayload struct {
 	Type    string `json:"type"`
 	AppName string `json:"appName"`
+}
+
+type Command struct {
+	Type    string         `json:"type"`
+	Payload CommandPayload `json:"payload"`
 }
 
 type AppMetrics struct {
@@ -195,25 +200,25 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 	apps := app.Manager.ListApplications()
 	var targetAppID string
 	for _, app := range apps {
-		if app.Name == cmd.AppName {
+		if app.Name == cmd.Payload.AppName {
 			targetAppID = app.ID
 			break
 		}
 	}
 
 	if targetAppID == "" {
-		return fmt.Errorf("app not found: %s", cmd.AppName)
+		return fmt.Errorf("app not found: %s", cmd.Payload.AppName)
 	}
 
-	switch cmd.Type {
+	switch cmd.Payload.Type {
 	case "start":
-		return app.Manager.StartApplication(targetAppID, 0, cmd.AppName)
+		return app.Manager.StartApplication(targetAppID, 0, cmd.Payload.AppName)
 	case "stop":
 		return app.Manager.StopApplication(targetAppID)
 	case "restart":
 		return app.Manager.RestartApplication(targetAppID)
 	default:
-		return fmt.Errorf("unknown command type: %s", cmd.Type)
+		return fmt.Errorf("unknown command type: %s", cmd.Payload.Type)
 	}
 }
 
@@ -347,48 +352,62 @@ func (m *monitorService) handleCommands() {
 			}
 
 			// Log received command for debugging
-			log.Printf("Received command: type=%s, appName=%s", cmd.Type, cmd.AppName)
+			log.Printf("Received command: type=%s, payload.type=%s, payload.appName=%s",
+				cmd.Type, cmd.Payload.Type, cmd.Payload.AppName)
 
 			// Handle different command types
 			switch cmd.Type {
-			case "start", "stop", "restart":
-				// These are control commands that require appName
-				if cmd.AppName == "" {
-					log.Printf("Invalid control command: empty app name for command type: %s", cmd.Type)
+			case "command":
+				// Handle control commands
+				switch cmd.Payload.Type {
+				case "start", "stop", "restart", "rebuild", "build":
+					if cmd.Payload.AppName == "" {
+						log.Printf("Invalid control command: empty app name for command type: %s", cmd.Payload.Type)
+						response := map[string]interface{}{
+							"type":      "command_response",
+							"status":    "error",
+							"error":     "empty app name",
+							"timestamp": time.Now(),
+						}
+						m.mu.Lock()
+						if err := m.connector.WriteJSON(response); err != nil {
+							log.Printf("Error sending command response: %v", err)
+							m.reconnect()
+						}
+						m.mu.Unlock()
+						continue
+					}
+
+					// Create command for executor
+					execCmd := Command{
+						Type:    cmd.Payload.Type,
+						Payload: cmd.Payload,
+					}
+
+					err := m.commandExecutor.Execute(execCmd)
 					response := map[string]interface{}{
 						"type":      "command_response",
-						"status":    "error",
-						"error":     "empty app name",
+						"status":    "success",
+						"appName":   cmd.Payload.AppName,
+						"command":   cmd.Payload.Type,
 						"timestamp": time.Now(),
 					}
+
+					if err != nil {
+						response["status"] = "error"
+						response["error"] = err.Error()
+					}
+
 					m.mu.Lock()
 					if err := m.connector.WriteJSON(response); err != nil {
 						log.Printf("Error sending command response: %v", err)
 						m.reconnect()
 					}
 					m.mu.Unlock()
-					continue
-				}
 
-				err := m.commandExecutor.Execute(cmd)
-				response := map[string]interface{}{
-					"type":      "command_response",
-					"appName":   cmd.AppName,
-					"status":    "success",
-					"timestamp": time.Now(),
+				default:
+					log.Printf("Unknown control command type: %s", cmd.Payload.Type)
 				}
-
-				if err != nil {
-					response["status"] = "error"
-					response["error"] = err.Error()
-				}
-
-				m.mu.Lock()
-				if err := m.connector.WriteJSON(response); err != nil {
-					log.Printf("Error sending command response: %v", err)
-					m.reconnect()
-				}
-				m.mu.Unlock()
 
 			case "apps", "metrics", "servers", "server_metrics":
 				// These are data request commands, no appName required
