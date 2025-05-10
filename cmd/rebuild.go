@@ -65,8 +65,18 @@ func stopExistingApp(appInfo *app.AppInfo) error {
 }
 
 func rebuildApp(id string) error {
-	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
+	appInfo, err := GetAppInfo(id)
+	if err != nil {
+		return err
+	}
+
+	if appInfo.Directory == "" {
+		return fmt.Errorf("application directory not found for ID %s", id)
+	}
+
+	outputPath := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", id))
 	cmd := exec.Command("go", "build", "-o", outputPath)
+	cmd.Dir = appInfo.Directory
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if app, exists := appManager.Apps[id]; exists {

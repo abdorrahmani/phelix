@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +42,7 @@ type AppInfo struct {
 	BuildStatus string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Directory   string // Directory where the application is located
 }
 
 // AppStatus represents the current status of an application
@@ -225,8 +227,13 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 	// Try using gopsutil first
 	if p, err := process.NewProcess(int32(app.PID)); err == nil {
 		if running, _ := p.IsRunning(); running {
-			// Additional verification using ps command
-			cmd := exec.Command("sh", "-c", fmt.Sprintf("ps -p %d -o pid= > /dev/null 2>&1", app.PID))
+			// Additional verification using system commands
+			var cmd *exec.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", app.PID))
+			} else {
+				cmd = exec.Command("ps", "-p", fmt.Sprintf("%d", app.PID))
+			}
 			if err := cmd.Run(); err == nil {
 				return true
 			}
@@ -331,6 +338,7 @@ func (m *AppManager) SaveState() error {
 		BuildStatus string    `json:"build_status"`
 		CreatedAt   time.Time `json:"created_at"`
 		UpdatedAt   time.Time `json:"updated_at"`
+		Directory   string    `json:"directory"`
 	}
 
 	savedApps := make(map[string]SavedApp)
@@ -346,6 +354,7 @@ func (m *AppManager) SaveState() error {
 			BuildStatus: app.BuildStatus,
 			CreatedAt:   app.CreatedAt,
 			UpdatedAt:   app.UpdatedAt,
+			Directory:   app.Directory,
 		}
 	}
 
@@ -380,6 +389,7 @@ func (m *AppManager) LoadState() error {
 		BuildStatus string    `json:"build_status"`
 		CreatedAt   time.Time `json:"created_at"`
 		UpdatedAt   time.Time `json:"updated_at"`
+		Directory   string    `json:"directory"`
 	}
 
 	var savedApps map[string]SavedApp
@@ -402,22 +412,7 @@ func (m *AppManager) LoadState() error {
 	m.Apps = make(map[string]*AppInfo)
 	for id, saved := range savedApps {
 		// Check if process is still running
-		isRunning := false
-		if saved.PID > 0 {
-			// Try multiple methods to check if process is running
-			if p, err := process.NewProcess(int32(saved.PID)); err == nil {
-				if running, _ := p.IsRunning(); running {
-					isRunning = true
-				}
-			}
-			// Fallback to system command if gopsutil fails
-			if !isRunning {
-				cmd := exec.Command("ps", "-p", fmt.Sprintf("%d", saved.PID))
-				if err := cmd.Run(); err == nil {
-					isRunning = true
-				}
-			}
-		}
+		isRunning := m.isProcessRunning(saved.PID)
 
 		// Create app info with appropriate status
 		appInfo := &AppInfo{
@@ -431,6 +426,7 @@ func (m *AppManager) LoadState() error {
 			BuildStatus: saved.BuildStatus,
 			CreatedAt:   saved.CreatedAt,
 			UpdatedAt:   saved.UpdatedAt,
+			Directory:   saved.Directory,
 			Cmd:         nil,
 		}
 
@@ -466,7 +462,18 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	}
 	defer f.Close()
 
-	cmd := exec.Command(fmt.Sprintf("./app_%s", id))
+	app, exists := m.Apps[id]
+	if !exists {
+		return fmt.Errorf("application %s not found", id)
+	}
+
+	if app.Directory == "" {
+		return fmt.Errorf("application directory not found for ID %s", id)
+	}
+
+	binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
+	cmd := exec.Command(binaryPath)
+	cmd.Dir = app.Directory
 	cmd.Stdout = f
 	cmd.Stderr = f
 
@@ -474,19 +481,14 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 		return fmt.Errorf("start failed: %v", err)
 	}
 
-	m.Apps[id] = &AppInfo{
-		ID:          id,
-		Cmd:         cmd,
-		Name:        name,
-		PID:         cmd.Process.Pid,
-		Status:      "running",
-		Start:       time.Now(),
-		Port:        port,
-		LogFile:     logFile,
-		BuildStatus: "built",
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}
+	app.Cmd = cmd
+	app.PID = cmd.Process.Pid
+	app.Status = "running"
+	app.Start = time.Now()
+	app.Port = port
+	app.LogFile = logFile
+	app.BuildStatus = "built"
+	app.UpdatedAt = time.Now()
 
 	return nil
 }
@@ -555,19 +557,25 @@ func (m *AppManager) getProcessMetrics(pid int) (uint64, float64, error) {
 		return 0, 0, err
 	}
 
+	// Check if process is actually running
+	running, err := p.IsRunning()
+	if err != nil || !running {
+		return 0, 0, fmt.Errorf("process is not running")
+	}
+
 	var ramUsage uint64
 	var cpuUsage float64
 
-	for i := 0; i < 3; i++ {
-		time.Sleep(200 * time.Millisecond)
-		memInfo, _ := p.MemoryInfo()
-		if memInfo != nil {
-			ramUsage = memInfo.RSS
-		}
-		cpuUsage, _ = p.CPUPercent()
-		if cpuUsage > 0 {
-			break
-		}
+	// Try to get memory info
+	memInfo, err := p.MemoryInfo()
+	if err == nil && memInfo != nil {
+		ramUsage = memInfo.RSS
+	}
+
+	// Try to get CPU usage
+	cpuPercent, err := p.CPUPercent()
+	if err == nil {
+		cpuUsage = cpuPercent
 	}
 
 	return ramUsage, cpuUsage, nil
@@ -615,15 +623,18 @@ func (m *AppManager) isProcessRunning(pid int) bool {
 	// Try using gopsutil first
 	if p, err := process.NewProcess(int32(pid)); err == nil {
 		if running, _ := p.IsRunning(); running {
-			// Additional verification using ps command
-			cmd := exec.Command("sh", "-c", fmt.Sprintf("ps -p %d -o pid= > /dev/null 2>&1", pid))
+			// Additional verification using system commands
+			var cmd *exec.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid))
+			} else {
+				cmd = exec.Command("ps", "-p", fmt.Sprintf("%d", pid))
+			}
 			if err := cmd.Run(); err == nil {
 				return true
 			}
 		}
 	}
 
-	// Fallback to system command with more detailed check
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("ps -p %d -o pid= > /dev/null 2>&1", pid))
-	return cmd.Run() == nil
+	return false
 }

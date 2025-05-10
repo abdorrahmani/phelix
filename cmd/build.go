@@ -120,6 +120,10 @@ func validateUniqueName(name string) error {
 func createAppEntry(id, name string) error {
 	if appManager, ok := app.Manager.(*app.AppManager); ok {
 		now := time.Now()
+		currentDir, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current directory: %v", err)
+		}
 		appManager.Apps[id] = &app.AppInfo{
 			ID:          id,
 			Name:        name,
@@ -127,6 +131,7 @@ func createAppEntry(id, name string) error {
 			BuildStatus: "building",
 			CreatedAt:   now,
 			UpdatedAt:   now,
+			Directory:   currentDir,
 		}
 		return appManager.SaveState()
 	}
