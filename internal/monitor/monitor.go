@@ -16,14 +16,16 @@ import (
 
 // Constants for configuration
 const (
-	pingInterval         = 30 * time.Second
+	pingInterval         = 15 * time.Second
 	metricsInterval      = 2 * time.Second
 	reconnectDelay       = 5 * time.Second
 	maxReconnectAttempts = 3
 	wsURL                = "wss://gophel.anophel.com/api/v1/gophel/ws"
-	readTimeout          = 60 * time.Second
+	readTimeout          = 120 * time.Second
 	writeTimeout         = 10 * time.Second
 	handshakeTimeout     = 45 * time.Second
+	operationTimeout     = 90 * time.Second
+	pongWait             = 60 * time.Second
 )
 
 // Interfaces following Interface Segregation Principle
@@ -199,10 +201,26 @@ type appCommandExecutor struct{}
 func (e *appCommandExecutor) Execute(cmd Command) error {
 	apps := app.Manager.ListApplications()
 	var targetAppID string
+	var targetAppName string
+
+	// First try to find by app name
 	for _, app := range apps {
 		if app.Name == cmd.Payload.AppName {
 			targetAppID = app.ID
+			targetAppName = app.Name
 			break
+		}
+	}
+
+	// If not found by name, try to use the appName as ID directly
+	if targetAppID == "" {
+		// Check if the appName is actually an ID
+		for _, app := range apps {
+			if app.ID == cmd.Payload.AppName {
+				targetAppID = app.ID
+				targetAppName = app.Name
+				break
+			}
 		}
 	}
 
@@ -210,9 +228,12 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 		return fmt.Errorf("app not found: %s", cmd.Payload.AppName)
 	}
 
+	log.Printf("Executing command '%s' for app '%s' (ID: %s)", cmd.Payload.Type, targetAppName, targetAppID)
+
+	// Execute command directly, just like the CLI
 	switch cmd.Payload.Type {
 	case "start":
-		return app.Manager.StartApplication(targetAppID, 0, cmd.Payload.AppName)
+		return app.Manager.StartApplication(targetAppID, 0, targetAppName)
 	case "stop":
 		return app.Manager.StopApplication(targetAppID)
 	case "restart":
@@ -231,6 +252,8 @@ type monitorService struct {
 	stopChan          chan struct{}
 	mu                sync.Mutex
 	reconnectAttempts int
+	metricsPaused     bool
+	metricsPauseMu    sync.Mutex
 }
 
 func NewMonitorService() MonitorService {
@@ -294,7 +317,7 @@ func (m *monitorService) connect() error {
 	}
 
 	// Set initial read deadline
-	if err := m.connector.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+	if err := m.connector.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
 		return fmt.Errorf("error setting read deadline: %w", err)
 	}
 
@@ -305,7 +328,7 @@ func (m *monitorService) connect() error {
 
 	// Set pong handler to extend read deadline
 	m.connector.SetPongHandler(func(string) error {
-		return m.connector.SetReadDeadline(time.Now().Add(readTimeout))
+		return m.connector.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
 	return nil
@@ -334,100 +357,159 @@ func (m *monitorService) SendCommand(cmd Command) error {
 	return m.connector.WriteJSON(cmd)
 }
 
+func (m *monitorService) pauseMetrics() {
+	m.metricsPauseMu.Lock()
+	m.metricsPaused = true
+	m.metricsPauseMu.Unlock()
+}
+
+func (m *monitorService) resumeMetrics() {
+	m.metricsPauseMu.Lock()
+	m.metricsPaused = false
+	m.metricsPauseMu.Unlock()
+}
+
+func (m *monitorService) sendMetrics() {
+	ticker := time.NewTicker(metricsInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		case <-ticker.C:
+			m.metricsPauseMu.Lock()
+			if m.metricsPaused {
+				m.metricsPauseMu.Unlock()
+				continue
+			}
+			m.metricsPauseMu.Unlock()
+
+			m.sendServerMetrics()
+			m.sendAppMetrics()
+			m.sendAppDetails()
+		}
+	}
+}
+
 func (m *monitorService) handleCommands() {
 	for {
 		select {
 		case <-m.stopChan:
 			return
 		default:
-			var cmd Command
-			if err := m.connector.ReadJSON(&cmd); err != nil {
+			// Set read deadline for command handling
+			if err := m.connector.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+				log.Printf("Error setting read deadline: %v", err)
+				m.reconnect()
+				continue
+			}
+
+			var rawMessage json.RawMessage
+			if err := m.connector.ReadJSON(&rawMessage); err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					log.Printf("WebSocket connection closed unexpectedly: %v", err)
 					m.reconnect()
+				} else if err.Error() == "i/o timeout" {
+					// For timeout errors, try to reconnect
+					log.Printf("WebSocket read timeout, attempting to reconnect")
+					m.reconnect()
 				} else {
-					log.Printf("Error reading command: %v", err)
+					log.Printf("Error reading message: %v", err)
 				}
 				continue
 			}
 
-			// Log received command for debugging
-			log.Printf("Received command: type=%s, payload.type=%s, payload.appName=%s",
-				cmd.Type, cmd.Payload.Type, cmd.Payload.AppName)
+			// Reset read deadline after successful read
+			if err := m.connector.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+				log.Printf("Error resetting read deadline: %v", err)
+			}
 
-			// Handle different command types
-			switch cmd.Type {
+			// Parse and handle the message
+			var msg map[string]interface{}
+			if err := json.Unmarshal(rawMessage, &msg); err != nil {
+				log.Printf("Error parsing message: %v", err)
+				continue
+			}
+
+			msgType, ok := msg["type"].(string)
+			if !ok {
+				log.Printf("Invalid message format: missing or invalid type")
+				continue
+			}
+
+			// Handle different message types
+			switch msgType {
 			case "command":
-				// Handle control commands
-				switch cmd.Payload.Type {
-				case "start", "stop", "restart", "rebuild", "build":
-					if cmd.Payload.AppName == "" {
-						log.Printf("Invalid control command: empty app name for command type: %s", cmd.Payload.Type)
-						response := map[string]interface{}{
-							"type":      "command_response",
-							"status":    "error",
-							"error":     "empty app name",
-							"timestamp": time.Now(),
-						}
-						m.mu.Lock()
-						if err := m.connector.WriteJSON(response); err != nil {
-							log.Printf("Error sending command response: %v", err)
-							m.reconnect()
-						}
-						m.mu.Unlock()
-						continue
-					}
-
-					// Create command for executor
-					execCmd := Command{
-						Type:    cmd.Payload.Type,
-						Payload: cmd.Payload,
-					}
-
-					err := m.commandExecutor.Execute(execCmd)
-					response := map[string]interface{}{
-						"type":      "command_response",
-						"status":    "success",
-						"appName":   cmd.Payload.AppName,
-						"command":   cmd.Payload.Type,
-						"timestamp": time.Now(),
-					}
-
-					if err != nil {
-						response["status"] = "error"
-						response["error"] = err.Error()
-					}
-
-					m.mu.Lock()
-					if err := m.connector.WriteJSON(response); err != nil {
-						log.Printf("Error sending command response: %v", err)
-						m.reconnect()
-					}
-					m.mu.Unlock()
-
-				default:
-					log.Printf("Unknown control command type: %s", cmd.Payload.Type)
+				payload, ok := msg["payload"].(map[string]interface{})
+				if !ok {
+					log.Printf("Invalid command format: missing or invalid payload")
+					continue
 				}
 
-			case "apps", "metrics", "servers", "server_metrics":
-				// These are data request commands, no appName required
-				// They are handled by the metrics collector
-				continue
+				cmdType, ok := payload["type"].(string)
+				if !ok {
+					log.Printf("Invalid command format: missing command type")
+					continue
+				}
 
-			case "ping":
+				appName, ok := payload["appName"].(string)
+				if !ok {
+					log.Printf("Invalid command format: missing app name")
+					continue
+				}
+
+				log.Printf("Received command: type=%s, appName=%s", cmdType, appName)
+
+				// Pause metrics sending during command execution
+				m.pauseMetrics()
+				defer m.resumeMetrics()
+
+				// Create command for executor
+				execCmd := Command{
+					Type: cmdType,
+					Payload: CommandPayload{
+						Type:    cmdType,
+						AppName: appName,
+					},
+				}
+
+				// Execute command directly
+				err := m.commandExecutor.Execute(execCmd)
 				response := map[string]interface{}{
-					"type":      "pong",
+					"type":      "command_response",
+					"status":    "success",
+					"appName":   appName,
+					"command":   cmdType,
 					"timestamp": time.Now(),
 				}
+
+				if err != nil {
+					response["status"] = "error"
+					response["error"] = err.Error()
+					log.Printf("Command execution failed: %v", err)
+				}
+
 				m.mu.Lock()
 				if err := m.connector.WriteJSON(response); err != nil {
-					log.Printf("Error sending pong response: %v", err)
+					log.Printf("Error sending command response: %v", err)
+					m.mu.Unlock()
 					m.reconnect()
+					continue
 				}
 				m.mu.Unlock()
 
+			case "pong":
+				// Handle pong message
+				log.Printf("Received pong response")
+
+			case "apps", "metrics", "servers", "server_metrics":
+				// These are data request commands, no payload required
+				// They are handled by the metrics collector
+				continue
+
 			default:
-				log.Printf("Unknown command type: %s", cmd.Type)
+				log.Printf("Unknown message type: %s", msgType)
 			}
 		}
 	}
@@ -484,30 +566,27 @@ func (m *monitorService) reconnect() {
 	}
 
 	time.Sleep(reconnectDelay)
-	if err := m.connect(); err != nil {
-		log.Printf("Failed to reconnect: %v", err)
-		m.reconnectAttempts++
+
+	// Try to reconnect
+	for i := 0; i < maxReconnectAttempts; i++ {
+		if err := m.connect(); err != nil {
+			log.Printf("Reconnection attempt %d failed: %v", i+1, err)
+			time.Sleep(reconnectDelay)
+			continue
+		}
+
+		// If we successfully reconnect, send server info
+		if err := m.sendServerInfo(); err != nil {
+			log.Printf("Warning: Failed to send server info after reconnection: %v", err)
+		}
+
+		log.Printf("Successfully reconnected to WebSocket server")
+		m.reconnectAttempts = 0
 		return
 	}
 
-	log.Printf("Successfully reconnected to WebSocket server")
-	m.reconnectAttempts = 0
-}
-
-func (m *monitorService) sendMetrics() {
-	ticker := time.NewTicker(metricsInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-m.stopChan:
-			return
-		case <-ticker.C:
-			m.sendServerMetrics()
-			m.sendAppMetrics()
-			m.sendAppDetails()
-		}
-	}
+	log.Printf("Failed to reconnect after %d attempts", maxReconnectAttempts)
+	m.reconnectAttempts++
 }
 
 func (m *monitorService) sendServerMetrics() {
