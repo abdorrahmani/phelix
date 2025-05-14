@@ -27,6 +27,7 @@ type AppManagerInterface interface {
 	ListApplications() []AppListItem
 	SaveState() error
 	LoadState() error
+	RemoveApplication(id string) error
 }
 
 // AppInfo represents the state of a single application
@@ -637,4 +638,47 @@ func (m *AppManager) isProcessRunning(pid int) bool {
 	}
 
 	return false
+}
+
+// RemoveApplication removes an application by its ID
+func (m *AppManager) RemoveApplication(id string) error {
+	m.Lock.Lock()
+	defer m.Lock.Unlock()
+
+	if err := m.LoadState(); err != nil {
+		return fmt.Errorf("failed to load state: %v", err)
+	}
+
+	app, exists := m.Apps[id]
+	if !exists {
+		return fmt.Errorf("application %s not found", id)
+	}
+
+	// Stop the application if it's running
+	if app.Status == "running" {
+		if err := m.stopApplicationProcess(app); err != nil {
+			return fmt.Errorf("failed to stop application before removal: %v", err)
+		}
+	}
+
+	// Remove the application binary if it exists
+	if app.Directory != "" {
+		binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
+		if err := os.Remove(binaryPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove application binary: %v", err)
+		}
+	}
+
+	// Remove the log file if it exists
+	if app.LogFile != "" {
+		if err := os.Remove(app.LogFile); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove log file: %v", err)
+		}
+	}
+
+	// Remove the application from the map
+	delete(m.Apps, id)
+
+	// Save the updated state
+	return m.SaveState()
 }

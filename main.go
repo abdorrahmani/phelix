@@ -112,6 +112,7 @@ func main() {
 	rootCmd.AddCommand(cmd.LogCmd)
 	rootCmd.AddCommand(cmd.AuthCmd)
 	rootCmd.AddCommand(cmd.VersionCmd)
+	rootCmd.AddCommand(cmd.RemoveCmd)
 	rootCmd.AddCommand(monitorCmd)
 
 	if err := rootCmd.Execute(); err != nil {
