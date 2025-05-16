@@ -10,15 +10,40 @@ import (
 var port int
 
 var StartCmd = &cobra.Command{
-	Use:   "start <ID> --port <PORT>",
-	Short: "Starts a specific application by its ID",
-	Args:  cobra.ExactArgs(1),
+	Use:   "start [ID] --port <PORT>",
+	Short: "Starts a specific application by its ID or all applications if no ID is provided",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
-
 		if err := app.Manager.LoadState(); err != nil {
 			return fmt.Errorf("failed to load state: %v", err)
 		}
+
+		// If no ID provided, start all apps
+		if len(args) == 0 {
+			apps := app.Manager.ListApplications()
+			if len(apps) == 0 {
+				fmt.Println("No applications found to start.")
+				return nil
+			}
+
+			fmt.Println("Starting all applications...")
+			for _, appInfo := range apps {
+				if appInfo.Status != "running" {
+					fmt.Printf("Starting application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
+					if err := app.Manager.StartApplication(appInfo.ID, appInfo.Port, appInfo.Name); err != nil {
+						fmt.Printf("Warning: Failed to start application '%s' (ID: %s): %v\n", appInfo.Name, appInfo.ID, err)
+						continue
+					}
+					fmt.Printf("Application '%s' (ID: %s) started successfully\n", appInfo.Name, appInfo.ID)
+				} else {
+					fmt.Printf("Application '%s' (ID: %s) is already running\n", appInfo.Name, appInfo.ID)
+				}
+			}
+			return nil
+		}
+
+		// Start specific app
+		id := args[0]
 
 		appInfo, err := GetAppInfo(id)
 		if err != nil {
