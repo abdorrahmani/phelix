@@ -2,13 +2,13 @@ package server
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/gophel/internal/network"
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
@@ -73,18 +73,9 @@ func Initialize() error {
 	}
 
 	// Get IP addresses
-	var ipv4List, ipv6List []string
-	addrs, err := net.InterfaceAddrs()
-	if err == nil {
-		for _, addr := range addrs {
-			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-				if ipnet.IP.To4() != nil {
-					ipv4List = append(ipv4List, ipnet.IP.String())
-				} else {
-					ipv6List = append(ipv6List, ipnet.IP.String())
-				}
-			}
-		}
+	ipv4List, ipv6List, err := network.GetPublicIPs()
+	if err != nil {
+		return fmt.Errorf("failed to get public IPs: %w", err)
 	}
 
 	// Convert IP lists to comma-separated strings
