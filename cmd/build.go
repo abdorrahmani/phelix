@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -28,7 +30,6 @@ var BuildCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateSession(); err != nil {
-			return err
 		}
 
 		name := args[0]
@@ -138,9 +139,41 @@ func createAppEntry(id, name string) error {
 	return fmt.Errorf("invalid app manager type")
 }
 
+func FindMainFile(root string) (string, error) {
+	var mainFile string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && d.Name() == "main.go" {
+			mainFile = path
+			return io.EOF
+		}
+		return nil
+	})
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("error walking directory: %w", err)
+	}
+	if mainFile == "" {
+		return "", fmt.Errorf("no main.go file found in the directory")
+	}
+	return mainFile, nil
+}
+
 func buildApplication(id string) error {
 	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
-	cmd := exec.Command("go", "build", "-o", outputPath)
+	projectRoot := app.Manager.(*app.AppManager).Apps[id].Directory
+
+	mainFile, err := FindMainFile(projectRoot)
+	if err != nil {
+		return fmt.Errorf("build failed: %v", err)
+	}
+
+	realPath, _ := filepath.Rel(projectRoot, mainFile)
+
+	cmd := exec.Command("go", "build", "-o", outputPath, realPath)
+	cmd.Dir = projectRoot
+
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if app, exists := appManager.Apps[id]; exists {
