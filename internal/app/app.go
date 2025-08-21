@@ -324,10 +324,6 @@ func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 
 // SaveState saves the current state to disk
 func (m *AppManager) SaveState() error {
-	if err := os.MkdirAll(filepath.Dir(stateFile), 0755); err != nil {
-		return err
-	}
-
 	type SavedApp struct {
 		ID          string    `json:"id"`
 		Name        string    `json:"name"`
@@ -363,7 +359,12 @@ func (m *AppManager) SaveState() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(stateFile, data, 0644)
+
+	tmpFile := stateFile + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, stateFile)
 }
 
 // LoadState loads the state from disk
