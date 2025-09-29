@@ -13,6 +13,9 @@ import (
 	"github.com/abdorrahmani/gophel/internal/server"
 )
 
+// MaxLogSize maximum size of log files
+const MaxLogSize = 100 * 1024 * 1024 // 100 MB
+
 type AppLogs struct {
 	ID       string    `json:"id"`
 	ServerID string    `json:"server_id"`
@@ -161,4 +164,63 @@ func trimTrailingNewline(s string) string {
 		return trimTrailingNewline(s[:len(s)-1])
 	}
 	return s
+}
+
+// RemovePreviousLogs remove logs of each application that run with gophel by size (100 MB)
+func RemovePreviousLogs() {
+	apps := app.Manager.ListApplications()
+	for _, appItem := range apps {
+		logFile := filepath.Join(os.Getenv("HOME"), ".gophel", "logs", fmt.Sprintf("%s.log", appItem.ID))
+
+		info, err := os.Stat(logFile)
+		if err != nil {
+			fmt.Printf("Failed to stat log file %s: %v", logFile, err)
+			continue
+		}
+
+		if info.Size() > MaxLogSize {
+			fmt.Printf("Log file %s too large (%d bytes)", logFile, info.Size())
+			err := trimLogFile(logFile)
+			if err != nil {
+				fmt.Printf("Failed to remove log file %s: %v", logFile, err)
+			}
+		}
+	}
+}
+
+// trimLogFile trim logs file of application by size (100 MB)
+func trimLogFile(logFile string) error {
+	file, err := os.Open(logFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	if info.Size() <= MaxLogSize {
+		return nil
+	}
+
+	start := info.Size() - MaxLogSize
+	if _, err := file.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+
+	tempPath := logFile + ".tmp"
+	tempFile, err := os.Create(tempPath)
+	if err != nil {
+		return err
+	}
+	defer tempFile.Close()
+
+	_, err = io.Copy(tempFile, file)
+	if err != nil {
+		return err
+	}
+
+	return os.Rename(tempPath, logFile)
 }

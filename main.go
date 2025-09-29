@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/gophel/cmd"
+	"github.com/abdorrahmani/gophel/internal/logs"
 	"github.com/abdorrahmani/gophel/internal/monitor"
 	"github.com/spf13/cobra"
 )
@@ -69,6 +70,34 @@ func main() {
 		Use:   "monitor",
 		Short: "Start the WebSocket monitoring service",
 		Run: func(cobraCmd *cobra.Command, args []string) {
+
+			go func() {
+				for {
+					select {
+					case <-done:
+						return
+					default:
+						logs.RemovePreviousLogs()
+						logs.RemoveGophelLogs()
+						time.Sleep(1 * time.Minute) // each minute
+					}
+				}
+			}()
+
+			// For delete each 15 minute fil logs
+			go func() {
+				tricker := time.NewTicker(15 * time.Minute)
+				defer tricker.Stop()
+				for {
+					select {
+					case <-done:
+						return
+					case <-tricker.C:
+						logs.RemovePreviousLogs()
+					}
+				}
+			}()
+
 			// Start WebSocket monitoring
 			go func() {
 				for {
