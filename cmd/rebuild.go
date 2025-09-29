@@ -75,13 +75,23 @@ func rebuildApp(id string) error {
 	}
 
 	outputPath := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", id))
-	cmd := exec.Command("go", "build", "-o", outputPath)
-	cmd.Dir = appInfo.Directory
+	projectRoot := app.Manager.(*app.AppManager).Apps[id].Directory
+
+	mainFile, err := FindMainFile(projectRoot)
+	if err != nil {
+		return fmt.Errorf("failed to find main file: %v", err)
+	}
+
+	realPath, _ := filepath.Rel(projectRoot, mainFile)
+
+	cmd := exec.Command("go", "build", "-o", outputPath, realPath)
+	cmd.Dir = projectRoot
+
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
-			if app, exists := appManager.Apps[id]; exists {
-				app.BuildStatus = "failed"
-				app.UpdatedAt = time.Now()
+			if info, exists := appManager.Apps[id]; exists {
+				info.BuildStatus = "failed"
+				info.UpdatedAt = time.Now()
 				appManager.SaveState()
 			}
 		}
