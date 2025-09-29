@@ -12,21 +12,19 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/abdorrahmani/gophel/internal/logs"
 	"github.com/abdorrahmani/gophel/internal/server"
 	"github.com/gorilla/websocket"
 )
 
-// Constants for configuration
 const (
 	pingInterval         = 15 * time.Second
 	metricsInterval      = 2 * time.Second
 	reconnectDelay       = 5 * time.Second
 	maxReconnectAttempts = 3
 	wsURL                = "wss://gophel.anophel.com/api/v1/gophel/ws"
-	readTimeout          = 120 * time.Second
 	writeTimeout         = 10 * time.Second
 	handshakeTimeout     = 45 * time.Second
-	operationTimeout     = 90 * time.Second
 	pongWait             = 60 * time.Second
 )
 
@@ -52,13 +50,14 @@ type MetricsCollector interface {
 	CollectAppMetrics() []AppMetrics
 	CollectAppDetails() []AppDetails
 	CollectServerMetrics() (*server.ServerMetrics, error)
+	CollectAppLogs() ([]logs.AppLogs, error)
 }
 
 type CommandExecutor interface {
 	Execute(cmd Command) error
 }
 
-// Core types
+// CommandPayload Core types
 type CommandPayload struct {
 	Type    string `json:"type"`
 	AppName string `json:"appName"`
@@ -195,6 +194,10 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 
 func (c *appMetricsCollector) CollectServerMetrics() (*server.ServerMetrics, error) {
 	return server.CollectMetrics()
+}
+
+func (c *appMetricsCollector) CollectAppLogs() ([]logs.AppLogs, error) {
+	return logs.CollectAppLogs()
 }
 
 // Command executor implementation
@@ -460,6 +463,7 @@ func (m *monitorService) sendMetrics() {
 			m.sendServerMetrics()
 			m.sendAppMetrics()
 			m.sendAppDetails()
+			m.sendAppLogs()
 			m.mu.Unlock()
 
 			// Reset write deadline after sending metrics
@@ -589,6 +593,7 @@ func (m *monitorService) handleCommands() {
 					m.sendServerMetrics()
 					m.sendAppMetrics()
 					m.sendAppDetails()
+					m.sendAppLogs()
 					m.mu.Unlock()
 				}()
 
@@ -596,7 +601,7 @@ func (m *monitorService) handleCommands() {
 				// Handle pong message
 				log.Printf("Received pong response")
 
-			case "apps", "metrics", "servers", "server_metrics":
+			case "apps", "metrics", "servers", "server_metrics", "app_logs":
 				// These are data request commands, no payload required
 				// They are handled by the metrics collector
 				continue
@@ -680,6 +685,24 @@ func (m *monitorService) reconnect() {
 
 	log.Printf("Failed to reconnect after %d attempts", maxReconnectAttempts)
 	m.reconnectAttempts++
+}
+
+func (m *monitorService) sendAppLogs() {
+	entries, err := m.metricsCollector.CollectAppLogs()
+	if err != nil {
+		log.Printf("Error collecting app logs: %v", err)
+		return
+	}
+	for _, entry := range entries {
+		message := map[string]any{
+			"type":    "app_logs",
+			"payload": entry,
+		}
+		if err := m.connector.WriteJSON(message); err != nil {
+			log.Printf("Error sending app log: %v", err)
+			return
+		}
+	}
 }
 
 func (m *monitorService) sendServerMetrics() {
