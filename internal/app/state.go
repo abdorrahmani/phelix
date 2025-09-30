@@ -1,0 +1,180 @@
+package app
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+)
+
+var (
+	stateFile string
+	logDir    string
+)
+
+func init() {
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		homeDir = os.Getenv("USERPROFILE") // For Windows
+	}
+	stateFile = filepath.Join(homeDir, ".gophel", "apps.json")
+	logDir = filepath.Join(homeDir, ".gophel", "logs")
+
+	// Ensure directories exist
+	if err := ensureDirectories(); err != nil {
+		fmt.Printf("Warning: Failed to create required directories: %v\n", err)
+	}
+}
+
+func ensureDirectories() error {
+	// Create .gophel directory
+	gophelDir := filepath.Dir(stateFile)
+	if err := os.MkdirAll(gophelDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .gophel directory: %w", err)
+	}
+
+	// Create logs directory
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create logs directory: %w", err)
+	}
+
+	// Initialize state file if it doesn't exist
+	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
+		if err := os.WriteFile(stateFile, []byte("{}"), 0644); err != nil {
+			return fmt.Errorf("failed to initialize state file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// SaveState saves the current state to disk
+func (m *AppManager) SaveState() error {
+	type SavedApp struct {
+		ID          string    `json:"id"`
+		Name        string    `json:"name"`
+		PID         int       `json:"pid"`
+		Status      string    `json:"status"`
+		Start       time.Time `json:"start"`
+		Port        int       `json:"port"`
+		LogFile     string    `json:"log_file"`
+		BuildStatus string    `json:"build_status"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Directory   string    `json:"directory"`
+	}
+
+	savedApps := make(map[string]SavedApp)
+	for id, app := range m.Apps {
+		savedApps[id] = SavedApp{
+			ID:          id,
+			Name:        app.Name,
+			PID:         app.PID,
+			Status:      app.Status,
+			Start:       app.Start,
+			Port:        app.Port,
+			LogFile:     app.LogFile,
+			BuildStatus: app.BuildStatus,
+			CreatedAt:   app.CreatedAt,
+			UpdatedAt:   app.UpdatedAt,
+			Directory:   app.Directory,
+		}
+	}
+
+	data, err := json.MarshalIndent(savedApps, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpFile := stateFile + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, stateFile)
+}
+
+// LoadState loads the state from disk
+func (m *AppManager) LoadState() error {
+	data, err := os.ReadFile(stateFile)
+	if os.IsNotExist(err) {
+		// If file doesn't exist, create it with empty state
+		if err := os.MkdirAll(filepath.Dir(stateFile), 0755); err != nil {
+			return err
+		}
+		return os.WriteFile(stateFile, []byte("{}"), 0644)
+	} else if err != nil {
+		return err
+	}
+
+	type SavedApp struct {
+		ID          string    `json:"id"`
+		Name        string    `json:"name"`
+		PID         int       `json:"pid"`
+		Status      string    `json:"status"`
+		Start       time.Time `json:"start"`
+		Port        int       `json:"port"`
+		LogFile     string    `json:"log_file"`
+		BuildStatus string    `json:"build_status"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Directory   string    `json:"directory"`
+	}
+
+	var savedApps map[string]SavedApp
+	if err := json.Unmarshal(data, &savedApps); err != nil {
+		return err
+	}
+
+	// Find the highest ID to set NextID
+	maxID := uint(0)
+	for id := range savedApps {
+		if idNum, err := strconv.ParseUint(id, 10, 64); err == nil {
+			if uint(idNum) > maxID {
+				maxID = uint(idNum)
+			}
+		}
+	}
+	m.NextID = maxID + 1
+
+	// Clear existing apps and load from saved state
+	m.Apps = make(map[string]*AppInfo)
+	for id, saved := range savedApps {
+		// Check if process is still running
+		isRunning := m.isProcessRunning(saved.PID)
+
+		// Create app info with appropriate status
+		appInfo := &AppInfo{
+			ID:          id,
+			Name:        saved.Name,
+			PID:         saved.PID,
+			Status:      saved.Status,
+			Start:       saved.Start,
+			Port:        saved.Port,
+			LogFile:     saved.LogFile,
+			BuildStatus: saved.BuildStatus,
+			CreatedAt:   saved.CreatedAt,
+			UpdatedAt:   saved.UpdatedAt,
+			Directory:   saved.Directory,
+			Cmd:         nil,
+		}
+
+		// Update status based on process state
+		if isRunning {
+			appInfo.Status = "running"
+		} else if saved.Status == "running" {
+			appInfo.Status = "stopped"
+		}
+
+		// Only update timestamp if status changed
+		if appInfo.Status != saved.Status {
+			appInfo.UpdatedAt = time.Now()
+		}
+
+		m.Apps[id] = appInfo
+	}
+
+	// Save the updated state
+	return m.SaveState()
+}
