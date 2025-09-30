@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// calculateUptime calculates the uptime of an application
 func (m *AppManager) calculateUptime(app *AppInfo) string {
 	if app.Status != "running" {
 		return "N/A"
@@ -15,6 +16,7 @@ func (m *AppManager) calculateUptime(app *AppInfo) string {
 	return FormatDuration(duration)
 }
 
+// verifyApplicationBinary checks if the application binary exists
 func (m *AppManager) verifyApplicationBinary(id string) bool {
 	binaryPath := fmt.Sprintf("./app_%s", id)
 	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {

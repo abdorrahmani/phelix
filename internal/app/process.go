@@ -41,10 +41,7 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 	return false
 }
 
-func (m *AppManager) ensureLogDirectory() error {
-	return os.MkdirAll(logDir, 0755)
-}
-
+// startApplicationProcess starts the application process and updates the app info
 func (m *AppManager) startApplicationProcess(id string, name string, port int, logFile string) error {
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -83,6 +80,7 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	return nil
 }
 
+// stopApplicationProcess stops the application process gracefully, falling back to force kill if necessary
 func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 	if app.Cmd != nil && app.Cmd.Process != nil {
 		if stdin, _ := app.Cmd.StdinPipe(); stdin != nil {
@@ -133,6 +131,7 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 	return nil
 }
 
+// getProcessMetrics retrieves RAM and CPU usage for the given process PID
 func (m *AppManager) getProcessMetrics(pid int) (uint64, float64, error) {
 	p, err := process.NewProcess(int32(pid))
 	if err != nil {
@@ -186,4 +185,9 @@ func (m *AppManager) isProcessRunning(pid int) bool {
 	}
 
 	return false
+}
+
+// ensureLogDirectory ensures the log directory exists
+func (m *AppManager) ensureLogDirectory() error {
+	return os.MkdirAll(logDir, 0755)
 }

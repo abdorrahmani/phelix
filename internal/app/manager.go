@@ -15,6 +15,7 @@ type AppManager struct {
 	NextID uint
 }
 
+// Manager is the global instance of AppManager that implements AppManagerInterface
 var Manager AppManagerInterface = &AppManager{
 	Apps:   make(map[string]*AppInfo),
 	NextID: 1,

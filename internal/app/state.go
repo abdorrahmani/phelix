@@ -14,6 +14,8 @@ var (
 	logDir    string
 )
 
+// init initializes the package by setting up state file and log directory paths
+// and ensuring required directories exist.
 func init() {
 	homeDir := os.Getenv("HOME")
 	if homeDir == "" {
@@ -28,6 +30,7 @@ func init() {
 	}
 }
 
+// ensureDirectories creates the necessary directories and initializes the state file if it doesn't exist.
 func ensureDirectories() error {
 	// Create .gophel directory
 	gophelDir := filepath.Dir(stateFile)
