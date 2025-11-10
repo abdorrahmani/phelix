@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/abdorrahmani/gophel/cmd/auth"
 	"github.com/abdorrahmani/gophel/internal/app"
 	"github.com/spf13/cobra"
 )
@@ -60,7 +61,7 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 
-		if err := sendAppsToServer(); err != nil {
+		if err := auth.SendAppsToServer(); err != nil {
 			log.Printf("Error sending apps to server: %v", err)
 			fmt.Printf("Warning: Failed to send app information to server: %v\n", err)
 		}
