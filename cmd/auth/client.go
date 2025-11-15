@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/abdorrahmani/gophel/config"
 )
 
 // authenticate performs login with the given credentials.
 func authenticate(username, apiKey string) error {
-	req, err := http.NewRequest("POST", "https://gophel.anophel.com/api/v1/gophel/auth", nil)
+	cfg := config.Get()
+	req, err := http.NewRequest("POST", cfg.App.API+"/gophel/auth", nil)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
@@ -41,7 +44,8 @@ func authenticate(username, apiKey string) error {
 
 // VerifySession checks if the session is still valid.
 func VerifySession(session *Session) error {
-	req, err := http.NewRequest("GET", "https://gophel.anophel.com/api/v1/gophel/auth/status", nil)
+	cfg := config.Get()
+	req, err := http.NewRequest("GET", cfg.App.API+"gophel/auth/status", nil)
 	if err != nil {
 		return err
 	}
@@ -64,7 +68,8 @@ func VerifySession(session *Session) error {
 
 // performLogout invalidates the current session on the server.
 func performLogout(session *Session) error {
-	req, err := http.NewRequest("POST", "https://gophel.anophel.com/api/v1/gophel/auth/logout", nil)
+	cfg := config.Get()
+	req, err := http.NewRequest("POST", cfg.App.API+"/gophel/auth/logout", nil)
 	if err != nil {
 		return err
 	}

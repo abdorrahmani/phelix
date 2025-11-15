@@ -7,7 +7,6 @@ const (
 	metricsInterval      = 2 * time.Second
 	reconnectDelay       = 5 * time.Second
 	maxReconnectAttempts = 3
-	wsURL                = "wss://gophel.anophel.com/api/v1/gophel/ws"
 	writeTimeout         = 10 * time.Second
 	handshakeTimeout     = 45 * time.Second
 	pongWait             = 60 * time.Second

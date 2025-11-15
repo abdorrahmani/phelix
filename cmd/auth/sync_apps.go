@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/abdorrahmani/gophel/config"
 	"github.com/abdorrahmani/gophel/internal/app"
 )
 
 // SendAppsToServer uploads the list of running apps to the Gophel server.
 func SendAppsToServer() error {
+	cfg := config.Get()
 	session, err := GetValidSession()
 	if err != nil {
 		return fmt.Errorf("authentication required. Please run 'gophel auth login'")
@@ -38,7 +40,7 @@ func SendAppsToServer() error {
 	}
 
 	body, _ := json.Marshal(map[string]any{"apps": appDetails})
-	req, err := http.NewRequest("POST", "https://gophel.anophel.com/api/v1/gophel/apps", bytes.NewBuffer(body))
+	req, err := http.NewRequest("POST", cfg.App.API+"/gophel/apps", bytes.NewBuffer(body))
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}

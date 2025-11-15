@@ -12,6 +12,7 @@ import (
 
 	"github.com/abdorrahmani/gophel/cmd"
 	"github.com/abdorrahmani/gophel/cmd/auth"
+	"github.com/abdorrahmani/gophel/config"
 	"github.com/abdorrahmani/gophel/internal/logs"
 	"github.com/abdorrahmani/gophel/internal/monitor"
 	"github.com/spf13/cobra"
@@ -24,6 +25,10 @@ var (
 )
 
 func main() {
+	err := config.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Check if running in monitor mode
 	isMonitorMode = len(os.Args) > 1 && os.Args[1] == "monitor"
 

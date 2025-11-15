@@ -1,0 +1,4 @@
+app:
+  mode: "dev" #production
+  api: "http://localhost/api/v1" # https://gophel.anophel.com/api/v1
+  wssUrl : "wss://localhost/api/v1" # "wss://gophel.anophel.com/api/v1"
