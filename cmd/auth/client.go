@@ -12,7 +12,7 @@ import (
 // authenticate performs login with the given credentials.
 func authenticate(username, apiKey string) error {
 	cfg := config.Get()
-	req, err := http.NewRequest("POST", cfg.App.API+"/gophel/auth", nil)
+	req, err := http.NewRequest("POST", cfg.App.API+"/auth/auth", nil)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
@@ -45,7 +45,7 @@ func authenticate(username, apiKey string) error {
 // VerifySession checks if the session is still valid.
 func VerifySession(session *Session) error {
 	cfg := config.Get()
-	req, err := http.NewRequest("GET", cfg.App.API+"gophel/auth/status", nil)
+	req, err := http.NewRequest("GET", cfg.App.API+"/auth/gophel/status", nil)
 	if err != nil {
 		return err
 	}
@@ -69,7 +69,7 @@ func VerifySession(session *Session) error {
 // performLogout invalidates the current session on the server.
 func performLogout(session *Session) error {
 	cfg := config.Get()
-	req, err := http.NewRequest("POST", cfg.App.API+"/gophel/auth/logout", nil)
+	req, err := http.NewRequest("POST", cfg.App.API+"/auth/gophel/logout", nil)
 	if err != nil {
 		return err
 	}
