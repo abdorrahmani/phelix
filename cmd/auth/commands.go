@@ -9,16 +9,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	username string
+	apiKey   string
+)
+
 // LoginCmd handles the "gophel auth" login command.
 var LoginCmd = &cobra.Command{
-	Use:   "login",
+	Use:   "login --username <username> --apikey <apikey>",
 	Short: "Authenticate user with Gophel",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var username, apiKey string
-		fmt.Print("Enter username: ")
-		fmt.Scanln(&username)
-		fmt.Print("Enter API Key: ")
-		fmt.Scanln(&apiKey)
+		if username == "" && apiKey == "" {
+			fmt.Print("Enter username: ")
+			fmt.Scanln(&username)
+			fmt.Print("Enter API Key: ")
+			fmt.Scanln(&apiKey)
+		}
 
 		if err := authenticate(username, apiKey); err != nil {
 			log.Printf("Authentication failed: %v", err)
@@ -28,6 +34,11 @@ var LoginCmd = &cobra.Command{
 		printWelcome(username)
 		return nil
 	},
+}
+
+func init() {
+	LoginCmd.Flags().StringVarP(&username, "username", "u", "", "Username to login")
+	LoginCmd.Flags().StringVarP(&apiKey, "apiKey", "k", "", "api key to login")
 }
 
 // StatusCmd prints session status.
