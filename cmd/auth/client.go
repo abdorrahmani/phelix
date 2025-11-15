@@ -12,7 +12,7 @@ import (
 // authenticate performs login with the given credentials.
 func authenticate(username, apiKey string) error {
 	cfg := config.Get()
-	req, err := http.NewRequest("POST", cfg.App.API+"/auth/auth", nil)
+	req, err := http.NewRequest("POST", cfg.App.API+"/auth/gophel", nil)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
