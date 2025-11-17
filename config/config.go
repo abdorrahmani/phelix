@@ -1,11 +1,16 @@
 package config
 
 import (
+	"bytes"
+	_ "embed"
 	"fmt"
 	"sync"
 
 	"github.com/spf13/viper"
 )
+
+//go:embed config.yml
+var embeddedConfig []byte
 
 type Config struct {
 	App AppConfig
@@ -26,12 +31,12 @@ func Load() error {
 	var err error
 
 	once.Do(func() {
-		viper.SetConfigName("config")
-		viper.SetConfigType("yaml")
-		viper.AddConfigPath(".")
+		viper.SetConfigType("yml")
 
-		if readErr := viper.ReadInConfig(); readErr != nil {
-			err = readErr
+		if readErr := viper.ReadConfig(
+			bytes.NewBuffer(embeddedConfig),
+		); readErr != nil {
+			err = fmt.Errorf("unable to read embedded config: %v", readErr)
 			return
 		}
 
