@@ -55,7 +55,7 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 	return apps
 }
 
-func (c *appMetricsCollector) CollectServerMetrics() (*server.ServerMetrics, error) {
+func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 	return server.CollectMetrics()
 }
 

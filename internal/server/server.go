@@ -1,7 +1,10 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,45 +12,15 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/gophel/internal/network"
-	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
 	"github.com/shirou/gopsutil/host"
 	"github.com/shirou/gopsutil/mem"
 )
 
-// ServerInfo represents the server's basic information
-type ServerInfo struct {
-	ID            string    `json:"id"`
-	Hostname      string    `json:"hostname"`
-	IPv4          string    `json:"ip_v4"`
-	IPv6          string    `json:"ip_v6"`
-	OSType        string    `json:"os_type"`
-	OSFull        string    `json:"os_full"`
-	CPUInfo       string    `json:"cpu_info"`
-	TotalMemory   int64     `json:"total_memory"`
-	TotalCPUCores int       `json:"total_cpu_cores"`
-	TotalStorage  int64     `json:"total_storage"`
-	Uptime        string    `json:"uptime"`
-	LastReboot    time.Time `json:"last_reboot"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-}
-
-// ServerMetrics represents the server's current metrics
-type ServerMetrics struct {
-	ServerID        string    `json:"server_id"`
-	UsedMemory      uint64    `json:"used_memory"`
-	FreeMemory      uint64    `json:"free_memory"`
-	CPUUsagePercent float64   `json:"cpu_usage_percent"`
-	UsedStorage     uint64    `json:"used_storage"`
-	FreeStorage     uint64    `json:"free_storage"`
-	Timestamp       time.Time `json:"timestamp"`
-}
-
 var (
 	serverID     string
-	serverInfo   *ServerInfo
+	serverInfo   *Info
 	serverIDFile string
 )
 
@@ -132,7 +105,7 @@ func Initialize() error {
 		status = "critical"
 	}
 
-	serverInfo = &ServerInfo{
+	serverInfo = &Info{
 		ID:            serverID,
 		Hostname:      hostname,
 		IPv4:          ipv4,
@@ -152,8 +125,66 @@ func Initialize() error {
 	return nil
 }
 
+// generateServerID generates a new server ID base on host name and mac address
+func generateServerID() (string, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "", fmt.Errorf("connot get hostname: %w", err)
+	}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("connot get network interfaces: %w", err)
+	}
+
+	var macAddr string
+	for _, iface := range interfaces {
+		if len(iface.HardwareAddr) == 0 {
+			continue
+		}
+		macAddr = iface.HardwareAddr.String()
+		break
+	}
+	if macAddr == "" {
+		return "", fmt.Errorf("connot get MAC address")
+	}
+
+	combined := hostname + macAddr
+	hash := sha256.Sum256([]byte(combined))
+	return hex.EncodeToString(hash[:]), nil
+}
+
+// loadOrGenerateServerID loads the server ID from file or generates a new one
+func loadOrGenerateServerID() error {
+	// Create .gophel directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(serverIDFile), 0755); err != nil {
+		return fmt.Errorf("failed to create .gophel directory: %w", err)
+	}
+
+	// Try to read existing server ID
+	data, err := os.ReadFile(serverIDFile)
+	if err == nil {
+		serverID = string(data)
+		return nil
+	}
+
+	// If file doesn't exist or can't be read, generate new ID
+	if os.IsNotExist(err) {
+		serverID, err = generateServerID()
+		if err != nil {
+			return err
+		}
+
+		if err := os.WriteFile(serverIDFile, []byte(serverID), 0600); err != nil {
+			return fmt.Errorf("failed to save server ID: %w", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("failed to read server ID file: %w", err)
+}
+
 // GetServerInfo returns the server information
-func GetServerInfo() *ServerInfo {
+func GetServerInfo() *Info {
 	return serverInfo
 }
 
@@ -163,7 +194,7 @@ func GetServerID() string {
 }
 
 // CollectMetrics collects current server metrics
-func CollectMetrics() (*ServerMetrics, error) {
+func CollectMetrics() (*Metrics, error) {
 	// Get memory info
 	memInfo, err := mem.VirtualMemory()
 	if err != nil {
@@ -194,7 +225,7 @@ func CollectMetrics() (*ServerMetrics, error) {
 		serverInfo.Status = status
 	}
 
-	return &ServerMetrics{
+	return &Metrics{
 		ServerID:        serverID,
 		UsedMemory:      memInfo.Used,
 		FreeMemory:      memInfo.Free,
@@ -203,31 +234,4 @@ func CollectMetrics() (*ServerMetrics, error) {
 		FreeStorage:     diskInfo.Free,
 		Timestamp:       time.Now(),
 	}, nil
-}
-
-// loadOrGenerateServerID loads the server ID from file or generates a new one
-func loadOrGenerateServerID() error {
-	// Create .gophel directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(serverIDFile), 0755); err != nil {
-		return fmt.Errorf("failed to create .gophel directory: %w", err)
-	}
-
-	// Try to read existing server ID
-	data, err := os.ReadFile(serverIDFile)
-	if err == nil {
-		serverID = string(data)
-		return nil
-	}
-
-	// If file doesn't exist or can't be read, generate new ID
-	if os.IsNotExist(err) {
-		serverID = uuid.New().String()
-		// Save the new ID
-		if err := os.WriteFile(serverIDFile, []byte(serverID), 0600); err != nil {
-			return fmt.Errorf("failed to save server ID: %w", err)
-		}
-		return nil
-	}
-
-	return fmt.Errorf("failed to read server ID file: %w", err)
 }

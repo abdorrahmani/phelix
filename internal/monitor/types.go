@@ -7,7 +7,7 @@ import (
 	"github.com/abdorrahmani/gophel/internal/server"
 )
 
-// Interfaces following Interface Segregation Principle
+// MonitorService Interfaces following Interface Segregation Principle
 type MonitorService interface {
 	StartMonitoring() error
 	StopMonitoring() error
@@ -28,7 +28,7 @@ type WebSocketConnector interface {
 type MetricsCollector interface {
 	CollectAppMetrics() []AppMetrics
 	CollectAppDetails() []AppDetails
-	CollectServerMetrics() (*server.ServerMetrics, error)
+	CollectServerMetrics() (*server.Metrics, error)
 	CollectAppLogs() ([]logs.AppLogs, error)
 }
 
