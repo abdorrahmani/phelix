@@ -11,17 +11,17 @@ import (
 )
 
 var StatusCmd = &cobra.Command{
-	Use:   "status <ID>",
-	Short: "Displays the status of a specific application by its ID",
+	Use:   "status <ID|AppName>",
+	Short: "Displays the status of a specific application by its ID or AppName",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
+		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
 			return fmt.Errorf("failed to load state: %v", err)
 		}
 
-		status, err := app.Manager.StatusApplication(id)
+		status, err := app.Manager.StatusApplication(identifier)
 		if err != nil {
 			return fmt.Errorf("error getting status: %v", err)
 		}

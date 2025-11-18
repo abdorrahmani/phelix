@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -146,8 +145,8 @@ func (m *AppManager) ListApplications() []AppListItem {
 	return appList
 }
 
-// StatusApplication returns the status of an application
-func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
+// StatusApplication returns the status of an application by its ID or AppName
+func (m *AppManager) StatusApplication(identifier string) (AppStatus, error) {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
@@ -155,9 +154,19 @@ func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 		return AppStatus{}, fmt.Errorf("failed to load state: %v", err)
 	}
 
-	app, exists := m.Apps[id]
+	app, exists := m.Apps[identifier]
 	if !exists {
-		return AppStatus{}, errors.New("application not found")
+		for id, a := range m.Apps {
+			if a.Name == identifier {
+				app = a
+				identifier = id
+				exists = true
+				break
+			}
+		}
+	}
+	if !exists {
+		return AppStatus{}, fmt.Errorf("application not found with ID or Name: %s", identifier)
 	}
 
 	// Verify process status
@@ -166,7 +175,7 @@ func (m *AppManager) StatusApplication(id string) (AppStatus, error) {
 	}
 
 	status := AppStatus{
-		ID:          id,
+		ID:          identifier,
 		Name:        app.Name,
 		Status:      app.Status,
 		PID:         app.PID,
