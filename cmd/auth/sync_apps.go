@@ -18,7 +18,7 @@ func SendAppsToServer() error {
 	cfg := config.Get()
 	session, err := GetValidSession()
 	if err != nil {
-		return fmt.Errorf("authentication required. Please run 'gophel auth login'")
+		return fmt.Errorf("⚠ authentication required. Please run 'gophel auth login'")
 	}
 
 	appList := app.Manager.ListApplications()
@@ -42,7 +42,7 @@ func SendAppsToServer() error {
 	body, _ := json.Marshal(map[string]any{"apps": appDetails})
 	req, err := http.NewRequest("POST", cfg.App.API+"/gophel/apps", bytes.NewBuffer(body))
 	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
+		return fmt.Errorf("⚠ error creating request: %w", err)
 	}
 
 	req.Header.Set("X-Session-ID", session.SessionID)
@@ -51,13 +51,13 @@ func SendAppsToServer() error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("error sending request: %w", err)
+		return fmt.Errorf("⚠ error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(data))
+		return fmt.Errorf("⚠ server returned %d: %s", resp.StatusCode, string(data))
 	}
 
 	log.Printf("[Monitor] Successfully sent apps to server")

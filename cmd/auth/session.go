@@ -34,7 +34,7 @@ func readSession() (*Session, error) {
 func storeSession(sessionID, token string) error {
 	sessionDir := filepath.Join(os.Getenv("HOME"), ".gophel")
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
-		return fmt.Errorf("error creating session directory %s: %w", sessionDir, err)
+		return fmt.Errorf("⚠ error creating session directory %s: %w", sessionDir, err)
 	}
 
 	session := Session{
@@ -45,7 +45,7 @@ func storeSession(sessionID, token string) error {
 
 	data, err := json.Marshal(session)
 	if err != nil {
-		return fmt.Errorf("error serializing session: %w", err)
+		return fmt.Errorf("⚠ error serializing session: %w", err)
 	}
 
 	return os.WriteFile(getSessionFilePath(), data, 0600)
@@ -60,11 +60,11 @@ func removeSession() error {
 func GetValidSession() (*Session, error) {
 	session, err := readSession()
 	if err != nil {
-		return nil, fmt.Errorf("no active session found. Please run 'gophel auth' first")
+		return nil, fmt.Errorf("⚠ no active session found. Please run 'gophel auth' first")
 	}
 
 	if time.Now().After(session.ExpiresAt) {
-		return nil, fmt.Errorf("session has expired. Please re-authenticate")
+		return nil, fmt.Errorf("⚠ session has expired. Please re-authenticate")
 	}
 	return session, nil
 }

@@ -27,7 +27,7 @@ var LoginCmd = &cobra.Command{
 		}
 
 		if err := authenticate(username, apiKey); err != nil {
-			log.Printf("Authentication failed: %v", err)
+			log.Printf("⚠ Authentication failed: %v", err)
 			return err
 		}
 
@@ -52,7 +52,7 @@ var StatusCmd = &cobra.Command{
 		}
 
 		if err := VerifySession(session); err != nil {
-			return fmt.Errorf("session invalid: %w", err)
+			return fmt.Errorf("⚠ session invalid: %w", err)
 		}
 
 		printSession(session)
@@ -77,7 +77,7 @@ var LogoutCmd = &cobra.Command{
 		if err := removeSession(); err != nil {
 			return err
 		}
-		fmt.Println("Successfully logged out.")
+		fmt.Println("✓ Successfully logged out.")
 		return nil
 	},
 }
@@ -88,12 +88,12 @@ func printWelcome(username string) {
 	fmt.Printf("\nHi %s, welcome to Gophel!\n", bold(username))
 	fmt.Printf("You can monitor your apps at %s\n", green("gophel.anophel.com"))
 	fmt.Printf("%s\n\n", green("Authentication successful!"))
-	log.Printf("Authentication successful for %s", username)
+	log.Printf("✓ Authentication successful for %s", username)
 }
 
 func printSession(session *Session) {
 	green := color.New(color.FgGreen).SprintFunc()
-	fmt.Printf("Authenticated as: %s\n", green(session.SessionID))
-	fmt.Printf("Token: %s\n", session.Token)
-	fmt.Printf("Expires at: %s\n", session.ExpiresAt.Format(time.RFC1123))
+	fmt.Printf("• Authenticated as: %s\n", green(session.SessionID))
+	fmt.Printf("• Token: %s\n", session.Token)
+	fmt.Printf("• Expires at: %s\n", session.ExpiresAt.Format(time.RFC1123))
 }

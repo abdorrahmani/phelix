@@ -39,7 +39,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load state: %w", err)
+			return fmt.Errorf("  ⚠ Failed to load state: %w", err)
 		}
 
 		if err := validateUniqueName(name); err != nil {
@@ -47,7 +47,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		id := app.Manager.GenerateAppID()
-		fmt.Printf("Building application '%s', ID: %s\n", name, id)
+		fmt.Printf("• Building application '%s', ID: %s\n", name, id)
 
 		if err := createAppEntry(id, name); err != nil {
 			return err
@@ -62,11 +62,11 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if err := auth.SendAppsToServer(); err != nil {
-			log.Printf("Error sending apps to server: %v", err)
-			fmt.Printf("Warning: Failed to send app information to server: %v\n", err)
+			log.Printf("⚠ Error sending apps to server: %v", err)
+			fmt.Printf("⚠ Warning: Failed to send app information to server: %v\n", err)
 		}
 
-		fmt.Printf("Application '%s' (ID: %s) started successfully on port %d\n", name, id, buildPort)
+		fmt.Printf("✓ Application '%s' (ID: %s) started successfully on port %d\n", name, id, buildPort)
 		return nil
 	},
 }
@@ -78,12 +78,12 @@ func init() {
 func validateSession() error {
 	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
 	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
-		return fmt.Errorf("authentication required. Please run 'gophel auth' first")
+		return fmt.Errorf("⚠ Authentication required. Please run 'gophel auth' first")
 	}
 
 	data, err := os.ReadFile(sessionFile)
 	if err != nil {
-		return fmt.Errorf("error reading session file: %w", err)
+		return fmt.Errorf(" ⚠ error reading session file: %w", err)
 	}
 
 	var session struct {
@@ -93,11 +93,11 @@ func validateSession() error {
 	}
 
 	if err := json.Unmarshal(data, &session); err != nil {
-		return fmt.Errorf("error parsing session file: %w", err)
+		return fmt.Errorf("⚠ error parsing session file: %w", err)
 	}
 
 	if time.Now().After(session.ExpiresAt) {
-		return fmt.Errorf("session expired. Please run 'gophel auth' again")
+		return fmt.Errorf("⚠ session expired. Please run 'gophel auth' again")
 	}
 
 	return nil
@@ -105,7 +105,7 @@ func validateSession() error {
 
 func validateName(name string) error {
 	if name == "" {
-		return fmt.Errorf("application name cannot be empty")
+		return fmt.Errorf("⚠ application name cannot be empty")
 	}
 	return nil
 }
@@ -113,7 +113,7 @@ func validateName(name string) error {
 func validateUniqueName(name string) error {
 	for _, app := range app.Manager.(*app.AppManager).Apps {
 		if app.Name == name {
-			return fmt.Errorf("application name '%s' is already in use", name)
+			return fmt.Errorf("⚠ application name '%s' is already in use", name)
 		}
 	}
 	return nil
@@ -124,7 +124,7 @@ func createAppEntry(id, name string) error {
 		now := time.Now()
 		currentDir, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("failed to get current directory: %v", err)
+			return fmt.Errorf("⚠ failed to get current directory: %v", err)
 		}
 		appManager.Apps[id] = &app.AppInfo{
 			ID:          id,
@@ -137,7 +137,7 @@ func createAppEntry(id, name string) error {
 		}
 		return appManager.SaveState()
 	}
-	return fmt.Errorf("invalid app manager type")
+	return fmt.Errorf("⚠ invalid app manager type")
 }
 
 func FindMainFile(root string) (string, error) {
@@ -156,7 +156,7 @@ func FindMainFile(root string) (string, error) {
 		return "", fmt.Errorf("error walking directory: %w", err)
 	}
 	if mainFile == "" {
-		return "", fmt.Errorf("no main.go file found in the directory")
+		return "", fmt.Errorf("⚠ no main.go file found in the directory")
 	}
 	return mainFile, nil
 }
@@ -167,7 +167,7 @@ func buildApplication(id string) error {
 
 	mainFile, err := FindMainFile(projectRoot)
 	if err != nil {
-		return fmt.Errorf("build failed: %v", err)
+		return fmt.Errorf("⚠ build failed: %v", err)
 	}
 
 	realPath, _ := filepath.Rel(projectRoot, mainFile)
@@ -183,7 +183,7 @@ func buildApplication(id string) error {
 				appManager.SaveState()
 			}
 		}
-		return fmt.Errorf("build failed: %v\nOutput: %s", err, string(output))
+		return fmt.Errorf("⚠ build failed: %v\nOutput: %s", err, string(output))
 	}
 
 	if appManager, ok := app.Manager.(*app.AppManager); ok {
@@ -198,7 +198,7 @@ func buildApplication(id string) error {
 
 func startApplication(id, name string) error {
 	if err := app.Manager.StartApplication(id, buildPort, name); err != nil {
-		return fmt.Errorf("failed to start application: %w", err)
+		return fmt.Errorf("⚠ failed to start application: %w", err)
 	}
 	return nil
 }

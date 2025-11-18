@@ -14,7 +14,7 @@ func authenticate(username, apiKey string) error {
 	cfg := config.Get()
 	req, err := http.NewRequest("POST", cfg.App.API+"/auth/gophel", nil)
 	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
+		return fmt.Errorf("⚠ error creating request: %w", err)
 	}
 
 	req.Header.Set("X-API-Key", apiKey)
@@ -22,12 +22,12 @@ func authenticate(username, apiKey string) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("error sending request: %w", err)
+		return fmt.Errorf("⚠ error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("invalid credentials: status code %d", resp.StatusCode)
+		return fmt.Errorf("⚠ invalid credentials: status code %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -36,7 +36,7 @@ func authenticate(username, apiKey string) error {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("error decoding response: %w", err)
+		return fmt.Errorf("⚠ error decoding response: %w", err)
 	}
 
 	return storeSession(result.Session, result.Token)
@@ -55,12 +55,12 @@ func VerifySession(session *Session) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("error verifying session: %w", err)
+		return fmt.Errorf("⚠ error verifying session: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("invalid session")
+		return fmt.Errorf("⚠ invalid session")
 	}
 
 	return nil
@@ -78,13 +78,13 @@ func performLogout(session *Session) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("error sending logout request: %w", err)
+		return fmt.Errorf("⚠ error sending logout request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("logout failed: %s", string(body))
+		return fmt.Errorf("⚠ logout failed: %s", string(body))
 	}
 	return nil
 }

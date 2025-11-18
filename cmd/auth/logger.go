@@ -15,7 +15,7 @@ var logFileHandle *os.File
 func setupLogging() {
 	logDir := filepath.Join(os.Getenv("HOME"), ".gophel", "logs")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
-		fmt.Printf("Failed to create log directory: %s\n", logDir)
+		fmt.Printf("⚠ Failed to create log directory: %s\n", logDir)
 		return
 	}
 
@@ -23,7 +23,7 @@ func setupLogging() {
 	var err error
 	logFileHandle, err = os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		fmt.Printf("Failed to open log file: %v\n", err)
+		fmt.Printf("⚠ Failed to open log file: %v\n", err)
 		return
 	}
 
