@@ -13,17 +13,17 @@ import (
 )
 
 var LogCmd = &cobra.Command{
-	Use:   "log <ID>",
-	Short: "Display logs for a specific application by its ID",
+	Use:   "log <ID|AppName>",
+	Short: "Display logs for a specific application by its ID or AppName.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
+		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load app state: %v", err)
+			return fmt.Errorf("⚠ Failed to load app state: %v", err)
 		}
 
-		appInfo, err := GetAppInfo(id)
+		appInfo, err := GetAppInfo(identifier)
 		if err != nil {
 			return err
 		}
@@ -39,7 +39,7 @@ var LogCmd = &cobra.Command{
 func displayLogs(appInfo *app.AppInfo) error {
 	f, err := os.Open(appInfo.LogFile)
 	if err != nil {
-		return fmt.Errorf("failed to open log file %s: %v", appInfo.LogFile, err)
+		return fmt.Errorf("⚠ Failed to open log file %s: %v", appInfo.LogFile, err)
 	}
 	defer f.Close()
 
@@ -63,7 +63,7 @@ func displayLogs(appInfo *app.AppInfo) error {
 func displayHistoricalLogs(f *os.File) error {
 	lastLines, err := getLastNLines(f, 10)
 	if err != nil {
-		return fmt.Errorf("failed to read historical logs: %v", err)
+		return fmt.Errorf("⚠ Failed to read historical logs: %v", err)
 	}
 
 	for _, line := range lastLines {
@@ -71,7 +71,7 @@ func displayHistoricalLogs(f *os.File) error {
 	}
 
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("failed to seek to end of log file: %v", err)
+		return fmt.Errorf("⚠ Failed to seek to end of log file: %v", err)
 	}
 
 	return nil
@@ -91,7 +91,7 @@ func streamNewLogs(f *os.File, sigChan chan os.Signal) error {
 				if err == nil {
 					fmt.Print(line)
 				} else if err != io.EOF {
-					fmt.Printf("Error reading log: %v\n", err)
+					fmt.Printf("⚠ Error reading log: %v\n", err)
 					return
 				}
 				time.Sleep(50 * time.Millisecond)

@@ -8,21 +8,26 @@ import (
 )
 
 var StopCmd = &cobra.Command{
-	Use:   "stop <ID>",
-	Short: "Stop a running application by its ID",
+	Use:   "stop <ID|AppName>",
+	Short: "Stop a running application by its ID or AppName.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
+		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load app state: %v", err)
+			return fmt.Errorf(" ⚠ Failed to load app state: %v", err)
 		}
 
-		if err := app.Manager.StopApplication(id); err != nil {
-			return fmt.Errorf("failed to stop application: %v", err)
+		appInfo, err := GetAppInfo(identifier)
+		if err != nil {
+			return err
 		}
 
-		fmt.Printf("Gophel: Application %s stopped successfully\n", id)
+		if err := app.Manager.StopApplication(appInfo.ID); err != nil {
+			return fmt.Errorf(" ⚠ Failed to stop application '%s' (ID: %s) : %v", appInfo.Name, appInfo.ID, err)
+		}
+
+		fmt.Printf("✓ Application '%s' (ID: %s) stopped successfully\n", appInfo.Name, appInfo.ID)
 		return nil
 	},
 }

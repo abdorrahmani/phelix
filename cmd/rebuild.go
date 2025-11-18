@@ -13,37 +13,37 @@ import (
 var rebuildPort int
 
 var RebuildCmd = &cobra.Command{
-	Use:   "rebuild <ID> --port <PORT>",
-	Short: "Rebuilds and runs a Go Application by its ID",
+	Use:   "rebuild <ID|AppName> --port <PORT>",
+	Short: "Rebuilds and runs a Go Application by its ID or AppName.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
+		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load state: %v", err)
+			return fmt.Errorf("⚠ Failed to load state: %v", err)
 		}
 
-		appInfo, err := GetAppInfo(id)
+		appInfo, err := GetAppInfo(identifier)
 		if err != nil {
 			return err
 		}
 
 		name, portToUse := DetermineAppParameters(appInfo, cmd, rebuildPort)
-		fmt.Printf("Rebuilding application '%s' (ID: %s)\n", name, id)
+		fmt.Printf("• Rebuilding application '%s' (ID: %s)\n", name, appInfo.ID)
 
 		if err := stopExistingApp(appInfo); err != nil {
 			return err
 		}
 
-		if err := rebuildApp(id); err != nil {
+		if err := rebuildApp(appInfo.ID); err != nil {
 			return err
 		}
 
-		if err := app.Manager.StartApplication(id, portToUse, name); err != nil {
-			return fmt.Errorf("failed to start rebuilt application '%s' (ID: %s): %v", name, id, err)
+		if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
+			return fmt.Errorf("⚠ Failed to start rebuilt application '%s' (ID: %s): %v", name, appInfo.ID, err)
 		}
 
-		fmt.Printf("Application '%s' (ID: %s) rebuilt and started successfully on port %d\n", name, id, portToUse)
+		fmt.Printf("✓ Application '%s' (ID: %s) rebuilt and started successfully on port %d\n", name, appInfo.ID, portToUse)
 		return nil
 	},
 }
@@ -54,12 +54,12 @@ func init() {
 
 func stopExistingApp(appInfo *app.AppInfo) error {
 	if appInfo.Status != "running" {
-		fmt.Printf("Note: Application '%s' (ID: %s) was not running\n", appInfo.Name, appInfo.ID)
+		fmt.Printf("⚠ Note: Application '%s' (ID: %s) was not running\n", appInfo.Name, appInfo.ID)
 		return nil
 	}
 
 	if err := app.Manager.StopApplication(appInfo.ID); err != nil {
-		return fmt.Errorf("failed to stop application '%s' (ID: %s): %v", appInfo.Name, appInfo.ID, err)
+		return fmt.Errorf("⚠ Failed to stop application '%s' (ID: %s): %v", appInfo.Name, appInfo.ID, err)
 	}
 	return nil
 }
@@ -71,7 +71,7 @@ func rebuildApp(id string) error {
 	}
 
 	if appInfo.Directory == "" {
-		return fmt.Errorf("application directory not found for ID %s", id)
+		return fmt.Errorf("⚠ Application directory not found for ID %s", id)
 	}
 
 	outputPath := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", id))
@@ -79,7 +79,7 @@ func rebuildApp(id string) error {
 
 	mainFile, err := FindMainFile(projectRoot)
 	if err != nil {
-		return fmt.Errorf("failed to find main file: %v", err)
+		return fmt.Errorf("⚠ Failed to find main file: %v", err)
 	}
 
 	realPath, _ := filepath.Rel(projectRoot, mainFile)
@@ -95,7 +95,7 @@ func rebuildApp(id string) error {
 				appManager.SaveState()
 			}
 		}
-		return fmt.Errorf("rebuild failed: %v\nOutput: %s", err, string(output))
+		return fmt.Errorf("⚠ Rebuild failed: %v\nOutput: %s", err, string(output))
 	}
 
 	if appManager, ok := app.Manager.(*app.AppManager); ok {

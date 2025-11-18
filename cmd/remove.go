@@ -8,27 +8,27 @@ import (
 )
 
 var RemoveCmd = &cobra.Command{
-	Use:   "remove <ID>",
-	Short: "Remove an application by its ID",
+	Use:   "remove <ID|AppName>",
+	Short: "Remove an application by its ID or AppName.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
+		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load state: %v", err)
+			return fmt.Errorf("⚠ Failed to load state: %v", err)
 		}
 
-		appInfo, err := GetAppInfo(id)
+		appInfo, err := GetAppInfo(identifier)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Removing application '%s' (ID: %s)\n", appInfo.Name, id)
-		if err := app.Manager.RemoveApplication(id); err != nil {
-			return fmt.Errorf("failed to remove application: %v", err)
+		fmt.Printf("• Removing application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
+		if err := app.Manager.RemoveApplication(appInfo.ID); err != nil {
+			return fmt.Errorf("⚠ Failed to remove application: %v", err)
 		}
 
-		fmt.Printf("Application '%s' (ID: %s) removed successfully\n", appInfo.Name, id)
+		fmt.Printf("✓ Application '%s' (ID: %s) removed successfully\n", appInfo.Name, appInfo.ID)
 		return nil
 	},
 }

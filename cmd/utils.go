@@ -8,13 +8,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// GetAppInfo retrieves application information by ID
-func GetAppInfo(id string) (*app.AppInfo, error) {
-	appInfo, exists := app.Manager.(*app.AppManager).Apps[id]
-	if !exists {
-		return nil, fmt.Errorf("application with ID %s not found", id)
+// GetAppInfo retrieves application information by ID or AppName
+func GetAppInfo(identifier string) (*app.AppInfo, error) {
+	manager := app.Manager.(*app.AppManager)
+	if appInfo, exists := manager.Apps[identifier]; exists {
+		return appInfo, nil
 	}
-	return appInfo, nil
+	for _, a := range manager.Apps {
+		if a.Name == identifier {
+			return a, nil
+		}
+	}
+	return nil, fmt.Errorf("application not found with ID or Name: %s", identifier)
 }
 
 // DetermineAppParameters determines the name and port to use for an application
