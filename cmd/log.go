@@ -50,21 +50,7 @@ func displaySelfLogs() error {
 	}
 	defer f.Close()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-	defer signal.Stop(sigChan)
-
-	fmt.Println("Press Ctrl+C to shut down")
-
-	if err := displayHistoricalLogs(f); err != nil {
-		return err
-	}
-
-	if err := streamNewLogs(f, sigChan); err != nil {
-		return err
-	}
-	fmt.Println("Goodbye!")
-	return nil
+	return streamLogs("gophel", f)
 }
 
 func displayLogs(appInfo *app.AppInfo) error {
@@ -74,10 +60,15 @@ func displayLogs(appInfo *app.AppInfo) error {
 	}
 	defer f.Close()
 
+	return streamLogs(appInfo.Name, f)
+}
+
+func streamLogs(name string, f *os.File) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
+	defer signal.Stop(sigChan)
 
-	fmt.Printf("Gophel: Showing logs for application %s (press Ctrl+C to exit)...\n", appInfo.ID)
+	fmt.Printf("Gophel: Showing logs for %s (Ctrl+C to exit)\n", name)
 
 	if err := displayHistoricalLogs(f); err != nil {
 		return err
@@ -87,7 +78,7 @@ func displayLogs(appInfo *app.AppInfo) error {
 		return err
 	}
 
-	fmt.Println("\nGophel bye!")
+	fmt.Println("\nGoodbye!")
 	return nil
 }
 
