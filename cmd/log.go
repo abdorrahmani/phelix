@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"time"
 
 	"github.com/abdorrahmani/gophel/internal/app"
@@ -15,13 +16,17 @@ import (
 var LogCmd = &cobra.Command{
 	Use:   "log <ID|AppName>",
 	Short: "Display logs for a specific application by its ID or AppName.",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		identifier := args[0]
-
 		if err := app.Manager.LoadState(); err != nil {
 			return fmt.Errorf("⚠ Failed to load app state: %v", err)
 		}
+
+		if len(args) == 0 {
+			return displaySelfLogs()
+		}
+
+		identifier := args[0]
 
 		appInfo, err := GetAppInfo(identifier)
 		if err != nil {
@@ -34,6 +39,32 @@ var LogCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func displaySelfLogs() error {
+	path := filepath.Join(os.Getenv("HOME"), ".gophel", "logs", "gophel.log")
+
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("⚠ Failed to open log file: %v", err)
+	}
+	defer f.Close()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	defer signal.Stop(sigChan)
+
+	fmt.Println("Press Ctrl+C to shut down")
+
+	if err := displayHistoricalLogs(f); err != nil {
+		return err
+	}
+
+	if err := streamNewLogs(f, sigChan); err != nil {
+		return err
+	}
+	fmt.Println("Goodbye!")
+	return nil
 }
 
 func displayLogs(appInfo *app.AppInfo) error {
