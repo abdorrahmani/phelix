@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-func RemoveGophelLogs() {
+func RemoveSelfLogs() {
 	logFile := filepath.Join(os.Getenv("HOME"), ".gophel", "logs", "gophel.log")
 
 	info, err := os.Stat(logFile)

@@ -87,7 +87,7 @@ func main() {
 						return
 					default:
 						logs.RemovePreviousLogs()
-						logs.RemoveGophelLogs()
+						logs.RemoveSelfLogs()
 						time.Sleep(1 * time.Minute) // each minute
 					}
 				}
