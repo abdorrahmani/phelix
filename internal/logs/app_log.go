@@ -34,12 +34,17 @@ func CollectAppLogsUnified() ([]LogEntry, error) {
 			a.ID,
 			path,
 			func(line string) LogEntry {
+				p := parseLogLine(line)
+				if p.Timestamp.IsZero() {
+					p.Timestamp = time.Now()
+				}
 				return LogEntry{
 					ID:       a.ID,
 					ServerID: serverID,
 					AppID:    a.ID,
-					Log:      trimTrailingNewline(line),
-					Date:     time.Now(),
+					Log:      p.Message,
+					Date:     p.Timestamp,
+					Level:    p.Level,
 				}
 			},
 		)

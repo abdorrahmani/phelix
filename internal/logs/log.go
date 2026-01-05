@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"strings"
+	"time"
 )
 
 // NewGenericLogCollector creates a reusable log collector.
@@ -144,4 +146,48 @@ func trimLogFile(logFile string) error {
 	}
 
 	return os.Rename(tempPath, logFile)
+}
+
+var timeLayout = "2006/01/02 15:04:05"
+
+func parseLogLine(line string) ParsedLog {
+	raw := strings.TrimSpace(line)
+
+	pl := ParsedLog{
+		Raw:       raw,
+		Timestamp: time.Time{},
+		Level:     LevelInfo,
+		Message:   raw,
+	}
+
+	// extract timestamp
+	if ts := timePrefix.FindString(raw); ts != "" {
+		if t, err := time.Parse(timeLayout, ts); err == nil {
+			pl.Timestamp = t
+			pl.Message = strings.TrimSpace(strings.TrimPrefix(raw, ts))
+		}
+	}
+
+	msg := strings.ToLower(strings.TrimSpace(pl.Message))
+
+	// detect level
+	switch {
+	case strings.Contains(msg, "error"),
+		strings.Contains(msg, "failed"),
+		strings.Contains(msg, "panic"):
+		pl.Level = LevelError
+
+	case strings.Contains(msg, "warn"),
+		strings.Contains(msg, "⚠"):
+		pl.Level = LevelWarning
+
+	case strings.Contains(msg, "debug"),
+		strings.Contains(msg, "[gin-debug]"):
+		pl.Level = LevelDebug
+
+	default:
+		pl.Level = LevelInfo
+	}
+
+	return pl
 }
