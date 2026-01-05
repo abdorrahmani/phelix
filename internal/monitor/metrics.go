@@ -62,3 +62,7 @@ func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 func (c *appMetricsCollector) CollectAppLogs() ([]logs.AppLogs, error) {
 	return logs.CollectAppLogs()
 }
+
+func (c *appMetricsCollector) CollectSelfLogs() ([]logs.SelfLog, error) {
+	return logs.CollectSelfLogs()
+}

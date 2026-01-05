@@ -6,38 +6,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/abdorrahmani/gophel/internal/app"
 	"github.com/abdorrahmani/gophel/internal/server"
 )
-
-// MaxLogSize maximum size of log files
-const MaxLogSize = 100 * 1024 * 1024 // 100 MB
-
-type AppLogs struct {
-	ID       string    `json:"id"`
-	ServerID string    `json:"server_id"`
-	AppID    string    `json:"app_id"`
-	Log      string    `json:"log"`
-	Date     time.Time `json:"date"`
-}
-
-type logReader struct {
-	appID     string
-	file      *os.File
-	reader    *bufio.Reader
-	lastPos   int64
-	stopChan  chan struct{}
-	isRunning bool
-}
-
-type appLogCollector struct {
-	logReaders  map[string]*logReader
-	mu          sync.RWMutex
-	logCallback func(AppLogs)
-}
 
 func newAppLogCollector() *appLogCollector {
 	return &appLogCollector{
@@ -60,9 +33,6 @@ var defaultCollector = newAppLogCollector()
 func CollectAppLogs() ([]AppLogs, error) {
 	return defaultCollector.collectAppLogs()
 }
-
-const lastNOnColdStart = 5
-const maxLinesPerTick = 200
 
 func (l *appLogCollector) collectAppLogs() ([]AppLogs, error) {
 	serverID := server.GetServerID()

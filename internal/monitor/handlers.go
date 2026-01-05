@@ -110,12 +110,32 @@ func (m *monitorService) sendMetrics() {
 			m.sendAppMetrics()
 			m.sendAppDetails()
 			m.sendAppLogs()
+			m.sendSelfLogs()
 			m.mu.Unlock()
 
 			// Reset write deadline after sending metrics
 			if err := m.connector.SetWriteDeadline(time.Time{}); err != nil {
 				log.Printf("Error resetting write deadline: %v", err)
 			}
+		}
+	}
+}
+
+func (m *monitorService) sendSelfLogs() {
+	entries, err := m.metricsCollector.CollectSelfLogs()
+	if err != nil {
+		log.Printf("Error collecting self logs: %v", err)
+		return
+	}
+
+	for _, entry := range entries {
+		message := map[string]any{
+			"type":    "self_logs",
+			"payload": entry,
+		}
+		if err := m.connector.WriteJSON(message); err != nil {
+			log.Printf("Error sending self log: %v", err)
+			return
 		}
 	}
 }

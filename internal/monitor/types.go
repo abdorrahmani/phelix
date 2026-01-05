@@ -30,6 +30,7 @@ type MetricsCollector interface {
 	CollectAppDetails() []AppDetails
 	CollectServerMetrics() (*server.Metrics, error)
 	CollectAppLogs() ([]logs.AppLogs, error)
+	CollectSelfLogs() ([]logs.SelfLog, error)
 }
 
 type CommandExecutor interface {
