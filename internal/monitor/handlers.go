@@ -260,6 +260,7 @@ func (m *monitorService) handleCommands() {
 					m.sendAppMetrics()
 					m.sendAppDetails()
 					m.sendAppLogs()
+					m.sendSelfLogs()
 					m.mu.Unlock()
 				}()
 
@@ -267,7 +268,7 @@ func (m *monitorService) handleCommands() {
 				// Handle pong message
 				log.Printf("Received pong response")
 
-			case "apps", "metrics", "servers", "server_metrics", "app_logs":
+			case "apps", "metrics", "servers", "server_metrics", "app_logs", "self_logs":
 				// These are data request commands, no payload required
 				// They are handled by the metrics collector
 				continue
