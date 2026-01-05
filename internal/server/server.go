@@ -127,25 +127,24 @@ func Initialize() error {
 	return nil
 }
 
+type idReader func() (string, error)
+
 // generateServerID generates a new server ID base on host name and mac address
 func generateServerID() (string, error) {
-	// 1. Try machine-id
-	if id, err := readMachineID(); err != nil {
-		return id, err
+	readers := []idReader{
+		readMachineID,
+		readSMBISOUUID,
+		readCPUId,
+		fallbackHash,
 	}
 
-	// 2. Try SMBIOS product_uuid
-	if id, err := readSMBISOUUID(); err != nil {
-		return id, err
+	for _, r := range readers {
+		if id, err := r(); err == nil && id != "" {
+			return id, nil
+		}
 	}
 
-	// 3. Try CPU ID via dmidecode
-	if id, err := readCPUId(); err != nil {
-		return id, err
-	}
-
-	// 4. Fallback (hostname + MAC)
-	return fallbackHash()
+	return "", fmt.Errorf("no suitable hardware ID found for server ID generation")
 }
 
 func readMachineID() (string, error) {
