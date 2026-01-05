@@ -59,10 +59,10 @@ func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 	return server.CollectMetrics()
 }
 
-func (c *appMetricsCollector) CollectAppLogs() ([]logs.AppLogs, error) {
-	return logs.CollectAppLogs()
+func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
+	return logs.CollectAppLogsUnified()
 }
 
-func (c *appMetricsCollector) CollectSelfLogs() ([]logs.SelfLog, error) {
-	return logs.CollectSelfLogs()
+func (c *appMetricsCollector) CollectSelfLogs() ([]logs.LogEntry, error) {
+	return logs.CollectSelfLogsUnified()
 }
