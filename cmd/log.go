@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/spf13/cobra"
 )
 
@@ -42,7 +42,7 @@ var LogCmd = &cobra.Command{
 }
 
 func displaySelfLogs() error {
-	path := filepath.Join(os.Getenv("HOME"), ".gophel", "logs", "gophel.log")
+	path := filepath.Join(os.Getenv("HOME"), ".phelix", "logs", "phelix.log")
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -50,7 +50,7 @@ func displaySelfLogs() error {
 	}
 	defer f.Close()
 
-	return streamLogs("gophel", f)
+	return streamLogs("phelix", f)
 }
 
 func displayLogs(appInfo *app.AppInfo) error {
@@ -68,7 +68,7 @@ func streamLogs(name string, f *os.File) error {
 	signal.Notify(sigChan, os.Interrupt)
 	defer signal.Stop(sigChan)
 
-	fmt.Printf("Gophel: Showing logs for %s (Ctrl+C to exit)\n", name)
+	fmt.Printf("Phelix: Showing logs for %s (Ctrl+C to exit)\n", name)
 
 	if err := displayHistoricalLogs(f); err != nil {
 		return err

@@ -7,7 +7,7 @@ import (
 // Cmd is the root command for authentication-related actions.
 var Cmd = &cobra.Command{
 	Use:   "auth",
-	Short: "Authenticate with gophel.anophel.com",
+	Short: "Authenticate with phelix.anophel.com",
 }
 
 func init() {

@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/abdorrahmani/gophel/internal/server"
+	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/gorilla/websocket"
 )
 

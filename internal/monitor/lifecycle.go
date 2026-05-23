@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/abdorrahmani/gophel/internal/server"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 func (m *monitorService) StartMonitoring() error {
@@ -40,7 +40,7 @@ func (m *monitorService) initialize() error {
 		return fmt.Errorf("failed to initialize server info: %w", err)
 	}
 
-	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
+	sessionFile := filepath.Join(os.Getenv("HOME"), ".phelix", "session.json")
 	data, err := os.ReadFile(sessionFile)
 	if err != nil {
 		return fmt.Errorf("failed to read session file: %w", err)

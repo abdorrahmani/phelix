@@ -3,45 +3,45 @@
 # Exit immediately if a command exists with a non-zero status
 set -e
 
-echo "Building gophel..."
+echo "Building phelix..."
 
-go build -o gophel
+go build -o phelix
 
-echo "Moving gophel to /usr/local/bin/..."
-sudo mv gophel /usr/local/bin/
+echo "Moving phelix to /usr/local/bin/..."
+sudo mv phelix /usr/local/bin/
 
 echo "Setting executable permission"
-sudo chmod +x /usr/local/bin/gophel
+sudo chmod +x /usr/local/bin/phelix
 
 # Create startup script
 echo "Creating startup script..."
-sudo tee /usr/local/bin/gophel-startup.sh > /dev/null << EOL
+sudo tee /usr/local/bin/phelix-startup.sh > /dev/null << EOL
 #!/bin/bash
 # Start the monitoring service
-/usr/local/bin/gophel monitor &
+/usr/local/bin/phelix monitor &
 
 # Wait for monitoring service to initialize
 sleep 5
 
 # Start all applications
-/usr/local/bin/gophel start
+/usr/local/bin/phelix start
 EOL
 
 # Make startup script executable
-sudo chmod +x /usr/local/bin/gophel-startup.sh
+sudo chmod +x /usr/local/bin/phelix-startup.sh
 
 # Create systemd service file
 echo "Creating systemd service..."
-sudo tee /etc/systemd/system/gophel.service > /dev/null << EOL
+sudo tee /etc/systemd/system/phelix.service > /dev/null << EOL
 [Unit]
-Description=Gophel WebSocket Monitoring Service
+Description=Phelix WebSocket Monitoring Service
 After=network.target
 
 [Service]
 Type=simple
 User=$USER
 WorkingDirectory=/usr/local/bin
-ExecStart=/usr/local/bin/gophel-startup.sh
+ExecStart=/usr/local/bin/phelix-startup.sh
 Restart=always
 RestartSec=5
 
@@ -54,11 +54,11 @@ echo "Reloading systemd..."
 sudo systemctl daemon-reload
 
 # Enable and start the service
-echo "Enabling and starting gophel service..."
-sudo systemctl enable gophel.service
-sudo systemctl restart gophel.service
+echo "Enabling and starting phelix service..."
+sudo systemctl enable phelix.service
+sudo systemctl restart phelix.service
 
-echo "✅ Installation completed! You can now run 'gophel --help'."
+echo "✅ Installation completed! You can now run 'phelix --help'."
 echo "The WebSocket monitoring service is running in the background."
-echo "To check service status: sudo systemctl status gophel"
-echo "To view logs: sudo journalctl -u gophel -f"
+echo "To check service status: sudo systemctl status phelix"
+echo "To view logs: sudo journalctl -u phelix -f"

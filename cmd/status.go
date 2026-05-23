@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"

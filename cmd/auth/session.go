@@ -12,7 +12,7 @@ const sessionFileName = "session.json"
 
 // getSessionFilePath returns the full path of the session file.
 func getSessionFilePath() string {
-	return filepath.Join(os.Getenv("HOME"), ".gophel", sessionFileName)
+	return filepath.Join(os.Getenv("HOME"), ".phelix", sessionFileName)
 }
 
 // readSession loads the session from disk.
@@ -32,7 +32,7 @@ func readSession() (*Session, error) {
 
 // storeSession saves the session to disk.
 func storeSession(sessionID, token string) error {
-	sessionDir := filepath.Join(os.Getenv("HOME"), ".gophel")
+	sessionDir := filepath.Join(os.Getenv("HOME"), ".phelix")
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
 		return fmt.Errorf("⚠ error creating session directory %s: %w", sessionDir, err)
 	}
@@ -60,7 +60,7 @@ func removeSession() error {
 func GetValidSession() (*Session, error) {
 	session, err := readSession()
 	if err != nil {
-		return nil, fmt.Errorf("⚠ no active session found. Please run 'gophel auth' first")
+		return nil, fmt.Errorf("⚠ no active session found. Please run 'phelix auth' first")
 	}
 
 	if time.Now().After(session.ExpiresAt) {

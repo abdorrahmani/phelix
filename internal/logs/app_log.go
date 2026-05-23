@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/abdorrahmani/gophel/internal/app"
-	"github.com/abdorrahmani/gophel/internal/server"
+	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 var appCollector = NewGenericLogCollector(
@@ -26,7 +26,7 @@ func CollectAppLogsUnified() ([]LogEntry, error) {
 	for _, a := range apps {
 		path := filepath.Join(
 			os.Getenv("HOME"),
-			".gophel", "logs",
+			".phelix", "logs",
 			a.ID+".log",
 		)
 
@@ -61,7 +61,7 @@ func CollectAppLogsUnified() ([]LogEntry, error) {
 func RemovePreviousLogs() {
 	apps := app.Manager.ListApplications()
 	for _, appItem := range apps {
-		logFile := filepath.Join(os.Getenv("HOME"), ".gophel", "logs", fmt.Sprintf("%s.log", appItem.ID))
+		logFile := filepath.Join(os.Getenv("HOME"), ".phelix", "logs", fmt.Sprintf("%s.log", appItem.ID))
 
 		info, err := os.Stat(logFile)
 		if err != nil {

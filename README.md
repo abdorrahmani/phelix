@@ -1,7 +1,7 @@
-# Gophel - Go Application Manager
+# Phelix - Go/Rust Application Manager
 
 ## Overview
-Gophel is a powerful Go Application Manager that helps you build, run, and manage Go applications across multiple servers. It provides a comprehensive set of commands for managing your Go applications with features like authentication, monitoring, and application lifecycle management.
+Phelix is a powerful Go Application Manager that helps you build, run, and manage Go applications across multiple servers. It provides a comprehensive set of commands for managing your Go applications with features like authentication, monitoring, and application lifecycle management.
 
 ## Features
 - Multi-server application management
@@ -13,85 +13,85 @@ Gophel is a powerful Go Application Manager that helps you build, run, and manag
 - WebSocket-based monitoring service
 
 ## Installation
-The CLI requires Go to be installed on your system. If Go is not installed, Gophel will attempt to install it automatically on Linux systems. For other operating systems, you'll need to install Go manually.
+The CLI requires Go to be installed on your system. If Go is not installed, Phelix will attempt to install it automatically on Linux systems. For other operating systems, you'll need to install Go manually.
 
 ```bash
-# Install Gophel
-go install github.com/abdorrahmani/gophel@latest
+# Install Phelix
+go install github.com/abdorrahmani/phelix@latest
 ```
 
 ## Authentication
-Before using most commands, you need to authenticate with the Gophel service.
+Before using most commands, you need to authenticate with the Phelix service.
 
 ### Authentication Commands
 
-#### `gophel auth`
-Authenticates with gophel.anophel.com using your username and API key.
+#### `phelix auth`
+Authenticates with phelix.anophel.com using your username and API key.
 ```bash
-gophel auth
+phelix auth
 ```
 You will be prompted to enter:
 - Username
 - API Key
 
-#### `gophel auth status`
+#### `phelix auth status`
 Shows your current authentication status, including:
 - Authenticated user
 - Session ID
 - Expiration time
 
-#### `gophel auth logout`
+#### `phelix auth logout`
 Logs out the current user and removes the session.
 
 ## Application Management Commands
 
 ### Building and Running Applications
 
-#### `gophel build <NAME> --port <PORT>`
+#### `phelix build <NAME> --port <PORT>`
 Builds and runs a Go application from the current directory.
 ```bash
-gophel build myapp --port 8080
+phelix build myapp --port 8080
 ```
 - `NAME`: Name of your application
 - `--port`: Port to run the application on (default: 8080)
 
-#### `gophel rebuild <ID> --port <PORT>`
+#### `phelix rebuild <ID> --port <PORT>`
 Rebuilds and runs an existing application.
 ```bash
-gophel rebuild 123 --port 8080
+phelix rebuild 123 --port 8080
 ```
 - `ID`: Application ID
 - `--port`: Port to run the application on (defaults to previous port if unspecified)
 
 ### Application Control
 
-#### `gophel start <ID> --port <PORT>`
+#### `phelix start <ID> --port <PORT>`
 Starts a specific application.
 ```bash
-gophel start 123 --port 8080
+phelix start 123 --port 8080
 ```
 
-#### `gophel stop <ID>`
+#### `phelix stop <ID>`
 Stops a running application.
 ```bash
-gophel stop 123
+phelix stop 123
 ```
 
-#### `gophel restart <ID>`
+#### `phelix restart <ID>`
 Restarts an application.
 ```bash
-gophel restart 123
+phelix restart 123
 ```
 
-#### `gophel remove <ID>`
-Removes an application from Gophel.
+#### `phelix remove <ID>`
+Removes an application from Phelix.
 ```bash
-gophel remove 123
+phelix remove 123
 ```
 
 ### Application Information
 
-#### `gophel list`
+#### `phelix list`
 Lists all applications across all monitored servers, showing:
 - ID
 - Name
@@ -100,7 +100,7 @@ Lists all applications across all monitored servers, showing:
 - Uptime
 - Server location
 
-#### `gophel status <ID>`
+#### `phelix status <ID>`
 Shows detailed status of a specific application, including:
 - ID
 - Name
@@ -112,7 +112,7 @@ Shows detailed status of a specific application, including:
 - Server information
 - Last update time
 
-#### `gophel log <ID>`
+#### `phelix log <ID>`
 Displays logs for a specific application.
 - Shows the last 10 lines of historical logs
 - Streams new logs in real-time
@@ -121,7 +121,7 @@ Displays logs for a specific application.
 
 ### Multi-Server Monitoring
 
-#### `gophel monitor`
+#### `phelix monitor`
 Starts the WebSocket monitoring service that:
 - Monitors application status across all servers
 - Sends application information to the central server
@@ -129,7 +129,7 @@ Starts the WebSocket monitoring service that:
 - Provides real-time updates for all managed applications
 
 #### Server Management
-Gophel can monitor multiple servers simultaneously. Each server running Gophel will:
+Phelix can monitor multiple servers simultaneously. Each server running Phelix will:
 - Register itself with the central monitoring service
 - Send regular status updates
 - Maintain its own application state
@@ -142,13 +142,13 @@ Gophel can monitor multiple servers simultaneously. Each server running Gophel w
 - Network access between servers (if monitoring multiple servers)
 
 ## File Locations
-- Session file: `~/.gophel/session.json`
-- Log files: `~/.gophel/logs/gophel.log`
+- Session file: `~/.phelix/session.json`
+- Log files: `~/.phelix/logs/phelix.log`
 - Application logs: Stored in the application's directory
-- Server configuration: `~/.gophel/config.json`
+- Server configuration: `~/.phelix/config.json`
 
 ## Error Handling
-- Authentication errors will prompt you to run `gophel auth`
+- Authentication errors will prompt you to run `phelix auth`
 - Build errors will be displayed with detailed output
 - Connection errors will be logged and retried automatically
 - Server communication errors will be handled gracefully
@@ -174,13 +174,13 @@ Gophel can monitor multiple servers simultaneously. Each server running Gophel w
 Current version: 0.0.1
 To check the version:
 ```bash
-gophel version
+phelix version
 ```
 
 ## Support
 For support and issues, please visit:
-- GitHub Issues: [github.com/abdorrahmani/gophel/issues](https://github.com/abdorrahmani/gophel/issues)
-- Documentation: [gophel.anophel.com/docs](https://gophel.anophel.com/docs)
+- GitHub Issues: [github.com/abdorrahmani/phelix/issues](https://github.com/abdorrahmani/phelix/issues)
+- Documentation: [phelix.anophel.com/docs](https://phelix.anophel.com/docs)
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details. 

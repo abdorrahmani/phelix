@@ -21,8 +21,8 @@ func init() {
 	if homeDir == "" {
 		homeDir = os.Getenv("USERPROFILE") // For Windows
 	}
-	stateFile = filepath.Join(homeDir, ".gophel", "apps.json")
-	logDir = filepath.Join(homeDir, ".gophel", "logs")
+	stateFile = filepath.Join(homeDir, ".phelix", "apps.json")
+	logDir = filepath.Join(homeDir, ".phelix", "logs")
 
 	// Ensure directories exist
 	if err := ensureDirectories(); err != nil {
@@ -32,10 +32,10 @@ func init() {
 
 // ensureDirectories creates the necessary directories and initializes the state file if it doesn't exist.
 func ensureDirectories() error {
-	// Create .gophel directory
-	gophelDir := filepath.Dir(stateFile)
-	if err := os.MkdirAll(gophelDir, 0755); err != nil {
-		return fmt.Errorf("failed to create .gophel directory: %w", err)
+	// Create .phelix directory
+	phelixDir := filepath.Dir(stateFile)
+	if err := os.MkdirAll(phelixDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .phelix directory: %w", err)
 	}
 
 	// Create logs directory

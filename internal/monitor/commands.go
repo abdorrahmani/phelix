@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/abdorrahmani/phelix/internal/app"
 )
 
 // Command executor implementation
@@ -45,14 +45,14 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 
 	log.Printf("Executing command '%s' for app '%s' (ID: %s)", cmd.Payload.Type, targetAppName, targetAppID)
 
-	// Find the gophel executable in PATH
-	gophelPath, err := exec.LookPath("gophel")
+	// Find the phelix executable in PATH
+	phelixPath, err := exec.LookPath("phelix")
 	if err != nil {
-		return fmt.Errorf("failed to find gophel executable: %v", err)
+		return fmt.Errorf("failed to find phelix executable: %v", err)
 	}
 
-	// Create the command with the correct format: gophel commandName ID
-	execCmd := exec.Command(gophelPath, cmd.Payload.Type, targetAppID)
+	// Create the command with the correct format: phelix commandName ID
+	execCmd := exec.Command(phelixPath, cmd.Payload.Type, targetAppID)
 
 	// Set up environment with Go variables
 	env := os.Environ()

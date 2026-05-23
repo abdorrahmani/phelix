@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/abdorrahmani/gophel/config"
+	"github.com/abdorrahmani/phelix/config"
 	"github.com/gorilla/websocket"
 )
 
@@ -19,7 +19,7 @@ func (w *websocketConn) Connect(token, sessionID string) error {
 		ReadBufferSize:   32768,
 		WriteBufferSize:  32768,
 	}
-	url := fmt.Sprintf("%s?token=%s&sessionID=%s", cfg.App.WSSUrl+"/gophel/ws", token, sessionID)
+	url := fmt.Sprintf("%s?token=%s&sessionID=%s", cfg.App.WSSUrl+"/phelix/ws", token, sessionID)
 	conn, _, err := dialer.Dial(url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to WebSocket: %w", err)

@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/abdorrahmani/gophel/cmd"
-	"github.com/abdorrahmani/gophel/cmd/auth"
-	"github.com/abdorrahmani/gophel/config"
-	"github.com/abdorrahmani/gophel/internal/logs"
-	"github.com/abdorrahmani/gophel/internal/monitor"
+	"github.com/abdorrahmani/phelix/cmd"
+	"github.com/abdorrahmani/phelix/cmd/auth"
+	"github.com/abdorrahmani/phelix/config"
+	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/spf13/cobra"
 )
 
@@ -53,8 +53,8 @@ func main() {
 	}()
 
 	rootCmd := &cobra.Command{
-		Use:     "gophel",
-		Short:   "Gophel - Go Application Manager",
+		Use:     "phelix",
+		Short:   "Phelix - Go/Rust Application Manager",
 		Version: cmd.Version,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			// Only check authentication for auth status command
@@ -62,12 +62,12 @@ func main() {
 				session, err := auth.GetValidSession()
 				if err != nil {
 					fmt.Printf("Authentication required: %v\n", err)
-					fmt.Println("Please run 'gophel auth login' to authenticate first")
+					fmt.Println("Please run 'phelix auth login' to authenticate first")
 					os.Exit(1)
 				}
 				if err := auth.VerifySession(session); err != nil {
 					fmt.Printf("Invalid session: %v\n", err)
-					fmt.Println("Please run 'gophel auth login' again")
+					fmt.Println("Please run 'phelix auth login' again")
 					os.Exit(1)
 				}
 			}

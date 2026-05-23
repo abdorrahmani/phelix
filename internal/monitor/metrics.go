@@ -3,9 +3,9 @@ package monitor
 import (
 	"log"
 
-	"github.com/abdorrahmani/gophel/internal/app"
-	"github.com/abdorrahmani/gophel/internal/logs"
-	"github.com/abdorrahmani/gophel/internal/server"
+	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // appMetricsCollector Metrics collector implementation

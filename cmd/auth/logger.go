@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 )
 
-const logFile = "gophel.log"
+const logFile = "phelix.log"
 
 var logFileHandle *os.File
 
-// setupLogging initializes a file-based logger under ~/.gophel/logs.
+// setupLogging initializes a file-based logger under ~/.phelix/logs.
 func setupLogging() {
-	logDir := filepath.Join(os.Getenv("HOME"), ".gophel", "logs")
+	logDir := filepath.Join(os.Getenv("HOME"), ".phelix", "logs")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		fmt.Printf("⚠ Failed to create log directory: %s\n", logDir)
 		return

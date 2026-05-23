@@ -3,8 +3,8 @@ package monitor
 import (
 	"time"
 
-	"github.com/abdorrahmani/gophel/internal/logs"
-	"github.com/abdorrahmani/gophel/internal/server"
+	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // MonitorService Interfaces following Interface Segregation Principle

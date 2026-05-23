@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/abdorrahmani/gophel/cmd/auth"
-	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/abdorrahmani/phelix/cmd/auth"
+	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/spf13/cobra"
 )
 
@@ -76,9 +76,9 @@ func init() {
 }
 
 func validateSession() error {
-	sessionFile := filepath.Join(os.Getenv("HOME"), ".gophel", "session.json")
+	sessionFile := filepath.Join(os.Getenv("HOME"), ".phelix", "session.json")
 	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
-		return fmt.Errorf("⚠ Authentication required. Please run 'gophel auth' first")
+		return fmt.Errorf("⚠ Authentication required. Please run 'phelix auth' first")
 	}
 
 	data, err := os.ReadFile(sessionFile)
@@ -97,7 +97,7 @@ func validateSession() error {
 	}
 
 	if time.Now().After(session.ExpiresAt) {
-		return fmt.Errorf("⚠ session expired. Please run 'gophel auth' again")
+		return fmt.Errorf("⚠ session expired. Please run 'phelix auth' again")
 	}
 
 	return nil

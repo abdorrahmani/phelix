@@ -9,16 +9,16 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/abdorrahmani/gophel/config"
-	"github.com/abdorrahmani/gophel/internal/app"
+	"github.com/abdorrahmani/phelix/config"
+	"github.com/abdorrahmani/phelix/internal/app"
 )
 
-// SendAppsToServer uploads the list of running apps to the Gophel server.
+// SendAppsToServer uploads the list of running apps to the Phelix server.
 func SendAppsToServer() error {
 	cfg := config.Get()
 	session, err := GetValidSession()
 	if err != nil {
-		return fmt.Errorf("⚠ authentication required. Please run 'gophel auth login'")
+		return fmt.Errorf("⚠ authentication required. Please run 'phelix auth login'")
 	}
 
 	appList := app.Manager.ListApplications()
@@ -40,7 +40,7 @@ func SendAppsToServer() error {
 	}
 
 	body, _ := json.Marshal(map[string]any{"apps": appDetails})
-	req, err := http.NewRequest("POST", cfg.App.API+"/gophel/apps", bytes.NewBuffer(body))
+	req, err := http.NewRequest("POST", cfg.App.API+"/phelix/apps", bytes.NewBuffer(body))
 	if err != nil {
 		return fmt.Errorf("⚠ error creating request: %w", err)
 	}

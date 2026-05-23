@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abdorrahmani/gophel/internal/network"
+	"github.com/abdorrahmani/phelix/internal/network"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
 	"github.com/shirou/gopsutil/host"
@@ -31,7 +31,7 @@ func init() {
 	if homeDir == "" {
 		homeDir = os.Getenv("USERPROFILE") // For Windows
 	}
-	serverIDFile = filepath.Join(homeDir, ".gophel", "server_id")
+	serverIDFile = filepath.Join(homeDir, ".phelix", "server_id")
 }
 
 // Initialize initializes the server information
@@ -196,9 +196,9 @@ func fallbackHash() (string, error) {
 
 // loadOrGenerateServerID loads the server ID from file or generates a new one
 func loadOrGenerateServerID() error {
-	// Create .gophel directory if it doesn't exist
+	// Create .phelix directory if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(serverIDFile), 0755); err != nil {
-		return fmt.Errorf("⚠ Failed to create .gophel directory: %w", err)
+		return fmt.Errorf("⚠ Failed to create .phelix directory: %w", err)
 	}
 
 	// Try to read existing server ID

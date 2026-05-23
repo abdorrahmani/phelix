@@ -14,10 +14,10 @@ var (
 	apiKey   string
 )
 
-// LoginCmd handles the "gophel auth" login command.
+// LoginCmd handles the "phelix auth" login command.
 var LoginCmd = &cobra.Command{
 	Use:   "login --username <username> --apikey <apikey>",
-	Short: "Authenticate user with Gophel",
+	Short: "Authenticate user with Phelix",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if username == "" && apiKey == "" {
 			fmt.Print("Enter username: ")
@@ -63,7 +63,7 @@ var StatusCmd = &cobra.Command{
 // LogoutCmd logs out the current session.
 var LogoutCmd = &cobra.Command{
 	Use:   "logout",
-	Short: "Logout from Gophel",
+	Short: "Logout from Phelix",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, err := GetValidSession()
 		if err != nil {
@@ -85,8 +85,8 @@ var LogoutCmd = &cobra.Command{
 func printWelcome(username string) {
 	green := color.New(color.FgGreen).SprintFunc()
 	bold := color.New(color.Bold).SprintFunc()
-	fmt.Printf("\nHi %s, welcome to Gophel!\n", bold(username))
-	fmt.Printf("You can monitor your apps at %s\n", green("gophel.anophel.com"))
+	fmt.Printf("\nHi %s, welcome to Phelix!\n", bold(username))
+	fmt.Printf("You can monitor your apps at %s\n", green("phelix.anophel.com"))
 	fmt.Printf("%s\n\n", green("Authentication successful!"))
 	log.Printf("✓ Authentication successful for %s", username)
 }
