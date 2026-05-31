@@ -29,32 +29,53 @@ func (w *websocketConn) Connect(token, sessionID string) error {
 }
 
 func (w *websocketConn) Close() error {
-	if w.conn != nil {
-		return w.conn.Close()
+	if w.conn == nil {
+		return nil
 	}
-	return nil
+
+	conn := w.conn
+	w.conn = nil
+	return conn.Close()
 }
 
 func (w *websocketConn) WriteJSON(v interface{}) error {
+	if w.conn == nil {
+		return fmt.Errorf("websocket is not connected")
+	}
 	return w.conn.WriteJSON(v)
 }
 
 func (w *websocketConn) ReadJSON(v interface{}) error {
+	if w.conn == nil {
+		return fmt.Errorf("websocket is not connected")
+	}
 	return w.conn.ReadJSON(v)
 }
 
 func (w *websocketConn) WriteMessage(messageType int, data []byte) error {
+	if w.conn == nil {
+		return fmt.Errorf("websocket is not connected")
+	}
 	return w.conn.WriteMessage(messageType, data)
 }
 
 func (w *websocketConn) SetReadDeadline(t time.Time) error {
+	if w.conn == nil {
+		return fmt.Errorf("websocket is not connected")
+	}
 	return w.conn.SetReadDeadline(t)
 }
 
 func (w *websocketConn) SetWriteDeadline(t time.Time) error {
+	if w.conn == nil {
+		return fmt.Errorf("websocket is not connected")
+	}
 	return w.conn.SetWriteDeadline(t)
 }
 
 func (w *websocketConn) SetPongHandler(h func(string) error) {
+	if w.conn == nil {
+		return
+	}
 	w.conn.SetPongHandler(h)
 }

@@ -12,6 +12,7 @@ type monitorService struct {
 	session           Session
 	stopChan          chan struct{}
 	mu                sync.Mutex
+	reconnectMu       sync.Mutex
 	reconnectAttempts int
 	metricsPaused     bool
 	metricsPauseMu    sync.Mutex

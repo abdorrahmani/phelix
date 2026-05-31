@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/server"
-	"github.com/gorilla/websocket"
 )
 
 func (m *monitorService) sendServerInfo() error {
@@ -155,16 +154,8 @@ func (m *monitorService) handleCommands() {
 
 			var rawMessage json.RawMessage
 			if err := m.connector.ReadJSON(&rawMessage); err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("WebSocket connection closed unexpectedly: %v", err)
-					m.reconnect()
-				} else if err.Error() == "i/o timeout" {
-					// For timeout errors, try to reconnect
-					log.Printf("WebSocket read timeout, attempting to reconnect")
-					m.reconnect()
-				} else {
-					log.Printf("Error reading message: %v", err)
-				}
+				log.Printf("WebSocket read failed, attempting to reconnect: %v", err)
+				m.reconnect()
 				continue
 			}
 

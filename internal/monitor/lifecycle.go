@@ -125,6 +125,9 @@ func (m *monitorService) keepAlive() {
 }
 
 func (m *monitorService) reconnect() {
+	m.reconnectMu.Lock()
+	defer m.reconnectMu.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
