@@ -197,7 +197,11 @@ func buildApplication(id string) error {
 }
 
 func startApplication(id, name string) error {
-	if err := app.Manager.StartApplication(id, buildPort, name); err != nil {
+	return startApplicationOnPort(id, name, buildPort)
+}
+
+func startApplicationOnPort(id, name string, port int) error {
+	if err := app.Manager.StartApplication(id, port, name); err != nil {
 		return fmt.Errorf("⚠ failed to start application: %w", err)
 	}
 	return nil
