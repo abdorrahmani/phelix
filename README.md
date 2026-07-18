@@ -11,6 +11,7 @@ Phelix is a powerful Go Application Manager that helps you build, run, and manag
 - Authentication and security
 - Application lifecycle management
 - WebSocket-based monitoring service
+- **Encrypted environment variable management** (NEW)
 
 ## Installation
 The CLI requires Go to be installed on your system. If Go is not installed, Phelix will attempt to install it automatically on Linux systems. For other operating systems, you'll need to install Go manually.
@@ -119,6 +120,56 @@ Displays logs for a specific application.
 - Press Ctrl+C to exit
 - Supports cross-server log viewing
 
+### Environment Variable Management
+
+Phelix provides a secure way to manage encrypted environment variables for your applications. All environment variables are encrypted using AES-256-GCM encryption and stored in `~/.phelix/envs/`.
+
+#### Master Key Management
+The master key is automatically generated and stored at `~/.phelix/master.key`. Keep this file safe and never commit it to version control.
+
+#### `phelix env set <AppName> <KEY=VALUE> [KEY=VALUE ...]`
+Sets one or more encrypted environment variables for an application.
+```bash
+# Set a single variable
+phelix env set myapp DATABASE_URL=postgresql://localhost/db
+
+# Set multiple variables at once
+phelix env set myapp API_KEY=xxx SECRET_TOKEN=yyy DEBUG=true
+```
+
+#### `phelix env get <AppName> <KEY>`
+Retrieves a specific environment variable value.
+```bash
+phelix env get myapp DATABASE_URL
+```
+Note: Sensitive keys (containing SECRET, KEY, TOKEN, PASSWORD) are masked in output.
+
+#### `phelix env list <AppName>`
+Lists all environment variables set for an application.
+```bash
+phelix env list myapp
+```
+Output shows variable names with masked values for security.
+
+#### `phelix env unset <AppName> <KEY>`
+Removes an environment variable from an application.
+```bash
+phelix env unset myapp DEBUG
+```
+
+#### Environment Variable Injection
+When an application starts, Phelix automatically:
+1. Decrypts the .env.enc file using the master key
+2. Injects all environment variables into the application process
+3. The application receives variables exactly as you set them
+
+#### Security Features
+- **Encrypted Storage**: All values are encrypted with AES-256-GCM
+- **Sensitive Key Masking**: Keys containing SECRET, KEY, TOKEN, PASSWORD are automatically masked in logs
+- **Secure Key Storage**: Master key is stored with restricted file permissions (0600)
+- **No Plain Text**: Environment variables are never stored in plain text
+- **Application Isolation**: Each application has its own encrypted environment file
+
 ### Multi-Server Monitoring
 
 #### `phelix monitor`
@@ -146,6 +197,8 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 - Log files: `~/.phelix/logs/phelix.log`
 - Application logs: Stored in the application's directory
 - Server configuration: `~/.phelix/config.json`
+- **Master key: `~/.phelix/master.key`** (Keep this safe!)
+- **Encrypted environment files: `~/.phelix/envs/<appid>.env.enc`**
 
 ## Error Handling
 - Authentication errors will prompt you to run `phelix auth`
@@ -162,6 +215,10 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 6. Ensure proper network connectivity between servers
 7. Regularly check server status across your infrastructure
 8. Monitor resource usage across all servers
+9. **Use encrypted environment variables for sensitive data** (API keys, database credentials, etc.)
+10. **Never commit master keys or encrypted env files to version control**
+11. **Regularly rotate sensitive credentials**
+12. **Use descriptive variable names** (e.g., DATABASE_CONNECTION_URL instead of DB)
 
 ## Security Considerations
 - All communication is encrypted
