@@ -151,6 +151,7 @@ func main() {
 	rootCmd.AddCommand(auth.Cmd)
 	rootCmd.AddCommand(cmd.VersionCmd)
 	rootCmd.AddCommand(cmd.RemoveCmd)
+	rootCmd.AddCommand(cmd.EnvCmd)
 	rootCmd.AddCommand(monitorCmd)
 
 	if err := rootCmd.Execute(); err != nil {

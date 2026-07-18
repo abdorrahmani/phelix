@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/env"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -63,6 +64,17 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	cmd.Dir = app.Directory
 	cmd.Stdout = f
 	cmd.Stderr = f
+
+	// Inject encrypted environment variables
+	envVars := os.Environ() // Start with current environment
+	appEnvVars, err := env.Instance.GetAllEnvVars(id)
+	if err == nil {
+		// If env vars exist, append them to the process environment
+		for key, value := range appEnvVars {
+			envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+	cmd.Env = envVars
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start failed: %v", err)
