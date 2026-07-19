@@ -13,6 +13,7 @@ import (
 	"github.com/abdorrahmani/phelix/cmd"
 	"github.com/abdorrahmani/phelix/cmd/auth"
 	"github.com/abdorrahmani/phelix/config"
+	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ import (
 
 var (
 	monitorService monitor.MonitorService
+	healthDaemon   *health.GlobalDaemon
 	done           = make(chan struct{})
 	isMonitorMode  bool
 )
@@ -42,6 +44,16 @@ func main() {
 
 	// Initialize monitor service
 	monitorService = monitor.NewMonitorService()
+
+	// Initialize global health daemon with NoOp client (will be upgraded when monitor connects)
+	healthDaemon = health.InitGlobalDaemon(&health.NoOpWebSocketClient{})
+
+	// Start health daemon in background
+	go func() {
+		if err := healthDaemon.Start(); err != nil {
+			log.Printf("[Health] Failed to start global daemon: %v", err)
+		}
+	}()
 
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
@@ -152,6 +164,7 @@ func main() {
 	rootCmd.AddCommand(cmd.VersionCmd)
 	rootCmd.AddCommand(cmd.RemoveCmd)
 	rootCmd.AddCommand(cmd.EnvCmd)
+	rootCmd.AddCommand(cmd.HealthCmd)
 	rootCmd.AddCommand(monitorCmd)
 
 	if err := rootCmd.Execute(); err != nil {
