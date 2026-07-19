@@ -12,6 +12,7 @@ type MonitorService interface {
 	StartMonitoring() error
 	StopMonitoring() error
 	SendCommand(cmd Command) error
+	SendMessage(msgType string, payload interface{}) error
 }
 
 type WebSocketConnector interface {

@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"sync"
+	"time"
 )
 
 // monitorService Main monitor service
@@ -43,4 +44,29 @@ func (m *monitorService) resumeMetrics() {
 	m.metricsPauseMu.Lock()
 	m.metricsPaused = false
 	m.metricsPauseMu.Unlock()
+}
+
+// SendMessage sends any JSON message through the WebSocket
+func (m *monitorService) SendMessage(msgType string, payload interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	message := map[string]interface{}{
+		"type":    msgType,
+		"payload": payload,
+	}
+
+	if err := m.connector.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return err
+	}
+
+	if err := m.connector.WriteJSON(message); err != nil {
+		return err
+	}
+
+	if err := m.connector.SetWriteDeadline(time.Time{}); err != nil {
+		return err
+	}
+
+	return nil
 }
