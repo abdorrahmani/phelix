@@ -17,7 +17,10 @@ import (
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
 	"github.com/shirou/gopsutil/host"
+	"github.com/shirou/gopsutil/load"
 	"github.com/shirou/gopsutil/mem"
+	gopsutilnet "github.com/shirou/gopsutil/net"
+	"github.com/shirou/gopsutil/process"
 )
 
 var (
@@ -32,6 +35,41 @@ func init() {
 		homeDir = os.Getenv("USERPROFILE") // For Windows
 	}
 	serverIDFile = filepath.Join(homeDir, ".phelix", "server_id")
+}
+
+// getNetworkStats returns total network bytes in and out across all interfaces
+func getNetworkStats() (uint64, uint64, error) {
+	var totalBytesIn, totalBytesOut uint64
+
+	stats, err := gopsutilnet.IOCounters(true)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	for _, stat := range stats {
+		totalBytesIn += stat.BytesRecv
+		totalBytesOut += stat.BytesSent
+	}
+
+	return totalBytesIn, totalBytesOut, nil
+}
+
+// getLoadAverage returns the system load average
+func getLoadAverage() (float64, float64, float64, error) {
+	avg, err := load.Avg()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return avg.Load1, avg.Load5, avg.Load15, nil
+}
+
+// getProcessCount returns the number of running processes
+func getProcessCount() (uint32, error) {
+	processes, err := process.Processes()
+	if err != nil {
+		return 0, err
+	}
+	return uint32(len(processes)), nil
 }
 
 // Initialize initializes the server information
@@ -98,6 +136,28 @@ func Initialize() error {
 	// Get OS full details
 	osFull := fmt.Sprintf("%s,%s %s", hostInfo.OS, hostInfo.Platform, hostInfo.PlatformVersion)
 
+	// Get region, architecture, and kernel version
+	region := getServerRegion()
+	arch := getArchitecture()
+	kernelVersion := getKernelVersion()
+
+	// Get swap info
+	swapInfo, err := mem.SwapMemory()
+	if err != nil {
+		return fmt.Errorf("failed to get swap info: %w", err)
+	}
+
+	// Collect network interface names and MACs
+	ifaces, _ := net.Interfaces()
+	var ifaceList []string
+	for _, iface := range ifaces {
+		mac := iface.HardwareAddr.String()
+		if mac == "" {
+			mac = "<no-mac>"
+		}
+		ifaceList = append(ifaceList, fmt.Sprintf("%s(%s)", iface.Name, mac))
+	}
+
 	// Determine server status based on system metrics
 	status := "healthy"
 	if memInfo.UsedPercent > 90 || diskInfo.UsedPercent > 90 {
@@ -115,6 +175,7 @@ func Initialize() error {
 		OSType:        hostInfo.OS,
 		OSFull:        osFull,
 		CPUInfo:       cpuInfoStr,
+		NetworkIfaces: ifaceList,
 		TotalMemory:   int64(memInfo.Total),
 		TotalCPUCores: runtime.NumCPU(),
 		TotalStorage:  int64(diskInfo.Total),
@@ -122,6 +183,10 @@ func Initialize() error {
 		LastReboot:    lastReboot,
 		Status:        status,
 		CreatedAt:     time.Now(),
+		Region:        region,
+		Architecture:  arch,
+		KernelVersion: kernelVersion,
+		SwapTotal:     int64(swapInfo.Total),
 	}
 
 	return nil
@@ -254,6 +319,30 @@ func CollectMetrics() (*Metrics, error) {
 		return nil, fmt.Errorf("⚠ Failed to get disk info: %w", err)
 	}
 
+	// Get network stats
+	networkIn, networkOut, err := getNetworkStats()
+	if err != nil {
+		return nil, fmt.Errorf("⚠ Failed to get network stats: %w", err)
+	}
+
+	// Get load average
+	loadAvg1, loadAvg5, loadAvg15, err := getLoadAverage()
+	if err != nil {
+		return nil, fmt.Errorf("⚠ Failed to get load average: %w", err)
+	}
+
+	// Get swap info
+	swapInfo, err := mem.SwapMemory()
+	if err != nil {
+		return nil, fmt.Errorf("⚠ Failed to get swap info: %w", err)
+	}
+
+	// Get process count
+	procCount, err := getProcessCount()
+	if err != nil {
+		return nil, fmt.Errorf("⚠ Failed to get process count: %w", err)
+	}
+
 	// Update server status based on current metrics
 	if serverInfo != nil {
 		status := "healthy"
@@ -266,13 +355,30 @@ func CollectMetrics() (*Metrics, error) {
 		serverInfo.Status = status
 	}
 
+	// Compute swap percent
+	var swapPercent float64
+	if swapInfo.Total > 0 {
+		swapPercent = (float64(swapInfo.Used) / float64(swapInfo.Total)) * 100
+	}
+
 	return &Metrics{
-		ServerID:        serverID,
-		UsedMemory:      memInfo.Used,
-		FreeMemory:      memInfo.Free,
-		CPUUsagePercent: cpuPercent[0],
-		UsedStorage:     diskInfo.Used,
-		FreeStorage:     diskInfo.Free,
-		Timestamp:       time.Now(),
+		ServerID:         serverID,
+		UsedMemory:       memInfo.Used,
+		FreeMemory:       memInfo.Free,
+		MemoryPercent:    memInfo.UsedPercent,
+		CPUUsagePercent:  cpuPercent[0],
+		UsedStorage:      diskInfo.Used,
+		FreeStorage:      diskInfo.Free,
+		StoragePercent:   diskInfo.UsedPercent,
+		Timestamp:        time.Now(),
+		NetworkIn:        networkIn,
+		NetworkOut:       networkOut,
+		LoadAvg1min:      loadAvg1,
+		LoadAvg5min:      loadAvg5,
+		LoadAvg15min:     loadAvg15,
+		SwapUsed:         swapInfo.Used,
+		SwapFree:         swapInfo.Free,
+		SwapPercent:      swapPercent,
+		RunningProcesses: procCount,
 	}, nil
 }
