@@ -6,12 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
 var (
 	stateFile string
 	logDir    string
+	fileMutex sync.Mutex
 )
 
 // init initializes the package by setting up state file and log directory paths
@@ -91,6 +93,10 @@ func (m *AppManager) SaveState() error {
 		return err
 	}
 
+	// Serialize file operations to avoid concurrent writes
+	fileMutex.Lock()
+	defer fileMutex.Unlock()
+
 	tmpFile := stateFile + ".tmp"
 	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
 		return err
@@ -100,16 +106,27 @@ func (m *AppManager) SaveState() error {
 
 // LoadState loads the state from disk
 func (m *AppManager) LoadState() error {
+	// Ensure only one goroutine performs file read/repair at a time
+	fileMutex.Lock()
 	data, err := os.ReadFile(stateFile)
 	if os.IsNotExist(err) {
 		// If file doesn't exist, create it with empty state
 		if err := os.MkdirAll(filepath.Dir(stateFile), 0755); err != nil {
+			fileMutex.Unlock()
 			return err
 		}
-		return os.WriteFile(stateFile, []byte("{}"), 0644)
+		if err := os.WriteFile(stateFile, []byte("{}"), 0644); err != nil {
+			fileMutex.Unlock()
+			return err
+		}
+		// Release lock and return after creating file
+		fileMutex.Unlock()
+		return nil
 	} else if err != nil {
+		fileMutex.Unlock()
 		return err
 	}
+	fileMutex.Unlock()
 
 	type SavedApp struct {
 		ID          string    `json:"id"`
@@ -127,7 +144,17 @@ func (m *AppManager) LoadState() error {
 
 	var savedApps map[string]SavedApp
 	if err := json.Unmarshal(data, &savedApps); err != nil {
-		return err
+		// Handle corrupted JSON: back up corrupted file and reinitialize
+		corruptName := stateFile + ".corrupt." + fmt.Sprintf("%d", time.Now().Unix())
+		_ = os.WriteFile(corruptName, data, 0644)
+
+		// Recreate a fresh state file
+		fileMutex.Lock()
+		_ = os.WriteFile(stateFile, []byte("{}"), 0644)
+		fileMutex.Unlock()
+
+		// Continue with empty state instead of failing
+		savedApps = make(map[string]SavedApp)
 	}
 
 	// Find the highest ID to set NextID
