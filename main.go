@@ -48,12 +48,14 @@ func main() {
 	// Initialize global health daemon with NoOp client (will be upgraded when monitor connects)
 	healthDaemon = health.InitGlobalDaemon(&health.NoOpWebSocketClient{})
 
-	// Start health daemon in background
-	go func() {
-		if err := healthDaemon.Start(); err != nil {
-			log.Printf("[Health] Failed to start global daemon: %v", err)
-		}
-	}()
+	if isMonitorMode {
+		// Only the long-running monitor process actually needs the daemon.
+		go func() {
+			if err := healthDaemon.Start(); err != nil {
+				log.Printf("[Health] Failed to start global daemon: %v", err)
+			}
+		}()
+	}
 
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)

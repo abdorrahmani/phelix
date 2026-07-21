@@ -182,6 +182,9 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager) error {
 	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
 	appInfo := app.Manager.(*app.AppManager).Apps[id]
+	if appInfo == nil {
+		return fmt.Errorf("%s application %s not found in state (it may have been removed by a concurrent operation); please retry", color.RedString("✗"), id)
+	}
 	projectRoot := appInfo.Directory
 
 	// Detect language
