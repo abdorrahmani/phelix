@@ -7,6 +7,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -44,8 +45,9 @@ var RebuildCmd = &cobra.Command{
 			return fmt.Errorf("%s unsupported or unknown project language: %s", color.RedString("✗"), lang)
 		}
 
-		// Validate tools
-		if err := buildMgr.ValidateTools(lang); err != nil {
+		// Check toolchain; prompt to install if missing
+		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
+		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
 			return fmt.Errorf("%s %v", color.RedString("✗"), err)
 		}
 

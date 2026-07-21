@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -33,14 +31,6 @@ func main() {
 	}
 	// Check if running in monitor mode
 	isMonitorMode = len(os.Args) > 1 && os.Args[1] == "monitor"
-
-	// Skip Go installation check for monitor command
-	if !isMonitorMode {
-		if err := checkGoInstallation(); err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	}
 
 	// Initialize monitor service
 	monitorService = monitor.NewMonitorService()
@@ -173,28 +163,4 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-}
-
-func checkGoInstallation() error {
-	if _, err := exec.LookPath("go"); err != nil {
-		fmt.Println("Go not found. Attempting to install the latest version...")
-		if runtime.GOOS != "linux" {
-			return fmt.Errorf("automatic Go installation is only supported on Linux; please install Go manually")
-		}
-
-		cmd := exec.Command("sudo", "apt", "update")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to run apt update: %v", err)
-		}
-		cmd = exec.Command("sudo", "apt", "install", "-y", "golang-go")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to install Go: %v", err)
-		}
-		fmt.Println("Go installed successfully!")
-	}
-	return nil
 }
