@@ -29,11 +29,12 @@ var ListCmd = &cobra.Command{
 
 func createTable() *tablewriter.Table {
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"ID", "Name", "Status", "PID", "Uptime"})
+	table.SetHeader([]string{"ID", "Name", "Status", "Language", "PID", "Uptime"})
 	table.SetBorder(true)
 	table.SetRowLine(true)
 	table.SetColumnAlignment([]int{
 		tablewriter.ALIGN_LEFT,
+		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
@@ -45,10 +46,15 @@ func createTable() *tablewriter.Table {
 func populateTable(table *tablewriter.Table, apps []app.AppListItem) {
 	for _, app := range apps {
 		status := FormatStatus(app.Status)
+		lang := app.Language
+		if lang == "" {
+			lang = "unknown"
+		}
 		table.Append([]string{
 			app.ID,
 			color.BlueString(app.Name),
 			status,
+			color.CyanString(lang),
 			fmt.Sprintf("%d", app.PID),
 			app.Uptime,
 		})

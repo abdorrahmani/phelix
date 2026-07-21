@@ -3,16 +3,15 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"io/fs"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/abdorrahmani/phelix/cmd/auth"
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -22,12 +21,14 @@ const (
 
 var (
 	buildPort int
+	buildArgs []string
+	noUpload  bool
 )
 
 var BuildCmd = &cobra.Command{
 	Use:   "build <NAME> --port <PORT>",
-	Short: "Builds and runs a Go application with a specified name",
-	Long:  "Compiles a Go application from the current directory with the given name and starts it immediately",
+	Short: "Builds and runs an application (Go/Rust) with a specified name",
+	Long:  "Compiles an application from the current directory (auto-detects language) with the given name and starts it immediately",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateSession(); err != nil {
@@ -39,40 +40,67 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("  ⚠ Failed to load state: %w", err)
+			return fmt.Errorf("%s Failed to load state: %w", color.RedString("✗"), err)
 		}
 
 		if err := validateUniqueName(name); err != nil {
 			return err
 		}
 
-		id := app.Manager.GenerateAppID()
-		fmt.Printf("• Building application '%s', ID: %s\n", name, id)
+		// Get project root
+		currentDir, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("%s failed to get current directory: %v", color.RedString("✗"), err)
+		}
 
-		if err := createAppEntry(id, name); err != nil {
+		// Detect language
+		buildMgr := builder.NewBuildManager()
+		lang := buildMgr.DetectLanguage(currentDir)
+		if !lang.IsSupported() {
+			return fmt.Errorf("%s unsupported or unknown project language: %s", color.RedString("✗"), lang)
+		}
+
+		// Validate tools
+		if err := buildMgr.ValidateTools(lang); err != nil {
+			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		}
+
+		id := app.Manager.GenerateAppID()
+		fmt.Printf("%s Building application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(id))
+		fmt.Printf("  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
+
+		if err := createAppEntry(id, name, lang, noUpload); err != nil {
 			return err
 		}
 
-		if err := buildApplication(id); err != nil {
+		if err := buildApplication(id, buildArgs, buildMgr); err != nil {
 			return err
+		}
+
+		if !noUpload {
+			fmt.Printf("%s Uploading app information to server...\n", color.BlueString("→"))
+			if err := auth.SendAppsToServer(); err != nil {
+				log.Printf("%s Error sending apps to server: %v", color.YellowString("⚠"), err)
+				fmt.Printf("%s Warning: Failed to send app information to server: %v\n", color.YellowString("⚠"), err)
+			}
+		} else {
+			fmt.Printf("  %s Skipping upload to server (--no-upload was set)\n", color.YellowString("Note:"))
 		}
 
 		if err := startApplication(id, name); err != nil {
 			return err
 		}
 
-		if err := auth.SendAppsToServer(); err != nil {
-			log.Printf("⚠ Error sending apps to server: %v", err)
-			fmt.Printf("⚠ Warning: Failed to send app information to server: %v\n", err)
-		}
-
-		fmt.Printf("✓ Application '%s' (ID: %s) started successfully on port %d\n", name, id, buildPort)
+		fmt.Printf("%s Application %s (ID: %s) started successfully on port %d\n",
+			color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(id), buildPort)
 		return nil
 	},
 }
 
 func init() {
 	BuildCmd.Flags().IntVarP(&buildPort, "port", "p", defaultPort, "Port to run the application on")
+	BuildCmd.Flags().StringArrayVarP(&buildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
+	BuildCmd.Flags().BoolVar(&noUpload, "no-upload", false, "If set, do not upload/send app information to the server")
 }
 
 func validateSession() error {
@@ -119,13 +147,22 @@ func validateUniqueName(name string) error {
 	return nil
 }
 
-func createAppEntry(id, name string) error {
+func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 	if appManager, ok := app.Manager.(*app.AppManager); ok {
 		now := time.Now()
 		currentDir, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("⚠ failed to get current directory: %v", err)
+			return fmt.Errorf("%s failed to get current directory: %v", color.RedString("✗"), err)
 		}
+
+		// Convert lang to string
+		langStr := "unknown"
+		if langBuilt, ok := lang.(builder.Language); ok {
+			langStr = string(langBuilt)
+		} else if langStr, ok := lang.(string); ok {
+			langStr = langStr
+		}
+
 		appManager.Apps[id] = &app.AppInfo{
 			ID:          id,
 			Name:        name,
@@ -134,65 +171,75 @@ func createAppEntry(id, name string) error {
 			CreatedAt:   now,
 			UpdatedAt:   now,
 			Directory:   currentDir,
+			Language:    langStr,
+			NoUpload:    noUpload,
 		}
 		return appManager.SaveState()
 	}
-	return fmt.Errorf("⚠ invalid app manager type")
+	return fmt.Errorf("%s invalid app manager type", color.RedString("✗"))
 }
 
-func FindMainFile(root string) (string, error) {
-	var mainFile string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && d.Name() == "main.go" {
-			mainFile = path
-			return io.EOF
-		}
-		return nil
-	})
-	if err != nil && err != io.EOF {
-		return "", fmt.Errorf("error walking directory: %w", err)
-	}
-	if mainFile == "" {
-		return "", fmt.Errorf("⚠ no main.go file found in the directory")
-	}
-	return mainFile, nil
-}
-
-func buildApplication(id string) error {
+func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager) error {
 	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
-	projectRoot := app.Manager.(*app.AppManager).Apps[id].Directory
+	appInfo := app.Manager.(*app.AppManager).Apps[id]
+	projectRoot := appInfo.Directory
 
-	mainFile, err := FindMainFile(projectRoot)
-	if err != nil {
-		return fmt.Errorf("⚠ build failed: %v", err)
+	// Detect language
+	lang := builder.ParseLanguage(appInfo.Language)
+	if !lang.IsSupported() {
+		lang = buildMgr.DetectLanguage(projectRoot)
 	}
 
-	realPath, _ := filepath.Rel(projectRoot, mainFile)
+	fmt.Printf("  %s Preparing build environment...\n", color.BlueString("→"))
 
-	cmd := exec.Command("go", "build", "-o", outputPath, realPath)
-	cmd.Dir = projectRoot
-
-	if output, err := cmd.CombinedOutput(); err != nil {
+	// Prepare build context
+	buildCtx, err := buildMgr.PrepareBuild(
+		id,
+		appInfo.Name,
+		projectRoot,
+		outputPath,
+		lang,
+		extraArgs,
+		appInfo.NoUpload,
+	)
+	if err != nil {
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if app, exists := appManager.Apps[id]; exists {
 				app.BuildStatus = "failed"
 				app.UpdatedAt = time.Now()
-				appManager.SaveState()
+				_ = appManager.SaveState()
 			}
 		}
-		return fmt.Errorf("⚠ build failed: %v\nOutput: %s", err, string(output))
+		return fmt.Errorf("%s build preparation failed: %v", color.RedString("✗"), err)
 	}
 
+	fmt.Printf("  %s Building with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
+
+	// Execute build
+	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
+		if appManager, ok := app.Manager.(*app.AppManager); ok {
+			if appInfo, exists := appManager.Apps[id]; exists {
+				appInfo.BuildStatus = "failed"
+				appInfo.UpdatedAt = time.Now()
+				_ = appManager.SaveState()
+			}
+		}
+		return fmt.Errorf("%s build failed: %v", color.RedString("✗"), err)
+	}
+
+	duration := buildMgr.GetBuildDuration(buildCtx)
+	fmt.Printf("  %s Build completed in %s\n", color.GreenString("✓"), color.YellowString(duration.String()))
+
+	// Update build status
 	if appManager, ok := app.Manager.(*app.AppManager); ok {
-		if app, exists := appManager.Apps[id]; exists {
-			app.BuildStatus = "success"
-			app.UpdatedAt = time.Now()
-			appManager.SaveState()
+		if appInfoPtr, exists := appManager.Apps[id]; exists {
+			appInfoPtr.BuildStatus = "success"
+			appInfoPtr.Language = string(lang)
+			appInfoPtr.UpdatedAt = time.Now()
+			_ = appManager.SaveState()
 		}
 	}
+
 	return nil
 }
 
@@ -201,8 +248,9 @@ func startApplication(id, name string) error {
 }
 
 func startApplicationOnPort(id, name string, port int) error {
+	fmt.Printf("  %s Starting application on port %d...\n", color.BlueString("→"), port)
 	if err := app.Manager.StartApplication(id, port, name); err != nil {
-		return fmt.Errorf("⚠ failed to start application: %w", err)
+		return fmt.Errorf("%s failed to start application: %w", color.RedString("✗"), err)
 	}
 	return nil
 }

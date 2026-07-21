@@ -69,6 +69,8 @@ func (m *AppManager) SaveState() error {
 		CreatedAt   time.Time `json:"created_at"`
 		UpdatedAt   time.Time `json:"updated_at"`
 		Directory   string    `json:"directory"`
+		Language    string    `json:"language"`
+		NoUpload    bool      `json:"no_upload"`
 	}
 
 	savedApps := make(map[string]SavedApp)
@@ -85,6 +87,8 @@ func (m *AppManager) SaveState() error {
 			CreatedAt:   app.CreatedAt,
 			UpdatedAt:   app.UpdatedAt,
 			Directory:   app.Directory,
+			Language:    app.Language,
+			NoUpload:    app.NoUpload,
 		}
 	}
 
@@ -140,6 +144,8 @@ func (m *AppManager) LoadState() error {
 		CreatedAt   time.Time `json:"created_at"`
 		UpdatedAt   time.Time `json:"updated_at"`
 		Directory   string    `json:"directory"`
+		Language    string    `json:"language"`
+		NoUpload    bool      `json:"no_upload"`
 	}
 
 	var savedApps map[string]SavedApp
@@ -189,6 +195,9 @@ func (m *AppManager) LoadState() error {
 			Directory:   saved.Directory,
 			Cmd:         nil,
 		}
+		// restore language and no-upload flag
+		appInfo.Language = saved.Language
+		appInfo.NoUpload = saved.NoUpload
 
 		// Update status based on process state
 		if isRunning {

@@ -32,6 +32,10 @@ type AppInfo struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	Directory   string // Directory where the application is located
+	// Language represents the programming language of the project (go, rust, ...)
+	Language string
+	// NoUpload indicates whether this app should be uploaded/shared with the server
+	NoUpload bool
 }
 
 // AppStatus represents the current status of an application
@@ -46,6 +50,7 @@ type AppStatus struct {
 	BuildStatus string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Language    string
 }
 
 // AppListItem represents a simplified view of an application for listing
@@ -59,4 +64,5 @@ type AppListItem struct {
 	BuildStatus string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Language    string
 }

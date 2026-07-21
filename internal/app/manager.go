@@ -140,6 +140,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 			BuildStatus: app.BuildStatus,
 			CreatedAt:   app.CreatedAt,
 			UpdatedAt:   app.UpdatedAt,
+			Language:    app.Language,
 		})
 	}
 	return appList
@@ -184,6 +185,7 @@ func (m *AppManager) StatusApplication(identifier string) (AppStatus, error) {
 		CreatedAt:   app.CreatedAt,
 		UpdatedAt:   app.UpdatedAt,
 	}
+	status.Language = app.Language
 
 	if app.Status == "running" {
 		ramUsage, cpuUsage, err := m.getProcessMetrics(app.PID)

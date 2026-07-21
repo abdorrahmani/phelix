@@ -39,11 +39,12 @@ func displayStatus(status app.AppStatus) {
 
 func createStatusTable() *tablewriter.Table {
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"ID", "Name", "Status", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
+	table.SetHeader([]string{"ID", "Name", "Language", "Status", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
 	table.SetBorder(true)
 	table.SetRowLine(true)
 	table.SetColumnAlignment([]int{
 		tablewriter.ALIGN_LEFT,
+		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
@@ -57,10 +58,15 @@ func createStatusTable() *tablewriter.Table {
 func populateStatusTable(table *tablewriter.Table, status app.AppStatus) {
 	statusText := FormatStatus(status.Status)
 	ramUsageMB := float64(status.RAMUsage) / (1024 * 1024)
+	lang := status.Language
+	if lang == "" {
+		lang = "unknown"
+	}
 
 	table.Append([]string{
 		status.ID,
 		color.BlueString(status.Name),
+		color.CyanString(lang),
 		statusText,
 		fmt.Sprintf("%d", status.PID),
 		status.Uptime,

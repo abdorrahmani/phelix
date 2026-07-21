@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -31,19 +34,19 @@ var StartCmd = &cobra.Command{
 				return nil
 			}
 
-			fmt.Println("Starting all applications...")
+			fmt.Println(color.BlueString("→") + " Starting all applications...")
 			for _, a := range apps {
 				if a.Status == "running" {
-					fmt.Printf("• '%s' (ID: %s) is already running\n", a.Name, a.ID)
+					fmt.Printf("  %s %s (ID: %s) is already running\n", color.GreenString("✓"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID))
 					continue
 				}
 
-				fmt.Printf("• Starting '%s' (ID: %s) on port %d...\n", a.Name, a.ID, a.Port)
+				fmt.Printf("  %s Starting %s (ID: %s) on port %d...\n", color.BlueString("→"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), a.Port)
 				if err := app.Manager.StartApplication(a.ID, a.Port, a.Name); err != nil {
-					fmt.Printf("  ⚠ Failed to start '%s' (ID: %s): %v\n", a.Name, a.ID, err)
+					fmt.Printf("    %s Failed to start %s (ID: %s): %v\n", color.RedString("✗"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), err)
 					continue
 				}
-				fmt.Printf("  ✓ '%s' started successfully\n", a.Name)
+				fmt.Printf("    %s %s started successfully\n", color.GreenString("✓"), color.CyanString("'%s'", a.Name))
 			}
 			return nil
 		}
@@ -62,37 +65,45 @@ var StartCmd = &cobra.Command{
 		name, usePort := DetermineAppParameters(appInfo, cmd, port)
 
 		if startEnsure && appInfo.Status == "running" {
-			fmt.Printf("✓ Application '%s' (ID: %s) is already running on port %d\n", name, appInfo.ID, appInfo.Port)
+			fmt.Printf("%s Application %s (ID: %s) is already running on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), appInfo.Port)
 			return nil
 		}
 
-		fmt.Printf("Starting application '%s' (ID: %s) on port %d\n", name, appInfo.ID, usePort)
+		fmt.Printf("%s Starting application %s (ID: %s) on port %d\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), usePort)
 
 		if err := app.Manager.StartApplication(appInfo.ID, usePort, name); err != nil {
 			if !startEnsure {
-				return fmt.Errorf("⚠ Failed to start application '%s' (ID: %s): %v", name, appInfo.ID, err)
+				return fmt.Errorf("%s Failed to start application %s (ID: %s): %v", color.RedString("✗"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
 			}
 
-			fmt.Printf("⚠ Start failed for application '%s' (ID: %s): %v\n", name, appInfo.ID, err)
-			fmt.Printf("• Rebuilding application '%s' (ID: %s)\n", name, appInfo.ID)
+			fmt.Printf("%s Start failed for application %s (ID: %s): %v\n", color.YellowString("⚠"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
+
+			// Try to rebuild
+			buildMgr := builder.NewBuildManager()
+			lang := builder.ParseLanguage(appInfo.Language)
+			if !lang.IsSupported() {
+				lang = buildMgr.DetectLanguage(appInfo.Directory)
+			}
+
+			fmt.Printf("%s Rebuilding application %s (ID: %s) with %s...\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), color.GreenString(buildMgr.FormatLanguage(lang)))
 
 			if err := stopExistingApp(appInfo); err != nil {
 				return err
 			}
 
-			if err := rebuildApp(appInfo.ID); err != nil {
+			if err := rebuildApp(appInfo.ID, []string{}, buildMgr); err != nil {
 				return err
 			}
 
 			if err := app.Manager.StartApplication(appInfo.ID, usePort, name); err != nil {
-				return fmt.Errorf("⚠ Failed to start rebuilt application '%s' (ID: %s): %v", name, appInfo.ID, err)
+				return fmt.Errorf("%s Failed to start rebuilt application %s (ID: %s): %v", color.RedString("✗"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
 			}
 
-			fmt.Printf("✓ Application '%s' (ID: %s) rebuilt and started successfully on port %d\n", name, appInfo.ID, usePort)
+			fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), usePort)
 			return nil
 		}
 
-		fmt.Printf("✓ Application '%s' (ID: %s) started successfully on port %d\n", name, appInfo.ID, usePort)
+		fmt.Printf("%s Application %s (ID: %s) started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), usePort)
 		return nil
 	},
 }
@@ -112,13 +123,33 @@ func ensureNewApplication(name string, port int) error {
 	}
 
 	id := app.Manager.GenerateAppID()
-	fmt.Printf("• Application '%s' does not exist. Building it with ID: %s\n", name, id)
 
-	if err := createAppEntry(id, name); err != nil {
+	// Get current directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("%s failed to get current directory: %v", color.RedString("✗"), err)
+	}
+
+	// Detect language
+	buildMgr := builder.NewBuildManager()
+	lang := buildMgr.DetectLanguage(cwd)
+	if !lang.IsSupported() {
+		return fmt.Errorf("%s unsupported or unknown project language: %s", color.RedString("✗"), lang)
+	}
+
+	// Validate tools
+	if err := buildMgr.ValidateTools(lang); err != nil {
+		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+	}
+
+	fmt.Printf("%s Application %s does not exist. Building it with ID: %s\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(id))
+	fmt.Printf("  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
+
+	if err := createAppEntry(id, name, lang, noUpload); err != nil {
 		return err
 	}
 
-	if err := buildApplication(id); err != nil {
+	if err := buildApplication(id, []string{}, buildMgr); err != nil {
 		return err
 	}
 
@@ -126,6 +157,6 @@ func ensureNewApplication(name string, port int) error {
 		return err
 	}
 
-	fmt.Printf("✓ Application '%s' (ID: %s) built and started successfully on port %d\n", name, id, port)
+	fmt.Printf("%s Application %s (ID: %s) built and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(id), port)
 	return nil
 }
