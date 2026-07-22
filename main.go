@@ -157,6 +157,7 @@ func main() {
 	rootCmd.AddCommand(cmd.RemoveCmd)
 	rootCmd.AddCommand(cmd.EnvCmd)
 	rootCmd.AddCommand(cmd.HealthCmd)
+	rootCmd.AddCommand(cmd.ProxyCmd)
 	rootCmd.AddCommand(monitorCmd)
 
 	rootCmd.AddCommand(cmd.VersionCmd)

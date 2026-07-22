@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/deploy"
+	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -15,11 +18,18 @@ import (
 var rebuildPort int
 var rebuildArgs []string
 var rebuildNoUpload bool
+var rebuildBlueGreen bool
+var rebuildReplicas int
 
 var RebuildCmd = &cobra.Command{
 	Use:   "rebuild <ID|AppName> --port <PORT>",
 	Short: "Rebuilds and runs a Go Application by its ID or AppName.",
 	Args:  cobra.ExactArgs(1),
+	// Deploy failures are already printed with context (✗ lines); cobra's
+	// default usage dump and "Error:" prefix after a long blue-green/rolling
+	// run are noise.
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		identifier := args[0]
 
@@ -60,6 +70,16 @@ var RebuildCmd = &cobra.Command{
 			_ = app.Manager.SaveState()
 		}
 
+		// Zero-downtime deploy paths. When --blue-green or --replicas is set we
+		// hand off to the deploy package instead of the stop->build->start flow
+		// below. The deploy package builds via the same builder, starts the new
+		// instance on an internal port, runs the tiered health check, then
+		// atomically switches the proxy target — so the public port never drops
+		// a connection.
+		if rebuildBlueGreen || rebuildReplicas > 0 {
+			return runZeroDowntimeDeploy(appInfo, name, portToUse)
+		}
+
 		if err := stopExistingApp(appInfo); err != nil {
 			return err
 		}
@@ -82,6 +102,109 @@ func init() {
 	RebuildCmd.Flags().IntVarP(&rebuildPort, "port", "p", 8080, "Port to run the application on (defaults to previous port if unspecified)")
 	RebuildCmd.Flags().StringArrayVarP(&rebuildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	RebuildCmd.Flags().BoolVar(&rebuildNoUpload, "no-upload", false, "If set, do not upload/send app information to the server after rebuild")
+	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
+	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
+}
+
+// runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a
+// deploy.Builder closure around the existing rebuildApp path, a proxy.Client
+// for the control socket, and a colorised logger, then runs BlueGreen or
+// Rolling depending on which flag was set.
+func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) error {
+	socket, err := proxy.DefaultSocketPath()
+	if err != nil {
+		return fmt.Errorf("%s could not determine proxy socket path: %v", color.RedString("✗"), err)
+	}
+
+	// Ensure the proxy daemon is up. If the user hasn't started it yet, spawn
+	// it in the background so blue-green/rolling "just work".
+	fmt.Printf("  %s Ensuring proxy daemon is running...\n", color.BlueString("→"))
+	if err := proxy.EnsureDaemon(context.Background(), "", 5*time.Second); err != nil {
+		return fmt.Errorf("%s %v\n  Start it manually with: %s",
+			color.RedString("✗"), err, color.CyanString("phelix proxy"))
+	}
+
+	proxyClient := proxy.NewClient(socket)
+	if err := proxyClient.Ping(context.Background()); err != nil {
+		return fmt.Errorf("%s %v\n  Start it first with: %s",
+			color.RedString("✗"), err, color.CyanString("phelix proxy"))
+	}
+
+	// deploy.Builder closure: delegates to the existing rebuild path, which
+	// handles language detection, toolchain checks and env injection.
+	buildMgr := builder.NewBuildManager()
+	builderFn := func(ctx context.Context, appID, appName string, extraArgs []string) (string, error) {
+		if err := rebuildApp(appID, extraArgs, buildMgr); err != nil {
+			return "", err
+		}
+		// The binary lives at <Directory>/app_<id>, matching app/process.go.
+		if am, ok := app.Manager.(*app.AppManager); ok {
+			if info, exists := am.Apps[appID]; exists {
+				return filepath.Join(info.Directory, fmt.Sprintf("app_%s", appID)), nil
+			}
+		}
+		return "", fmt.Errorf("could not locate built binary for %s", appID)
+	}
+
+	logger := &colorLogger{}
+	healthProvider := deploy.DefaultHealthProvider()
+
+	if rebuildBlueGreen {
+		bg := &deploy.BlueGreen{
+			AppName:        name,
+			AppID:          appInfo.ID,
+			PublicPort:     publicPort,
+			ExtraArgs:      rebuildArgs,
+			Builder:        builderFn,
+			Launcher:       deploy.DefaultLauncher,
+			ProxyClient:    proxyClient,
+			HealthProvider: healthProvider,
+			Logger:         logger,
+		}
+		if err := bg.Deploy(context.Background()); err != nil {
+			return err
+		}
+		fmt.Printf("%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
+		return nil
+	}
+
+	// Rolling deploy.
+	r := &deploy.Rolling{
+		AppName:        name,
+		AppID:          appInfo.ID,
+		PublicPort:     publicPort,
+		Replicas:       rebuildReplicas,
+		ExtraArgs:      rebuildArgs,
+		Builder:        builderFn,
+		Launcher:       deploy.DefaultLauncher,
+		ProxyClient:    proxyClient,
+		HealthProvider: healthProvider,
+		Logger:         logger,
+	}
+	if err := r.Deploy(context.Background()); err != nil {
+		return err
+	}
+	fmt.Printf("%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
+		color.GreenString("✓"), color.CyanString("'%s'", name), rebuildReplicas)
+	return nil
+}
+
+// colorLogger implements deploy.Logger using the project's existing color
+// convention (→ blue, ✓ green, ⚠ yellow, ✗ red).
+type colorLogger struct{}
+
+func (colorLogger) Stepf(f string, a ...any) {
+	fmt.Printf("  %s %s\n", color.BlueString("→"), fmt.Sprintf(f, a...))
+}
+func (colorLogger) Infof(f string, a ...any) { fmt.Printf("    %s\n", fmt.Sprintf(f, a...)) }
+func (colorLogger) Warnf(f string, a ...any) {
+	fmt.Printf("  %s %s\n", color.YellowString("⚠"), fmt.Sprintf(f, a...))
+}
+func (colorLogger) Successf(f string, a ...any) {
+	fmt.Printf("  %s %s\n", color.GreenString("✓"), fmt.Sprintf(f, a...))
+}
+func (colorLogger) Errorf(f string, a ...any) {
+	fmt.Printf("  %s %s\n", color.RedString("✗"), fmt.Sprintf(f, a...))
 }
 
 func stopExistingApp(appInfo *app.AppInfo) error {

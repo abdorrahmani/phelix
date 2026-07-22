@@ -11,7 +11,8 @@ Phelix is a powerful Go Application Manager that helps you build, run, and manag
 - Authentication and security
 - Application lifecycle management
 - WebSocket-based monitoring service
-- **Encrypted environment variable management** (NEW)
+- **Encrypted environment variable management**
+- **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
 
 ## Installation
 The CLI requires Go to be installed on your system. If Go is not installed, Phelix will attempt to install it automatically on Linux systems. For other operating systems, you'll need to install Go manually.
@@ -64,6 +65,8 @@ phelix rebuild 123 --port 8080
 - `ID`: Application ID
 - `--port`: Port to run the application on (defaults to previous port if unspecified)
 
+For zero-downtime rebuilds, see [Zero-Downtime Deploys](#zero-downtime-deploys) below (`--blue-green` / `--replicas`).
+
 ### Application Control
 
 #### `phelix start <ID> --port <PORT>`
@@ -99,7 +102,8 @@ Lists all applications across all monitored servers, showing:
 - Status
 - PID
 - Uptime
-- Server location
+- Deploy method (`blue-green`, `rolling`, or classic)
+- Proxy enrollment (public port and active slot, when the proxy daemon is up)
 
 #### `phelix status <ID>`
 Shows detailed status of a specific application, including:
@@ -110,8 +114,8 @@ Shows detailed status of a specific application, including:
 - Uptime
 - RAM Usage (MB)
 - CPU Usage (%)
-- Server information
-- Last update time
+- Deploy method, active slot/replicas, and health tier (when using zero-downtime deploys)
+- Live proxy routing (public port, primary backend, in-flight requests)
 
 #### `phelix log <ID>`
 Displays logs for a specific application.
@@ -170,6 +174,53 @@ When an application starts, Phelix automatically:
 - **No Plain Text**: Environment variables are never stored in plain text
 - **Application Isolation**: Each application has its own encrypted environment file
 
+### Zero-Downtime Deploys
+
+Phelix can rebuild and cut over without dropping connections by keeping a reverse-proxy daemon on the app's **stable public port** and switching traffic to a newly built, health-checked instance.
+
+```
+Client → :8080 [phelix proxy]  ──atomic target──→ blue  :9001
+                                               ↘ green :9002
+```
+
+#### Prerequisites
+1. Your app must listen on the port given by the `PORT` environment variable (Phelix sets this for each internal instance).
+2. Prefer a real health endpoint so deploys use Tier 1 checks:
+   ```bash
+   phelix health set myapp --path /health
+   ```
+   Without one, Phelix falls back to Tier 2 (any HTTP response) or Tier 3 (TCP only) and prints a warning.
+
+#### `phelix proxy`
+Starts the reverse-proxy daemon **in the background** (control socket: `~/.phelix/proxy.sock`).
+```bash
+phelix proxy              # detach into background
+phelix proxy status       # show enrolled apps and routing
+phelix proxy stop         # drain and stop the daemon
+phelix proxy --foreground # run attached (for systemd / debugging)
+```
+`phelix rebuild --blue-green` / `--replicas` will also auto-start the daemon if it is not already running.
+
+#### Blue-green deploy
+Builds a new binary, starts it on the inactive slot (blue ↔ green), waits until healthy, then atomically switches the proxy. The previous instance is drained and stopped.
+```bash
+phelix rebuild myapp --blue-green
+phelix rebuild myapp --blue-green --port 8080
+```
+
+#### Rolling deploy
+Restarts N replicas one at a time (never more than one down). Useful when you want capacity during the cut-over.
+```bash
+phelix rebuild myapp --replicas 3
+```
+
+#### What you see in `list` / `status`
+- **Deploy**: `blue-green (blue|green)` or `rolling (×N)`, or `-` for classic stop→start rebuilds
+- **Proxy**: `on :<public> → <slot>` when enrolled, otherwise `off`
+
+#### Failure behaviour
+If the new instance fails its health check, the deploy **aborts**, the new instance is killed, and the currently active instance is left untouched — public traffic keeps flowing.
+
 ### Multi-Server Monitoring
 
 #### `phelix monitor`
@@ -196,6 +247,9 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 - Session file: `~/.phelix/session.json`
 - Log files: `~/.phelix/logs/phelix.log`
 - Application logs: Stored in the application's directory
+- Deploy instance logs: `~/.phelix/logs/deploy_*.log`
+- Deploy state: `~/.phelix/apps/<AppName>/deploy.json`
+- Proxy control socket: `~/.phelix/proxy.sock`
 - Server configuration: `~/.phelix/config.json`
 - **Master key: `~/.phelix/master.key`** (Keep this safe!)
 - **Encrypted environment files: `~/.phelix/envs/<appid>.env.enc`**

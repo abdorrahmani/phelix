@@ -23,6 +23,7 @@ var (
 	healthName          string
 	healthURL           string
 	watchFlag           bool
+	healthMode          string
 )
 
 var HealthCmd = &cobra.Command{
@@ -114,6 +115,26 @@ var healthSetCmd = &cobra.Command{
 			fmt.Printf("Default endpoint configured: %s\n", endpointName)
 		} else {
 			fmt.Println("Health checks initialized for app (no endpoints yet)")
+		}
+
+		// Persist the deploy-tier health config (used by blue-green/rolling
+		// deploys). Validate the mode up front so typos are caught here rather
+		// than silently falling back to auto at deploy time.
+		mode := health.TierModeAuto
+		if healthMode != "" {
+			switch health.DeployTierMode(healthMode) {
+			case health.TierModeAuto, health.TierModeHTTP, health.TierModeTCPOnly, health.TierModeNone:
+				mode = health.DeployTierMode(healthMode)
+			default:
+				return fmt.Errorf("invalid --mode %q: must be one of auto, http, tcp-only, none", healthMode)
+			}
+		}
+		config.DeployTier = &health.DeployTierConfig{
+			Mode:     mode,
+			Path:     healthPath,
+			Interval: interval,
+			Retries:  retries,
+			Timeout:  timeout,
 		}
 
 		// Save config
@@ -498,6 +519,7 @@ func init() {
 	healthSetCmd.Flags().IntVar(&healthRetries, "retries", 3, "Number of consecutive failures before marking DOWN")
 	healthSetCmd.Flags().StringVar(&healthExpectedCodes, "codes", "200-299", "Expected HTTP status codes (e.g., 200-299)")
 	healthSetCmd.Flags().StringVar(&healthTimeout, "timeout", "10s", "Request timeout")
+	healthSetCmd.Flags().StringVar(&healthMode, "mode", "auto", "Deploy health tier: auto, http, tcp-only, none")
 
 	// health add flags
 	healthAddCmd.Flags().StringVar(&healthName, "name", "", "Endpoint name (required)")

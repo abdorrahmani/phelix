@@ -33,6 +33,48 @@ type AppHealthConfig struct {
 	Endpoints map[string]*HealthCheckConfig `json:"endpoints"` // key is endpoint name
 	Enabled   bool                          `json:"enabled"`
 	UpdatedAt time.Time                     `json:"updated_at"`
+
+	// DeployTier configures the tiered health check used during zero-downtime
+	// deploys (blue-green / rolling). It is read by internal/deploy via
+	// internal/health/tiered.go. nil means "auto-detect at deploy time".
+	DeployTier *DeployTierConfig `json:"deploy_tier,omitempty"`
+}
+
+// DeployTierMode selects which health-check tier the deploy flow uses.
+//
+// The deploy flow cannot assume every app exposes a /health endpoint, so the
+// tier system falls back from "explicit HTTP endpoint" down to "process is
+// alive". See SelectTier in tiered.go for the selection rules.
+type DeployTierMode string
+
+const (
+	// TierModeAuto auto-detects: explicit path -> Tier1, else HTTP probe ->
+	// Tier2, else TCP -> Tier3. This is the default.
+	TierModeAuto DeployTierMode = "auto"
+	// TierModeHTTP forces Tier 1: require 2xx on the configured path.
+	TierModeHTTP DeployTierMode = "http"
+	// TierModeTCPOnly forces Tier 3 TCP: only net.Dial the port.
+	TierModeTCPOnly DeployTierMode = "tcp-only"
+	// TierModeNone forces Tier 3 None: only check the PID is alive (no network).
+	TierModeNone DeployTierMode = "none"
+)
+
+// DeployTierConfig configures the tiered deploy-time health check for an app.
+type DeployTierConfig struct {
+	// Mode selects the tier or "auto" for selection logic.
+	Mode DeployTierMode `json:"mode"`
+	// Path is the explicit health endpoint path (e.g. /health). Selects Tier 1
+	// when non-empty (and Mode is auto/http).
+	Path string `json:"path,omitempty"`
+	// Interval between consecutive probes during the deploy health-check window.
+	// Defaults to 1s.
+	Interval string `json:"interval,omitempty"`
+	// Retries is the number of consecutive successful probes required before
+	// an instance is considered healthy. Defaults to 5.
+	Retries int `json:"retries,omitempty"`
+	// Timeout is the overall deadline for the instance to become healthy.
+	// Defaults to 30s.
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // HealthCheckHistory represents stored health check history
