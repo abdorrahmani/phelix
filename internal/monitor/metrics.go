@@ -4,6 +4,7 @@ import (
 	"log"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
@@ -45,6 +46,7 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 			Name:        appInfo.Name,
 			Status:      appInfo.Status,
 			BuildStatus: appInfo.BuildStatus,
+			Language:    builder.Language(appInfo.Language),
 			PID:         appInfo.PID,
 			Port:        appInfo.Port,
 			Uptime:      appInfo.Uptime,
