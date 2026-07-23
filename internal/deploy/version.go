@@ -22,6 +22,12 @@ type VersionMeta struct {
 	DeployedAt *time.Time `json:"deployed_at,omitempty"`
 	DeployMode string     `json:"deploy_mode,omitempty"`
 	IsCurrent  bool       `json:"is_current"`
+	// DockerImage is the full image reference (registry/repo:tag) when this
+	// version was built via `phelix dockerize`. When present, future deploy
+	// logic can use "docker run" as a BuildSource implementation instead of
+	// running the binary directly. This field is additive — nil/absent means
+	// the version is a native binary build (FreshBuildSource path).
+	DockerImage string `json:"docker_image,omitempty"`
 }
 
 // VersionsFile is the on-disk metadata index for an app's build history.
@@ -289,6 +295,40 @@ func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, po
 		return nil, err
 	}
 	return &RecordResult{Version: ver, BinaryPath: destBin, EnvPath: envPath}, nil
+}
+
+// RecordDockerBuild records a Docker image as a new version entry. Unlike
+// RecordFreshBuild, it does not copy a binary — the version metadata carries
+// a DockerImage reference that future deploy logic can use to run the image.
+// The version is created with is_current=false (same two-phase protocol).
+func RecordDockerBuild(appName, dockerImage, tag, gitCommit string, policy RetentionPolicy, log Logger) (*RecordResult, error) {
+	if policy == nil {
+		policy = DefaultRetention{}
+	}
+	ver, err := NextVersion(appName)
+	if err != nil {
+		return nil, err
+	}
+	vf, err := LoadVersions(appName)
+	if err != nil {
+		return nil, err
+	}
+	vf.Versions = append(vf.Versions, VersionMeta{
+		Version:     ver,
+		Tag:         tag,
+		GitCommit:   gitCommit,
+		BuiltAt:     time.Now(),
+		SizeBytes:   0, // Docker images don't have a local binary size
+		IsCurrent:   false,
+		DockerImage: dockerImage,
+	})
+	if err := saveVersions(appName, vf); err != nil {
+		return nil, err
+	}
+	if err := PruneVersions(appName, policy, log); err != nil {
+		return nil, err
+	}
+	return &RecordResult{Version: ver}, nil
 }
 
 // PromoteVersion marks ver as current after a successful deploy: updates

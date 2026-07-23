@@ -14,6 +14,7 @@ Phelix is a powerful Go Application Manager that helps you build, run, and manag
 - **Encrypted environment variable management**
 - **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
 - **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
+- **Docker image building** (auto-generated multi-stage Dockerfiles for Go/Rust with optimized layer caching)
 
 ## Installation
 The CLI requires Go to be installed on your system. If Go is not installed, Phelix will attempt to install it automatically on Linux systems. For other operating systems, you'll need to install Go manually.
@@ -317,6 +318,90 @@ If the start fails, the version exists on disk but `is_current` stays false — 
 #### Retention policy
 Old versions are automatically pruned after each successful build, keeping the last 5 versions by default. The currently active version is never pruned, even if it falls outside the retention window. The retention count is configurable per plan tier (Free: 3, Pro: 10, Enterprise: unlimited).
 
+### Docker Image Building
+
+Phelix can build optimized multi-stage Docker images for Go and Rust projects. Language is auto-detected from `go.mod` (Go) or `Cargo.toml` (Rust).
+
+#### `phelix dockerize <AppName>`
+
+Builds a Docker image for the project in the current directory.
+
+```bash
+phelix dockerize myapp --tag v1.0.0
+phelix dockerize myapp --tag v1.0.0 --push --registry ghcr.io/myuser
+phelix dockerize myapp --tag v1.0.0 --build-arg VERSION=1.0.0
+phelix dockerize myapp --tag v1.0.0 --with-compose --depends-on redis,postgres
+```
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--tag` | Version tag for the Docker image (e.g. `v1.2.3`) |
+| `--push` | Push the image to the registry after building |
+| `--registry` | Registry prefix (e.g. `ghcr.io/user`, `docker.io/myorg`, `harbor.example.com/project`) |
+| `-a, --build-arg` | Extra build argument `KEY=value` (repeatable) |
+| `--with-compose` | Generate a `docker-compose.yml` with the app service |
+| `--depends-on` | Sidecar services for compose (`redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`) |
+
+#### How it works
+
+**Language detection:**
+- Checks for `go.mod` (Go) or `Cargo.toml` (Rust) in the current directory
+- Fails with a clear error if neither or both are found
+
+**Dockerfile generation (if none exists):**
+
+The generated Dockerfiles use multi-stage builds optimized for Docker layer caching. The instruction ordering is designed so that dependency-heavy layers are cached separately from source code:
+
+*Go:*
+1. **Builder stage** — `COPY go.mod go.sum` → `go mod download` → `COPY . .` → `go build`
+   - Dependencies are downloaded and cached before copying source. Editing source code only triggers recompilation, not re-downloading of modules.
+   - Final binary is built with `CGO_ENABLED=0` for a fully static binary.
+2. **Runtime stage** — `FROM scratch` with just the binary. Smallest possible image.
+
+*Rust:*
+1. **Dependency cache stage** — Copies `Cargo.toml`/`Cargo.lock`, creates a dummy `main.rs`, runs `cargo build --release`. This compiles ALL dependencies (~minutes for typical projects) and caches the result.
+2. **Real build stage** — Copies real source, runs `cargo build --release`. Only the application's own code needs recompilation (seconds).
+3. **Runtime stage** — `debian:bookworm-slim` with `ca-certificates`. Minimal runtime with glibc compatibility.
+
+> **If a Dockerfile already exists in the project directory, it is used as-is** — Phelix never overwrites a user-provided Dockerfile.
+
+**`.dockerignore` generation (if none exists):**
+Auto-generated to exclude `.git`, `.env` files, build artifacts, logs, IDE configs, and Phelix internals — preventing secrets from leaking into the build context.
+
+**Build output:**
+Docker's build progress (layer pulls, compilation steps) is streamed in real-time to the terminal, so you can see what's happening during the build instead of a blank screen.
+
+**OCI metadata labels:**
+Every image is tagged with OCI-standard labels:
+- `org.opencontainers.image.version` — the `--tag` value
+- `org.opencontainers.image.revision` — git commit hash (if available)
+- `org.opencontainers.image.created` — build timestamp
+
+**Version integration:**
+Each `phelix dockerize` call records the Docker image reference in `versions.json` (the same versioning system used by `phelix rollback`). This means the version history tracks both binary builds and Docker images, so future rollback logic can support `docker run <image>` as a deploy source without redesigning the schema.
+
+**Push to registry:**
+The `--push` flag pushes the built image to a configurable registry. Registry credentials can be stored using the same AES-256-GCM encrypted mechanism as environment variables (via `internal/env`). If you're not logged in, a clear error message tells you to run `docker login` first.
+
+#### Docker-compose generation
+
+The `--with-compose` flag generates a `docker-compose.yml` that includes the app service and any requested sidecars:
+
+```bash
+phelix dockerize myapp --tag v1.0.0 --with-compose --depends-on redis,postgres
+```
+
+This produces a ready-to-use `docker-compose.yml` with:
+- The app's service (building from the local Dockerfile)
+- Redis (port 6379, `redis:7-alpine`)
+- PostgreSQL (port 5432, `postgres:16-alpine` with default credentials)
+
+Supported sidecars: `redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`.
+
+> **Important:** Phelix only *generates* the compose file. It does **not** manage the lifecycle (start/stop/health) of compose-defined services. Use `docker compose up -d` directly to manage them.
+
 ### Multi-Server Monitoring
 
 #### `phelix monitor`
@@ -354,6 +439,7 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 - Server configuration: `~/.phelix/config.json`
 - **Master key: `~/.phelix/master.key`** (Keep this safe!)
 - **Encrypted environment files: `~/.phelix/envs/<appid>.env.enc`**
+- **Registry credentials: `~/.phelix/registry/<slug>.enc`** (AES-256-GCM encrypted)
 
 ## Error Handling
 - Authentication errors will prompt you to run `phelix auth`
@@ -378,6 +464,7 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 14. **Keep the proxy daemon running** (`phelix proxy`) for zero-downtime rollbacks
 15. **Use `--tag` to label important builds** (e.g. `--tag "v2.1-release"`) for easier rollback identification
 16. **Check `phelix status <app>` for version history** — the last 3 versions are shown so you can see what you'd roll back to
+17. **Use `phelix dockerize` to containerize apps** — generates optimized multi-stage Dockerfiles with dependency caching
 
 ## Security Considerations
 - All communication is encrypted

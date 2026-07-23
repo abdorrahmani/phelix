@@ -159,6 +159,7 @@ func main() {
 	rootCmd.AddCommand(cmd.EnvCmd)
 	rootCmd.AddCommand(cmd.HealthCmd)
 	rootCmd.AddCommand(cmd.ProxyCmd)
+	rootCmd.AddCommand(cmd.DockerizeCmd)
 	rootCmd.AddCommand(monitorCmd)
 
 	rootCmd.AddCommand(cmd.VersionCmd)
