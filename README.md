@@ -258,7 +258,11 @@ This means you can always inspect a failed build's artifacts, but a broken deplo
 ```
 
 #### `phelix rollback <AppName>`
-Roll back to the previous version with zero downtime. Rollback goes through the same deploy path as a forward deploy — health check, proxy switch, graceful shutdown — so the rollback gets the same zero-downtime guarantee.
+Roll back to a previous version. The rollback path depends on how the app was deployed:
+
+- **Zero-downtime apps** (built with `--blue-green` or `--replicas`): rollback goes through the same deploy path — health check, proxy switch, graceful shutdown — so you get the same zero-downtime guarantee.
+- **Classic apps** (built with plain `phelix build` / `phelix rebuild`): rollback stops the current instance, copies the versioned binary into place, and starts it. This is a brief downtime rollback (stop → start).
+
 ```bash
 phelix rollback myapp              # roll back to the previous version
 phelix rollback myapp --to v2      # roll back to a specific version
@@ -283,7 +287,9 @@ Output table columns:
 - **Prune soon** — whether this version would be removed after the next build (based on retention policy)
 
 #### How rollback works
-Rollback reuses the exact same zero-downtime deploy mechanism as `phelix rebuild --blue-green` / `--replicas`. It does **not** perform a raw symlink flip. Internally:
+Rollback supports two paths depending on how the app was originally deployed:
+
+**Zero-downtime path** (blue-green / rolling apps):
 1. `ResolveVersionOrTag` resolves the `--to` argument to a concrete version ID (supports version numbers and unique tag names)
 2. `ExistingVersionSource` resolves the binary and env paths for the target version
 3. A new instance starts on the inactive slot (blue or green)
@@ -293,6 +299,15 @@ Rollback reuses the exact same zero-downtime deploy mechanism as `phelix rebuild
 7. The `current` symlink and `versions.json` are updated
 
 If the rollback target fails its health check, the rollback **aborts** and the active instance is left untouched — identical to a failed forward deploy.
+
+**Classic path** (apps built without `--blue-green` / `--replicas`):
+1. `ResolveVersionOrTag` resolves the target version
+2. The current instance is stopped
+3. The versioned binary is copied to the app's expected location
+4. The app is started via `app.Manager.StartApplication`
+5. The version is promoted (`is_current` set to true, `current` symlink updated)
+
+If the start fails, the version exists on disk but `is_current` stays false — the user can retry without a broken "current" pointer.
 
 #### Rollback safety
 - **Concurrent protection**: A deploy lock prevents rollback from racing with another deploy or rollback on the same app
