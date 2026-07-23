@@ -1,0 +1,231 @@
+package grpc
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/abdorrahmani/phelix/config"
+	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
+	"github.com/abdorrahmani/phelix/internal/server"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
+)
+
+const (
+	keepaliveInterval    = 10 * time.Second
+	keepaliveTimeout     = 3 * time.Second
+	connectionTimeout    = 10 * time.Second
+	metadataSyncInterval = 30 * time.Second
+)
+
+// Client manages the gRPC connection to the backend.
+type Client struct {
+	conn          *grpc.ClientConn
+	serviceClient pb.PhelixServiceClient
+	mu            sync.RWMutex
+	done          chan struct{}
+	reconnectCh   chan struct{}
+	reconnect     *reconnectState
+	connected     bool
+	cancel        context.CancelFunc
+}
+
+// NewClient creates a new gRPC client instance.
+func NewClient() *Client {
+	return &Client{
+		done:        make(chan struct{}),
+		reconnectCh: make(chan struct{}, 1),
+		reconnect:   newReconnectState(),
+	}
+}
+
+// Connect establishes the gRPC connection to the backend.
+func (c *Client) Connect() error {
+	cfg := config.Get()
+	if cfg.App.GRPCUrl == "" {
+		grpcLog("[gRPC] No gRPC URL configured, skipping connection")
+		return nil
+	}
+
+	// Initialize server if not already done (needed for CLI commands)
+	if err := server.Initialize(); err != nil {
+		grpcLog("[gRPC] Failed to initialize server: %v", err)
+		return nil
+	}
+
+	serverID := server.GetServerID()
+	if serverID == "" {
+		grpcLog("[gRPC] No server ID available after initialization")
+		return fmt.Errorf("no server ID available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), connectionTimeout)
+	defer cancel()
+
+	// Create auth context
+	authCtx, err := attachAuthMetadata(ctx, serverID)
+	if err != nil {
+		return err
+	}
+
+	conn, err := grpc.DialContext(
+		authCtx,
+		cfg.App.GRPCUrl,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                keepaliveInterval,
+			Timeout:             keepaliveTimeout,
+			PermitWithoutStream: true,
+		}),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	c.conn = conn
+	c.serviceClient = pb.NewPhelixServiceClient(conn)
+	c.connected = true
+	c.mu.Unlock()
+
+	grpcLog("[gRPC] Connected to %s", cfg.App.GRPCUrl)
+	return nil
+}
+
+// Start initializes the gRPC client and begins background operations.
+func (c *Client) Start() {
+	if err := c.Connect(); err != nil {
+		grpcLog("[gRPC] Initial connection failed: %v, will retry", err)
+		c.scheduleReconnect()
+	}
+
+	// Start reconnect loop
+	go c.startReconnectLoop()
+
+	// Start metadata sync loop
+	go c.startMetadataSync()
+
+	// Start connection health monitor
+	go c.monitorConnection()
+}
+
+// Close gracefully shuts down the gRPC client.
+func (c *Client) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	select {
+	case <-c.done:
+		// Already closed
+		return
+	default:
+		close(c.done)
+	}
+
+	if c.conn != nil {
+		if err := c.conn.Close(); err != nil {
+			grpcLog("[gRPC] Error closing connection: %v", err)
+		}
+	}
+
+	c.connected = false
+	grpcLog("[gRPC] Client closed")
+}
+
+// IsConnected returns whether the gRPC client has an active connection.
+func (c *Client) IsConnected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.connected && c.conn != nil && c.conn.GetState() == connectivity.Ready
+}
+
+// reconnectIfNeeded checks connection state and triggers reconnect if needed.
+func (c *Client) reconnectIfNeeded() {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		c.scheduleReconnect()
+		return
+	}
+
+	state := conn.GetState()
+	if state == connectivity.Shutdown || state == connectivity.TransientFailure {
+		grpcLog("[gRPC] Connection state: %v, scheduling reconnect", state)
+		c.scheduleReconnect()
+	}
+}
+
+// monitorConnection periodically checks the connection health.
+func (c *Client) monitorConnection() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			c.reconnectIfNeeded()
+		}
+	}
+}
+
+// startMetadataSync periodically sends metadata to the backend.
+func (c *Client) startMetadataSync() {
+	ticker := time.NewTicker(metadataSyncInterval)
+	defer ticker.Stop()
+
+	// Send initial metadata immediately
+	c.sendMetadataOnce()
+
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			c.sendMetadataOnce()
+		}
+	}
+}
+
+func (c *Client) sendMetadataOnce() {
+	if !c.IsConnected() {
+		return
+	}
+
+	md := collectMetadata()
+	if md == nil {
+		grpcLog("[gRPC] collectMetadata returned nil (server_id empty?)")
+		return
+	}
+
+	grpcLog("[gRPC] Syncing metadata: server_id=%s apps=%d running=%d", md.GetServerId(), md.GetTotalManagedApps(), md.GetRunningApps())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	serverID := server.GetServerID()
+	authCtx, err := attachAuthMetadata(ctx, serverID)
+	if err != nil {
+		grpcLog("[gRPC] Failed to attach auth metadata: %v", err)
+		return
+	}
+
+	resp, err := c.serviceClient.SyncMetadata(authCtx, md)
+	if err != nil {
+		grpcLog("[gRPC] Metadata sync failed: %v", err)
+		c.reconnectIfNeeded()
+		return
+	}
+
+	if !resp.Accepted {
+		grpcLog("[gRPC] Metadata rejected: %s", resp.Message)
+	}
+}

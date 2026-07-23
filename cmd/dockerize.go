@@ -10,6 +10,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/docker"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -206,6 +207,9 @@ encryption mechanism as environment variables (via the internal/env package).`,
 		}
 
 		fmt.Printf("\n%s Docker image ready: %s\n", color.GreenString("✓"), color.CyanString(imageName))
+
+		// Report dockerize event
+		phelixgrpc.ReportEvent("", name, "dockerize", true, "", 0, "docker", dockerizeTag)
 		return nil
 	},
 }

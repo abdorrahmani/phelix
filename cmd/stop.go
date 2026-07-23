@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/spf13/cobra"
 )
 
@@ -24,10 +25,12 @@ var StopCmd = &cobra.Command{
 		}
 
 		if err := app.Manager.StopApplication(appInfo.ID); err != nil {
+			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", false, err.Error(), 0, "", "")
 			return fmt.Errorf(" ⚠ Failed to stop application '%s' (ID: %s) : %v", appInfo.Name, appInfo.ID, err)
 		}
 
 		fmt.Printf("✓ Application '%s' (ID: %s) stopped successfully\n", appInfo.Name, appInfo.ID)
+		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", true, "", 0, "", "")
 		return nil
 	},
 }

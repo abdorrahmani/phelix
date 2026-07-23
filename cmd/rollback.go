@@ -9,6 +9,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
@@ -101,6 +102,7 @@ var RollbackCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", name), target)
+		phelixgrpc.ReportEvent(appInfo.ID, name, "rollback", true, "", 0, "", fmt.Sprintf("v%d", target))
 		return nil
 	},
 }

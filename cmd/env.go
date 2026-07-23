@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/env"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/spf13/cobra"
 )
 
@@ -58,6 +59,7 @@ Examples:
 				}
 
 				fmt.Printf("✓ Set '%s' for application '%s'\n", key, appName)
+				phelixgrpc.ReportEvent(appID, appName, "env_change", true, "", 0, "", "")
 			}
 
 		case "get":
@@ -102,6 +104,7 @@ Examples:
 			}
 
 			fmt.Printf("✓ Unset '%s' for application '%s'\n", key, appName)
+			phelixgrpc.ReportEvent(appID, appName, "env_change", true, "", 0, "", "")
 
 		case "check":
 			if len(args) < 3 {

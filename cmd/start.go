@@ -6,6 +6,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +48,7 @@ var StartCmd = &cobra.Command{
 					continue
 				}
 				fmt.Printf("    %s %s started successfully\n", color.GreenString("✓"), color.CyanString("'%s'", a.Name))
+				phelixgrpc.ReportEvent(a.ID, a.Name, "start", true, "", 0, "", "")
 			}
 			return nil
 		}
@@ -104,6 +106,7 @@ var StartCmd = &cobra.Command{
 		}
 
 		fmt.Printf("%s Application %s (ID: %s) started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), usePort)
+		phelixgrpc.ReportEvent(appInfo.ID, name, "start", true, "", 0, "", "")
 		return nil
 	},
 }

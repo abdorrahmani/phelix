@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/spf13/cobra"
 )
 
@@ -25,10 +26,12 @@ var RestartCmd = &cobra.Command{
 
 		fmt.Printf("• Restarting Application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
 		if err := app.Manager.RestartApplication(appInfo.ID); err != nil {
+			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
 			return fmt.Errorf("⚠ Restart failed: %v", err)
 		}
 
 		fmt.Printf("✓ Application '%s' (ID: %s) restarted successfully\n", appInfo.Name, appInfo.ID)
+		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
 		return nil
 	},
 }

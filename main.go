@@ -11,6 +11,7 @@ import (
 	"github.com/abdorrahmani/phelix/cmd"
 	"github.com/abdorrahmani/phelix/cmd/auth"
 	"github.com/abdorrahmani/phelix/config"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
@@ -46,6 +47,10 @@ func main() {
 				log.Printf("[Health] Failed to start global daemon: %v", err)
 			}
 		}()
+
+		// Initialize and start the gRPC client
+		grpcClient := phelixgrpc.InitGlobalClient()
+		go grpcClient.Start()
 	}
 
 	// Setup signal handling
@@ -53,6 +58,10 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
+		// Gracefully shutdown gRPC client
+		if c := phelixgrpc.GetClient(); c != nil {
+			c.Close()
+		}
 		close(done)
 		os.Exit(0)
 	}()

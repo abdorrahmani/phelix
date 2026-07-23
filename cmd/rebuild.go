@@ -9,6 +9,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
@@ -129,6 +130,7 @@ var RebuildCmd = &cobra.Command{
 		}
 
 		fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
+		phelixgrpc.ReportEvent(appInfo.ID, name, "rebuild", true, "", 0, "", "")
 		return nil
 	},
 }
