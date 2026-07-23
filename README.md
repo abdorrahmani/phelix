@@ -1,583 +1,324 @@
-# Phelix - Go/Rust Application Manager
+# Phelix
 
-## Overview
-Phelix is a powerful Go Application Manager that helps you build, run, and manage Go applications across multiple servers. It provides a comprehensive set of commands for managing your Go applications with features like authentication, monitoring, and application lifecycle management.
+A CLI tool for building, running, deploying, and managing **Go** and **Rust** applications — with versioned builds, zero-downtime blue-green/rolling deploys, Docker image building, encrypted environment variables, health checks.
 
-## Features
-- Multi-server application management
-- Real-time application monitoring
-- Centralized logging
-- Cross-server status checking
-- Authentication and security
-- Application lifecycle management
-- WebSocket-based monitoring service
-- **Encrypted environment variable management**
-- **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
-- **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
-- **Docker image building** (auto-generated multi-stage Dockerfiles for Go/Rust with optimized layer caching)
-- **Matrix builds** (build multiple compiler-version x platform combinations in one command)
+Phelix is written in Go and built with [Cobra](https://github.com/spf13/cobra). It targets Linux (with experimental Windows support).
 
-## Installation
-The CLI requires Go to be installed on your system. If Go is not installed, Phelix will attempt to install it automatically on Linux systems. For other operating systems, you'll need to install Go manually.
+---
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+  - [Installation](#installation)
+  - [Authentication](#authentication)
+  - [Core Workflow](#core-workflow)
+  - [Command Reference](#command-reference)
+  - [Where Phelix Stores Data](#where-phelix-stores-data)
+
+## Quick Start
 
 ```bash
-# Install Phelix
+# Build and run an app from the current directory (auto-detects Go or Rust)
+phelix build myapp --port 8080
+
+# Rebuild after a code change — zero downtime via blue-green
+phelix rebuild myapp --blue-green
+
+# List all managed apps
+phelix list
+
+# Roll back to the previous versioned build
+phelix rollback myapp
+```
+
+---
+
+## Installation
+
+### Recommended — one-line installer
+
+```bash
+curl -fsSL https://phelix.anophel.com/install.sh | bash
+```
+
+The installer **detects your operating system and architecture**, downloads the
+matching prebuilt binary (so you don't need Go/Rust preinstalled just to install
+Phelix), installs it to `/usr/local/bin/phelix`, and — on Linux — registers and
+enables a `phelix.service` **systemd** unit that starts the background WebSocket
+monitor and all managed apps on boot.
+
+```bash
+phelix version              # verify the install
+sudo systemctl status phelix   # Linux: monitor service running?
+```
+
+### Alternative — build from source
+
+```bash
+git clone <repo-url> Phelix
+cd Phelix
+go build -o phelix
+sudo mv phelix /usr/local/bin/
+```
+
+### Alternative — `go install`
+
+```bash
 go install github.com/abdorrahmani/phelix@latest
 ```
 
-## Authentication
-Before using most commands, you need to authenticate with the Phelix service.
+> The in-repo `setup.sh` is the developer-facing variant of the installer: it
+> builds from source with `go build`, installs the binary, and creates the same
+> systemd unit. The hosted `install.sh` is the end-user version that downloads a
+> prebuilt binary per-OS instead of requiring a local Go toolchain.
 
-### Authentication Commands
+### Runtime dependencies
 
-#### `phelix auth`
-Authenticates with phelix.anophel.com using your username and API key.
-```bash
-phelix auth
-```
-You will be prompted to enter:
-- Username
-- API Key
+- **Go** toolchain (`go`) and/or **Rust** toolchain (`cargo`) — required to build
+  apps. Phelix detects a missing toolchain and offers to install it
+  automatically (Linux). For other OSes it prints manual instructions.
+- **Docker** — only required for `phelix dockerize`.
 
-#### `phelix auth status`
-Shows your current authentication status, including:
-- Authenticated user
-- Session ID
-- Expiration time
+Verify it runs:
 
-#### `phelix auth logout`
-Logs out the current user and removes the session.
-
-## Application Management Commands
-
-### Building and Running Applications
-
-#### `phelix build <NAME> --port <PORT>`
-Builds and runs a Go application from the current directory. Every successful build creates a new versioned artifact (`v1`, `v2`, ...) — not just zero-downtime builds.
-```bash
-phelix build myapp --port 8080
-phelix build myapp --port 8080 --tag "pre-holiday-release"
-```
-- `NAME`: Name of your application
-- `--port`: Port to run the application on (default: 8080)
-- `--tag`: Optional label stored as metadata alongside the auto-incremented version (e.g. `"hotfix-auth-bug"`). Tags are informational only — version IDs (`v1`, `v2`, ...) remain the source of truth.
-
-#### `phelix rebuild <ID> --port <PORT>`
-Rebuilds and runs an existing application. Every successful rebuild creates a new versioned artifact.
-```bash
-phelix rebuild 123 --port 8080
-phelix rebuild 123 --port 8080 --tag "hotfix-auth-bug"
-```
-- `ID`: Application ID
-- `--port`: Port to run the application on (defaults to previous port if unspecified)
-- `--tag`: Optional label stored as metadata alongside the auto-incremented version
-
-For zero-downtime rebuilds, see [Zero-Downtime Deploys](#zero-downtime-deploys) below (`--blue-green` / `--replicas`).
-
-### Application Control
-
-#### `phelix start <ID> --port <PORT>`
-Starts a specific application.
-```bash
-phelix start 123 --port 8080
-```
-
-#### `phelix stop <ID>`
-Stops a running application.
-```bash
-phelix stop 123
-```
-
-#### `phelix restart <ID>`
-Restarts an application.
-```bash
-phelix restart 123
-```
-
-#### `phelix remove <ID>`
-Removes an application from Phelix.
-```bash
-phelix remove 123
-```
-
-### Application Information
-
-#### `phelix list`
-Lists all applications across all monitored servers, showing:
-- ID
-- Name
-- Version (current version from `versions.json`, e.g. `v3 (hotfix-auth)`; `—` for apps with no version history)
-- Status
-- PID
-- Uptime
-- Deploy method (`blue-green`, `rolling`, or classic)
-- Proxy enrollment (public port and active slot, when the proxy daemon is up)
-
-#### `phelix status <ID>`
-Shows detailed status of a specific application, including:
-- ID
-- Name
-- Status
-- PID
-- Uptime
-- RAM Usage (MB)
-- CPU Usage (%)
-- **Version section**: current version (with tag if set), git commit hash, build timestamp, deploy timestamp, binary size
-- **Recent version history**: last 3 versions with tags and `*` marking the current one
-- Deploy method, active slot/replicas, and health tier (when using zero-downtime deploys)
-- Active version number (e.g. `v3`)
-- Last rollback info (from/to version and timestamp)
-- Live proxy routing (public port, primary backend, in-flight requests)
-
-#### `phelix log <ID>`
-Displays logs for a specific application.
-- Shows the last 10 lines of historical logs
-- Streams new logs in real-time
-- Press Ctrl+C to exit
-- Supports cross-server log viewing
-
-### Environment Variable Management
-
-Phelix provides a secure way to manage encrypted environment variables for your applications. All environment variables are encrypted using AES-256-GCM encryption and stored in `~/.phelix/envs/`.
-
-#### Master Key Management
-The master key is automatically generated and stored at `~/.phelix/master.key`. Keep this file safe and never commit it to version control.
-
-#### `phelix env set <AppName> <KEY=VALUE> [KEY=VALUE ...]`
-Sets one or more encrypted environment variables for an application.
-```bash
-# Set a single variable
-phelix env set myapp DATABASE_URL=postgresql://localhost/db
-
-# Set multiple variables at once
-phelix env set myapp API_KEY=xxx SECRET_TOKEN=yyy DEBUG=true
-```
-
-#### `phelix env get <AppName> <KEY>`
-Retrieves a specific environment variable value.
-```bash
-phelix env get myapp DATABASE_URL
-```
-Note: Sensitive keys (containing SECRET, KEY, TOKEN, PASSWORD) are masked in output.
-
-#### `phelix env list <AppName>`
-Lists all environment variables set for an application.
-```bash
-phelix env list myapp
-```
-Output shows variable names with masked values for security.
-
-#### `phelix env unset <AppName> <KEY>`
-Removes an environment variable from an application.
-```bash
-phelix env unset myapp DEBUG
-```
-
-#### Environment Variable Injection
-When an application starts, Phelix automatically:
-1. Decrypts the .env.enc file using the master key
-2. Injects all environment variables into the application process
-3. The application receives variables exactly as you set them
-
-#### Security Features
-- **Encrypted Storage**: All values are encrypted with AES-256-GCM
-- **Sensitive Key Masking**: Keys containing SECRET, KEY, TOKEN, PASSWORD are automatically masked in logs
-- **Secure Key Storage**: Master key is stored with restricted file permissions (0600)
-- **No Plain Text**: Environment variables are never stored in plain text
-- **Application Isolation**: Each application has its own encrypted environment file
-
-### Zero-Downtime Deploys
-
-Phelix can rebuild and cut over without dropping connections by keeping a reverse-proxy daemon on the app's **stable public port** and switching traffic to a newly built, health-checked instance.
-
-```
-Client → :8080 [phelix proxy]  ──atomic target──→ blue  :9001
-                                               ↘ green :9002
-```
-
-#### Prerequisites
-1. Your app must listen on the port given by the `PORT` environment variable (Phelix sets this for each internal instance).
-2. Prefer a real health endpoint so deploys use Tier 1 checks:
-   ```bash
-   phelix health set myapp --path /health
-   ```
-   Without one, Phelix falls back to Tier 2 (any HTTP response) or Tier 3 (TCP only) and prints a warning.
-
-#### `phelix proxy`
-Starts the reverse-proxy daemon **in the background** (control socket: `~/.phelix/proxy.sock`).
-```bash
-phelix proxy              # detach into background
-phelix proxy status       # show enrolled apps and routing
-phelix proxy stop         # drain and stop the daemon
-phelix proxy --foreground # run attached (for systemd / debugging)
-```
-`phelix rebuild --blue-green` / `--replicas` will also auto-start the daemon if it is not already running.
-
-#### Blue-green deploy
-Builds a new binary, starts it on the inactive slot (blue ↔ green), waits until healthy, then atomically switches the proxy. The previous instance is drained and stopped.
-```bash
-phelix rebuild myapp --blue-green
-phelix rebuild myapp --blue-green --port 8080
-```
-
-#### Rolling deploy
-Restarts N replicas one at a time (never more than one down). Useful when you want capacity during the cut-over.
-```bash
-phelix rebuild myapp --replicas 3
-```
-
-#### What you see in `list` / `status`
-- **Deploy**: `blue-green (blue|green)` or `rolling (×N)`, or `-` for classic stop→start rebuilds
-- **Proxy**: `on :<public> → <slot>` when enrolled, otherwise `off`
-
-#### Failure behaviour
-If the new instance fails its health check, the deploy **aborts**, the new instance is killed, and the currently active instance is left untouched — public traffic keeps flowing.
-
-### Versioned Builds and Rollback
-
-Every successful build — whether via `phelix build`, `phelix rebuild`, or zero-downtime deploy — creates a numbered version (`v1`, `v2`, `v3`, ...) rather than overwriting. Versions store both the binary and its paired encrypted env snapshot, so rollback always restores a known-good binary + env pair — never binary-only.
-
-#### Build-and-deploy ordering guarantee
-
-Versions use a two-phase commit to ensure safety:
-
-1. **Build succeeds** → version is created on disk (`builds/vN/binary`, `env/vN.enc`) and recorded in `versions.json` with `is_current: false`.
-2. **Deploy succeeds** (start/health check passes) → `PromoteVersion` flips `is_current: true` and updates the `current` symlink.
-3. **Deploy fails** → the version exists on disk for inspection or retry, but `is_current` stays `false` and the `current` symlink is never moved. The active running instance is untouched.
-
-This means you can always inspect a failed build's artifacts, but a broken deploy can never corrupt the "current" pointer.
-
-```
-~/.phelix/apps/myapp/
-├── builds/v1/binary
-├── builds/v2/binary
-├── builds/v3/binary
-├── env/v1.enc
-├── env/v2.enc
-├── current -> builds/v3    (symlink, updated only after proxy switch succeeds)
-├── versions.json           (metadata per version)
-└── rollback.log            (audit trail)
-```
-
-#### `phelix rollback <AppName>`
-Roll back to a previous version. The rollback path depends on how the app was deployed:
-
-- **Zero-downtime apps** (built with `--blue-green` or `--replicas`): rollback goes through the same deploy path — health check, proxy switch, graceful shutdown — so you get the same zero-downtime guarantee.
-- **Classic apps** (built with plain `phelix build` / `phelix rebuild`): rollback stops the current instance, copies the versioned binary into place, and starts it. This is a brief downtime rollback (stop → start).
-
-```bash
-phelix rollback myapp              # roll back to the previous version
-phelix rollback myapp --to v2      # roll back to a specific version
-phelix rollback myapp --to 3       # version number without 'v' prefix also works
-phelix rollback myapp --to hotfix-auth-bug   # roll back by tag name
-```
-
-The `--to` flag accepts either a version ID (`v3`, `3`) or a unique tag name. If a tag matches exactly one version, it resolves automatically. If a tag matches zero or more than one version, an error is returned — use a version ID to disambiguate.
-
-#### `phelix rollback <AppName> --list`
-Show all retained versions with metadata.
-```bash
-phelix rollback myapp --list
-```
-Output table columns:
-- **Version** — `vN` label
-- **Tag** — optional label (e.g. `hotfix-auth-bug`), if provided via `--tag`
-- **Commit** — git commit hash (if available at build time)
-- **Built** — build timestamp (RFC 3339)
-- **Size** — binary size on disk
-- **Current** — whether this version is actively serving traffic
-- **Prune soon** — whether this version would be removed after the next build (based on retention policy)
-
-#### How rollback works
-Rollback supports two paths depending on how the app was originally deployed:
-
-**Zero-downtime path** (blue-green / rolling apps):
-1. `ResolveVersionOrTag` resolves the `--to` argument to a concrete version ID (supports version numbers and unique tag names)
-2. `ExistingVersionSource` resolves the binary and env paths for the target version
-3. A new instance starts on the inactive slot (blue or green)
-4. Tiered health checks verify the instance is healthy
-5. The proxy atomically switches traffic to the new instance
-6. The old instance is gracefully drained and stopped
-7. The `current` symlink and `versions.json` are updated
-
-If the rollback target fails its health check, the rollback **aborts** and the active instance is left untouched — identical to a failed forward deploy.
-
-**Classic path** (apps built without `--blue-green` / `--replicas`):
-1. `ResolveVersionOrTag` resolves the target version
-2. The current instance is stopped
-3. The versioned binary is copied to the app's expected location
-4. The app is started via `app.Manager.StartApplication`
-5. The version is promoted (`is_current` set to true, `current` symlink updated)
-
-If the start fails, the version exists on disk but `is_current` stays false — the user can retry without a broken "current" pointer.
-
-#### Rollback safety
-- **Concurrent protection**: A deploy lock prevents rollback from racing with another deploy or rollback on the same app
-- **Versioned env**: Binary and env are paired per version; rollback always restores both
-- **Audit log**: Every rollback attempt (success or failure) is recorded in `~/.phelix/apps/<AppName>/rollback.log`
-
-#### Retention policy
-Old versions are automatically pruned after each successful build, keeping the last 5 versions by default. The currently active version is never pruned, even if it falls outside the retention window. The retention count is configurable per plan tier (Free: 3, Pro: 10, Enterprise: unlimited).
-
-### Docker Image Building
-
-Phelix can build optimized multi-stage Docker images for Go and Rust projects. Language is auto-detected from `go.mod` (Go) or `Cargo.toml` (Rust).
-
-#### `phelix dockerize <AppName>`
-
-Builds a Docker image for the project in the current directory.
-
-```bash
-phelix dockerize myapp --tag v1.0.0
-phelix dockerize myapp --tag v1.0.0 --push --registry ghcr.io/myuser
-phelix dockerize myapp --tag v1.0.0 --build-arg VERSION=1.0.0
-phelix dockerize myapp --tag v1.0.0 --with-compose --depends-on redis,postgres
-```
-
-#### Flags
-
-| Flag | Description |
-|------|-------------|
-| `--tag` | Version tag for the Docker image (e.g. `v1.2.3`) |
-| `--push` | Push the image to the registry after building |
-| `--registry` | Registry prefix (e.g. `ghcr.io/user`, `docker.io/myorg`, `harbor.example.com/project`) |
-| `-a, --build-arg` | Extra build argument `KEY=value` (repeatable) |
-| `--with-compose` | Generate a `docker-compose.yml` with the app service |
-| `--depends-on` | Sidecar services for compose (`redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`) |
-
-#### How it works
-
-**Language detection:**
-- Checks for `go.mod` (Go) or `Cargo.toml` (Rust) in the current directory
-- Fails with a clear error if neither or both are found
-
-**Dockerfile generation (if none exists):**
-
-The generated Dockerfiles use multi-stage builds optimized for Docker layer caching. The instruction ordering is designed so that dependency-heavy layers are cached separately from source code:
-
-*Go:*
-1. **Builder stage** — `COPY go.mod go.sum` → `go mod download` → `COPY . .` → `go build`
-   - Dependencies are downloaded and cached before copying source. Editing source code only triggers recompilation, not re-downloading of modules.
-   - Final binary is built with `CGO_ENABLED=0` for a fully static binary.
-2. **Runtime stage** — `FROM scratch` with just the binary. Smallest possible image.
-
-*Rust:*
-1. **Dependency cache stage** — Copies `Cargo.toml`/`Cargo.lock`, creates a dummy `main.rs`, runs `cargo build --release`. This compiles ALL dependencies (~minutes for typical projects) and caches the result.
-2. **Real build stage** — Copies real source, runs `cargo build --release`. Only the application's own code needs recompilation (seconds).
-3. **Runtime stage** — `debian:bookworm-slim` with `ca-certificates`. Minimal runtime with glibc compatibility.
-
-> **If a Dockerfile already exists in the project directory, it is used as-is** — Phelix never overwrites a user-provided Dockerfile.
-
-**`.dockerignore` generation (if none exists):**
-Auto-generated to exclude `.git`, `.env` files, build artifacts, logs, IDE configs, and Phelix internals — preventing secrets from leaking into the build context.
-
-**Build output:**
-Docker's build progress (layer pulls, compilation steps) is streamed in real-time to the terminal, so you can see what's happening during the build instead of a blank screen.
-
-**OCI metadata labels:**
-Every image is tagged with OCI-standard labels:
-- `org.opencontainers.image.version` — the `--tag` value
-- `org.opencontainers.image.revision` — git commit hash (if available)
-- `org.opencontainers.image.created` — build timestamp
-
-**Version integration:**
-Each `phelix dockerize` call records the Docker image reference in `versions.json` (the same versioning system used by `phelix rollback`). This means the version history tracks both binary builds and Docker images, so future rollback logic can support `docker run <image>` as a deploy source without redesigning the schema.
-
-**Push to registry:**
-The `--push` flag pushes the built image to a configurable registry. Registry credentials can be stored using the same AES-256-GCM encrypted mechanism as environment variables (via `internal/env`). If you're not logged in, a clear error message tells you to run `docker login` first.
-
-#### Docker-compose generation
-
-The `--with-compose` flag generates a `docker-compose.yml` that includes the app service and any requested sidecars:
-
-```bash
-phelix dockerize myapp --tag v1.0.0 --with-compose --depends-on redis,postgres
-```
-
-This produces a ready-to-use `docker-compose.yml` with:
-- The app's service (building from the local Dockerfile)
-- Redis (port 6379, `redis:7-alpine`)
-- PostgreSQL (port 5432, `postgres:16-alpine` with default credentials)
-
-Supported sidecars: `redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`.
-
-> **Important:** Phelix only *generates* the compose file. It does **not** manage the lifecycle (start/stop/health) of compose-defined services. Use `docker compose up -d` directly to manage them.
-
-### Matrix Builds
-
-Build multiple compiler-version x platform combinations in a single command. This is useful for producing release artifacts for multiple architectures and Go/Rust versions at once.
-
-#### `phelix build <NAME> --matrix`
-
-Build binaries for a cross-product of toolchain versions and target platforms.
-
-```bash
-# Build Go binaries for 3 versions × 2 platforms (6 combinations)
-phelix build myapp --matrix --go-versions 1.21,1.22,1.23 --platforms linux/amd64,linux/arm64
-
-# Build Rust binaries using cross
-phelix build myapp --matrix --rust-versions 1.77,1.78 --platforms linux/amd64,linux/arm64
-
-# Dry run — show the plan without building
-phelix build myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64 --matrix-dry-run
-
-# Debug mode — show Docker commands, build output, and cache paths
-phelix build myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --debug
-```
-
-#### `phelix dockerize <NAME> --matrix`
-
-Build Docker images for multiple version x platform combinations.
-
-```bash
-# Per-combination tags: myapp:go1.22-linux-amd64, myapp:go1.23-linux-arm64, etc.
-phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --matrix-tags
-
-# Multi-arch manifest: single tag with all platforms
-phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --multi-arch-tag
-
-# Build + push (all must succeed, or use --push-partial)
-phelix dockerize myapp --matrix --go-versions 1.22 --platforms linux/amd64,linux/arm64 --push
-
-# Push only successful images even if some failed
-phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --push --push-partial
-```
-
-#### Matrix flags
-
-| Flag | Description |
-|------|-------------|
-| `--matrix` | Enable matrix mode (also auto-enabled when `--go-versions`/`--rust-versions`/`--platforms` are set) |
-| `--go-versions` | Comma-separated Go versions to build with (e.g. `1.21,1.22,1.23`) |
-| `--rust-versions` | Comma-separated Rust versions to build with (e.g. `1.77,1.78`) |
-| `--platforms` | Target platforms (e.g. `linux/amd64,linux/arm64,darwin/arm64`) |
-| `--matrix-concurrency` | Max parallel builds (default: 3) |
-| `--matrix-dry-run` | Print the matrix plan without executing |
-| `--debug` | Show verbose output: Docker commands, build logs, cache paths, active combinations |
-
-#### How matrix builds work
-
-**Cross-compilation strategy:**
-
-- **Go**: Uses native cross-compilation via `GOOS`/`GOARCH` env vars (no extra toolchain needed when `CGO_ENABLED=0`). If the project uses CGO (`import "C"`), the build fails with a clear error suggesting Docker-based builds or a C cross-compiler.
-- **Rust**: Uses the `cross` tool (not raw `rustup target add`), which builds inside a Docker container with the correct linker and C libraries pre-configured. This ensures any crate — including those with C dependencies — builds correctly.
-
-**Multi-version builds:**
-
-When multiple toolchain versions are specified (e.g. `--go-versions 1.21,1.22,1.23`), each version runs inside its own Docker container (`golang:1.21`, `golang:1.22`, etc.). This avoids requiring multiple toolchains installed on the host and provides clean cache isolation.
-
-**Output naming:**
-
-- Binaries: `builds/matrix/{lang}{version}-{os}-{arch}/binary` (e.g. `builds/matrix/go1.22-linux-amd64/binary`)
-- Docker images (per-combo): `myapp:go1.22-linux-amd64`, `myapp:go1.23-arm64`, etc.
-- Docker images (multi-arch): single manifest list tag via `docker buildx`
-
-**Concurrency and caching:**
-
-- Worker pool runs combinations in parallel (default: 3 concurrent builds)
-- Each combination gets its own cache directory (`.phelix/cache/go/{combo-id}/` or `target/{combo-id}/`)
-- Live progress display shows which combinations are running/completed/failed
-
-**Failure handling:**
-
-- **Build phase**: Fail-open — if one combination fails, the rest continue. Full summary at the end.
-- **Push phase**: Fail-closed by default — if any combination failed, no images are pushed. Use `--push-partial` to override and push only successful images.
-
-**Reporting:**
-
-After all combinations complete, a summary is printed to the terminal and a JSON report is written to `builds/matrix/report.json`. The report lists each combination's status, duration, artifact path, and error message if failed.
-
-#### Output naming convention
-
-| Artifact | Naming |
-|----------|--------|
-| Binary (matrix) | `builds/matrix/go1.22-linux-amd64/binary` |
-| Docker per-combo tag | `myapp:go1.22-linux-amd64` |
-| Docker multi-arch tag | `myapp:latest` (manifest list) |
-| JSON report | `builds/matrix/report.json` |
-
-### Multi-Server Monitoring
-
-#### `phelix monitor`
-Starts the WebSocket monitoring service that:
-- Monitors application status across all servers
-- Sends application information to the central server
-- Automatically reconnects if connection is lost
-- Provides real-time updates for all managed applications
-
-#### Server Management
-Phelix can monitor multiple servers simultaneously. Each server running Phelix will:
-- Register itself with the central monitoring service
-- Send regular status updates
-- Maintain its own application state
-- Sync with other servers when needed
-
-## System Requirements
-- Go programming language
-- Internet connection for authentication and monitoring
-- Sufficient permissions to create and manage application files
-- Network access between servers (if monitoring multiple servers)
-
-## File Locations
-- Session file: `~/.phelix/session.json`
-- Log files: `~/.phelix/logs/phelix.log`
-- Application logs: Stored in the application's directory
-- Deploy instance logs: `~/.phelix/logs/deploy_*.log`
-- Deploy state: `~/.phelix/apps/<AppName>/deploy.json`
-- Version metadata: `~/.phelix/apps/<AppName>/versions.json`
-- Versioned binaries: `~/.phelix/apps/<AppName>/builds/vN/binary`
-- Versioned env snapshots: `~/.phelix/apps/<AppName>/env/vN.enc`
-- Rollback audit log: `~/.phelix/apps/<AppName>/rollback.log`
-- Current symlink: `~/.phelix/apps/<AppName>/current` → `builds/vN`
-- Proxy control socket: `~/.phelix/proxy.sock`
-- Server configuration: `~/.phelix/config.json`
-- **Master key: `~/.phelix/master.key`** (Keep this safe!)
-- **Encrypted environment files: `~/.phelix/envs/<appid>.env.enc`**
-- **Registry credentials: `~/.phelix/registry/<slug>.enc`** (AES-256-GCM encrypted)
-
-## Error Handling
-- Authentication errors will prompt you to run `phelix auth`
-- Build errors will be displayed with detailed output
-- Connection errors will be logged and retried automatically
-- Server communication errors will be handled gracefully
-
-## Best Practices
-1. Always authenticate before using the CLI
-2. Use meaningful names for your applications
-3. Monitor application logs for debugging
-4. Use the status command to check application health
-5. Keep your session active by logging in when needed
-6. Ensure proper network connectivity between servers
-7. Regularly check server status across your infrastructure
-8. Monitor resource usage across all servers
-9. **Use encrypted environment variables for sensitive data** (API keys, database credentials, etc.)
-10. **Never commit master keys or encrypted env files to version control**
-11. **Regularly rotate sensitive credentials**
-12. **Use descriptive variable names** (e.g., DATABASE_CONNECTION_URL instead of DB)
-13. **Use `phelix rollback --list` to review available versions** before rolling back
-14. **Keep the proxy daemon running** (`phelix proxy`) for zero-downtime rollbacks
-15. **Use `--tag` to label important builds** (e.g. `--tag "v2.1-release"`) for easier rollback identification
-16. **Check `phelix status <app>` for version history** — the last 3 versions are shown so you can see what you'd roll back to
-17. **Use `phelix dockerize` to containerize apps** — generates optimized multi-stage Dockerfiles with dependency caching
-
-## Security Considerations
-- All communication is encrypted
-- Authentication tokens are securely stored
-- Server-to-server communication is authenticated
-- Regular session validation
-- Secure file permissions
-
-## Version Information
-Current version: 0.0.1
-To check the version:
 ```bash
 phelix version
 ```
 
-## Support
-For support and issues, please visit:
-- GitHub Issues: [github.com/abdorrahmani/phelix/issues](https://github.com/abdorrahmani/phelix/issues)
-- Documentation: [phelix.anophel.com/docs](https://phelix.anophel.com/docs)
+## Authentication
 
-## License
-This project is licensed under the MIT License - see the LICENSE file for details. 
+Most commands require an authenticated session with the Phelix service
+(`phelix.anophel.com`). Authenticate once; the session is stored locally at
+`~/.phelix/session.json`.
+
+```bash
+# Interactive
+phelix auth login
+
+# Non-interactive
+phelix auth login --username <user> --apiKey <key>
+
+phelix auth status     # show current session + expiry
+phelix auth logout     # invalidate and remove the session
+```
+
+## Core Workflow
+
+A typical lifecycle:
+
+```text
+build    →  (rebuild --blue-green)  →  rollback    →  stop / remove
+   \            |                          ^
+    \           +-- versioned (v1, v2…) ----+
+```
+
+1. **Build** a project into a named, managed app and start it.
+2. **Rebuild** after changes; optionally zero-downtime via blue-green or rolling.
+3. Every build is **versioned** (`v1`, `v2`, …) and can be tagged.
+4. **Roll back** to any retained version if something breaks.
+5. Monitor with `status`, `list`, `log`, and `health`.
+6. Ship containers with `dockerize`.
+
+## Command Reference
+
+### Building & rebuilding
+
+#### `phelix build <NAME> [flags]`
+Compiles the project in the current directory (auto-detects Go or Rust), starts
+it on the given port, and records a **new versioned build**.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port, -p` | `8080` | Port to run the app on |
+| `--build-arg, -a` | — | Extra args passed to the build tool (repeatable) |
+| `--tag` | — | Human label stored with the version (e.g. `"hotfix-auth"`) |
+| `--no-upload` | `false` | Don't sync app info to the server |
+| `--debug` | `false` | Verbose build/tool output |
+| `--matrix` | `false` | Matrix mode: build versions × platforms (see [Matrix builds](#matrix-builds)) |
+| `--go-versions` | — | Go versions, e.g. `1.22,1.23` |
+| `--rust-versions` | — | Rust versions, e.g. `1.77,1.78` |
+| `--platforms` | — | Targets, e.g. `linux/amd64,linux/arm64` |
+| `--matrix-concurrency` | 4 | Max parallel matrix builds |
+| `--matrix-dry-run` | `false` | Print the plan without building |
+
+```bash
+phelix build myapp -p 8080 --tag "v1.2.3"
+```
+
+#### `phelix rebuild <ID|AppName> [flags]`
+Rebuilds an existing app from its source directory. Supports zero-downtime
+deploy.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port, -p` | previous/`8080` | Port to run on |
+| `--build-arg, -a` | — | Extra build args (repeatable) |
+| `--tag` | — | Version label |
+| `--no-upload` | `false` | Skip server sync |
+| `--blue-green` | `false` | Zero-downtime blue-green deploy (needs `phelix proxy`) |
+| `--replicas` | `0` | Zero-downtime rolling deploy over N replicas |
+
+```bash
+phelix rebuild myapp --blue-green
+phelix rebuild myapp --replicas 3
+```
+
+### Versioning & rollback
+
+#### `phelix rollback <AppName> [flags]`
+Reverts to a previous versioned build. Automatically chooses the right strategy:
+classic stop→start for plain builds, or zero-downtime for apps deployed with
+blue-green/rolling.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--to` | — | Target: `v3`, `3`, or a tag name (default: previous version) |
+| `--list` | `false` | List all retained versions with metadata |
+
+```bash
+phelix rollback myapp              # previous version
+phelix rollback myapp --to v3
+phelix rollback myapp --to "hotfix-auth"
+phelix rollback myapp --list
+```
+
+### Lifecycle
+
+| Command | Description |
+|---------|-------------|
+| `phelix start [<ID\|AppName>] [--port P] [--ensure]` | Start an app (or all apps if none given). `--ensure` builds if missing and rebuilds if startup fails. |
+| `phelix stop <ID\|AppName>` | Stop a running app. |
+| `phelix restart <ID\|AppName>` | Restart an app. |
+| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, version, deploy mode, proxy routing. |
+| `phelix list` | Table of all apps with version, status, deploy, and proxy columns. |
+| `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. |
+| `phelix remove <ID\|AppName>` | Stop and delete an app from management. |
+
+### Encrypted environment variables
+
+`phelix env` manages per-app secrets encrypted at rest with **AES-256-GCM**.
+The encryption key lives at `~/.phelix/master.key` (auto-generated).
+
+```bash
+phelix env set    MyApp DATABASE_URL=postgresql://localhost/db
+phelix env get    MyApp DATABASE_URL      # sensitive values are masked
+phelix env list   MyApp                   # values shown as ***REDACTED***
+phelix env unset  MyApp DATABASE_URL
+phelix env check  MyApp DATABASE_URL      # exit-status friendly existence check
+```
+
+Encrypted values are injected into the app process at start, and snapshotted
+alongside each versioned build so a rollback restores the matching env.
+
+### Health checks
+
+`phelix health` configures HTTP health endpoints and the deploy-time health tier.
+
+```bash
+phelix health set <App> --path /health --interval 10s --retries 3 --mode auto
+phelix health add  <App> --name "API" --url https://api.example.com/health
+phelix health list   <App>
+phelix health remove <App> --name "API"
+phelix health status <App> [--watch]   # --watch = live terminal dashboard
+```
+
+**Deploy health tiers** (used by blue-green/rolling to decide when an instance is
+safe to receive traffic):
+
+| Tier | Trigger | "Alive" means |
+|------|---------|---------------|
+| Tier 1 | Explicit `--path` set | HTTP 2xx on that path |
+| Tier 2 | No path, app speaks HTTP | Any HTTP response (even 404/500) |
+| Tier 3 (TCP) | Not HTTP, or `--mode tcp-only` | TCP port accepts connections |
+| Tier 3 (PID) | Worker/daemon, or `--mode none` | Process PID still exists |
+
+`--mode` options: `auto` (default), `http`, `tcp-only`, `none`.
+
+### Zero-downtime reverse proxy
+
+The `phelix proxy` daemon binds each app's public port and routes traffic to the
+active internal instance. Blue-green/rolling deploys atomically switch the
+target through a control socket — no dropped connections.
+
+```bash
+phelix proxy            # start in background (detaches and returns)
+phelix proxy status     # show enrolled apps + routing
+phelix proxy stop       # shut the daemon down (drains up to 30s)
+phelix proxy --foreground   # run attached (for process supervisors)
+```
+
+### Docker
+
+#### `phelix dockerize <AppName> [flags]`
+Generates a multi-stage `Dockerfile` (if absent — never overwrites), a
+`.dockerignore`, builds the image, and records it as a version.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tag` | `latest` | Image tag (e.g. `v1.2.3`) |
+| `--registry` | — | Registry prefix (e.g. `ghcr.io/user`) |
+| `--push` | `false` | Push after building |
+| `--build-arg, -a` | — | `KEY=value` build args (repeatable) |
+| `--with-compose` | `false` | Generate `docker-compose.yml` |
+| `--depends-on` | — | Sidecar services: `redis,postgres,mysql,mongodb,rabbitmq` |
+| `--matrix` + family | — | Matrix Docker builds (see [Matrix builds](#matrix-builds)) |
+
+```bash
+phelix dockerize myapp --tag v1.2.3 --registry ghcr.io/me --push
+phelix dockerize myapp --with-compose --depends-on redis,postgres
+```
+
+> Phelix generates the compose file but does **not** manage sidecar lifecycles —
+> use `docker compose up -d` for those.
+
+### Matrix builds
+
+Build the cross-product of **toolchain version × platform** in one command.
+Reports per-combination results and writes a JSON report.
+
+```bash
+# Native binaries
+phelix build myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64
+
+# Docker images (multi-arch or per-combo tags)
+phelix dockerize myapp --matrix --go-versions 1.22,1.23 \
+    --platforms linux/amd64,linux/arm64 --multi-arch-tag --push
+```
+
+Known Go versions: `1.20`–`1.26`. Known Rust versions: `1.75`–`1.97` (`1.80,1.90,1.97`...).
+Known platforms: `linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `windows/amd64`.
+
+### Other commands
+
+```bash
+phelix version [--short | --verbose]
+phelix monitor      # start the background WebSocket monitoring service
+```
+
+`phelix monitor` is the long-running process that reports app metrics back to
+the Phelix service. It's normally started by the systemd unit created by
+`setup.sh`, not run manually.
+
+## Where Phelix Stores Data
+
+All state lives under `~/.phelix/`:
+
+```
+~/.phelix/
+├── apps.json            # registry of all managed apps
+├── master.key           # AES-256-GCM master key for env encryption
+├── session.json         # auth session
+├── proxy.sock           # proxy daemon control socket
+├── logs/
+│   ├── phelix.log       # Phelix's own log
+│   └── <app>.log        # per-app logs
+└── apps/<AppName>/      # per-app data
+    ├── versions.json    # version metadata index
+    ├── deploy.json      # blue-green / rolling state
+    ├── current → builds/vN   # symlink to the active build
+    ├── builds/vN/binary      # versioned binaries
+    └── env/vN.enc            # per-version encrypted env snapshot
+```
+
+Retention: the last **5** versions are kept (configurable); the active version is
+never pruned.
