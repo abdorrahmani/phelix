@@ -20,6 +20,7 @@ type Rolling struct {
 	ExtraArgs  []string
 
 	Builder        Builder
+	Source         BuildSource
 	Launcher       InstanceLauncher
 	ProxyClient    ProxyClient
 	HealthProvider HealthConfigProvider
@@ -51,6 +52,14 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 		r.Replicas = 1
 	}
 
+	src := r.Source
+	if src == nil && r.Builder != nil {
+		src = BuilderSource(r.Builder)
+	}
+	if src == nil {
+		return fmt.Errorf("deploy: no BuildSource or Builder configured")
+	}
+
 	state, err := LoadOrInit(r.AppName, ModeRolling, r.PublicPort)
 	if err != nil {
 		return fmt.Errorf("failed to load deploy state: %w", err)
@@ -59,6 +68,19 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	state.Replicas = ensureReplicaMap(state.Replicas, r.Replicas)
 
 	log.Stepf("rolling deploy for %s: %d replicas", r.AppName, r.Replicas)
+
+	// Build/prepare once — FreshBuildSource must not create a new version per replica.
+	log.Stepf("%s", src.Describe())
+	binaryPath, envPath, err := src.Build(ctx)
+	if err != nil {
+		return fmt.Errorf("prepare deploy artifact: %w", err)
+	}
+	envOverlay, err := EnvOverlayFromSnapshot(envPath, r.AppID)
+	if err != nil {
+		return fmt.Errorf("env snapshot: %w", err)
+	}
+
+	targetVer := targetVersionFromSource(src)
 
 	tierCfg := r.healthCfg()
 	tier := health.SelectTier(tierCfg, firstPortAddr(state), nil)
@@ -76,7 +98,7 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	// Iterate over replica indices in order.
 	indices := replicaIndices(state.Replicas)
 	for _, key := range indices {
-		if err := r.rollOne(ctx, state, key, tier, tierCfg, grace); err != nil {
+		if err := r.rollOne(ctx, state, binaryPath, envOverlay, targetVer, key, tier, tierCfg, grace); err != nil {
 			return fmt.Errorf("rolling deploy failed at replica %s: %w", key, err)
 		}
 	}
@@ -87,6 +109,12 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	state.Health.Tier = int(tier)
 	state.Health.TierLabel = tier.String()
 	state.Health.HealthyAt = time.Now()
+	if ver := targetVersionFromSource(src); ver > 0 {
+		state.ActiveVersion = ver
+		if err := PromoteVersion(r.AppName, ver, string(ModeRolling)); err != nil {
+			log.Warnf("failed to promote version v%d: %v", ver, err)
+		}
+	}
 	_ = Store(state)
 
 	log.Successf("rolling deploy of %s complete: %d replicas updated", r.AppName, len(indices))
@@ -94,7 +122,7 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 }
 
 // rollOne performs the stop→build→start→health→re-add cycle for one replica.
-func (r *Rolling) rollOne(ctx context.Context, state *DeployState, key string, tier health.Tier, tierCfg *health.DeployTierConfig, grace time.Duration) error {
+func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath string, envOverlay []string, targetVer int, key string, tier health.Tier, tierCfg *health.DeployTierConfig, grace time.Duration) error {
 	log := r.logger()
 
 	// 1. Stop current instance for this slot (remove from rotation first).
@@ -106,15 +134,9 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, key string, t
 		cur.Status = "stopped"
 	}
 
-	// 2. Build.
-	log.Stepf("replica %s: building", key)
-	binaryPath, err := r.Builder(ctx, r.AppID, r.AppName, r.ExtraArgs)
-	if err != nil {
-		return fmt.Errorf("build: %w", err)
-	}
-
-	// 3. Start replacement.
-	proc, port, err := r.Launcher(ctx, binaryPath, nil)
+	// 2. Start replacement (artifact prepared once for the whole roll).
+	log.Stepf("replica %s: starting from %s", key, binaryPath)
+	proc, port, err := r.Launcher(ctx, binaryPath, envOverlay)
 	if err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
@@ -125,6 +147,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, key string, t
 		BinaryPath: binaryPath,
 		StartedAt:  time.Now(),
 		Status:     "running",
+		Version:    targetVer,
 	}
 	state.Replicas[key] = inst
 	_ = Store(state)

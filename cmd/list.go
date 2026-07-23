@@ -37,11 +37,12 @@ var ListCmd = &cobra.Command{
 
 func createTable() *tablewriter.Table {
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"ID", "Name", "Status", "Language", "PID", "Uptime", "Deploy", "Proxy"})
+	table.SetHeader([]string{"ID", "Name", "Version", "Status", "Language", "PID", "Uptime", "Deploy", "Proxy"})
 	table.SetBorder(true)
 	table.SetRowLine(true)
 	table.SetColumnAlignment([]int{
 		tablewriter.ALIGN_LEFT,
+		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
 		tablewriter.ALIGN_CENTER,
@@ -60,10 +61,12 @@ func populateTable(table *tablewriter.Table, apps []app.AppListItem, proxyByApp 
 		if lang == "" {
 			lang = "unknown"
 		}
+		verCol := formatVersionColumn(a.Name)
 		deployCol, proxyCol := formatDeployProxyColumns(a.Name, proxyByApp)
 		table.Append([]string{
 			a.ID,
 			color.BlueString(a.Name),
+			verCol,
 			status,
 			color.CyanString(lang),
 			fmt.Sprintf("%d", a.PID),
@@ -72,6 +75,22 @@ func populateTable(table *tablewriter.Table, apps []app.AppListItem, proxyByApp 
 			proxyCol,
 		})
 	}
+}
+
+// formatVersionColumn returns a human-readable version cell for an app,
+// joining AppInfo + DeployState + versions.json data. Returns "—" when the
+// app has no version history (e.g. predating this feature or never built
+// through the versioned path).
+func formatVersionColumn(appName string) string {
+	meta, err := deploy.CurrentVersionMeta(appName)
+	if err != nil || meta == nil {
+		return color.HiBlackString("—")
+	}
+	label := fmt.Sprintf("v%d", meta.Version)
+	if meta.Tag != "" {
+		label += " " + color.YellowString("(%s)", meta.Tag)
+	}
+	return color.CyanString(label)
 }
 
 // formatDeployProxyColumns returns human-readable Deploy and Proxy cells for

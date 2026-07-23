@@ -13,6 +13,7 @@ Phelix is a powerful Go Application Manager that helps you build, run, and manag
 - WebSocket-based monitoring service
 - **Encrypted environment variable management**
 - **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
+- **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
 
 ## Installation
 The CLI requires Go to be installed on your system. If Go is not installed, Phelix will attempt to install it automatically on Linux systems. For other operating systems, you'll need to install Go manually.
@@ -50,20 +51,24 @@ Logs out the current user and removes the session.
 ### Building and Running Applications
 
 #### `phelix build <NAME> --port <PORT>`
-Builds and runs a Go application from the current directory.
+Builds and runs a Go application from the current directory. Every successful build creates a new versioned artifact (`v1`, `v2`, ...) — not just zero-downtime builds.
 ```bash
 phelix build myapp --port 8080
+phelix build myapp --port 8080 --tag "pre-holiday-release"
 ```
 - `NAME`: Name of your application
 - `--port`: Port to run the application on (default: 8080)
+- `--tag`: Optional label stored as metadata alongside the auto-incremented version (e.g. `"hotfix-auth-bug"`). Tags are informational only — version IDs (`v1`, `v2`, ...) remain the source of truth.
 
 #### `phelix rebuild <ID> --port <PORT>`
-Rebuilds and runs an existing application.
+Rebuilds and runs an existing application. Every successful rebuild creates a new versioned artifact.
 ```bash
 phelix rebuild 123 --port 8080
+phelix rebuild 123 --port 8080 --tag "hotfix-auth-bug"
 ```
 - `ID`: Application ID
 - `--port`: Port to run the application on (defaults to previous port if unspecified)
+- `--tag`: Optional label stored as metadata alongside the auto-incremented version
 
 For zero-downtime rebuilds, see [Zero-Downtime Deploys](#zero-downtime-deploys) below (`--blue-green` / `--replicas`).
 
@@ -99,6 +104,7 @@ phelix remove 123
 Lists all applications across all monitored servers, showing:
 - ID
 - Name
+- Version (current version from `versions.json`, e.g. `v3 (hotfix-auth)`; `—` for apps with no version history)
 - Status
 - PID
 - Uptime
@@ -114,7 +120,11 @@ Shows detailed status of a specific application, including:
 - Uptime
 - RAM Usage (MB)
 - CPU Usage (%)
+- **Version section**: current version (with tag if set), git commit hash, build timestamp, deploy timestamp, binary size
+- **Recent version history**: last 3 versions with tags and `*` marking the current one
 - Deploy method, active slot/replicas, and health tier (when using zero-downtime deploys)
+- Active version number (e.g. `v3`)
+- Last rollback info (from/to version and timestamp)
 - Live proxy routing (public port, primary backend, in-flight requests)
 
 #### `phelix log <ID>`
@@ -221,6 +231,77 @@ phelix rebuild myapp --replicas 3
 #### Failure behaviour
 If the new instance fails its health check, the deploy **aborts**, the new instance is killed, and the currently active instance is left untouched — public traffic keeps flowing.
 
+### Versioned Builds and Rollback
+
+Every successful build — whether via `phelix build`, `phelix rebuild`, or zero-downtime deploy — creates a numbered version (`v1`, `v2`, `v3`, ...) rather than overwriting. Versions store both the binary and its paired encrypted env snapshot, so rollback always restores a known-good binary + env pair — never binary-only.
+
+#### Build-and-deploy ordering guarantee
+
+Versions use a two-phase commit to ensure safety:
+
+1. **Build succeeds** → version is created on disk (`builds/vN/binary`, `env/vN.enc`) and recorded in `versions.json` with `is_current: false`.
+2. **Deploy succeeds** (start/health check passes) → `PromoteVersion` flips `is_current: true` and updates the `current` symlink.
+3. **Deploy fails** → the version exists on disk for inspection or retry, but `is_current` stays `false` and the `current` symlink is never moved. The active running instance is untouched.
+
+This means you can always inspect a failed build's artifacts, but a broken deploy can never corrupt the "current" pointer.
+
+```
+~/.phelix/apps/myapp/
+├── builds/v1/binary
+├── builds/v2/binary
+├── builds/v3/binary
+├── env/v1.enc
+├── env/v2.enc
+├── current -> builds/v3    (symlink, updated only after proxy switch succeeds)
+├── versions.json           (metadata per version)
+└── rollback.log            (audit trail)
+```
+
+#### `phelix rollback <AppName>`
+Roll back to the previous version with zero downtime. Rollback goes through the same deploy path as a forward deploy — health check, proxy switch, graceful shutdown — so the rollback gets the same zero-downtime guarantee.
+```bash
+phelix rollback myapp              # roll back to the previous version
+phelix rollback myapp --to v2      # roll back to a specific version
+phelix rollback myapp --to 3       # version number without 'v' prefix also works
+phelix rollback myapp --to hotfix-auth-bug   # roll back by tag name
+```
+
+The `--to` flag accepts either a version ID (`v3`, `3`) or a unique tag name. If a tag matches exactly one version, it resolves automatically. If a tag matches zero or more than one version, an error is returned — use a version ID to disambiguate.
+
+#### `phelix rollback <AppName> --list`
+Show all retained versions with metadata.
+```bash
+phelix rollback myapp --list
+```
+Output table columns:
+- **Version** — `vN` label
+- **Tag** — optional label (e.g. `hotfix-auth-bug`), if provided via `--tag`
+- **Commit** — git commit hash (if available at build time)
+- **Built** — build timestamp (RFC 3339)
+- **Size** — binary size on disk
+- **Current** — whether this version is actively serving traffic
+- **Prune soon** — whether this version would be removed after the next build (based on retention policy)
+
+#### How rollback works
+Rollback reuses the exact same zero-downtime deploy mechanism as `phelix rebuild --blue-green` / `--replicas`. It does **not** perform a raw symlink flip. Internally:
+1. `ResolveVersionOrTag` resolves the `--to` argument to a concrete version ID (supports version numbers and unique tag names)
+2. `ExistingVersionSource` resolves the binary and env paths for the target version
+3. A new instance starts on the inactive slot (blue or green)
+4. Tiered health checks verify the instance is healthy
+5. The proxy atomically switches traffic to the new instance
+6. The old instance is gracefully drained and stopped
+7. The `current` symlink and `versions.json` are updated
+
+If the rollback target fails its health check, the rollback **aborts** and the active instance is left untouched — identical to a failed forward deploy.
+
+#### Rollback safety
+- **Concurrent protection**: A deploy lock prevents rollback from racing with another deploy or rollback on the same app
+- **Versioned env**: Binary and env are paired per version; rollback always restores both
+- **Audit log**: Every rollback attempt (success or failure) is recorded in `~/.phelix/apps/<AppName>/rollback.log`
+
+#### Retention policy
+Old versions are automatically pruned after each successful build, keeping the last 5 versions by default. The currently active version is never pruned, even if it falls outside the retention window. The retention count is configurable per plan tier (Free: 3, Pro: 10, Enterprise: unlimited).
+
 ### Multi-Server Monitoring
 
 #### `phelix monitor`
@@ -249,6 +330,11 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 - Application logs: Stored in the application's directory
 - Deploy instance logs: `~/.phelix/logs/deploy_*.log`
 - Deploy state: `~/.phelix/apps/<AppName>/deploy.json`
+- Version metadata: `~/.phelix/apps/<AppName>/versions.json`
+- Versioned binaries: `~/.phelix/apps/<AppName>/builds/vN/binary`
+- Versioned env snapshots: `~/.phelix/apps/<AppName>/env/vN.enc`
+- Rollback audit log: `~/.phelix/apps/<AppName>/rollback.log`
+- Current symlink: `~/.phelix/apps/<AppName>/current` → `builds/vN`
 - Proxy control socket: `~/.phelix/proxy.sock`
 - Server configuration: `~/.phelix/config.json`
 - **Master key: `~/.phelix/master.key`** (Keep this safe!)
@@ -273,6 +359,10 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 10. **Never commit master keys or encrypted env files to version control**
 11. **Regularly rotate sensitive credentials**
 12. **Use descriptive variable names** (e.g., DATABASE_CONNECTION_URL instead of DB)
+13. **Use `phelix rollback --list` to review available versions** before rolling back
+14. **Keep the proxy daemon running** (`phelix proxy`) for zero-downtime rollbacks
+15. **Use `--tag` to label important builds** (e.g. `--tag "v2.1-release"`) for easier rollback identification
+16. **Check `phelix status <app>` for version history** — the last 3 versions are shown so you can see what you'd roll back to
 
 ## Security Considerations
 - All communication is encrypted

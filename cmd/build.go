@@ -11,6 +11,7 @@ import (
 	"github.com/abdorrahmani/phelix/cmd/auth"
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ var (
 	buildPort int
 	buildArgs []string
 	noUpload  bool
+	buildTag  string
 )
 
 var BuildCmd = &cobra.Command{
@@ -79,6 +81,28 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 
+		// --- Version recording ------------------------------------------------
+		// The build succeeded. Record a new version with is_current=false.
+		// The version becomes "current" only after the deploy (start) succeeds
+		// and PromoteVersion is called below. This two-phase approach ensures
+		// that a build which succeeds but whose start fails leaves the version
+		// on disk for inspection but never becomes the active running instance.
+		gitCommit := deploy.DetectGitCommit(currentDir)
+		logger := &colorLogger{}
+		rec, verErr := deploy.RecordFreshBuild(
+			name, id,
+			filepath.Join(currentDir, fmt.Sprintf("app_%s", id)),
+			gitCommit, buildTag,
+			deploy.DefaultRetention{Max: 5}, logger,
+		)
+		if verErr != nil {
+			// Version recording is best-effort for the initial build path.
+			// If it fails, the build still succeeded — we warn but don't abort.
+			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
+		} else {
+			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
+		}
+
 		if !noUpload {
 			fmt.Printf("%s Uploading app information to server...\n", color.BlueString("→"))
 			if err := auth.SendAppsToServer(); err != nil {
@@ -90,7 +114,20 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if err := startApplication(id, name); err != nil {
+			// Deploy (start) failed. The version exists on disk in
+			// builds/vN/ but is_current was never set to true and
+			// PromoteVersion was never called, so the user can inspect
+			// or retry without having a broken "current" pointer.
 			return err
+		}
+
+		// Deploy succeeded — promote the version so it becomes current.
+		// This updates versions.json (is_current, deployed_at) and the
+		// current → builds/vN symlink.
+		if rec != nil {
+			if err := deploy.PromoteVersion(name, rec.Version, "classic"); err != nil {
+				fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
+			}
 		}
 
 		fmt.Printf("%s Application %s (ID: %s) started successfully on port %d\n",
@@ -103,6 +140,7 @@ func init() {
 	BuildCmd.Flags().IntVarP(&buildPort, "port", "p", defaultPort, "Port to run the application on")
 	BuildCmd.Flags().StringArrayVarP(&buildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	BuildCmd.Flags().BoolVar(&noUpload, "no-upload", false, "If set, do not upload/send app information to the server")
+	BuildCmd.Flags().StringVar(&buildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
 }
 
 func validateSession() error {

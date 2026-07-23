@@ -83,6 +83,56 @@ func displayDeployAndProxy(appName string) {
 	proxyUp, proxyByApp := loadProxySnapshot()
 
 	fmt.Println()
+
+	// --- Version info (from versions.json) --------------------------------
+	fmt.Printf("%s Version\n", color.BlueString("→"))
+	meta, err := deploy.CurrentVersionMeta(appName)
+	if err != nil || meta == nil {
+		fmt.Printf("  Current version: %s\n", color.HiBlackString("— (no version history)"))
+	} else {
+		verLabel := fmt.Sprintf("v%d", meta.Version)
+		if meta.Tag != "" {
+			verLabel += fmt.Sprintf(" %s", color.YellowString("(%s)", meta.Tag))
+		}
+		fmt.Printf("  Current version: %s\n", color.CyanString(verLabel))
+		if meta.GitCommit != "" {
+			commit := meta.GitCommit
+			if len(commit) > 12 {
+				commit = commit[:12]
+			}
+			fmt.Printf("  Git commit:      %s\n", color.HiBlackString(commit))
+		}
+		fmt.Printf("  Built at:        %s\n", meta.BuiltAt.Format("2006-01-02 15:04:05"))
+		if meta.DeployedAt != nil {
+			fmt.Printf("  Deployed at:     %s\n", meta.DeployedAt.Format("2006-01-02 15:04:05"))
+		}
+		if meta.SizeBytes > 0 {
+			fmt.Printf("  Binary size:     %.1f MB\n", float64(meta.SizeBytes)/(1024*1024))
+		}
+	}
+
+	// --- Recent version history (last 3) ----------------------------------
+	recent, recentErr := deploy.RecentVersions(appName, 3)
+	if recentErr == nil && len(recent) > 0 {
+		fmt.Printf("  Recent versions: ")
+		for i, v := range recent {
+			if i > 0 {
+				fmt.Printf(", ")
+			}
+			label := fmt.Sprintf("v%d", v.Version)
+			if v.Tag != "" {
+				label += fmt.Sprintf(" (%s)", v.Tag)
+			}
+			if v.IsCurrent {
+				label += " *"
+			}
+			fmt.Printf("%s", label)
+		}
+		fmt.Println()
+	}
+
+	// --- Deploy state (blue-green / rolling) ------------------------------
+	fmt.Println()
 	fmt.Printf("%s Zero-downtime deploy\n", color.BlueString("→"))
 
 	state, err := deploy.Load(appName)
@@ -97,17 +147,27 @@ func displayDeployAndProxy(appName string) {
 			}
 			fmt.Printf("  Deploy method: %s\n", color.MagentaString("blue-green"))
 			fmt.Printf("  Active slot:   %s\n", color.CyanString(active))
+			if state.ActiveVersion > 0 {
+				fmt.Printf("  Active version: v%d\n", state.ActiveVersion)
+			}
 			fmt.Printf("  Public port:   %d\n", state.PublicPort)
 			if state.Slots != nil {
 				for _, slot := range []string{deploy.SlotBlue, deploy.SlotGreen} {
 					if inst := state.Slots[slot]; inst != nil {
-						fmt.Printf("  Slot %-5s:    status=%s pid=%d port=%d\n",
-							slot, inst.Status, inst.PID, inst.Port)
+						ver := ""
+						if inst.Version > 0 {
+							ver = fmt.Sprintf(" version=v%d", inst.Version)
+						}
+						fmt.Printf("  Slot %-5s:    status=%s pid=%d port=%d%s\n",
+							slot, inst.Status, inst.PID, inst.Port, ver)
 					}
 				}
 			}
 		case deploy.ModeRolling:
 			fmt.Printf("  Deploy method: %s\n", color.MagentaString("rolling"))
+			if state.ActiveVersion > 0 {
+				fmt.Printf("  Active version: v%d\n", state.ActiveVersion)
+			}
 			fmt.Printf("  Replicas:      %d\n", len(state.Replicas))
 			fmt.Printf("  Public port:   %d\n", state.PublicPort)
 			for key, inst := range state.Replicas {
@@ -122,6 +182,11 @@ func displayDeployAndProxy(appName string) {
 		}
 		if state.Health != nil && state.Health.TierLabel != "" {
 			fmt.Printf("  Health tier:   %s\n", state.Health.TierLabel)
+		}
+		if state.LastRollback != nil {
+			fmt.Printf("  Last rollback: v%d → v%d at %s\n",
+				state.LastRollback.FromVersion, state.LastRollback.ToVersion,
+				state.LastRollback.At.Format("2006-01-02 15:04:05"))
 		}
 	}
 

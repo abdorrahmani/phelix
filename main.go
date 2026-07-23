@@ -147,6 +147,7 @@ func main() {
 	// Add commands
 	rootCmd.AddCommand(cmd.BuildCmd)
 	rootCmd.AddCommand(cmd.RebuildCmd)
+	rootCmd.AddCommand(cmd.RollbackCmd)
 	rootCmd.AddCommand(cmd.StartCmd)
 	rootCmd.AddCommand(cmd.RestartCmd)
 	rootCmd.AddCommand(cmd.StatusCmd)

@@ -62,7 +62,8 @@ type BlueGreen struct {
 	PublicPort int
 	ExtraArgs  []string
 
-	Builder        Builder
+	Builder        Builder // deprecated: use Source; kept for tests via BuilderSource
+	Source         BuildSource
 	Launcher       InstanceLauncher
 	ProxyClient    ProxyClient
 	HealthProvider HealthConfigProvider
@@ -97,6 +98,14 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		grace = DefaultGracePeriod
 	}
 
+	src := bg.Source
+	if src == nil && bg.Builder != nil {
+		src = BuilderSource(bg.Builder)
+	}
+	if src == nil {
+		return bg.failf("deploy: no BuildSource or Builder configured")
+	}
+
 	// 1. Load / initialise state.
 	state, err := LoadOrInit(bg.AppName, ModeBlueGreen, bg.PublicPort)
 	if err != nil {
@@ -111,20 +120,25 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	// 2. Proxy daemon must be reachable; enrol if this is the first deploy.
 	proxyOK := bg.ProxyClient != nil && bg.pingProxy(ctx) == nil
 
-	// 3. Build the new binary.
-	log.Stepf("building new binary for slot %s", inactive)
-	binaryPath, err := bg.Builder(ctx, bg.AppID, bg.AppName, bg.ExtraArgs)
+	// 3. Prepare binary + paired env snapshot (fresh compile or rollback target).
+	log.Stepf("%s for slot %s", src.Describe(), inactive)
+	binaryPath, envPath, err := src.Build(ctx)
 	if err != nil {
-		return bg.failf("build failed: %w", err)
+		return bg.failf("prepare deploy artifact failed: %w", err)
 	}
-	log.Successf("build complete: %s", binaryPath)
+	log.Successf("artifact ready: %s", binaryPath)
+	envOverlay, err := EnvOverlayFromSnapshot(envPath, bg.AppID)
+	if err != nil {
+		return bg.failf("load env snapshot: %w", err)
+	}
 
 	// 4. Start the new instance on a free internal port.
 	log.Stepf("starting new instance on slot %s", inactive)
-	proc, port, err := bg.Launcher(ctx, binaryPath, nil)
+	proc, port, err := bg.Launcher(ctx, binaryPath, envOverlay)
 	if err != nil {
 		return bg.failf("start instance failed: %w", err)
 	}
+	targetVer := targetVersionFromSource(src)
 	newInst := &Instance{
 		Slot:       inactive,
 		PID:        proc.PID(),
@@ -132,6 +146,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		BinaryPath: binaryPath,
 		StartedAt:  time.Now(),
 		Status:     "starting",
+		Version:    targetVer,
 	}
 	if state.Slots == nil {
 		state.Slots = map[string]*Instance{SlotBlue: {Slot: SlotBlue}, SlotGreen: {Slot: SlotGreen}}
@@ -214,9 +229,17 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		log.Successf("traffic switched to slot %s (zero downtime)", inactive)
 	}
 
-	// 8. Promote the new slot and gracefully stop the old instance.
+	// 8. Promote the new slot and gracefully stop the old instance. Version and
+	// "current" symlink are updated only after the proxy switch succeeds — same
+	// rule as forward deploy (never point current at an unhealthy instance).
 	oldActive := active
 	state.ActiveSlot = inactive
+	if targetVer > 0 {
+		state.ActiveVersion = targetVer
+		if err := PromoteVersion(bg.AppName, targetVer, string(ModeBlueGreen)); err != nil {
+			log.Warnf("failed to promote version v%d: %v (traffic already routed)", targetVer, err)
+		}
+	}
 	if err := Store(state); err != nil {
 		log.Warnf("failed to persist state after switch: %v (traffic already routed)", err)
 	}

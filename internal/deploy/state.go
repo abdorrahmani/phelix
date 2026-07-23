@@ -49,6 +49,16 @@ type Instance struct {
 	StartedAt time.Time `json:"started_at,omitempty"`
 	// Status is one of: "running", "stopped", "failed", "starting".
 	Status string `json:"status"`
+	// Version is the builds/vN label this instance was started from (when known).
+	Version int `json:"version,omitempty"`
+}
+
+// RollbackRecord is a compact summary of the last successful rollback for an
+// app, stored in DeployState so phelix status can display it.
+type RollbackRecord struct {
+	FromVersion int       `json:"from_version"`
+	ToVersion   int       `json:"to_version"`
+	At          time.Time `json:"at"`
 }
 
 // HealthSummary records which health tier was last used for the app and its
@@ -90,6 +100,14 @@ type DeployState struct {
 	Health *HealthSummary `json:"health,omitempty"`
 	// GraceSeconds is the graceful-shutdown grace period for old instances.
 	GraceSeconds int `json:"grace_seconds,omitempty"`
+	// ActiveVersion is the builds/vN label currently serving traffic after the
+	// last successful deploy or rollback.
+	ActiveVersion int `json:"active_version,omitempty"`
+	// LastRollback records when the last successful rollback completed, along
+	// with from/to version. Useful for phelix status output and audit.
+	LastRollback *RollbackRecord `json:"last_rollback,omitempty"`
+	// OpLock is set while a blue-green/rolling deploy or rollback is in flight.
+	OpLock *DeployLock `json:"op_lock,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }

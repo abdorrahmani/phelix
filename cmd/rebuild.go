@@ -20,6 +20,7 @@ var rebuildArgs []string
 var rebuildNoUpload bool
 var rebuildBlueGreen bool
 var rebuildReplicas int
+var rebuildTag string
 
 var RebuildCmd = &cobra.Command{
 	Use:   "rebuild <ID|AppName> --port <PORT>",
@@ -84,13 +85,47 @@ var RebuildCmd = &cobra.Command{
 			return err
 		}
 
+		// Acquire deploy lock to prevent concurrent rebuilds on the same app
+		// from corrupting versions.json or double-assigning version numbers.
+		release, lockErr := deploy.AcquireDeployLock(name, "rebuild")
+		if lockErr != nil {
+			return fmt.Errorf("%s %v", color.RedString("✗"), lockErr)
+		}
+		defer release()
+
 		if err := rebuildApp(appInfo.ID, rebuildArgs, buildMgr); err != nil {
 			return err
 		}
 
+		// --- Version recording ------------------------------------------------
+		// Same two-phase invariant as build: record with is_current=false,
+		// promote only after the start succeeds.
+		gitCommit := deploy.DetectGitCommit(appInfo.Directory)
+		logger := &colorLogger{}
+		rec, verErr := deploy.RecordFreshBuild(
+			name, appInfo.ID,
+			filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID)),
+			gitCommit, rebuildTag,
+			deploy.DefaultRetention{Max: 5}, logger,
+		)
+		if verErr != nil {
+			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
+		} else {
+			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
+		}
+
 		fmt.Printf("  %s Starting application on port %d...\n", color.BlueString("→"), portToUse)
 		if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
+			// Deploy failed. Version exists on disk but is_current is
+			// false and PromoteVersion was never called.
 			return fmt.Errorf("%s Failed to start rebuilt application %s (ID: %s): %v", color.RedString("✗"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
+		}
+
+		// Deploy succeeded — promote the version.
+		if rec != nil {
+			if err := deploy.PromoteVersion(name, rec.Version, "classic"); err != nil {
+				fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
+			}
 		}
 
 		fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
@@ -104,6 +139,7 @@ func init() {
 	RebuildCmd.Flags().BoolVar(&rebuildNoUpload, "no-upload", false, "If set, do not upload/send app information to the server after rebuild")
 	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
+	RebuildCmd.Flags().StringVar(&rebuildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
 }
 
 // runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a
@@ -130,24 +166,39 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 			color.RedString("✗"), err, color.CyanString("phelix proxy"))
 	}
 
+	logger := &colorLogger{}
+	healthProvider := deploy.DefaultHealthProvider()
+
 	// deploy.Builder closure: delegates to the existing rebuild path, which
 	// handles language detection, toolchain checks and env injection.
 	buildMgr := builder.NewBuildManager()
-	builderFn := func(ctx context.Context, appID, appName string, extraArgs []string) (string, error) {
-		if err := rebuildApp(appID, extraArgs, buildMgr); err != nil {
-			return "", err
-		}
-		// The binary lives at <Directory>/app_<id>, matching app/process.go.
-		if am, ok := app.Manager.(*app.AppManager); ok {
-			if info, exists := am.Apps[appID]; exists {
-				return filepath.Join(info.Directory, fmt.Sprintf("app_%s", appID)), nil
+	gitCommit := deploy.DetectGitCommit(appInfo.Directory)
+	freshSource := &deploy.FreshBuildSource{
+		AppName:   name,
+		AppID:     appInfo.ID,
+		ExtraArgs: rebuildArgs,
+		GitCommit: gitCommit,
+		Tag:       rebuildTag,
+		Retention: deploy.DefaultRetention{Max: 5},
+		Logger:    logger,
+		BuildFn: func(ctx context.Context, appID string, extraArgs []string) (string, error) {
+			if err := rebuildApp(appID, extraArgs, buildMgr); err != nil {
+				return "", err
 			}
-		}
-		return "", fmt.Errorf("could not locate built binary for %s", appID)
+			if am, ok := app.Manager.(*app.AppManager); ok {
+				if info, exists := am.Apps[appID]; exists {
+					return filepath.Join(info.Directory, fmt.Sprintf("app_%s", appID)), nil
+				}
+			}
+			return "", fmt.Errorf("could not locate built binary for %s", appID)
+		},
 	}
 
-	logger := &colorLogger{}
-	healthProvider := deploy.DefaultHealthProvider()
+	release, err := deploy.AcquireDeployLock(name, "deploy")
+	if err != nil {
+		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+	}
+	defer release()
 
 	if rebuildBlueGreen {
 		bg := &deploy.BlueGreen{
@@ -155,7 +206,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 			AppID:          appInfo.ID,
 			PublicPort:     publicPort,
 			ExtraArgs:      rebuildArgs,
-			Builder:        builderFn,
+			Source:         freshSource,
 			Launcher:       deploy.DefaultLauncher,
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
@@ -175,7 +226,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		PublicPort:     publicPort,
 		Replicas:       rebuildReplicas,
 		ExtraArgs:      rebuildArgs,
-		Builder:        builderFn,
+		Source:         freshSource,
 		Launcher:       deploy.DefaultLauncher,
 		ProxyClient:    proxyClient,
 		HealthProvider: healthProvider,
