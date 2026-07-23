@@ -12,6 +12,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -26,6 +27,15 @@ var (
 	buildArgs []string
 	noUpload  bool
 	buildTag  string
+
+	// Matrix build flags.
+	matrixFlag        bool
+	goVersions        []string
+	rustVersions      []string
+	platforms         []string
+	matrixConcurrency int
+	matrixDryRun      bool
+	buildDebug        bool
 )
 
 var BuildCmd = &cobra.Command{
@@ -63,6 +73,15 @@ var BuildCmd = &cobra.Command{
 			return fmt.Errorf("%s unsupported or unknown project language: %s", color.RedString("✗"), lang)
 		}
 
+		// --- Matrix build path ---
+		// When --matrix is set (or --go-versions / --rust-versions / --platforms
+		// are provided), we expand the cross product of versions × platforms
+		// and build each combination concurrently via a bounded worker pool.
+		if matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms) {
+			return runMatrixMode(name, lang, currentDir, buildArgs, noUpload, buildTag)
+		}
+
+		// --- Standard single-artifact build path ---
 		// Check toolchain; prompt to install if missing
 		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
 		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
@@ -141,6 +160,15 @@ func init() {
 	BuildCmd.Flags().StringArrayVarP(&buildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	BuildCmd.Flags().BoolVar(&noUpload, "no-upload", false, "If set, do not upload/send app information to the server")
 	BuildCmd.Flags().StringVar(&buildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
+
+	// Matrix build flags.
+	BuildCmd.Flags().BoolVar(&matrixFlag, "matrix", false, "Enable matrix build mode (cross-product of versions × platforms)")
+	BuildCmd.Flags().StringSliceVar(&goVersions, "go-versions", nil, "Go versions to build with (e.g. 1.21,1.22,1.23)")
+	BuildCmd.Flags().StringSliceVar(&rustVersions, "rust-versions", nil, "Rust versions to build with (e.g. 1.77,1.78)")
+	BuildCmd.Flags().StringSliceVar(&platforms, "platforms", nil, "Target platforms (e.g. linux/amd64,linux/arm64)")
+	BuildCmd.Flags().IntVar(&matrixConcurrency, "matrix-concurrency", matrix.DefaultConcurrency, "Max parallel builds in matrix mode")
+	BuildCmd.Flags().BoolVar(&matrixDryRun, "matrix-dry-run", false, "Print the matrix plan without executing builds")
+	BuildCmd.Flags().BoolVar(&buildDebug, "debug", false, "Show verbose build output, commands, and Docker operations")
 }
 
 func validateSession() error {
@@ -296,4 +324,124 @@ func startApplicationOnPort(id, name string, port int) error {
 		return fmt.Errorf("%s failed to start application: %w", color.RedString("✗"), err)
 	}
 	return nil
+}
+
+// runMatrixMode executes a matrix build: cross product of {toolchain version} × {platform}.
+//
+// Build phase uses fail-open semantics: if one combination fails, we continue
+// building the rest. This is deliberate — a matrix build produces multiple
+// artifacts and users need to know which combinations are broken, not just that
+// "something failed". The full summary at the end shows exactly what succeeded
+// and what failed, with error details per failure.
+//
+// After building, we record all successful artifacts in versions.json (additive
+// schema) and write a report (JSON + terminal summary).
+func runMatrixMode(name string, lang builder.Language, projectRoot string, extraArgs []string, noUpload bool, tag string) error {
+	// Determine which version lists to use based on the detected language.
+	versions := goVersions
+	if lang == builder.Rust {
+		versions = rustVersions
+	}
+	if len(versions) == 0 {
+		return fmt.Errorf("%s matrix mode requires version flags: use --go-versions or --rust-versions for %s projects",
+			color.RedString("✗"), lang)
+	}
+
+	// Parse the build plan.
+	plan, err := matrix.ParsePlan(lang, versions, platforms)
+	if err != nil {
+		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+	}
+
+	fmt.Printf("%s Matrix build: %s (%d combinations)\n",
+		color.BlueString("→"), color.CyanString(name), len(plan.Combinations))
+	for _, c := range plan.Combinations {
+		fmt.Printf("    %s %s\n", color.New(color.Faint).Sprint("•"), c.ID())
+	}
+	fmt.Println()
+
+	if matrixDryRun {
+		fmt.Printf("  %s Dry run — no builds executed\n", color.YellowString("Note:"))
+		return nil
+	}
+
+	// Build the appropriate builder.
+	var buildFn matrix.BuildFunc
+	switch lang {
+	case builder.Go:
+		gb := &matrix.GoMatrixBuilder{
+			ProjectRoot: projectRoot,
+			AppName:     name,
+			UseDocker:   len(versions) > 1, // use Docker when multiple versions
+			Debug:       buildDebug,
+		}
+		buildFn = gb.Build
+	case builder.Rust:
+		rb := &matrix.RustMatrixBuilder{ProjectRoot: projectRoot, AppName: name, Debug: buildDebug}
+		buildFn = rb.Build
+	default:
+		return fmt.Errorf("%s unsupported language for matrix build: %s", color.RedString("✗"), lang)
+	}
+
+	// Execute with bounded concurrency.
+	startTime := time.Now()
+	results := matrix.Execute(plan, buildFn, matrix.ExecutorConfig{
+		Concurrency: matrixConcurrency,
+		Debug:       buildDebug,
+	})
+
+	// Generate and display the report.
+	report := matrix.GenerateReport(name, results, startTime)
+	report.PrintTerminal()
+
+	reportPath, _ := report.WriteJSON(projectRoot)
+	if reportPath != "" {
+		fmt.Printf("  %s Report written to %s\n", color.GreenString("✓"), reportPath)
+	}
+
+	// Record successful artifacts in the versioning system.
+	if report.Succeeded > 0 {
+		artifacts := make([]deploy.MatrixArtifact, 0, report.Succeeded)
+		for _, r := range results {
+			if r.Status != "success" {
+				continue
+			}
+			artifacts = append(artifacts, deploy.MatrixArtifact{
+				Platform:  r.Combination.Platform,
+				Version:   r.Combination.Version,
+				Binary:    r.Artifact,
+				Status:    r.Status,
+				SizeBytes: fileSize(r.Artifact),
+			})
+		}
+
+		gitCommit := deploy.DetectGitCommit(projectRoot)
+		logger := &colorLogger{}
+		_, verErr := deploy.RecordMatrixBuild(
+			name, tag, gitCommit, artifacts, "",
+			deploy.DefaultRetention{Max: 5}, logger,
+		)
+		if verErr != nil {
+			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
+		} else {
+			fmt.Printf("  %s Matrix build recorded in version history\n", color.GreenString("✓"))
+		}
+	}
+
+	// Return an error if any combination failed, so the CLI exit code is non-zero.
+	// The user sees the full report above — this just ensures scripts can detect failures.
+	if report.Failed > 0 {
+		return fmt.Errorf("matrix build completed with %d failure(s) out of %d combinations",
+			report.Failed, report.Total)
+	}
+
+	return nil
+}
+
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }

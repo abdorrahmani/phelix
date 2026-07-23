@@ -28,6 +28,28 @@ type VersionMeta struct {
 	// running the binary directly. This field is additive — nil/absent means
 	// the version is a native binary build (FreshBuildSource path).
 	DockerImage string `json:"docker_image,omitempty"`
+	// MatrixArtifacts holds per-platform artifacts when this version was
+	// built via a matrix build (phelix build --matrix or phelix dockerize --matrix).
+	// When nil/empty, the version is a single-artifact build (the legacy
+	// BinaryPath or DockerImage path). This field is additive — existing
+	// non-matrix builds are unaffected.
+	MatrixArtifacts []MatrixArtifact `json:"matrix_artifacts,omitempty"`
+	// MultiArchImage is the manifest-list image reference when a matrix
+	// dockerize produced a multi-arch manifest (via docker buildx). Distinct
+	// from the per-combination tags in MatrixArtifacts.
+	MultiArchImage string `json:"multi_arch_image,omitempty"`
+}
+
+// MatrixArtifact describes one artifact from a matrix build, corresponding
+// to a single {toolchain version} × {platform} combination.
+type MatrixArtifact struct {
+	Platform  string `json:"platform"`            // e.g. "linux/amd64"
+	Version   string `json:"toolchain_version"`   // e.g. "1.22"
+	Binary    string `json:"binary,omitempty"`    // binary path (Go/Rust native builds)
+	ImageTag  string `json:"image_tag,omitempty"` // per-combination Docker image tag
+	Status    string `json:"status"`              // "success", "failed"
+	Error     string `json:"error,omitempty"`     // error message if failed
+	SizeBytes int64  `json:"size_bytes,omitempty"`
 }
 
 // VersionsFile is the on-disk metadata index for an app's build history.
@@ -576,4 +598,41 @@ func RecentVersions(appName string, n int) ([]VersionMeta, error) {
 		out = out[:n]
 	}
 	return out, nil
+}
+
+// RecordMatrixBuild records a matrix build as a new version entry containing
+// multiple per-platform artifacts. The version is created with is_current=false
+// (same two-phase protocol as RecordFreshBuild / RecordDockerBuild).
+//
+// artifacts should only include successfully-built combinations. Failed
+// combinations are recorded in the report.json but NOT in versions.json,
+// since versions.json is the deploy source of truth.
+func RecordMatrixBuild(appName, tag, gitCommit string, artifacts []MatrixArtifact, multiArchImage string, policy RetentionPolicy, log Logger) (*RecordResult, error) {
+	if policy == nil {
+		policy = DefaultRetention{}
+	}
+	ver, err := NextVersion(appName)
+	if err != nil {
+		return nil, err
+	}
+	vf, err := LoadVersions(appName)
+	if err != nil {
+		return nil, err
+	}
+	vf.Versions = append(vf.Versions, VersionMeta{
+		Version:         ver,
+		Tag:             tag,
+		GitCommit:       gitCommit,
+		BuiltAt:         time.Now(),
+		IsCurrent:       false,
+		MatrixArtifacts: artifacts,
+		MultiArchImage:  multiArchImage,
+	})
+	if err := saveVersions(appName, vf); err != nil {
+		return nil, err
+	}
+	if err := PruneVersions(appName, policy, log); err != nil {
+		return nil, err
+	}
+	return &RecordResult{Version: ver}, nil
 }

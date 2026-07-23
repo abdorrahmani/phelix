@@ -15,6 +15,7 @@ Phelix is a powerful Go Application Manager that helps you build, run, and manag
 - **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
 - **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
 - **Docker image building** (auto-generated multi-stage Dockerfiles for Go/Rust with optimized layer caching)
+- **Matrix builds** (build multiple compiler-version x platform combinations in one command)
 
 ## Installation
 The CLI requires Go to be installed on your system. If Go is not installed, Phelix will attempt to install it automatically on Linux systems. For other operating systems, you'll need to install Go manually.
@@ -401,6 +402,99 @@ This produces a ready-to-use `docker-compose.yml` with:
 Supported sidecars: `redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`.
 
 > **Important:** Phelix only *generates* the compose file. It does **not** manage the lifecycle (start/stop/health) of compose-defined services. Use `docker compose up -d` directly to manage them.
+
+### Matrix Builds
+
+Build multiple compiler-version x platform combinations in a single command. This is useful for producing release artifacts for multiple architectures and Go/Rust versions at once.
+
+#### `phelix build <NAME> --matrix`
+
+Build binaries for a cross-product of toolchain versions and target platforms.
+
+```bash
+# Build Go binaries for 3 versions × 2 platforms (6 combinations)
+phelix build myapp --matrix --go-versions 1.21,1.22,1.23 --platforms linux/amd64,linux/arm64
+
+# Build Rust binaries using cross
+phelix build myapp --matrix --rust-versions 1.77,1.78 --platforms linux/amd64,linux/arm64
+
+# Dry run — show the plan without building
+phelix build myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64 --matrix-dry-run
+
+# Debug mode — show Docker commands, build output, and cache paths
+phelix build myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --debug
+```
+
+#### `phelix dockerize <NAME> --matrix`
+
+Build Docker images for multiple version x platform combinations.
+
+```bash
+# Per-combination tags: myapp:go1.22-linux-amd64, myapp:go1.23-linux-arm64, etc.
+phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --matrix-tags
+
+# Multi-arch manifest: single tag with all platforms
+phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --multi-arch-tag
+
+# Build + push (all must succeed, or use --push-partial)
+phelix dockerize myapp --matrix --go-versions 1.22 --platforms linux/amd64,linux/arm64 --push
+
+# Push only successful images even if some failed
+phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --push --push-partial
+```
+
+#### Matrix flags
+
+| Flag | Description |
+|------|-------------|
+| `--matrix` | Enable matrix mode (also auto-enabled when `--go-versions`/`--rust-versions`/`--platforms` are set) |
+| `--go-versions` | Comma-separated Go versions to build with (e.g. `1.21,1.22,1.23`) |
+| `--rust-versions` | Comma-separated Rust versions to build with (e.g. `1.77,1.78`) |
+| `--platforms` | Target platforms (e.g. `linux/amd64,linux/arm64,darwin/arm64`) |
+| `--matrix-concurrency` | Max parallel builds (default: 3) |
+| `--matrix-dry-run` | Print the matrix plan without executing |
+| `--debug` | Show verbose output: Docker commands, build logs, cache paths, active combinations |
+
+#### How matrix builds work
+
+**Cross-compilation strategy:**
+
+- **Go**: Uses native cross-compilation via `GOOS`/`GOARCH` env vars (no extra toolchain needed when `CGO_ENABLED=0`). If the project uses CGO (`import "C"`), the build fails with a clear error suggesting Docker-based builds or a C cross-compiler.
+- **Rust**: Uses the `cross` tool (not raw `rustup target add`), which builds inside a Docker container with the correct linker and C libraries pre-configured. This ensures any crate — including those with C dependencies — builds correctly.
+
+**Multi-version builds:**
+
+When multiple toolchain versions are specified (e.g. `--go-versions 1.21,1.22,1.23`), each version runs inside its own Docker container (`golang:1.21`, `golang:1.22`, etc.). This avoids requiring multiple toolchains installed on the host and provides clean cache isolation.
+
+**Output naming:**
+
+- Binaries: `builds/matrix/{lang}{version}-{os}-{arch}/binary` (e.g. `builds/matrix/go1.22-linux-amd64/binary`)
+- Docker images (per-combo): `myapp:go1.22-linux-amd64`, `myapp:go1.23-arm64`, etc.
+- Docker images (multi-arch): single manifest list tag via `docker buildx`
+
+**Concurrency and caching:**
+
+- Worker pool runs combinations in parallel (default: 3 concurrent builds)
+- Each combination gets its own cache directory (`.phelix/cache/go/{combo-id}/` or `target/{combo-id}/`)
+- Live progress display shows which combinations are running/completed/failed
+
+**Failure handling:**
+
+- **Build phase**: Fail-open — if one combination fails, the rest continue. Full summary at the end.
+- **Push phase**: Fail-closed by default — if any combination failed, no images are pushed. Use `--push-partial` to override and push only successful images.
+
+**Reporting:**
+
+After all combinations complete, a summary is printed to the terminal and a JSON report is written to `builds/matrix/report.json`. The report lists each combination's status, duration, artifact path, and error message if failed.
+
+#### Output naming convention
+
+| Artifact | Naming |
+|----------|--------|
+| Binary (matrix) | `builds/matrix/go1.22-linux-amd64/binary` |
+| Docker per-combo tag | `myapp:go1.22-linux-amd64` |
+| Docker multi-arch tag | `myapp:latest` (manifest list) |
+| JSON report | `builds/matrix/report.json` |
 
 ### Multi-Server Monitoring
 

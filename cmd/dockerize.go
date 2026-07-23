@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/docker"
+	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +22,17 @@ var (
 	dockerizeBuildArgs []string
 	dockerizeCompose   bool
 	dockerizeDependsOn []string
+
+	// Matrix dockerize flags.
+	dockerizeMatrix       bool
+	dockerizeGoVersions   []string
+	dockerizeRustVersions []string
+	dockerizePlatforms    []string
+	dockerizeMatrixTags   bool
+	dockerizeMultiArchTag bool
+	dockerizePushPartial  bool
+	dockerizeConcurrency  int
+	dockerizeDebug        bool
 )
 
 var DockerizeCmd = &cobra.Command{
@@ -63,6 +77,11 @@ encryption mechanism as environment variables (via the internal/env package).`,
 		lang, err := docker.DetectLanguage(currentDir)
 		if err != nil {
 			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		}
+
+		// --- Matrix dockerize path ---
+		if matrix.IsMatrixMode(dockerizeMatrix, dockerizeGoVersions, dockerizeRustVersions, dockerizePlatforms) {
+			return runDockerizeMatrixMode(name, string(lang), currentDir, dockerizeTag, dockerizeRegistry, dockerizePush, dockerizePushPartial)
 		}
 
 		fmt.Printf("%s Dockerizing application %s (%s)\n",
@@ -198,4 +217,121 @@ func init() {
 	DockerizeCmd.Flags().StringArrayVarP(&dockerizeBuildArgs, "build-arg", "a", nil, "Extra build argument KEY=value (repeatable)")
 	DockerizeCmd.Flags().BoolVar(&dockerizeCompose, "with-compose", false, "Generate docker-compose.yml with the app service")
 	DockerizeCmd.Flags().StringSliceVar(&dockerizeDependsOn, "depends-on", nil, "Sidecar services for compose (redis, postgres, mysql, mongodb, rabbitmq)")
+
+	// Matrix dockerize flags.
+	DockerizeCmd.Flags().BoolVar(&dockerizeMatrix, "matrix", false, "Enable matrix mode: build Docker images for multiple version × platform combinations")
+	DockerizeCmd.Flags().StringSliceVar(&dockerizeGoVersions, "go-versions", nil, "Go versions to build with (e.g. 1.22,1.23)")
+	DockerizeCmd.Flags().StringSliceVar(&dockerizeRustVersions, "rust-versions", nil, "Rust versions to build with (e.g. 1.77,1.78)")
+	DockerizeCmd.Flags().StringSliceVar(&dockerizePlatforms, "platforms", nil, "Target platforms (e.g. linux/amd64,linux/arm64)")
+	DockerizeCmd.Flags().BoolVar(&dockerizeMatrixTags, "matrix-tags", false, "Tag each version×platform combination separately (e.g. myapp:go1.22-linux-amd64)")
+	DockerizeCmd.Flags().BoolVar(&dockerizeMultiArchTag, "multi-arch-tag", false, "Create a multi-arch manifest list tag via docker buildx")
+	DockerizeCmd.Flags().BoolVar(&dockerizePushPartial, "push-partial", false, "Push only successful images even if some combinations failed")
+	DockerizeCmd.Flags().IntVar(&dockerizeConcurrency, "matrix-concurrency", matrix.DefaultConcurrency, "Max parallel builds in matrix mode")
+	DockerizeCmd.Flags().BoolVar(&dockerizeDebug, "debug", false, "Show verbose build output, commands, and Docker operations")
+}
+
+// runDockerizeMatrixMode builds Docker images for a matrix of version × platform
+// combinations. It supports two tagging strategies:
+//
+//  1. Per-combination tags (--matrix-tags): each combo gets its own tag.
+//  2. Multi-arch manifest list (--multi-arch-tag): a single unified tag via buildx.
+//
+// Push semantics are fail-closed by default: if any combination failed to build,
+// we refuse to push any image. This prevents publishing a partial/inconsistent
+// release where some platforms work and others don't. The --push-partial flag
+// overrides this behavior.
+func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry string, push, pushPartial bool) error {
+	versions := dockerizeGoVersions
+	langEnum := builder.Go
+	if lang == "rust" {
+		versions = dockerizeRustVersions
+		langEnum = builder.Rust
+	}
+	if len(versions) == 0 {
+		return fmt.Errorf("%s matrix mode requires version flags: use --go-versions or --rust-versions",
+			color.RedString("✗"))
+	}
+
+	plan, err := matrix.ParsePlan(langEnum, versions, dockerizePlatforms)
+	if err != nil {
+		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+	}
+
+	fmt.Printf("%s Docker matrix build: %s (%d combinations)\n",
+		color.BlueString("→"), color.CyanString(name), len(plan.Combinations))
+	for _, c := range plan.Combinations {
+		fmt.Printf("    %s %s\n", color.New(color.Faint).Sprint("•"), c.ID())
+	}
+	fmt.Println()
+
+	// Ensure buildx is available for multi-arch builds.
+	if err := matrix.EnsureBuildx(); err != nil {
+		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+	}
+
+	dmb := &matrix.DockerMatrixBuilder{
+		ProjectRoot: projectRoot,
+		Registry:    registry,
+		Tag:         tag,
+		Debug:       dockerizeDebug,
+	}
+
+	// Build each combination.
+	startTime := time.Now()
+	results := matrix.Execute(plan, dmb.BuildDockerImage, matrix.ExecutorConfig{
+		Concurrency: dockerizeConcurrency,
+		Debug:       dockerizeDebug,
+	})
+
+	// Generate report.
+	report := matrix.GenerateReport(name, results, startTime)
+	report.PrintTerminal()
+
+	reportPath, _ := report.WriteJSON(projectRoot)
+	if reportPath != "" {
+		fmt.Printf("  %s Report written to %s\n", color.GreenString("✓"), reportPath)
+	}
+
+	// Handle push with fail-closed semantics.
+	if push {
+		if err := dmb.PushImages(results, pushPartial); err != nil {
+			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		}
+		fmt.Printf("  %s All images pushed\n", color.GreenString("✓"))
+	}
+
+	// Record successful artifacts in the versioning system.
+	if report.Succeeded > 0 {
+		artifacts := make([]deploy.MatrixArtifact, 0, report.Succeeded)
+		for _, r := range results {
+			if r.Status != "success" {
+				continue
+			}
+			artifacts = append(artifacts, deploy.MatrixArtifact{
+				Platform: r.Combination.Platform,
+				Version:  r.Combination.Version,
+				ImageTag: r.Artifact,
+				Status:   r.Status,
+			})
+		}
+
+		gitCommit := deploy.DetectGitCommit(projectRoot)
+		logger := &colorLogger{}
+		_, verErr := deploy.RecordMatrixBuild(
+			name, tag, gitCommit, artifacts, "",
+			deploy.DefaultRetention{Max: 5}, logger,
+		)
+		if verErr != nil {
+			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
+		} else {
+			fmt.Printf("  %s Docker matrix build recorded in version history\n", color.GreenString("✓"))
+		}
+	}
+
+	if report.Failed > 0 {
+		return fmt.Errorf("matrix dockerize completed with %d failure(s) out of %d combinations",
+			report.Failed, report.Total)
+	}
+
+	return nil
 }
