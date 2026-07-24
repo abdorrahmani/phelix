@@ -31,27 +31,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Check if running in monitor mode
 	isMonitorMode = len(os.Args) > 1 && os.Args[1] == "monitor"
 
-	// Initialize monitor service
 	monitorService = monitor.NewMonitorService()
 
-	// Initialize global health daemon with NoOp client (will be upgraded when monitor connects)
-	healthDaemon = health.InitGlobalDaemon(&health.NoOpWebSocketClient{})
+	healthDaemon = health.InitGlobalDaemon()
 
 	if isMonitorMode {
-		// Only the long-running monitor process actually needs the daemon.
-		// Initialize gRPC client for health result reporting
 		grpcClient := phelixgrpc.InitGlobalClient()
 		go grpcClient.Start()
 
-		// Wait briefly for gRPC connection, then start daemon with gRPC reporter
 		go func() {
 			time.Sleep(2 * time.Second)
 			if c := phelixgrpc.GetClient(); c != nil && c.IsConnected() {
-				reporter := health.NewGrpcHealthReporter(c.GetServiceClient())
-				healthDaemon.SetWebSocketClient(reporter)
+				reporter := phelixgrpc.NewGrpcHealthReporter(c.GetServiceClient())
+				healthDaemon.SetReporter(reporter)
 			}
 			if err := healthDaemon.Start(); err != nil {
 				log.Printf("[Health] Failed to start global daemon: %v", err)
@@ -59,12 +53,10 @@ func main() {
 		}()
 	}
 
-	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		// Gracefully shutdown gRPC client
 		if c := phelixgrpc.GetClient(); c != nil {
 			c.Close()
 		}
@@ -77,7 +69,6 @@ func main() {
 		Short:   "Phelix - Go/Rust Application Manager",
 		Version: version.Version,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			// Only check authentication for auth status command
 			if cmd.Name() == "auth" && len(args) > 0 && args[0] == "status" {
 				session, err := auth.GetValidSession()
 				if err != nil {
@@ -94,10 +85,9 @@ func main() {
 		},
 	}
 
-	// Add monitor command
 	monitorCmd := &cobra.Command{
 		Use:   "monitor",
-		Short: "Start the WebSocket monitoring service",
+		Short: "Start the monitoring service",
 		Run: func(cobraCmd *cobra.Command, args []string) {
 
 			go func() {
@@ -108,12 +98,11 @@ func main() {
 					default:
 						logs.RemovePreviousLogs()
 						logs.RemoveSelfLogs()
-						time.Sleep(1 * time.Minute) // each minute
+						time.Sleep(1 * time.Minute)
 					}
 				}
 			}()
 
-			// For delete each 15 minute fil logs
 			go func() {
 				tricker := time.NewTicker(15 * time.Minute)
 				defer tricker.Stop()
@@ -127,7 +116,6 @@ func main() {
 				}
 			}()
 
-			// Start WebSocket monitoring
 			go func() {
 				for {
 					select {
@@ -136,30 +124,27 @@ func main() {
 					default:
 						session, err := auth.GetValidSession()
 						if err != nil {
-							log.Printf("[WebSocket] No valid session found: %v", err)
+							log.Printf("[Monitor] No valid session found: %v", err)
 							time.Sleep(5 * time.Second)
 							continue
 						}
 
-						log.Printf("[WebSocket] Starting monitoring with session ID: %s", session.SessionID)
+						log.Printf("[Monitor] Starting monitoring with session ID: %s", session.SessionID)
 						if err := monitorService.StartMonitoring(); err != nil {
-							log.Printf("[WebSocket] Error starting monitoring: %v", err)
+							log.Printf("[Monitor] Error starting monitoring: %v", err)
 							time.Sleep(5 * time.Second)
 							continue
 						}
 
-						// Keep the goroutine running
 						time.Sleep(24 * time.Hour)
 					}
 				}
 			}()
 
-			// Keep the main process running
 			<-done
 		},
 	}
 
-	// Add commands
 	rootCmd.AddCommand(cmd.BuildCmd)
 	rootCmd.AddCommand(cmd.RebuildCmd)
 	rootCmd.AddCommand(cmd.RollbackCmd)

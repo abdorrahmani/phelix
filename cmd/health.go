@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strconv"
@@ -474,17 +475,53 @@ var healthWatchCmd = &cobra.Command{
 // health daemon - start background daemon
 var healthDaemonCmd = &cobra.Command{
 	Use:   "daemon",
-	Short: "Health check daemon (runs automatically, this command is deprecated)",
+	Short: "Start the health check daemon in the foreground",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		globalDaemon := health.GetGlobalDaemon()
-		if !globalDaemon.IsRunning() {
-			fmt.Println("⚠️  The health check daemon is not running. It should start automatically.")
-			fmt.Println("Please restart phelix or check the logs for startup errors.")
-			return fmt.Errorf("daemon not running")
+
+		if globalDaemon.IsRunning() {
+			fmt.Println("Health check daemon is already running")
+			fmt.Println("  Use 'phelix health status <app>' to check health status")
+			return nil
 		}
-		fmt.Println("✓ Health check daemon is running in the background")
+
+		fmt.Println("Starting health check daemon...")
+
+		// Initialize gRPC client for backend reporting
+		grpcClient.InitGlobalClient()
+		c := grpcClient.GetClient()
+		go c.Start()
+
+		// Wait for connection to establish
+		time.Sleep(2 * time.Second)
+
+		if c.IsConnected() {
+			reporter := grpcClient.NewGrpcHealthReporter(c.GetServiceClient())
+			globalDaemon.SetReporter(reporter)
+			fmt.Println("  Backend reporting: gRPC")
+		} else {
+			fmt.Println("  Backend reporting: disabled (not connected)")
+		}
+
+		if err := globalDaemon.Start(); err != nil {
+			return fmt.Errorf("failed to start daemon: %w", err)
+		}
+
+		fmt.Println("Health check daemon started")
 		fmt.Println("  Use 'phelix health status <app>' to check health status")
 		fmt.Println("  Use 'phelix health status <app> --watch' for live updates")
+		fmt.Println("  Press Ctrl+C to stop")
+
+		// Keep running until interrupted
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		<-sigChan
+
+		fmt.Println("\nStopping daemon...")
+		if err := globalDaemon.Stop(); err != nil {
+			log.Printf("[Health] Error stopping daemon: %v", err)
+		}
+		fmt.Println("Daemon stopped")
 		return nil
 	},
 }

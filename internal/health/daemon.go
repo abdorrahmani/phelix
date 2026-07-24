@@ -18,7 +18,7 @@ type Daemon struct {
 	stopChan        chan struct{}
 	wg              sync.WaitGroup
 	eventListeners  []EventListener
-	websocketClient WebSocketClient
+	reporter        HealthReporter
 	isRunning       bool
 	broadcastChan   chan *HealthCheckResult
 	autoRestartChan chan *AutoRestartRecord
@@ -28,17 +28,16 @@ type Daemon struct {
 // EventListener is called when health check events occur
 type EventListener func(event interface{})
 
-// WebSocketClient interface for sending health data to backend
-type WebSocketClient interface {
+// HealthReporter sends health data to the backend.
+type HealthReporter interface {
 	SendHealthCheckResult(result *HealthCheckResult, appID string, appName string) error
 	SendAutoRestartEvent(record *AutoRestartRecord) error
-	IsConnected() bool
 }
 
 var daemon *Daemon
 
 // InitDaemon initializes the health check daemon
-func InitDaemon(wsClient WebSocketClient) (*Daemon, error) {
+func InitDaemon() (*Daemon, error) {
 	configMgr, err := InitConfigManager()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize config manager: %w", err)
@@ -49,7 +48,6 @@ func InitDaemon(wsClient WebSocketClient) (*Daemon, error) {
 		checker:         NewChecker(),
 		configManager:   configMgr,
 		stopChan:        make(chan struct{}),
-		websocketClient: wsClient,
 		broadcastChan:   make(chan *HealthCheckResult, 100),
 		autoRestartChan: make(chan *AutoRestartRecord, 50),
 	}
@@ -60,6 +58,13 @@ func InitDaemon(wsClient WebSocketClient) (*Daemon, error) {
 	daemon.startMaintenanceWorker()
 
 	return daemon, nil
+}
+
+// SetReporter sets the health reporter for sending results to the backend.
+func (d *Daemon) SetReporter(r HealthReporter) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.reporter = r
 }
 
 // GetDaemon returns the singleton daemon instance
@@ -156,15 +161,12 @@ func (d *Daemon) checkEndpoint(appID, appName, endpointName string, config *Heal
 			return
 		case <-ticker.C:
 			result := d.checker.Check(config)
-			// annotate with app info so broadcaster can route correctly
 			result.AppID = appID
 			result.AppName = appName
-			d.broadcastChan <- result // Send for websocket streaming
+			d.broadcastChan <- result
 
-			// Update state
 			d.updateEndpointState(appID, appName, endpointName, config, result)
 
-			// Log the result
 			log.Printf("[Health] %s.%s: %s (latency: %v ms)", appName, endpointName, result.Status, result.LatencyMs)
 		}
 	}
@@ -196,16 +198,13 @@ func (d *Daemon) updateEndpointState(appID, appName, endpointName string, config
 		state.ConsecutiveFailures++
 		state.LastFailTime = time.Now()
 
-		// Check if we've exceeded the retry threshold
 		if state.ConsecutiveFailures >= config.Retries {
-			// Trigger auto-restart if not already on backoff
 			if state.BackoffLevel == 0 || time.Now().After(state.NextRestartTime) {
 				d.triggerAutoRestart(appID, appName, endpointName, config, state)
 			}
 		}
 	}
 
-	// Save history
 	history := d.configManager.GetHistory(appID, endpointName)
 	if history == nil {
 		history = &HealthCheckHistory{
@@ -214,7 +213,6 @@ func (d *Daemon) updateEndpointState(appID, appName, endpointName string, config
 		}
 	}
 
-	// Ring buffer - keep last 100
 	history.Results = append(history.Results, *result)
 	if len(history.Results) > 100 {
 		history.Results = history.Results[1:]
@@ -228,7 +226,6 @@ func (d *Daemon) updateEndpointState(appID, appName, endpointName string, config
 func (d *Daemon) triggerAutoRestart(appID, appName, endpointName string, config *HealthCheckConfig, state *EndpointState) {
 	backoffSeconds := d.calculateBackoff(state.BackoffLevel)
 
-	// Clean up crash history older than 24h
 	now := time.Now()
 	filteredCrashes := make([]time.Time, 0)
 	for _, t := range state.CrashHistory {
@@ -247,7 +244,6 @@ func (d *Daemon) triggerAutoRestart(appID, appName, endpointName string, config 
 		CrashCount24h:      len(state.CrashHistory),
 	}
 
-	// Check if we should actually restart (not too many crashes)
 	if len(state.CrashHistory) > 10 {
 		log.Printf("[Health] App %s has crashed %d times in 24h, skipping auto-restart", appName, len(state.CrashHistory))
 		record.ExitCode = 1
@@ -255,12 +251,10 @@ func (d *Daemon) triggerAutoRestart(appID, appName, endpointName string, config 
 		return
 	}
 
-	// Update state
 	state.BackoffLevel++
 	state.NextRestartTime = time.Now().Add(time.Duration(backoffSeconds) * time.Second)
 	state.CrashHistory = append(state.CrashHistory, time.Now())
 
-	// Queue for restart
 	d.autoRestartChan <- record
 
 	log.Printf("[Health] Auto-restart triggered for %s (backoff: %ds)", appName, backoffSeconds)
@@ -268,14 +262,14 @@ func (d *Daemon) triggerAutoRestart(appID, appName, endpointName string, config 
 
 // calculateBackoff returns the backoff duration in seconds
 func (d *Daemon) calculateBackoff(level int) int {
-	backoffs := []int{5, 15, 60, 300} // 5s, 15s, 1m, 5m
+	backoffs := []int{5, 15, 60, 300}
 	if level >= len(backoffs) {
 		return backoffs[len(backoffs)-1]
 	}
 	return backoffs[level]
 }
 
-// startBroadcaster sends health check results to websocket
+// startBroadcaster sends health check results to listeners and reporter
 func (d *Daemon) startBroadcaster() {
 	d.wg.Add(1)
 	go func() {
@@ -285,21 +279,22 @@ func (d *Daemon) startBroadcaster() {
 			case <-d.stopChan:
 				return
 			case result := <-d.broadcastChan:
-				// Notify listeners regardless of websocket availability
 				d.mu.RLock()
 				listeners := make([]EventListener, len(d.eventListeners))
 				copy(listeners, d.eventListeners)
+				r := d.reporter
 				d.mu.RUnlock()
+
 				for _, l := range listeners {
 					go l(result)
 				}
 
-				if d.websocketClient != nil {
-					// Send via websocket (buffering client will handle disconnected state)
-					if err := d.websocketClient.SendHealthCheckResult(result, result.AppID, result.AppName); err != nil {
-						// log but keep going
-						log.Printf("[Health] websocket send error: %v", err)
+				if r != nil {
+					if err := r.SendHealthCheckResult(result, result.AppID, result.AppName); err != nil {
+						log.Printf("[Health] Report error: %v", err)
 					}
+				} else {
+					log.Printf("[Health] No reporter set, skipping backend report for %s.%s", result.AppID, result.EndpointName)
 				}
 			}
 		}
@@ -316,15 +311,17 @@ func (d *Daemon) startAutoRestarter() {
 			case <-d.stopChan:
 				return
 			case record := <-d.autoRestartChan:
-				if d.websocketClient != nil {
-					_ = d.websocketClient.SendAutoRestartEvent(record)
+				d.mu.RLock()
+				r := d.reporter
+				d.mu.RUnlock()
+				if r != nil {
+					_ = r.SendAutoRestartEvent(record)
 				}
 
 				if err := d.configManager.SaveAutoRestartRecord(record.AppID, record); err != nil {
 					log.Printf("[Health] Failed to save restart record: %v", err)
 				}
 
-				// Perform the restart
 				if record.CrashCount24h <= 10 {
 					log.Printf("[Health] Auto-restarting %s...", record.AppName)
 					if err := app.Manager.RestartApplication(record.AppID); err != nil {
@@ -366,7 +363,6 @@ func (d *Daemon) performMaintenance() {
 	now := time.Now()
 	successThreshold := 5 * time.Minute
 
-	// Reset backoff for healthy endpoints
 	for appID := range d.endpointStates {
 		for endpointName, state := range d.endpointStates[appID] {
 			if state.LastSuccessTime.After(state.LastFailTime) &&

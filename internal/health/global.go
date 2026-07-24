@@ -10,7 +10,7 @@ import (
 // GlobalDaemon manages a singleton health check daemon instance
 type GlobalDaemon struct {
 	daemon            *Daemon
-	websocketClient   WebSocketClient
+	reporter          HealthReporter
 	mu                sync.RWMutex
 	started           bool
 	initAttempts      int
@@ -22,15 +22,12 @@ var globalDaemon *GlobalDaemon
 var globalDaemonOnce sync.Once
 
 // InitGlobalDaemon initializes the global health daemon singleton
-// It will automatically retry on initialization failure until it succeeds
-func InitGlobalDaemon(wsClient WebSocketClient) *GlobalDaemon {
+func InitGlobalDaemon() *GlobalDaemon {
 	globalDaemonOnce.Do(func() {
 		globalDaemon = &GlobalDaemon{
-			websocketClient:   wsClient,
 			maxInitAttempts:   30,
 			initRetryInterval: 1 * time.Second,
 		}
-		// Don't start it immediately; let Start() be called
 	})
 	return globalDaemon
 }
@@ -43,29 +40,42 @@ func GetGlobalDaemon() *GlobalDaemon {
 	return globalDaemon
 }
 
+// SetReporter sets the health reporter. Can be called before or after Start().
+func (gd *GlobalDaemon) SetReporter(r HealthReporter) {
+	gd.mu.Lock()
+	defer gd.mu.Unlock()
+	gd.reporter = r
+	if gd.daemon != nil {
+		gd.daemon.SetReporter(r)
+	}
+}
+
 // Start initializes and starts the daemon with retries
 func (gd *GlobalDaemon) Start() error {
 	gd.mu.Lock()
 	defer gd.mu.Unlock()
 
 	if gd.started && gd.daemon != nil {
-		return nil // Already started
+		return nil
 	}
 
-	// Try to initialize daemon with retries
 	var err error
 	gd.initAttempts = 0
 
 	for gd.initAttempts < gd.maxInitAttempts {
 		gd.initAttempts++
 
-		if gd.daemon, err = InitDaemon(gd.websocketClient); err != nil {
+		if gd.daemon, err = InitDaemon(); err != nil {
 			log.Printf("[Health] Failed to initialize daemon (attempt %d/%d): %v", gd.initAttempts, gd.maxInitAttempts, err)
 			time.Sleep(gd.initRetryInterval)
 			continue
 		}
 
-		// Start the daemon
+		// Apply reporter to the newly created daemon
+		if gd.reporter != nil {
+			gd.daemon.SetReporter(gd.reporter)
+		}
+
 		if err := gd.daemon.Start(); err != nil {
 			log.Printf("[Health] Failed to start daemon (attempt %d/%d): %v", gd.initAttempts, gd.maxInitAttempts, err)
 			gd.daemon = nil
@@ -90,7 +100,6 @@ func (gd *GlobalDaemon) GetDaemon() (*Daemon, error) {
 	}
 	gd.mu.RUnlock()
 
-	// If daemon is not initialized yet, wait a bit for it to start
 	for i := 0; i < 50; i++ {
 		time.Sleep(100 * time.Millisecond)
 		gd.mu.RLock()
@@ -126,12 +135,4 @@ func (gd *GlobalDaemon) IsRunning() bool {
 	gd.mu.RLock()
 	defer gd.mu.RUnlock()
 	return gd.started && gd.daemon != nil && gd.daemon.IsRunning()
-}
-
-// SetWebSocketClient replaces the WebSocket client used by the daemon.
-// Call this before Start() to use a gRPC reporter instead of the default NoOp client.
-func (gd *GlobalDaemon) SetWebSocketClient(wsClient WebSocketClient) {
-	gd.mu.Lock()
-	defer gd.mu.Unlock()
-	gd.websocketClient = wsClient
 }
