@@ -87,6 +87,48 @@ message HealthCheckCommand {
 }
 
 // ============================================================================
+// CLI-Initiated Health Config RPCs
+// ============================================================================
+
+// HealthSetConfigRequest is sent by the CLI to initialize health checks for an app.
+message HealthSetConfigRequest {
+  string app_id = 1;
+  string app_name = 2;
+  string path = 3;
+  string interval = 4;
+  int32 retries = 5;
+  string expected_codes = 6;
+  string timeout = 7;
+  string mode = 8;
+}
+
+// HealthAddEndpointRequest is sent by the CLI to add a health check endpoint.
+message HealthAddEndpointRequest {
+  string app_id = 1;
+  string app_name = 2;
+  string name = 3;
+  string url = 4;
+  string interval = 5;
+  int32 retries = 6;
+  string expected_codes = 7;
+  string timeout = 8;
+}
+
+// HealthRemoveEndpointRequest is sent by the CLI to remove a health check endpoint.
+message HealthRemoveEndpointRequest {
+  string app_id = 1;
+  string app_name = 2;
+  string name = 3;
+}
+
+// HealthConfigResponse is the response to a CLI-initiated health config RPC.
+message HealthConfigResponse {
+  bool success = 1;
+  string error = 2;
+  string message = 3;
+}
+
+// ============================================================================
 // Health Result Messages
 // ============================================================================
 

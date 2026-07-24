@@ -7,6 +7,7 @@ option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 import "internal/grpc/proto/events.proto";
 import "internal/grpc/proto/metadata.proto";
 import "internal/grpc/proto/envelope.proto";
+import "internal/grpc/proto/health.proto";
 
 // PhelixService is the main service for CLI-to-backend communication.
 service PhelixService {
@@ -24,4 +25,13 @@ service PhelixService {
   // The CLI processes them locally and returns results through the same stream.
   // This works through NAT/firewalls because the CLI initiates the connection.
   rpc AgentStream(stream ClientToServer) returns (stream ServerToClient);
+
+  // HealthSetConfig initializes health checks for an application (CLI-initiated).
+  rpc HealthSetConfig(HealthSetConfigRequest) returns (HealthConfigResponse);
+
+  // HealthAddEndpoint adds a health check endpoint (CLI-initiated).
+  rpc HealthAddEndpoint(HealthAddEndpointRequest) returns (HealthConfigResponse);
+
+  // HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
+  rpc HealthRemoveEndpoint(HealthRemoveEndpointRequest) returns (HealthConfigResponse);
 }

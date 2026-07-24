@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	grpcClient "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/spf13/cobra"
 )
@@ -142,10 +143,8 @@ var healthSetCmd = &cobra.Command{
 			return fmt.Errorf("failed to save config: %w", err)
 		}
 
-		// Sync to backend
-		if err := SendHealthSetToServer(appID, appInfo.Name, healthPath, interval, timeout, expectedCodes, string(mode), retries); err != nil {
-			fmt.Printf("  ⚠ Backend sync failed: %v\n", err)
-		}
+		// Sync to backend via gRPC
+		grpcClient.SendHealthSetConfig(appID, appInfo.Name, healthPath, interval, timeout, expectedCodes, string(mode), retries)
 
 		fmt.Printf("✓ Health checks configured for '%s' (ID: %s)\n", appInfo.Name, appID)
 		fmt.Println("Use 'phelix health add' to add more endpoints")
@@ -246,10 +245,8 @@ var healthAddCmd = &cobra.Command{
 			return fmt.Errorf("failed to save config: %w", err)
 		}
 
-		// Sync to backend
-		if err := SendHealthAddToServer(appID, appInfo.Name, config.Endpoints[healthName]); err != nil {
-			fmt.Printf("  ⚠ Backend sync failed: %v\n", err)
-		}
+		// Sync to backend via gRPC
+		grpcClient.SendHealthAddEndpoint(appID, appInfo.Name, config.Endpoints[healthName])
 
 		fmt.Printf("✓ Endpoint '%s' added to '%s'\n", healthName, appInfo.Name)
 		fmt.Printf("  URL: %s\n", healthURL)
@@ -302,6 +299,9 @@ var healthRemoveCmd = &cobra.Command{
 		if err := configMgr.SaveConfig(appID, config); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
 		}
+
+		// Sync to backend via gRPC
+		grpcClient.SendHealthRemoveEndpoint(appID, appInfo.Name, healthName)
 
 		fmt.Printf("✓ Endpoint '%s' removed from '%s'\n", healthName, appInfo.Name)
 		return nil

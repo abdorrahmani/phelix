@@ -19,10 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PhelixService_ReportEvent_FullMethodName  = "/phelix.PhelixService/ReportEvent"
-	PhelixService_SyncMetadata_FullMethodName = "/phelix.PhelixService/SyncMetadata"
-	PhelixService_StreamEvents_FullMethodName = "/phelix.PhelixService/StreamEvents"
-	PhelixService_AgentStream_FullMethodName  = "/phelix.PhelixService/AgentStream"
+	PhelixService_ReportEvent_FullMethodName          = "/phelix.PhelixService/ReportEvent"
+	PhelixService_SyncMetadata_FullMethodName         = "/phelix.PhelixService/SyncMetadata"
+	PhelixService_StreamEvents_FullMethodName         = "/phelix.PhelixService/StreamEvents"
+	PhelixService_AgentStream_FullMethodName          = "/phelix.PhelixService/AgentStream"
+	PhelixService_HealthSetConfig_FullMethodName      = "/phelix.PhelixService/HealthSetConfig"
+	PhelixService_HealthAddEndpoint_FullMethodName    = "/phelix.PhelixService/HealthAddEndpoint"
+	PhelixService_HealthRemoveEndpoint_FullMethodName = "/phelix.PhelixService/HealthRemoveEndpoint"
 )
 
 // PhelixServiceClient is the client API for PhelixService service.
@@ -42,6 +45,12 @@ type PhelixServiceClient interface {
 	// The CLI processes them locally and returns results through the same stream.
 	// This works through NAT/firewalls because the CLI initiates the connection.
 	AgentStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientToServer, ServerToClient], error)
+	// HealthSetConfig initializes health checks for an application (CLI-initiated).
+	HealthSetConfig(ctx context.Context, in *HealthSetConfigRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error)
+	// HealthAddEndpoint adds a health check endpoint (CLI-initiated).
+	HealthAddEndpoint(ctx context.Context, in *HealthAddEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error)
+	// HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
+	HealthRemoveEndpoint(ctx context.Context, in *HealthRemoveEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error)
 }
 
 type phelixServiceClient struct {
@@ -98,6 +107,36 @@ func (c *phelixServiceClient) AgentStream(ctx context.Context, opts ...grpc.Call
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PhelixService_AgentStreamClient = grpc.BidiStreamingClient[ClientToServer, ServerToClient]
 
+func (c *phelixServiceClient) HealthSetConfig(ctx context.Context, in *HealthSetConfigRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HealthConfigResponse)
+	err := c.cc.Invoke(ctx, PhelixService_HealthSetConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *phelixServiceClient) HealthAddEndpoint(ctx context.Context, in *HealthAddEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HealthConfigResponse)
+	err := c.cc.Invoke(ctx, PhelixService_HealthAddEndpoint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *phelixServiceClient) HealthRemoveEndpoint(ctx context.Context, in *HealthRemoveEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HealthConfigResponse)
+	err := c.cc.Invoke(ctx, PhelixService_HealthRemoveEndpoint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PhelixServiceServer is the server API for PhelixService service.
 // All implementations must embed UnimplementedPhelixServiceServer
 // for forward compatibility.
@@ -115,6 +154,12 @@ type PhelixServiceServer interface {
 	// The CLI processes them locally and returns results through the same stream.
 	// This works through NAT/firewalls because the CLI initiates the connection.
 	AgentStream(grpc.BidiStreamingServer[ClientToServer, ServerToClient]) error
+	// HealthSetConfig initializes health checks for an application (CLI-initiated).
+	HealthSetConfig(context.Context, *HealthSetConfigRequest) (*HealthConfigResponse, error)
+	// HealthAddEndpoint adds a health check endpoint (CLI-initiated).
+	HealthAddEndpoint(context.Context, *HealthAddEndpointRequest) (*HealthConfigResponse, error)
+	// HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
+	HealthRemoveEndpoint(context.Context, *HealthRemoveEndpointRequest) (*HealthConfigResponse, error)
 	mustEmbedUnimplementedPhelixServiceServer()
 }
 
@@ -136,6 +181,15 @@ func (UnimplementedPhelixServiceServer) StreamEvents(grpc.BidiStreamingServer[Ap
 }
 func (UnimplementedPhelixServiceServer) AgentStream(grpc.BidiStreamingServer[ClientToServer, ServerToClient]) error {
 	return status.Error(codes.Unimplemented, "method AgentStream not implemented")
+}
+func (UnimplementedPhelixServiceServer) HealthSetConfig(context.Context, *HealthSetConfigRequest) (*HealthConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HealthSetConfig not implemented")
+}
+func (UnimplementedPhelixServiceServer) HealthAddEndpoint(context.Context, *HealthAddEndpointRequest) (*HealthConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HealthAddEndpoint not implemented")
+}
+func (UnimplementedPhelixServiceServer) HealthRemoveEndpoint(context.Context, *HealthRemoveEndpointRequest) (*HealthConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HealthRemoveEndpoint not implemented")
 }
 func (UnimplementedPhelixServiceServer) mustEmbedUnimplementedPhelixServiceServer() {}
 func (UnimplementedPhelixServiceServer) testEmbeddedByValue()                       {}
@@ -208,6 +262,60 @@ func _PhelixService_AgentStream_Handler(srv interface{}, stream grpc.ServerStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PhelixService_AgentStreamServer = grpc.BidiStreamingServer[ClientToServer, ServerToClient]
 
+func _PhelixService_HealthSetConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HealthSetConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).HealthSetConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_HealthSetConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).HealthSetConfig(ctx, req.(*HealthSetConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PhelixService_HealthAddEndpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HealthAddEndpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).HealthAddEndpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_HealthAddEndpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).HealthAddEndpoint(ctx, req.(*HealthAddEndpointRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PhelixService_HealthRemoveEndpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HealthRemoveEndpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).HealthRemoveEndpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_HealthRemoveEndpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).HealthRemoveEndpoint(ctx, req.(*HealthRemoveEndpointRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PhelixService_ServiceDesc is the grpc.ServiceDesc for PhelixService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -222,6 +330,18 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SyncMetadata",
 			Handler:    _PhelixService_SyncMetadata_Handler,
+		},
+		{
+			MethodName: "HealthSetConfig",
+			Handler:    _PhelixService_HealthSetConfig_Handler,
+		},
+		{
+			MethodName: "HealthAddEndpoint",
+			Handler:    _PhelixService_HealthAddEndpoint_Handler,
+		},
+		{
+			MethodName: "HealthRemoveEndpoint",
+			Handler:    _PhelixService_HealthRemoveEndpoint_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
