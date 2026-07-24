@@ -4,6 +4,10 @@ package phelix;
 
 option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 
+import "internal/grpc/proto/events.proto";
+import "internal/grpc/proto/metadata.proto";
+import "internal/grpc/proto/envelope.proto";
+
 // PhelixService is the main service for CLI-to-backend communication.
 service PhelixService {
   // ReportEvent sends an application lifecycle event to the backend.
@@ -14,55 +18,10 @@ service PhelixService {
 
   // StreamEvents opens a bidirectional stream for continuous event reporting.
   rpc StreamEvents(stream ApplicationEvent) returns (stream EventAck);
-}
 
-// ApplicationEvent represents a single application lifecycle event.
-message ApplicationEvent {
-  string server_id = 1;
-  string user_id = 2;
-  string session_token = 3;
-  string app_id = 4;
-  string app_name = 5;
-  string action = 6;
-  int64 timestamp = 7;
-  bool success = 8;
-  string error_message = 9;
-  int32 pid = 10;
-  string deployment_mode = 11;
-  string version = 12;
-}
-
-// EventResponse is the backend's response to a reported event.
-message EventResponse {
-  bool accepted = 1;
-  string message = 2;
-}
-
-// EventAck is a lightweight acknowledgement for streamed events.
-message EventAck {
-  bool received = 1;
-  string event_id = 2;
-}
-
-// CLIMetadata represents continuous metadata about the CLI installation.
-message CLIMetadata {
-  string server_id = 1;
-  string user_id = 2;
-  string session_token = 3;
-  string cli_version = 4;
-  string build_version = 5;
-  string git_commit = 6;
-  string build_time = 7;
-  int64 uptime_seconds = 8;
-  string current_state = 9;
-  string monitor_status = 10;
-  int32 total_managed_apps = 11;
-  int32 running_apps = 12;
-  int64 timestamp = 13;
-}
-
-// MetadataResponse is the backend's response to metadata sync.
-message MetadataResponse {
-  bool accepted = 1;
-  string message = 2;
+  // AgentStream is the bidirectional stream for backend-to-CLI commands.
+  // The backend sends health commands, remote executions, and other requests.
+  // The CLI processes them locally and returns results through the same stream.
+  // This works through NAT/firewalls because the CLI initiates the connection.
+  rpc AgentStream(stream ClientToServer) returns (stream ServerToClient);
 }

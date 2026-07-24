@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// Ping is a keepalive ping from backend.
+message Ping {
+  string id = 1;
+  int64 timestamp = 2;
+}
+
+// Pong is a keepalive response from CLI.
+message Pong {
+  string id = 1;
+  int64 timestamp = 2;
+}
+
+// CancelRequest tells the CLI to cancel an ongoing operation.
+message CancelRequest {
+  string request_id = 1;
+}

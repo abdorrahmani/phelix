@@ -1,0 +1,198 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// ============================================================================
+// Health Command Messages
+// ============================================================================
+
+// HealthCommand wraps all health operations into a single command message.
+message HealthCommand {
+  string request_id = 1;
+  string server_id = 2;
+
+  oneof command {
+    HealthSetCommand set = 10;
+    HealthAddCommand add = 11;
+    HealthRemoveCommand remove = 12;
+    HealthListCommand list = 13;
+    HealthStatusCommand status = 14;
+    HealthWatchCommand watch = 15;
+    HealthDaemonStatusCommand daemon_status = 16;
+    HealthCheckCommand check = 17;
+  }
+}
+
+// HealthSetCommand initializes health checks for an application.
+message HealthSetCommand {
+  string app_id = 1;
+  string app_name = 2;
+  string path = 3;
+  string interval = 4;
+  int32 retries = 5;
+  string expected_codes = 6;
+  string timeout = 7;
+  string mode = 8;
+}
+
+// HealthAddCommand adds a named health check endpoint.
+message HealthAddCommand {
+  string app_id = 1;
+  string app_name = 2;
+  string name = 3;
+  string url = 4;
+  string interval = 5;
+  int32 retries = 6;
+  string expected_codes = 7;
+  string timeout = 8;
+}
+
+// HealthRemoveCommand removes a health check endpoint by name.
+message HealthRemoveCommand {
+  string app_id = 1;
+  string app_name = 2;
+  string name = 3;
+}
+
+// HealthListCommand lists all configured endpoints for an application.
+message HealthListCommand {
+  string app_id = 1;
+  string app_name = 2;
+}
+
+// HealthStatusCommand returns the current health status of an application.
+message HealthStatusCommand {
+  string app_id = 1;
+  string app_name = 2;
+}
+
+// HealthWatchCommand starts streaming continuous health updates.
+message HealthWatchCommand {
+  string app_id = 1;
+  string app_name = 2;
+}
+
+// HealthDaemonStatusCommand returns the daemon status.
+message HealthDaemonStatusCommand {}
+
+// HealthCheckCommand performs a one-shot health check on a specific endpoint.
+message HealthCheckCommand {
+  string app_id = 1;
+  string app_name = 2;
+  string url = 3;
+  string timeout = 4;
+  string expected_codes = 5;
+}
+
+// ============================================================================
+// Health Result Messages
+// ============================================================================
+
+// HealthResult is the result of a health command execution.
+message HealthResult {
+  string request_id = 1;
+  string server_id = 2;
+  string app_id = 3;
+  string app_name = 4;
+  string command = 5;
+  bool success = 6;
+  int64 execution_time = 7;
+  int64 timestamp = 8;
+  string message = 9;
+  string error = 10;
+  string diagnostics = 11;
+
+  // Result payload varies by command type
+  oneof result {
+    HealthResultSetResult set_result = 20;
+    HealthResultListResult list_result = 21;
+    HealthResultStatusResult status_result = 22;
+    HealthResultDaemonStatusResult daemon_status_result = 23;
+    HealthResultCheckResult check_result = 24;
+  }
+}
+
+// HealthResultSetResult contains the result of a set operation.
+message HealthResultSetResult {}
+
+// HealthResultListResult contains endpoint configurations.
+message HealthResultListResult {
+  repeated EndpointConfig endpoints = 1;
+  DeployTierConfigProto deploy_tier = 2;
+}
+
+// HealthResultStatusResult contains endpoint health statuses.
+message HealthResultStatusResult {
+  repeated EndpointHealthStatus endpoints = 1;
+}
+
+// HealthResultDaemonStatusResult contains daemon status information.
+message HealthResultDaemonStatusResult {
+  bool daemon_running = 1;
+  int32 total_apps = 2;
+  int32 total_endpoints = 3;
+  int32 healthy_endpoints = 4;
+  int32 unhealthy_endpoints = 5;
+}
+
+// HealthResultCheckResult contains a one-shot health check result.
+message HealthResultCheckResult {
+  string url = 1;
+  string status = 2;
+  int32 status_code = 3;
+  int64 latency_ms = 4;
+  string error = 5;
+  string raw_output = 6;
+}
+
+// ============================================================================
+// Health Support Types
+// ============================================================================
+
+// EndpointConfig represents a single health check endpoint configuration.
+message EndpointConfig {
+  string name = 1;
+  string url = 2;
+  string interval = 3;
+  int32 retries = 4;
+  string expected_codes = 5;
+  string timeout = 6;
+}
+
+// DeployTierConfigProto represents deploy-tier health configuration.
+message DeployTierConfigProto {
+  string mode = 1;
+  string path = 2;
+  string interval = 3;
+  int32 retries = 4;
+  string timeout = 5;
+}
+
+// EndpointHealthStatus represents the health status of a single endpoint.
+message EndpointHealthStatus {
+  string name = 1;
+  string url = 2;
+  string status = 3;
+  int32 status_code = 4;
+  int64 latency_ms = 5;
+  int64 checked_at = 6;
+  string error = 7;
+}
+
+// HealthStatusUpdate is streamed during HealthWatch operations.
+message HealthStatusUpdate {
+  string request_id = 1;
+  string server_id = 2;
+  string app_id = 3;
+  string app_name = 4;
+  string endpoint_name = 5;
+  string url = 6;
+  string status = 7;
+  int32 status_code = 8;
+  int64 latency_ms = 9;
+  int64 checked_at = 10;
+  string error = 11;
+  bool is_healthy = 12;
+}

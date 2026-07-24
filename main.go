@@ -48,7 +48,8 @@ func main() {
 			}
 		}()
 
-		// Initialize and start the gRPC client
+		// Initialize and start the gRPC client (CLI -> Backend)
+		// The AgentStream is started automatically within the client
 		grpcClient := phelixgrpc.InitGlobalClient()
 		go grpcClient.Start()
 	}

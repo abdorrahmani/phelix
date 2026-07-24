@@ -22,6 +22,7 @@ const (
 	PhelixService_ReportEvent_FullMethodName  = "/phelix.PhelixService/ReportEvent"
 	PhelixService_SyncMetadata_FullMethodName = "/phelix.PhelixService/SyncMetadata"
 	PhelixService_StreamEvents_FullMethodName = "/phelix.PhelixService/StreamEvents"
+	PhelixService_AgentStream_FullMethodName  = "/phelix.PhelixService/AgentStream"
 )
 
 // PhelixServiceClient is the client API for PhelixService service.
@@ -36,6 +37,11 @@ type PhelixServiceClient interface {
 	SyncMetadata(ctx context.Context, in *CLIMetadata, opts ...grpc.CallOption) (*MetadataResponse, error)
 	// StreamEvents opens a bidirectional stream for continuous event reporting.
 	StreamEvents(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ApplicationEvent, EventAck], error)
+	// AgentStream is the bidirectional stream for backend-to-CLI commands.
+	// The backend sends health commands, remote executions, and other requests.
+	// The CLI processes them locally and returns results through the same stream.
+	// This works through NAT/firewalls because the CLI initiates the connection.
+	AgentStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientToServer, ServerToClient], error)
 }
 
 type phelixServiceClient struct {
@@ -79,6 +85,19 @@ func (c *phelixServiceClient) StreamEvents(ctx context.Context, opts ...grpc.Cal
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PhelixService_StreamEventsClient = grpc.BidiStreamingClient[ApplicationEvent, EventAck]
 
+func (c *phelixServiceClient) AgentStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientToServer, ServerToClient], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &PhelixService_ServiceDesc.Streams[1], PhelixService_AgentStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ClientToServer, ServerToClient]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type PhelixService_AgentStreamClient = grpc.BidiStreamingClient[ClientToServer, ServerToClient]
+
 // PhelixServiceServer is the server API for PhelixService service.
 // All implementations must embed UnimplementedPhelixServiceServer
 // for forward compatibility.
@@ -91,6 +110,11 @@ type PhelixServiceServer interface {
 	SyncMetadata(context.Context, *CLIMetadata) (*MetadataResponse, error)
 	// StreamEvents opens a bidirectional stream for continuous event reporting.
 	StreamEvents(grpc.BidiStreamingServer[ApplicationEvent, EventAck]) error
+	// AgentStream is the bidirectional stream for backend-to-CLI commands.
+	// The backend sends health commands, remote executions, and other requests.
+	// The CLI processes them locally and returns results through the same stream.
+	// This works through NAT/firewalls because the CLI initiates the connection.
+	AgentStream(grpc.BidiStreamingServer[ClientToServer, ServerToClient]) error
 	mustEmbedUnimplementedPhelixServiceServer()
 }
 
@@ -109,6 +133,9 @@ func (UnimplementedPhelixServiceServer) SyncMetadata(context.Context, *CLIMetada
 }
 func (UnimplementedPhelixServiceServer) StreamEvents(grpc.BidiStreamingServer[ApplicationEvent, EventAck]) error {
 	return status.Error(codes.Unimplemented, "method StreamEvents not implemented")
+}
+func (UnimplementedPhelixServiceServer) AgentStream(grpc.BidiStreamingServer[ClientToServer, ServerToClient]) error {
+	return status.Error(codes.Unimplemented, "method AgentStream not implemented")
 }
 func (UnimplementedPhelixServiceServer) mustEmbedUnimplementedPhelixServiceServer() {}
 func (UnimplementedPhelixServiceServer) testEmbeddedByValue()                       {}
@@ -174,6 +201,13 @@ func _PhelixService_StreamEvents_Handler(srv interface{}, stream grpc.ServerStre
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PhelixService_StreamEventsServer = grpc.BidiStreamingServer[ApplicationEvent, EventAck]
 
+func _PhelixService_AgentStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(PhelixServiceServer).AgentStream(&grpc.GenericServerStream[ClientToServer, ServerToClient]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type PhelixService_AgentStreamServer = grpc.BidiStreamingServer[ClientToServer, ServerToClient]
+
 // PhelixService_ServiceDesc is the grpc.ServiceDesc for PhelixService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -194,6 +228,12 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "StreamEvents",
 			Handler:       _PhelixService_StreamEvents_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "AgentStream",
+			Handler:       _PhelixService_AgentStream_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

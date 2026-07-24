@@ -142,6 +142,11 @@ var healthSetCmd = &cobra.Command{
 			return fmt.Errorf("failed to save config: %w", err)
 		}
 
+		// Sync to backend
+		if err := SendHealthSetToServer(appID, appInfo.Name, healthPath, interval, timeout, expectedCodes, string(mode), retries); err != nil {
+			fmt.Printf("  ⚠ Backend sync failed: %v\n", err)
+		}
+
 		fmt.Printf("✓ Health checks configured for '%s' (ID: %s)\n", appInfo.Name, appID)
 		fmt.Println("Use 'phelix health add' to add more endpoints")
 
@@ -236,9 +241,14 @@ var healthAddCmd = &cobra.Command{
 			Timeout:       timeout,
 		}
 
-		// Save config
+		// Save config locally
 		if err := configMgr.SaveConfig(appID, config); err != nil {
 			return fmt.Errorf("failed to save config: %w", err)
+		}
+
+		// Sync to backend
+		if err := SendHealthAddToServer(appID, appInfo.Name, config.Endpoints[healthName]); err != nil {
+			fmt.Printf("  ⚠ Backend sync failed: %v\n", err)
 		}
 
 		fmt.Printf("✓ Endpoint '%s' added to '%s'\n", healthName, appInfo.Name)

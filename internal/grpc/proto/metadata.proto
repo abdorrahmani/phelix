@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// CLIMetadata represents continuous metadata about the CLI installation.
+message CLIMetadata {
+  string server_id = 1;
+  string user_id = 2;
+  string session_token = 3;
+  string cli_version = 4;
+  string build_version = 5;
+  string git_commit = 6;
+  string build_time = 7;
+  int64 uptime_seconds = 8;
+  string current_state = 9;
+  string monitor_status = 10;
+  int32 total_managed_apps = 11;
+  int32 running_apps = 12;
+  int64 timestamp = 13;
+}
+
+// MetadataResponse is the backend's response to metadata sync.
+message MetadataResponse {
+  bool accepted = 1;
+  string message = 2;
+}

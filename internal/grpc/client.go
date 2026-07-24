@@ -112,6 +112,9 @@ func (c *Client) Start() {
 
 	// Start connection health monitor
 	go c.monitorConnection()
+
+	// Start agent stream for backend-to-CLI commands
+	go c.startAgentStream()
 }
 
 // Close gracefully shuts down the gRPC client.
@@ -126,6 +129,9 @@ func (c *Client) Close() {
 	default:
 		close(c.done)
 	}
+
+	// Stop agent stream
+	c.stopAgentStream()
 
 	if c.conn != nil {
 		if err := c.conn.Close(); err != nil {
