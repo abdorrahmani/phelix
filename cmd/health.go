@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,6 +28,7 @@ var (
 	healthURL           string
 	watchFlag           bool
 	healthMode          string
+	daemonForeground    bool
 )
 
 var HealthCmd = &cobra.Command{
@@ -472,58 +475,200 @@ var healthWatchCmd = &cobra.Command{
 	},
 }
 
-// health daemon - start background daemon
+// health daemon - start health check daemon (background by default)
 var healthDaemonCmd = &cobra.Command{
 	Use:   "daemon",
-	Short: "Start the health check daemon in the foreground",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		globalDaemon := health.GetGlobalDaemon()
+	Short: "Start the health check daemon (background by default)",
+	Long: `Start the health check daemon that monitors application health endpoints.
 
-		if globalDaemon.IsRunning() {
-			fmt.Println("Health check daemon is already running")
-			fmt.Println("  Use 'phelix health status <app>' to check health status")
+By default the daemon starts in the background and the CLI exits. Use
+--foreground to run attached to the terminal. Use 'phelix health daemon status'
+to inspect the daemon, and 'phelix health daemon stop' to shut it down.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if daemonForeground {
+			return runHealthDaemonForeground()
+		}
+		return startDaemonBackground()
+	},
+}
+
+var healthDaemonStatusCmd = &cobra.Command{
+	Use:           "status",
+	Short:         "Show health daemon status",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pid, err := readHealthDaemonPID()
+		if err != nil {
+			fmt.Printf("⚠ Health daemon is not running\n")
+			fmt.Printf("  Start it with: phelix health daemon\n")
 			return nil
 		}
 
-		fmt.Println("Starting health check daemon...")
-
-		// Initialize gRPC client for backend reporting
-		grpcClient.InitGlobalClient()
-		c := grpcClient.GetClient()
-		go c.Start()
-
-		// Wait for connection to establish
-		time.Sleep(2 * time.Second)
-
-		if c.IsConnected() {
-			reporter := grpcClient.NewGrpcHealthReporter(c.GetServiceClient())
-			globalDaemon.SetReporter(reporter)
-			fmt.Println("  Backend reporting: gRPC")
-		} else {
-			fmt.Println("  Backend reporting: disabled (not connected)")
+		// Check if process is actually alive
+		proc, err := os.FindProcess(pid)
+		if err != nil || proc.Signal(syscall.Signal(0)) != nil {
+			// Stale PID file
+			_ = removeHealthDaemonPIDFile()
+			fmt.Printf("⚠ Health daemon is not running (stale PID file cleaned up)\n")
+			fmt.Printf("  Start it with: phelix health daemon\n")
+			return nil
 		}
 
-		if err := globalDaemon.Start(); err != nil {
-			return fmt.Errorf("failed to start daemon: %w", err)
-		}
-
-		fmt.Println("Health check daemon started")
-		fmt.Println("  Use 'phelix health status <app>' to check health status")
-		fmt.Println("  Use 'phelix health status <app> --watch' for live updates")
-		fmt.Println("  Press Ctrl+C to stop")
-
-		// Keep running until interrupted
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-
-		fmt.Println("\nStopping daemon...")
-		if err := globalDaemon.Stop(); err != nil {
-			log.Printf("[Health] Error stopping daemon: %v", err)
-		}
-		fmt.Println("Daemon stopped")
+		fmt.Printf("✓ Health daemon is running (PID %d)\n", pid)
+		fmt.Printf("  PID file: %s\n", healthDaemonPIDPath())
+		fmt.Printf("  Status: phelix health status <app>\n")
+		fmt.Printf("  Stop:   phelix health daemon stop\n")
 		return nil
 	},
+}
+
+var healthDaemonStopCmd = &cobra.Command{
+	Use:           "stop",
+	Short:         "Stop the background health daemon",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pid, err := readHealthDaemonPID()
+		if err != nil {
+			fmt.Printf("⚠ Health daemon is not running\n")
+			return nil
+		}
+
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			_ = removeHealthDaemonPIDFile()
+			fmt.Printf("⚠ Health daemon is not running (stale PID file cleaned up)\n")
+			return nil
+		}
+
+		if err := proc.Signal(syscall.SIGTERM); err != nil {
+			_ = removeHealthDaemonPIDFile()
+			fmt.Printf("⚠ Health daemon is not running (stale PID file cleaned up)\n")
+			return nil
+		}
+
+		// Wait up to 5s for graceful shutdown
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if proc.Signal(syscall.Signal(0)) != nil {
+				_ = removeHealthDaemonPIDFile()
+				fmt.Printf("✓ Health daemon stopped\n")
+				return nil
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+
+		// Force kill if still alive
+		_ = proc.Kill()
+		_ = removeHealthDaemonPIDFile()
+		fmt.Printf("✓ Health daemon stopped (force killed)\n")
+		return nil
+	},
+}
+
+// startDaemonBackground forks a detached `phelix health daemon --foreground`
+// child and returns so the CLI can exit.
+func startDaemonBackground() error {
+	if pid, err := readHealthDaemonPID(); err == nil {
+		// PID file exists — check if process is alive
+		if proc, findErr := os.FindProcess(pid); findErr == nil && proc.Signal(syscall.Signal(0)) == nil {
+			fmt.Printf("✓ Health daemon is already running (PID %d)\n", pid)
+			fmt.Printf("  Status: phelix health status <app>\n")
+			fmt.Printf("  Stop:   phelix health daemon stop\n")
+			return nil
+		}
+		// Stale PID file
+		_ = removeHealthDaemonPIDFile()
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
+	}
+	c := exec.Command(exe, "health", "daemon", "--foreground")
+	c.SysProcAttr = health.DetachedSysProcAttr()
+	if devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0); err == nil {
+		c.Stdin = devnull
+		c.Stdout = devnull
+		c.Stderr = devnull
+	}
+	if err := c.Start(); err != nil {
+		return fmt.Errorf("✗ failed to start health daemon: %v", err)
+	}
+	_ = c.Process.Release()
+
+	// Wait briefly for PID file to appear
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if pid, err := readHealthDaemonPID(); err == nil {
+			if proc, findErr := os.FindProcess(pid); findErr == nil && proc.Signal(syscall.Signal(0)) == nil {
+				fmt.Printf("✓ Health daemon started in background (PID %d)\n", pid)
+				fmt.Printf("  Status: phelix health status <app>\n")
+				fmt.Printf("  Stop:   phelix health daemon stop\n")
+				return nil
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("✗ health daemon did not start within 5s")
+}
+
+// runHealthDaemonForeground is the long-running daemon loop executed by the
+// detached child (and users who pass --foreground).
+func runHealthDaemonForeground() error {
+	globalDaemon := health.GetGlobalDaemon()
+
+	if globalDaemon.IsRunning() {
+		fmt.Println("Health check daemon is already running")
+		return nil
+	}
+
+	// Write PID file
+	if err := writeHealthDaemonPID(); err != nil {
+		return fmt.Errorf("failed to write PID file: %w", err)
+	}
+	defer removeHealthDaemonPIDFile()
+
+	// Set up signal handler to clean up PID file on exit
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	fmt.Println("Starting health check daemon...")
+
+	// Initialize gRPC client for backend reporting
+	grpcClient.InitGlobalClient()
+	c := grpcClient.GetClient()
+	go c.Start()
+
+	// Wait for connection to establish
+	time.Sleep(2 * time.Second)
+
+	if c.IsConnected() {
+		reporter := grpcClient.NewGrpcHealthReporter(c.GetServiceClient())
+		globalDaemon.SetReporter(reporter)
+		fmt.Println("  Backend reporting: gRPC")
+	} else {
+		fmt.Println("  Backend reporting: disabled (not connected)")
+	}
+
+	if err := globalDaemon.Start(); err != nil {
+		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+
+	fmt.Println("Health check daemon started")
+	fmt.Println("  Use 'phelix health status <app>' to check health status")
+	fmt.Println("  Use 'phelix health status <app> --watch' for live updates")
+
+	// Keep running until interrupted
+	<-sigChan
+
+	fmt.Println("\nStopping daemon...")
+	if err := globalDaemon.Stop(); err != nil {
+		log.Printf("[Health] Error stopping daemon: %v", err)
+	}
+	fmt.Println("Daemon stopped")
+	return nil
 }
 
 // Helper to resolve app ID or name to actual ID
@@ -600,6 +745,31 @@ func runOneShotHealthCheck(appID string, appInfo *app.AppListItem) error {
 	return nil
 }
 
+// healthDaemonPIDPath returns ~/.phelix/health_daemon.pid
+func healthDaemonPIDPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".phelix", "health_daemon.pid")
+}
+
+// writeHealthDaemonPID writes the current process PID to the PID file.
+func writeHealthDaemonPID() error {
+	return os.WriteFile(healthDaemonPIDPath(), []byte(strconv.Itoa(os.Getpid())), 0644)
+}
+
+// readHealthDaemonPID reads the PID from the PID file.
+func readHealthDaemonPID() (int, error) {
+	data, err := os.ReadFile(healthDaemonPIDPath())
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(data)))
+}
+
+// removeHealthDaemonPIDFile removes the PID file.
+func removeHealthDaemonPIDFile() error {
+	return os.Remove(healthDaemonPIDPath())
+}
+
 func init() {
 	// Add subcommands
 	HealthCmd.AddCommand(healthSetCmd)
@@ -609,6 +779,8 @@ func init() {
 	HealthCmd.AddCommand(healthStatusCmd)
 	HealthCmd.AddCommand(healthWatchCmd)
 	HealthCmd.AddCommand(healthDaemonCmd)
+	healthDaemonCmd.AddCommand(healthDaemonStatusCmd)
+	healthDaemonCmd.AddCommand(healthDaemonStopCmd)
 
 	// health set flags
 	healthSetCmd.Flags().StringVar(&healthPath, "path", "", "Health check path (e.g., /health)")
@@ -634,4 +806,7 @@ func init() {
 
 	// health status flags
 	healthStatusCmd.Flags().BoolVar(&watchFlag, "watch", false, "Watch health checks in real-time")
+
+	// health daemon flags
+	healthDaemonCmd.Flags().BoolVar(&daemonForeground, "foreground", false, "Run the daemon in the foreground instead of detaching")
 }
