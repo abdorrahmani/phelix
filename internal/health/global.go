@@ -127,3 +127,11 @@ func (gd *GlobalDaemon) IsRunning() bool {
 	defer gd.mu.RUnlock()
 	return gd.started && gd.daemon != nil && gd.daemon.IsRunning()
 }
+
+// SetWebSocketClient replaces the WebSocket client used by the daemon.
+// Call this before Start() to use a gRPC reporter instead of the default NoOp client.
+func (gd *GlobalDaemon) SetWebSocketClient(wsClient WebSocketClient) {
+	gd.mu.Lock()
+	defer gd.mu.Unlock()
+	gd.websocketClient = wsClient
+}

@@ -34,4 +34,10 @@ service PhelixService {
 
   // HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
   rpc HealthRemoveEndpoint(HealthRemoveEndpointRequest) returns (HealthConfigResponse);
+
+  // ReportHealthResult sends a health check result from the daemon to the backend.
+  rpc ReportHealthResult(ReportHealthResultRequest) returns (ReportHealthResultResponse);
+
+  // ReportAutoRestart sends an auto-restart event from the daemon to the backend.
+  rpc ReportAutoRestart(ReportAutoRestartRequest) returns (ReportAutoRestartResponse);
 }

@@ -382,11 +382,12 @@ var healthStatusCmd = &cobra.Command{
 			return fmt.Errorf("app not found: %s", args[0])
 		}
 
-		// Get the global daemon
+		// Try the global daemon first
 		globalDaemon := health.GetGlobalDaemon()
 		daemon, err := globalDaemon.GetDaemon()
 		if err != nil {
-			return fmt.Errorf("health daemon not ready: %w", err)
+			// Daemon not running — do a one-shot check
+			return runOneShotHealthCheck(appID, appInfo)
 		}
 
 		if watchFlag {
@@ -441,7 +442,12 @@ var healthWatchCmd = &cobra.Command{
 		globalDaemon := health.GetGlobalDaemon()
 		daemon, err := globalDaemon.GetDaemon()
 		if err != nil {
-			return fmt.Errorf("health daemon not ready: %w", err)
+			fmt.Println("Health daemon is not running. For continuous monitoring, run:")
+			fmt.Println("  phelix monitor")
+			fmt.Println()
+			fmt.Println("For a one-time check, run:")
+			fmt.Printf("  phelix health status %s\n", args[0])
+			return nil
 		}
 
 		// Create terminal display
@@ -510,6 +516,50 @@ func findApp(appID string) *app.AppListItem {
 			return &a
 		}
 	}
+	return nil
+}
+
+// runOneShotHealthCheck performs a single health check round and prints results.
+// Used when the daemon is not running (standalone CLI usage).
+func runOneShotHealthCheck(appID string, appInfo *app.AppListItem) error {
+	configMgr, err := health.InitConfigManager()
+	if err != nil {
+		return fmt.Errorf("failed to initialize config: %w", err)
+	}
+
+	config := configMgr.GetConfig(appID)
+	if config == nil || len(config.Endpoints) == 0 {
+		fmt.Printf("No health checks configured for '%s'\n", appInfo.Name)
+		return nil
+	}
+
+	checker := health.NewChecker()
+
+	fmt.Printf("Health Checks for '%s' (ID: %s)\n", appInfo.Name, appID)
+	fmt.Println(strings.Repeat("=", 80))
+
+	for name, ep := range config.Endpoints {
+		result := checker.Check(ep)
+		statusIcon := "✓"
+		if result.Status != "UP" {
+			statusIcon = "✗"
+		}
+
+		fmt.Printf("\n%s Name: %s\n", statusIcon, name)
+		fmt.Printf("  URL: %s\n", result.URL)
+		fmt.Printf("  Status: %s\n", result.Status)
+		if result.StatusCode != nil {
+			fmt.Printf("  HTTP Status: %d\n", *result.StatusCode)
+		}
+		if result.LatencyMs != nil {
+			fmt.Printf("  Latency: %dms\n", *result.LatencyMs)
+		}
+		if result.Error != nil {
+			fmt.Printf("  Error: %s\n", *result.Error)
+		}
+	}
+
+	fmt.Println()
 	return nil
 }
 

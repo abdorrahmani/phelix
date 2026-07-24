@@ -150,6 +150,13 @@ func (c *Client) IsConnected() bool {
 	return c.connected && c.conn != nil && c.conn.GetState() == connectivity.Ready
 }
 
+// GetServiceClient returns the underlying PhelixServiceClient.
+func (c *Client) GetServiceClient() pb.PhelixServiceClient {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.serviceClient
+}
+
 // reconnectIfNeeded checks connection state and triggers reconnect if needed.
 func (c *Client) reconnectIfNeeded() {
 	c.mu.RLock()

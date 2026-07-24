@@ -42,16 +42,21 @@ func main() {
 
 	if isMonitorMode {
 		// Only the long-running monitor process actually needs the daemon.
+		// Initialize gRPC client for health result reporting
+		grpcClient := phelixgrpc.InitGlobalClient()
+		go grpcClient.Start()
+
+		// Wait briefly for gRPC connection, then start daemon with gRPC reporter
 		go func() {
+			time.Sleep(2 * time.Second)
+			if c := phelixgrpc.GetClient(); c != nil && c.IsConnected() {
+				reporter := health.NewGrpcHealthReporter(c.GetServiceClient())
+				healthDaemon.SetWebSocketClient(reporter)
+			}
 			if err := healthDaemon.Start(); err != nil {
 				log.Printf("[Health] Failed to start global daemon: %v", err)
 			}
 		}()
-
-		// Initialize and start the gRPC client (CLI -> Backend)
-		// The AgentStream is started automatically within the client
-		grpcClient := phelixgrpc.InitGlobalClient()
-		go grpcClient.Start()
 	}
 
 	// Setup signal handling

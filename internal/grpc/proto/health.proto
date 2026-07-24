@@ -129,6 +129,46 @@ message HealthConfigResponse {
 }
 
 // ============================================================================
+// Daemon Health Result Reporting
+// ============================================================================
+
+// ReportHealthResultRequest is sent by the daemon to report a health check result.
+message ReportHealthResultRequest {
+  string app_id = 1;
+  string app_name = 2;
+  string endpoint_name = 3;
+  string url = 4;
+  string status = 5;
+  int32 status_code = 6;
+  int64 latency_ms = 7;
+  int64 checked_at = 8;
+  string error = 9;
+}
+
+// ReportHealthResultResponse is the response to a health result report.
+message ReportHealthResultResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ReportAutoRestartRequest is sent by the daemon to report an auto-restart event.
+message ReportAutoRestartRequest {
+  string app_id = 1;
+  string app_name = 2;
+  string reason = 3;
+  int32 exit_code = 4;
+  int32 backoff_next_seconds = 5;
+  int64 restarted_at = 6;
+  int32 crash_count_24h = 7;
+}
+
+// ReportAutoRestartResponse is the response to an auto-restart report.
+message ReportAutoRestartResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ============================================================================
 // Health Result Messages
 // ============================================================================
 

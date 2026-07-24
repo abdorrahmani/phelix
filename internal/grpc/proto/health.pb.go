@@ -1076,6 +1076,314 @@ func (x *HealthConfigResponse) GetMessage() string {
 	return ""
 }
 
+// ReportHealthResultRequest is sent by the daemon to report a health check result.
+type ReportHealthResultRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	AppName       string                 `protobuf:"bytes,2,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	EndpointName  string                 `protobuf:"bytes,3,opt,name=endpoint_name,json=endpointName,proto3" json:"endpoint_name,omitempty"`
+	Url           string                 `protobuf:"bytes,4,opt,name=url,proto3" json:"url,omitempty"`
+	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	StatusCode    int32                  `protobuf:"varint,6,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
+	LatencyMs     int64                  `protobuf:"varint,7,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
+	CheckedAt     int64                  `protobuf:"varint,8,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
+	Error         string                 `protobuf:"bytes,9,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportHealthResultRequest) Reset() {
+	*x = ReportHealthResultRequest{}
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportHealthResultRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportHealthResultRequest) ProtoMessage() {}
+
+func (x *ReportHealthResultRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportHealthResultRequest.ProtoReflect.Descriptor instead.
+func (*ReportHealthResultRequest) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ReportHealthResultRequest) GetAppId() string {
+	if x != nil {
+		return x.AppId
+	}
+	return ""
+}
+
+func (x *ReportHealthResultRequest) GetAppName() string {
+	if x != nil {
+		return x.AppName
+	}
+	return ""
+}
+
+func (x *ReportHealthResultRequest) GetEndpointName() string {
+	if x != nil {
+		return x.EndpointName
+	}
+	return ""
+}
+
+func (x *ReportHealthResultRequest) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ReportHealthResultRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ReportHealthResultRequest) GetStatusCode() int32 {
+	if x != nil {
+		return x.StatusCode
+	}
+	return 0
+}
+
+func (x *ReportHealthResultRequest) GetLatencyMs() int64 {
+	if x != nil {
+		return x.LatencyMs
+	}
+	return 0
+}
+
+func (x *ReportHealthResultRequest) GetCheckedAt() int64 {
+	if x != nil {
+		return x.CheckedAt
+	}
+	return 0
+}
+
+func (x *ReportHealthResultRequest) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// ReportHealthResultResponse is the response to a health result report.
+type ReportHealthResultResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportHealthResultResponse) Reset() {
+	*x = ReportHealthResultResponse{}
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportHealthResultResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportHealthResultResponse) ProtoMessage() {}
+
+func (x *ReportHealthResultResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportHealthResultResponse.ProtoReflect.Descriptor instead.
+func (*ReportHealthResultResponse) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ReportHealthResultResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *ReportHealthResultResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+// ReportAutoRestartRequest is sent by the daemon to report an auto-restart event.
+type ReportAutoRestartRequest struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	AppId              string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	AppName            string                 `protobuf:"bytes,2,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	Reason             string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	ExitCode           int32                  `protobuf:"varint,4,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	BackoffNextSeconds int32                  `protobuf:"varint,5,opt,name=backoff_next_seconds,json=backoffNextSeconds,proto3" json:"backoff_next_seconds,omitempty"`
+	RestartedAt        int64                  `protobuf:"varint,6,opt,name=restarted_at,json=restartedAt,proto3" json:"restarted_at,omitempty"`
+	CrashCount_24H     int32                  `protobuf:"varint,7,opt,name=crash_count_24h,json=crashCount24h,proto3" json:"crash_count_24h,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ReportAutoRestartRequest) Reset() {
+	*x = ReportAutoRestartRequest{}
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportAutoRestartRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportAutoRestartRequest) ProtoMessage() {}
+
+func (x *ReportAutoRestartRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportAutoRestartRequest.ProtoReflect.Descriptor instead.
+func (*ReportAutoRestartRequest) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ReportAutoRestartRequest) GetAppId() string {
+	if x != nil {
+		return x.AppId
+	}
+	return ""
+}
+
+func (x *ReportAutoRestartRequest) GetAppName() string {
+	if x != nil {
+		return x.AppName
+	}
+	return ""
+}
+
+func (x *ReportAutoRestartRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *ReportAutoRestartRequest) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *ReportAutoRestartRequest) GetBackoffNextSeconds() int32 {
+	if x != nil {
+		return x.BackoffNextSeconds
+	}
+	return 0
+}
+
+func (x *ReportAutoRestartRequest) GetRestartedAt() int64 {
+	if x != nil {
+		return x.RestartedAt
+	}
+	return 0
+}
+
+func (x *ReportAutoRestartRequest) GetCrashCount_24H() int32 {
+	if x != nil {
+		return x.CrashCount_24H
+	}
+	return 0
+}
+
+// ReportAutoRestartResponse is the response to an auto-restart report.
+type ReportAutoRestartResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportAutoRestartResponse) Reset() {
+	*x = ReportAutoRestartResponse{}
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportAutoRestartResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportAutoRestartResponse) ProtoMessage() {}
+
+func (x *ReportAutoRestartResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportAutoRestartResponse.ProtoReflect.Descriptor instead.
+func (*ReportAutoRestartResponse) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ReportAutoRestartResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *ReportAutoRestartResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 // HealthResult is the result of a health command execution.
 type HealthResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1106,7 +1414,7 @@ type HealthResult struct {
 
 func (x *HealthResult) Reset() {
 	*x = HealthResult{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[13]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1118,7 +1426,7 @@ func (x *HealthResult) String() string {
 func (*HealthResult) ProtoMessage() {}
 
 func (x *HealthResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[13]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1131,7 +1439,7 @@ func (x *HealthResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResult.ProtoReflect.Descriptor instead.
 func (*HealthResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{13}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *HealthResult) GetRequestId() string {
@@ -1306,7 +1614,7 @@ type HealthResultSetResult struct {
 
 func (x *HealthResultSetResult) Reset() {
 	*x = HealthResultSetResult{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[14]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1318,7 +1626,7 @@ func (x *HealthResultSetResult) String() string {
 func (*HealthResultSetResult) ProtoMessage() {}
 
 func (x *HealthResultSetResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[14]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1331,7 +1639,7 @@ func (x *HealthResultSetResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResultSetResult.ProtoReflect.Descriptor instead.
 func (*HealthResultSetResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{14}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{18}
 }
 
 // HealthResultListResult contains endpoint configurations.
@@ -1345,7 +1653,7 @@ type HealthResultListResult struct {
 
 func (x *HealthResultListResult) Reset() {
 	*x = HealthResultListResult{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[15]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1357,7 +1665,7 @@ func (x *HealthResultListResult) String() string {
 func (*HealthResultListResult) ProtoMessage() {}
 
 func (x *HealthResultListResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[15]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1370,7 +1678,7 @@ func (x *HealthResultListResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResultListResult.ProtoReflect.Descriptor instead.
 func (*HealthResultListResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{15}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *HealthResultListResult) GetEndpoints() []*EndpointConfig {
@@ -1397,7 +1705,7 @@ type HealthResultStatusResult struct {
 
 func (x *HealthResultStatusResult) Reset() {
 	*x = HealthResultStatusResult{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[16]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1409,7 +1717,7 @@ func (x *HealthResultStatusResult) String() string {
 func (*HealthResultStatusResult) ProtoMessage() {}
 
 func (x *HealthResultStatusResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[16]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1422,7 +1730,7 @@ func (x *HealthResultStatusResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResultStatusResult.ProtoReflect.Descriptor instead.
 func (*HealthResultStatusResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{16}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *HealthResultStatusResult) GetEndpoints() []*EndpointHealthStatus {
@@ -1446,7 +1754,7 @@ type HealthResultDaemonStatusResult struct {
 
 func (x *HealthResultDaemonStatusResult) Reset() {
 	*x = HealthResultDaemonStatusResult{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[17]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1458,7 +1766,7 @@ func (x *HealthResultDaemonStatusResult) String() string {
 func (*HealthResultDaemonStatusResult) ProtoMessage() {}
 
 func (x *HealthResultDaemonStatusResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[17]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1471,7 +1779,7 @@ func (x *HealthResultDaemonStatusResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResultDaemonStatusResult.ProtoReflect.Descriptor instead.
 func (*HealthResultDaemonStatusResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{17}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *HealthResultDaemonStatusResult) GetDaemonRunning() bool {
@@ -1524,7 +1832,7 @@ type HealthResultCheckResult struct {
 
 func (x *HealthResultCheckResult) Reset() {
 	*x = HealthResultCheckResult{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[18]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1536,7 +1844,7 @@ func (x *HealthResultCheckResult) String() string {
 func (*HealthResultCheckResult) ProtoMessage() {}
 
 func (x *HealthResultCheckResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[18]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1549,7 +1857,7 @@ func (x *HealthResultCheckResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResultCheckResult.ProtoReflect.Descriptor instead.
 func (*HealthResultCheckResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{18}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *HealthResultCheckResult) GetUrl() string {
@@ -1609,7 +1917,7 @@ type EndpointConfig struct {
 
 func (x *EndpointConfig) Reset() {
 	*x = EndpointConfig{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[19]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1621,7 +1929,7 @@ func (x *EndpointConfig) String() string {
 func (*EndpointConfig) ProtoMessage() {}
 
 func (x *EndpointConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[19]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1634,7 +1942,7 @@ func (x *EndpointConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointConfig.ProtoReflect.Descriptor instead.
 func (*EndpointConfig) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{19}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *EndpointConfig) GetName() string {
@@ -1693,7 +2001,7 @@ type DeployTierConfigProto struct {
 
 func (x *DeployTierConfigProto) Reset() {
 	*x = DeployTierConfigProto{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[20]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1705,7 +2013,7 @@ func (x *DeployTierConfigProto) String() string {
 func (*DeployTierConfigProto) ProtoMessage() {}
 
 func (x *DeployTierConfigProto) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[20]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1718,7 +2026,7 @@ func (x *DeployTierConfigProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeployTierConfigProto.ProtoReflect.Descriptor instead.
 func (*DeployTierConfigProto) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{20}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *DeployTierConfigProto) GetMode() string {
@@ -1772,7 +2080,7 @@ type EndpointHealthStatus struct {
 
 func (x *EndpointHealthStatus) Reset() {
 	*x = EndpointHealthStatus{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[21]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1784,7 +2092,7 @@ func (x *EndpointHealthStatus) String() string {
 func (*EndpointHealthStatus) ProtoMessage() {}
 
 func (x *EndpointHealthStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[21]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1797,7 +2105,7 @@ func (x *EndpointHealthStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointHealthStatus.ProtoReflect.Descriptor instead.
 func (*EndpointHealthStatus) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{21}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *EndpointHealthStatus) GetName() string {
@@ -1870,7 +2178,7 @@ type HealthStatusUpdate struct {
 
 func (x *HealthStatusUpdate) Reset() {
 	*x = HealthStatusUpdate{}
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[22]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1882,7 +2190,7 @@ func (x *HealthStatusUpdate) String() string {
 func (*HealthStatusUpdate) ProtoMessage() {}
 
 func (x *HealthStatusUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_health_proto_msgTypes[22]
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1895,7 +2203,7 @@ func (x *HealthStatusUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthStatusUpdate.ProtoReflect.Descriptor instead.
 func (*HealthStatusUpdate) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{22}
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *HealthStatusUpdate) GetRequestId() string {
@@ -2064,7 +2372,34 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"\x14HealthConfigResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\xbf\x05\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\x91\x02\n" +
+	"\x19ReportHealthResultRequest\x12\x15\n" +
+	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
+	"\bapp_name\x18\x02 \x01(\tR\aappName\x12#\n" +
+	"\rendpoint_name\x18\x03 \x01(\tR\fendpointName\x12\x10\n" +
+	"\x03url\x18\x04 \x01(\tR\x03url\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x12\x1f\n" +
+	"\vstatus_code\x18\x06 \x01(\x05R\n" +
+	"statusCode\x12\x1d\n" +
+	"\n" +
+	"latency_ms\x18\a \x01(\x03R\tlatencyMs\x12\x1d\n" +
+	"\n" +
+	"checked_at\x18\b \x01(\x03R\tcheckedAt\x12\x14\n" +
+	"\x05error\x18\t \x01(\tR\x05error\"L\n" +
+	"\x1aReportHealthResultResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\xfe\x01\n" +
+	"\x18ReportAutoRestartRequest\x12\x15\n" +
+	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
+	"\bapp_name\x18\x02 \x01(\tR\aappName\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\x12\x1b\n" +
+	"\texit_code\x18\x04 \x01(\x05R\bexitCode\x120\n" +
+	"\x14backoff_next_seconds\x18\x05 \x01(\x05R\x12backoffNextSeconds\x12!\n" +
+	"\frestarted_at\x18\x06 \x01(\x03R\vrestartedAt\x12&\n" +
+	"\x0fcrash_count_24h\x18\a \x01(\x05R\rcrashCount24h\"K\n" +
+	"\x19ReportAutoRestartResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\xbf\x05\n" +
 	"\fHealthResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
@@ -2167,7 +2502,7 @@ func file_internal_grpc_proto_health_proto_rawDescGZIP() []byte {
 	return file_internal_grpc_proto_health_proto_rawDescData
 }
 
-var file_internal_grpc_proto_health_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_internal_grpc_proto_health_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_internal_grpc_proto_health_proto_goTypes = []any{
 	(*HealthCommand)(nil),                  // 0: phelix.HealthCommand
 	(*HealthSetCommand)(nil),               // 1: phelix.HealthSetCommand
@@ -2182,16 +2517,20 @@ var file_internal_grpc_proto_health_proto_goTypes = []any{
 	(*HealthAddEndpointRequest)(nil),       // 10: phelix.HealthAddEndpointRequest
 	(*HealthRemoveEndpointRequest)(nil),    // 11: phelix.HealthRemoveEndpointRequest
 	(*HealthConfigResponse)(nil),           // 12: phelix.HealthConfigResponse
-	(*HealthResult)(nil),                   // 13: phelix.HealthResult
-	(*HealthResultSetResult)(nil),          // 14: phelix.HealthResultSetResult
-	(*HealthResultListResult)(nil),         // 15: phelix.HealthResultListResult
-	(*HealthResultStatusResult)(nil),       // 16: phelix.HealthResultStatusResult
-	(*HealthResultDaemonStatusResult)(nil), // 17: phelix.HealthResultDaemonStatusResult
-	(*HealthResultCheckResult)(nil),        // 18: phelix.HealthResultCheckResult
-	(*EndpointConfig)(nil),                 // 19: phelix.EndpointConfig
-	(*DeployTierConfigProto)(nil),          // 20: phelix.DeployTierConfigProto
-	(*EndpointHealthStatus)(nil),           // 21: phelix.EndpointHealthStatus
-	(*HealthStatusUpdate)(nil),             // 22: phelix.HealthStatusUpdate
+	(*ReportHealthResultRequest)(nil),      // 13: phelix.ReportHealthResultRequest
+	(*ReportHealthResultResponse)(nil),     // 14: phelix.ReportHealthResultResponse
+	(*ReportAutoRestartRequest)(nil),       // 15: phelix.ReportAutoRestartRequest
+	(*ReportAutoRestartResponse)(nil),      // 16: phelix.ReportAutoRestartResponse
+	(*HealthResult)(nil),                   // 17: phelix.HealthResult
+	(*HealthResultSetResult)(nil),          // 18: phelix.HealthResultSetResult
+	(*HealthResultListResult)(nil),         // 19: phelix.HealthResultListResult
+	(*HealthResultStatusResult)(nil),       // 20: phelix.HealthResultStatusResult
+	(*HealthResultDaemonStatusResult)(nil), // 21: phelix.HealthResultDaemonStatusResult
+	(*HealthResultCheckResult)(nil),        // 22: phelix.HealthResultCheckResult
+	(*EndpointConfig)(nil),                 // 23: phelix.EndpointConfig
+	(*DeployTierConfigProto)(nil),          // 24: phelix.DeployTierConfigProto
+	(*EndpointHealthStatus)(nil),           // 25: phelix.EndpointHealthStatus
+	(*HealthStatusUpdate)(nil),             // 26: phelix.HealthStatusUpdate
 }
 var file_internal_grpc_proto_health_proto_depIdxs = []int32{
 	1,  // 0: phelix.HealthCommand.set:type_name -> phelix.HealthSetCommand
@@ -2202,14 +2541,14 @@ var file_internal_grpc_proto_health_proto_depIdxs = []int32{
 	6,  // 5: phelix.HealthCommand.watch:type_name -> phelix.HealthWatchCommand
 	7,  // 6: phelix.HealthCommand.daemon_status:type_name -> phelix.HealthDaemonStatusCommand
 	8,  // 7: phelix.HealthCommand.check:type_name -> phelix.HealthCheckCommand
-	14, // 8: phelix.HealthResult.set_result:type_name -> phelix.HealthResultSetResult
-	15, // 9: phelix.HealthResult.list_result:type_name -> phelix.HealthResultListResult
-	16, // 10: phelix.HealthResult.status_result:type_name -> phelix.HealthResultStatusResult
-	17, // 11: phelix.HealthResult.daemon_status_result:type_name -> phelix.HealthResultDaemonStatusResult
-	18, // 12: phelix.HealthResult.check_result:type_name -> phelix.HealthResultCheckResult
-	19, // 13: phelix.HealthResultListResult.endpoints:type_name -> phelix.EndpointConfig
-	20, // 14: phelix.HealthResultListResult.deploy_tier:type_name -> phelix.DeployTierConfigProto
-	21, // 15: phelix.HealthResultStatusResult.endpoints:type_name -> phelix.EndpointHealthStatus
+	18, // 8: phelix.HealthResult.set_result:type_name -> phelix.HealthResultSetResult
+	19, // 9: phelix.HealthResult.list_result:type_name -> phelix.HealthResultListResult
+	20, // 10: phelix.HealthResult.status_result:type_name -> phelix.HealthResultStatusResult
+	21, // 11: phelix.HealthResult.daemon_status_result:type_name -> phelix.HealthResultDaemonStatusResult
+	22, // 12: phelix.HealthResult.check_result:type_name -> phelix.HealthResultCheckResult
+	23, // 13: phelix.HealthResultListResult.endpoints:type_name -> phelix.EndpointConfig
+	24, // 14: phelix.HealthResultListResult.deploy_tier:type_name -> phelix.DeployTierConfigProto
+	25, // 15: phelix.HealthResultStatusResult.endpoints:type_name -> phelix.EndpointHealthStatus
 	16, // [16:16] is the sub-list for method output_type
 	16, // [16:16] is the sub-list for method input_type
 	16, // [16:16] is the sub-list for extension type_name
@@ -2232,7 +2571,7 @@ func file_internal_grpc_proto_health_proto_init() {
 		(*HealthCommand_DaemonStatus)(nil),
 		(*HealthCommand_Check)(nil),
 	}
-	file_internal_grpc_proto_health_proto_msgTypes[13].OneofWrappers = []any{
+	file_internal_grpc_proto_health_proto_msgTypes[17].OneofWrappers = []any{
 		(*HealthResult_SetResult)(nil),
 		(*HealthResult_ListResult)(nil),
 		(*HealthResult_StatusResult)(nil),
@@ -2245,7 +2584,7 @@ func file_internal_grpc_proto_health_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_health_proto_rawDesc), len(file_internal_grpc_proto_health_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   23,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

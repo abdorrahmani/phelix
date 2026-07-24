@@ -26,6 +26,8 @@ const (
 	PhelixService_HealthSetConfig_FullMethodName      = "/phelix.PhelixService/HealthSetConfig"
 	PhelixService_HealthAddEndpoint_FullMethodName    = "/phelix.PhelixService/HealthAddEndpoint"
 	PhelixService_HealthRemoveEndpoint_FullMethodName = "/phelix.PhelixService/HealthRemoveEndpoint"
+	PhelixService_ReportHealthResult_FullMethodName   = "/phelix.PhelixService/ReportHealthResult"
+	PhelixService_ReportAutoRestart_FullMethodName    = "/phelix.PhelixService/ReportAutoRestart"
 )
 
 // PhelixServiceClient is the client API for PhelixService service.
@@ -51,6 +53,10 @@ type PhelixServiceClient interface {
 	HealthAddEndpoint(ctx context.Context, in *HealthAddEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error)
 	// HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
 	HealthRemoveEndpoint(ctx context.Context, in *HealthRemoveEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error)
+	// ReportHealthResult sends a health check result from the daemon to the backend.
+	ReportHealthResult(ctx context.Context, in *ReportHealthResultRequest, opts ...grpc.CallOption) (*ReportHealthResultResponse, error)
+	// ReportAutoRestart sends an auto-restart event from the daemon to the backend.
+	ReportAutoRestart(ctx context.Context, in *ReportAutoRestartRequest, opts ...grpc.CallOption) (*ReportAutoRestartResponse, error)
 }
 
 type phelixServiceClient struct {
@@ -137,6 +143,26 @@ func (c *phelixServiceClient) HealthRemoveEndpoint(ctx context.Context, in *Heal
 	return out, nil
 }
 
+func (c *phelixServiceClient) ReportHealthResult(ctx context.Context, in *ReportHealthResultRequest, opts ...grpc.CallOption) (*ReportHealthResultResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportHealthResultResponse)
+	err := c.cc.Invoke(ctx, PhelixService_ReportHealthResult_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *phelixServiceClient) ReportAutoRestart(ctx context.Context, in *ReportAutoRestartRequest, opts ...grpc.CallOption) (*ReportAutoRestartResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportAutoRestartResponse)
+	err := c.cc.Invoke(ctx, PhelixService_ReportAutoRestart_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PhelixServiceServer is the server API for PhelixService service.
 // All implementations must embed UnimplementedPhelixServiceServer
 // for forward compatibility.
@@ -160,6 +186,10 @@ type PhelixServiceServer interface {
 	HealthAddEndpoint(context.Context, *HealthAddEndpointRequest) (*HealthConfigResponse, error)
 	// HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
 	HealthRemoveEndpoint(context.Context, *HealthRemoveEndpointRequest) (*HealthConfigResponse, error)
+	// ReportHealthResult sends a health check result from the daemon to the backend.
+	ReportHealthResult(context.Context, *ReportHealthResultRequest) (*ReportHealthResultResponse, error)
+	// ReportAutoRestart sends an auto-restart event from the daemon to the backend.
+	ReportAutoRestart(context.Context, *ReportAutoRestartRequest) (*ReportAutoRestartResponse, error)
 	mustEmbedUnimplementedPhelixServiceServer()
 }
 
@@ -190,6 +220,12 @@ func (UnimplementedPhelixServiceServer) HealthAddEndpoint(context.Context, *Heal
 }
 func (UnimplementedPhelixServiceServer) HealthRemoveEndpoint(context.Context, *HealthRemoveEndpointRequest) (*HealthConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method HealthRemoveEndpoint not implemented")
+}
+func (UnimplementedPhelixServiceServer) ReportHealthResult(context.Context, *ReportHealthResultRequest) (*ReportHealthResultResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportHealthResult not implemented")
+}
+func (UnimplementedPhelixServiceServer) ReportAutoRestart(context.Context, *ReportAutoRestartRequest) (*ReportAutoRestartResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportAutoRestart not implemented")
 }
 func (UnimplementedPhelixServiceServer) mustEmbedUnimplementedPhelixServiceServer() {}
 func (UnimplementedPhelixServiceServer) testEmbeddedByValue()                       {}
@@ -316,6 +352,42 @@ func _PhelixService_HealthRemoveEndpoint_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PhelixService_ReportHealthResult_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportHealthResultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).ReportHealthResult(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_ReportHealthResult_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).ReportHealthResult(ctx, req.(*ReportHealthResultRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PhelixService_ReportAutoRestart_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportAutoRestartRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).ReportAutoRestart(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_ReportAutoRestart_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).ReportAutoRestart(ctx, req.(*ReportAutoRestartRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PhelixService_ServiceDesc is the grpc.ServiceDesc for PhelixService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -342,6 +414,14 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "HealthRemoveEndpoint",
 			Handler:    _PhelixService_HealthRemoveEndpoint_Handler,
+		},
+		{
+			MethodName: "ReportHealthResult",
+			Handler:    _PhelixService_ReportHealthResult_Handler,
+		},
+		{
+			MethodName: "ReportAutoRestart",
+			Handler:    _PhelixService_ReportAutoRestart_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
