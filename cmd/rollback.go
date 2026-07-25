@@ -27,6 +27,11 @@ var RollbackCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Ensure all queued rollback events are flushed to the backend
+		// before the CLI process exits. 5s is generous enough for a
+		// single gRPC round-trip; if it times out we log and move on.
+		defer phelixgrpc.StopRollbackSender(5 * time.Second)
+
 		name := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {

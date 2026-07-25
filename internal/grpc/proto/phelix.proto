@@ -5,6 +5,7 @@ package phelix;
 option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 
 import "internal/grpc/proto/events.proto";
+import "internal/grpc/proto/rollback.proto";
 import "internal/grpc/proto/metadata.proto";
 import "internal/grpc/proto/envelope.proto";
 import "internal/grpc/proto/health.proto";

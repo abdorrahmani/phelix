@@ -260,317 +260,6 @@ func (x *EventAck) GetEventId() string {
 	return ""
 }
 
-// RollbackLifecycleEvent reports a single step in the rollback execution
-// lifecycle. The backend receives a stream of these events to reconstruct
-// the full rollback timeline, display real-time progress, generate an audit
-// trail, and diagnose failures.
-type RollbackLifecycleEvent struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Identity
-	ServerId      string `protobuf:"bytes,1,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
-	CliAppId      string `protobuf:"bytes,2,opt,name=cli_app_id,json=cliAppId,proto3" json:"cli_app_id,omitempty"`
-	ResolvedAppId string `protobuf:"bytes,3,opt,name=resolved_app_id,json=resolvedAppId,proto3" json:"resolved_app_id,omitempty"`
-	AppName       string `protobuf:"bytes,4,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	// Rollback configuration
-	DeploymentMode   string `protobuf:"bytes,5,opt,name=deployment_mode,json=deploymentMode,proto3" json:"deployment_mode,omitempty"`
-	RollbackStrategy string `protobuf:"bytes,6,opt,name=rollback_strategy,json=rollbackStrategy,proto3" json:"rollback_strategy,omitempty"`
-	// Versioning
-	CurrentVersion string `protobuf:"bytes,7,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"`
-	TargetVersion  string `protobuf:"bytes,8,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
-	TargetTag      string `protobuf:"bytes,9,opt,name=target_tag,json=targetTag,proto3" json:"target_tag,omitempty"`
-	// Execution state
-	CurrentStep string `protobuf:"bytes,10,opt,name=current_step,json=currentStep,proto3" json:"current_step,omitempty"`
-	Success     bool   `protobuf:"varint,11,opt,name=success,proto3" json:"success,omitempty"`
-	Message     string `protobuf:"bytes,12,opt,name=message,proto3" json:"message,omitempty"`
-	Error       string `protobuf:"bytes,13,opt,name=error,proto3" json:"error,omitempty"`
-	// Timestamps and timing
-	Timestamp  int64 `protobuf:"varint,14,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	DurationMs int64 `protobuf:"varint,15,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	// Process context
-	Hostname string `protobuf:"bytes,16,opt,name=hostname,proto3" json:"hostname,omitempty"`
-	Pid      int32  `protobuf:"varint,17,opt,name=pid,proto3" json:"pid,omitempty"`
-	// Version list (populated on --list events)
-	Versions []*RollbackVersionEntry `protobuf:"bytes,18,rep,name=versions,proto3" json:"versions,omitempty"`
-	// Arbitrary key-value metadata for future extensibility.
-	Metadata map[string]string `protobuf:"bytes,19,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Auth identity (also sent as gRPC headers, but included in the message
-	// body so the backend can attribute the event without parsing headers).
-	UserId        string `protobuf:"bytes,20,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	SessionToken  string `protobuf:"bytes,21,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *RollbackLifecycleEvent) Reset() {
-	*x = RollbackLifecycleEvent{}
-	mi := &file_internal_grpc_proto_events_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RollbackLifecycleEvent) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RollbackLifecycleEvent) ProtoMessage() {}
-
-func (x *RollbackLifecycleEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_events_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RollbackLifecycleEvent.ProtoReflect.Descriptor instead.
-func (*RollbackLifecycleEvent) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_events_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *RollbackLifecycleEvent) GetServerId() string {
-	if x != nil {
-		return x.ServerId
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetCliAppId() string {
-	if x != nil {
-		return x.CliAppId
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetResolvedAppId() string {
-	if x != nil {
-		return x.ResolvedAppId
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetAppName() string {
-	if x != nil {
-		return x.AppName
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetDeploymentMode() string {
-	if x != nil {
-		return x.DeploymentMode
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetRollbackStrategy() string {
-	if x != nil {
-		return x.RollbackStrategy
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetCurrentVersion() string {
-	if x != nil {
-		return x.CurrentVersion
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetTargetVersion() string {
-	if x != nil {
-		return x.TargetVersion
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetTargetTag() string {
-	if x != nil {
-		return x.TargetTag
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetCurrentStep() string {
-	if x != nil {
-		return x.CurrentStep
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
-func (x *RollbackLifecycleEvent) GetMessage() string {
-	if x != nil {
-		return x.Message
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetTimestamp() int64 {
-	if x != nil {
-		return x.Timestamp
-	}
-	return 0
-}
-
-func (x *RollbackLifecycleEvent) GetDurationMs() int64 {
-	if x != nil {
-		return x.DurationMs
-	}
-	return 0
-}
-
-func (x *RollbackLifecycleEvent) GetHostname() string {
-	if x != nil {
-		return x.Hostname
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetPid() int32 {
-	if x != nil {
-		return x.Pid
-	}
-	return 0
-}
-
-func (x *RollbackLifecycleEvent) GetVersions() []*RollbackVersionEntry {
-	if x != nil {
-		return x.Versions
-	}
-	return nil
-}
-
-func (x *RollbackLifecycleEvent) GetMetadata() map[string]string {
-	if x != nil {
-		return x.Metadata
-	}
-	return nil
-}
-
-func (x *RollbackLifecycleEvent) GetUserId() string {
-	if x != nil {
-		return x.UserId
-	}
-	return ""
-}
-
-func (x *RollbackLifecycleEvent) GetSessionToken() string {
-	if x != nil {
-		return x.SessionToken
-	}
-	return ""
-}
-
-// RollbackVersionEntry describes one retained version in the --list output.
-type RollbackVersionEntry struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Version        int32                  `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
-	Tag            string                 `protobuf:"bytes,2,opt,name=tag,proto3" json:"tag,omitempty"`
-	GitCommit      string                 `protobuf:"bytes,3,opt,name=git_commit,json=gitCommit,proto3" json:"git_commit,omitempty"`
-	BuildTimestamp int64                  `protobuf:"varint,4,opt,name=build_timestamp,json=buildTimestamp,proto3" json:"build_timestamp,omitempty"`
-	BinarySize     int64                  `protobuf:"varint,5,opt,name=binary_size,json=binarySize,proto3" json:"binary_size,omitempty"`
-	Current        bool                   `protobuf:"varint,6,opt,name=current,proto3" json:"current,omitempty"`
-	PruneSoon      bool                   `protobuf:"varint,7,opt,name=prune_soon,json=pruneSoon,proto3" json:"prune_soon,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *RollbackVersionEntry) Reset() {
-	*x = RollbackVersionEntry{}
-	mi := &file_internal_grpc_proto_events_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *RollbackVersionEntry) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*RollbackVersionEntry) ProtoMessage() {}
-
-func (x *RollbackVersionEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_events_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use RollbackVersionEntry.ProtoReflect.Descriptor instead.
-func (*RollbackVersionEntry) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_events_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *RollbackVersionEntry) GetVersion() int32 {
-	if x != nil {
-		return x.Version
-	}
-	return 0
-}
-
-func (x *RollbackVersionEntry) GetTag() string {
-	if x != nil {
-		return x.Tag
-	}
-	return ""
-}
-
-func (x *RollbackVersionEntry) GetGitCommit() string {
-	if x != nil {
-		return x.GitCommit
-	}
-	return ""
-}
-
-func (x *RollbackVersionEntry) GetBuildTimestamp() int64 {
-	if x != nil {
-		return x.BuildTimestamp
-	}
-	return 0
-}
-
-func (x *RollbackVersionEntry) GetBinarySize() int64 {
-	if x != nil {
-		return x.BinarySize
-	}
-	return 0
-}
-
-func (x *RollbackVersionEntry) GetCurrent() bool {
-	if x != nil {
-		return x.Current
-	}
-	return false
-}
-
-func (x *RollbackVersionEntry) GetPruneSoon() bool {
-	if x != nil {
-		return x.PruneSoon
-	}
-	return false
-}
-
 var File_internal_grpc_proto_events_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_events_proto_rawDesc = "" +
@@ -595,47 +284,7 @@ const file_internal_grpc_proto_events_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"A\n" +
 	"\bEventAck\x12\x1a\n" +
 	"\breceived\x18\x01 \x01(\bR\breceived\x12\x19\n" +
-	"\bevent_id\x18\x02 \x01(\tR\aeventId\"\xb4\x06\n" +
-	"\x16RollbackLifecycleEvent\x12\x1b\n" +
-	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
-	"\n" +
-	"cli_app_id\x18\x02 \x01(\tR\bcliAppId\x12&\n" +
-	"\x0fresolved_app_id\x18\x03 \x01(\tR\rresolvedAppId\x12\x19\n" +
-	"\bapp_name\x18\x04 \x01(\tR\aappName\x12'\n" +
-	"\x0fdeployment_mode\x18\x05 \x01(\tR\x0edeploymentMode\x12+\n" +
-	"\x11rollback_strategy\x18\x06 \x01(\tR\x10rollbackStrategy\x12'\n" +
-	"\x0fcurrent_version\x18\a \x01(\tR\x0ecurrentVersion\x12%\n" +
-	"\x0etarget_version\x18\b \x01(\tR\rtargetVersion\x12\x1d\n" +
-	"\n" +
-	"target_tag\x18\t \x01(\tR\ttargetTag\x12!\n" +
-	"\fcurrent_step\x18\n" +
-	" \x01(\tR\vcurrentStep\x12\x18\n" +
-	"\asuccess\x18\v \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\f \x01(\tR\amessage\x12\x14\n" +
-	"\x05error\x18\r \x01(\tR\x05error\x12\x1c\n" +
-	"\ttimestamp\x18\x0e \x01(\x03R\ttimestamp\x12\x1f\n" +
-	"\vduration_ms\x18\x0f \x01(\x03R\n" +
-	"durationMs\x12\x1a\n" +
-	"\bhostname\x18\x10 \x01(\tR\bhostname\x12\x10\n" +
-	"\x03pid\x18\x11 \x01(\x05R\x03pid\x128\n" +
-	"\bversions\x18\x12 \x03(\v2\x1c.phelix.RollbackVersionEntryR\bversions\x12H\n" +
-	"\bmetadata\x18\x13 \x03(\v2,.phelix.RollbackLifecycleEvent.MetadataEntryR\bmetadata\x12\x17\n" +
-	"\auser_id\x18\x14 \x01(\tR\x06userId\x12#\n" +
-	"\rsession_token\x18\x15 \x01(\tR\fsessionToken\x1a;\n" +
-	"\rMetadataEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe4\x01\n" +
-	"\x14RollbackVersionEntry\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\x05R\aversion\x12\x10\n" +
-	"\x03tag\x18\x02 \x01(\tR\x03tag\x12\x1d\n" +
-	"\n" +
-	"git_commit\x18\x03 \x01(\tR\tgitCommit\x12'\n" +
-	"\x0fbuild_timestamp\x18\x04 \x01(\x03R\x0ebuildTimestamp\x12\x1f\n" +
-	"\vbinary_size\x18\x05 \x01(\x03R\n" +
-	"binarySize\x12\x18\n" +
-	"\acurrent\x18\x06 \x01(\bR\acurrent\x12\x1d\n" +
-	"\n" +
-	"prune_soon\x18\a \x01(\bR\tpruneSoonB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
+	"\bevent_id\x18\x02 \x01(\tR\aeventIdB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
 
 var (
 	file_internal_grpc_proto_events_proto_rawDescOnce sync.Once
@@ -649,23 +298,18 @@ func file_internal_grpc_proto_events_proto_rawDescGZIP() []byte {
 	return file_internal_grpc_proto_events_proto_rawDescData
 }
 
-var file_internal_grpc_proto_events_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_internal_grpc_proto_events_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_internal_grpc_proto_events_proto_goTypes = []any{
-	(*ApplicationEvent)(nil),       // 0: phelix.ApplicationEvent
-	(*EventResponse)(nil),          // 1: phelix.EventResponse
-	(*EventAck)(nil),               // 2: phelix.EventAck
-	(*RollbackLifecycleEvent)(nil), // 3: phelix.RollbackLifecycleEvent
-	(*RollbackVersionEntry)(nil),   // 4: phelix.RollbackVersionEntry
-	nil,                            // 5: phelix.RollbackLifecycleEvent.MetadataEntry
+	(*ApplicationEvent)(nil), // 0: phelix.ApplicationEvent
+	(*EventResponse)(nil),    // 1: phelix.EventResponse
+	(*EventAck)(nil),         // 2: phelix.EventAck
 }
 var file_internal_grpc_proto_events_proto_depIdxs = []int32{
-	4, // 0: phelix.RollbackLifecycleEvent.versions:type_name -> phelix.RollbackVersionEntry
-	5, // 1: phelix.RollbackLifecycleEvent.metadata:type_name -> phelix.RollbackLifecycleEvent.MetadataEntry
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0, // [0:0] is the sub-list for method output_type
+	0, // [0:0] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for extension type_name
+	0, // [0:0] is the sub-list for extension extendee
+	0, // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_events_proto_init() }
@@ -679,7 +323,7 @@ func file_internal_grpc_proto_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_events_proto_rawDesc), len(file_internal_grpc_proto_events_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

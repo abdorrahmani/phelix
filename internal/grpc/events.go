@@ -64,13 +64,21 @@ func (c *Client) SendAppEvent(appID, appName, action string, success bool, errMs
 }
 
 // SendRollbackEvent sends a detailed rollback lifecycle event to the backend.
-func (c *Client) SendRollbackEvent(event *pb.RollbackLifecycleEvent) {
+// Returns true if the event was sent and accepted, false otherwise.
+func (c *Client) SendRollbackEvent(event *pb.RollbackLifecycleEvent) bool {
 	if !c.IsConnected() {
 		grpcLog("[gRPC] Cannot send rollback event for app '%s': not connected", event.GetAppName())
-		return
+		return false
 	}
 
-	grpcLog("[gRPC] Sending rollback event: step=%s app=%s success=%v", event.GetCurrentStep(), event.GetAppName(), event.GetSuccess())
+	grpcLog("[gRPC] Sending rollback event: step=%s app=%s success=%v server_id=%s cli_app_id=%s mode=%s strategy=%s current_ver=%s target_ver=%s target_tag=%s pid=%d versions=%d metadata=%d",
+		event.GetCurrentStep(), event.GetAppName(), event.GetSuccess(),
+		event.GetServerId(), event.GetCliAppId(),
+		event.GetDeploymentMode(), event.GetRollbackStrategy(),
+		event.GetCurrentVersion(), event.GetTargetVersion(), event.GetTargetTag(),
+		event.GetPid(),
+		len(event.GetVersions()), len(event.GetMetadata()),
+	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -79,19 +87,21 @@ func (c *Client) SendRollbackEvent(event *pb.RollbackLifecycleEvent) {
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
 		grpcLog("[gRPC] Failed to attach auth metadata for rollback event: %v", err)
-		return
+		return false
 	}
 
 	resp, err := c.serviceClient.ReportRollbackEvent(authCtx, event)
 	if err != nil {
 		grpcLog("[gRPC] Failed to send rollback event: %v", err)
 		c.reconnectIfNeeded()
-		return
+		return false
 	}
 
 	if !resp.Accepted {
 		grpcLog("[gRPC] Rollback event rejected: %s", resp.Message)
-	} else {
-		grpcLog("[gRPC] Rollback event sent: step=%s", event.GetCurrentStep())
+		return false
 	}
+
+	grpcLog("[gRPC] Rollback event sent: step=%s", event.GetCurrentStep())
+	return true
 }

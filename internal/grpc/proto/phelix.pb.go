@@ -24,7 +24,7 @@ var File_internal_grpc_proto_phelix_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_phelix_proto_rawDesc = "" +
 	"\n" +
-	" internal/grpc/proto/phelix.proto\x12\x06phelix\x1a internal/grpc/proto/events.proto\x1a\"internal/grpc/proto/metadata.proto\x1a\"internal/grpc/proto/envelope.proto\x1a internal/grpc/proto/health.proto2\x97\x06\n" +
+	" internal/grpc/proto/phelix.proto\x12\x06phelix\x1a internal/grpc/proto/events.proto\x1a\"internal/grpc/proto/rollback.proto\x1a\"internal/grpc/proto/metadata.proto\x1a\"internal/grpc/proto/envelope.proto\x1a internal/grpc/proto/health.proto2\x97\x06\n" +
 	"\rPhelixService\x12>\n" +
 	"\vReportEvent\x12\x18.phelix.ApplicationEvent\x1a\x15.phelix.EventResponse\x12=\n" +
 	"\fSyncMetadata\x12\x13.phelix.CLIMetadata\x1a\x18.phelix.MetadataResponse\x12>\n" +
@@ -89,6 +89,7 @@ func file_internal_grpc_proto_phelix_proto_init() {
 		return
 	}
 	file_internal_grpc_proto_events_proto_init()
+	file_internal_grpc_proto_rollback_proto_init()
 	file_internal_grpc_proto_metadata_proto_init()
 	file_internal_grpc_proto_envelope_proto_init()
 	file_internal_grpc_proto_health_proto_init()
