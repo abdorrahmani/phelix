@@ -57,6 +57,7 @@ type AppStatus struct {
 type AppListItem struct {
 	ID          string
 	Name        string
+	Directory   string
 	Status      string
 	PID         int
 	Port        int

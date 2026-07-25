@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
@@ -439,4 +440,66 @@ func (r *RollbackReporter) writeLocalLog(step string, success bool, msg string, 
 		)
 		_, _ = f.WriteString(line)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Automatic version list sync
+// ---------------------------------------------------------------------------
+
+// SendVersionListForApp loads the version list for the given app and sends it
+// to the backend as a rollback lifecycle event. This is called automatically
+// after successful deploys and periodically by the monitor — the user never
+// needs to run `phelix rollback --list` manually.
+func SendVersionListForApp(appID, appName, appDir string) {
+	vers, err := deploy.ListVersionsForDisplay(appName, deploy.DefaultRetention{Max: 5})
+	if err != nil {
+		grpcLog("[gRPC] Version sync: failed to list versions for %s: %v", appName, err)
+		return
+	}
+
+	if len(vers) == 0 {
+		return
+	}
+
+	// Build proto version entries.
+	pbVersions := make([]*pb.RollbackVersionEntry, 0, len(vers))
+	for _, v := range vers {
+		pbVersions = append(pbVersions, &pb.RollbackVersionEntry{
+			Version:        int32(v.Version),
+			Tag:            v.Tag,
+			GitCommit:      v.GitCommit,
+			BuildTimestamp: v.BuiltAt.UnixMilli(),
+			BinarySize:     v.SizeBytes,
+			Current:        v.IsCurrent,
+			PruneSoon:      deploy.WouldPruneOnNextBuild(appName, v.Version, deploy.DefaultRetention{Max: 5}),
+		})
+	}
+
+	event := &pb.RollbackLifecycleEvent{
+		CliAppId:      appID,
+		ResolvedAppId: appID,
+		AppName:       appName,
+		CurrentStep:   RollbackStepListVersions,
+		Success:       true,
+		Message:       fmt.Sprintf("synced %d versions", len(vers)),
+		Timestamp:     time.Now().UnixMilli(),
+		Pid:           int32(os.Getpid()),
+		Versions:      pbVersions,
+		Metadata: map[string]string{
+			"app_directory": appDir,
+			"sync_mode":     "automatic",
+			"version_count": fmt.Sprintf("%d", len(vers)),
+		},
+	}
+
+	// Fill server ID and auth identity.
+	_ = server.Initialize()
+	event.ServerId = server.GetServerID()
+	if sid, tok := loadSessionIdentity(); sid != "" {
+		event.UserId = sid
+		event.SessionToken = tok
+	}
+
+	enqueueRollbackEvent(event)
+	grpcLog("[gRPC] Version sync: queued %d versions for %s", len(vers), appName)
 }

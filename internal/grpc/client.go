@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/config"
+	"github.com/abdorrahmani/phelix/internal/app"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"google.golang.org/grpc"
@@ -109,6 +110,9 @@ func (c *Client) Start() {
 
 	// Start metadata sync loop
 	go c.startMetadataSync()
+
+	// Start version list sync loop
+	go c.startVersionSync()
 
 	// Start connection health monitor
 	go c.monitorConnection()
@@ -240,5 +244,44 @@ func (c *Client) sendMetadataOnce() {
 
 	if !resp.Accepted {
 		grpcLog("[gRPC] Metadata rejected: %s", resp.Message)
+	}
+}
+
+// startVersionSync periodically sends version lists for all managed apps.
+func (c *Client) startVersionSync() {
+	// Use a longer interval than metadata sync — version lists change less
+	// frequently and carry more data.
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+
+	// Send initial sync after a short delay to let the connection stabilize.
+	select {
+	case <-c.done:
+		return
+	case <-time.After(5 * time.Second):
+		c.syncAllVersions()
+	}
+
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			c.syncAllVersions()
+		}
+	}
+}
+
+func (c *Client) syncAllVersions() {
+	if !c.IsConnected() {
+		return
+	}
+
+	apps := app.Manager.ListApplications()
+	for _, a := range apps {
+		if a.Directory == "" {
+			continue
+		}
+		SendVersionListForApp(a.ID, a.Name, a.Directory)
 	}
 }

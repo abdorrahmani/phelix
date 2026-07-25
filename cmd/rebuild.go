@@ -131,6 +131,7 @@ var RebuildCmd = &cobra.Command{
 
 		fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
 		phelixgrpc.ReportEvent(appInfo.ID, name, "rebuild", true, "", 0, "", "")
+		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		return nil
 	},
 }
@@ -218,6 +219,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 			return err
 		}
 		fmt.Printf("%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
+		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		return nil
 	}
 
@@ -239,6 +241,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	}
 	fmt.Printf("%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
 		color.GreenString("✓"), color.CyanString("'%s'", name), rebuildReplicas)
+	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	return nil
 }
 

@@ -155,6 +155,7 @@ var BuildCmd = &cobra.Command{
 
 		// Report build event
 		phelixgrpc.ReportEvent(id, name, "build", true, "", 0, "classic", "")
+		phelixgrpc.SendVersionListForApp(id, name, currentDir)
 		return nil
 	},
 }

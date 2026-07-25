@@ -133,6 +133,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 		appList = append(appList, AppListItem{
 			ID:          id,
 			Name:        app.Name,
+			Directory:   app.Directory,
 			Status:      app.Status,
 			PID:         app.PID,
 			Port:        app.Port,
