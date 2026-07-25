@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -18,6 +19,8 @@ type DeployLock struct {
 
 // AcquireDeployLock sets op_lock on deploy state when no other operation holds
 // it. release must be called when the operation finishes (success or failure).
+// If a lock exists but its owning process is no longer running, the stale lock
+// is automatically cleared.
 func AcquireDeployLock(appName, operation string) (release func(), err error) {
 	state, err := Load(appName)
 	if err != nil {
@@ -28,8 +31,14 @@ func AcquireDeployLock(appName, operation string) (release func(), err error) {
 		}
 	}
 	if state.OpLock != nil {
-		return nil, fmt.Errorf("deploy: %q already has %q in progress since %s (pid %d)",
-			appName, state.OpLock.Operation, state.OpLock.StartedAt.Format(time.RFC3339), state.OpLock.PID)
+		// Check whether the lock-holder process is still alive.
+		if !isPIDAlive(state.OpLock.PID) {
+			// Stale lock — previous holder crashed or was killed. Clear it.
+			state.OpLock = nil
+		} else {
+			return nil, fmt.Errorf("deploy: %q already has %q in progress since %s (pid %d)",
+				appName, state.OpLock.Operation, state.OpLock.StartedAt.Format(time.RFC3339), state.OpLock.PID)
+		}
 	}
 	state.OpLock = &DeployLock{
 		Operation: operation,
@@ -48,6 +57,15 @@ func AcquireDeployLock(appName, operation string) (release func(), err error) {
 		_ = Store(s)
 	}
 	return release, nil
+}
+
+// isPIDAlive returns true if a process with the given PID exists and can
+// receive signals. Signal 0 checks existence without actually sending a signal.
+func isPIDAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return syscall.Kill(pid, 0) == nil
 }
 
 // TryLoadLock reads the lock field for tests.

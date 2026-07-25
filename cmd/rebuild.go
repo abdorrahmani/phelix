@@ -268,7 +268,11 @@ func stopExistingApp(appInfo *app.AppInfo) error {
 
 	fmt.Printf("  %s Stopping existing application...\n", color.BlueString("→"))
 	if err := app.Manager.StopApplication(appInfo.ID); err != nil {
-		return fmt.Errorf("%s Failed to stop application %s (ID: %s): %v", color.RedString("✗"), color.CyanString("'%s'", appInfo.Name), color.YellowString(appInfo.ID), err)
+		// Warn but don't block the rebuild — the old process may be
+		// unkillable (e.g. stuck in D-state I/O). The new build will
+		// fail with a clear port-conflict error if the old process still
+		// holds the port.
+		fmt.Printf("  %s Could not stop old process: %v\n", color.YellowString("⚠"), err)
 	}
 	return nil
 }
