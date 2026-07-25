@@ -40,4 +40,9 @@ service PhelixService {
 
   // ReportAutoRestart sends an auto-restart event from the daemon to the backend.
   rpc ReportAutoRestart(ReportAutoRestartRequest) returns (ReportAutoRestartResponse);
+
+  // ReportRollbackEvent sends a detailed rollback lifecycle event to the backend.
+  // Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
+  // emits its own event so the backend can reconstruct the full timeline.
+  rpc ReportRollbackEvent(RollbackLifecycleEvent) returns (EventResponse);
 }

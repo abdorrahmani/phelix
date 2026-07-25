@@ -62,3 +62,36 @@ func (c *Client) SendAppEvent(appID, appName, action string, success bool, errMs
 	event := NewApplicationEvent(appID, appName, action, success, errMsg, pid, mode, version)
 	c.SendEvent(event)
 }
+
+// SendRollbackEvent sends a detailed rollback lifecycle event to the backend.
+func (c *Client) SendRollbackEvent(event *pb.RollbackLifecycleEvent) {
+	if !c.IsConnected() {
+		grpcLog("[gRPC] Cannot send rollback event for app '%s': not connected", event.GetAppName())
+		return
+	}
+
+	grpcLog("[gRPC] Sending rollback event: step=%s app=%s success=%v", event.GetCurrentStep(), event.GetAppName(), event.GetSuccess())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	serverID := server.GetServerID()
+	authCtx, err := attachAuthMetadata(ctx, serverID)
+	if err != nil {
+		grpcLog("[gRPC] Failed to attach auth metadata for rollback event: %v", err)
+		return
+	}
+
+	resp, err := c.serviceClient.ReportRollbackEvent(authCtx, event)
+	if err != nil {
+		grpcLog("[gRPC] Failed to send rollback event: %v", err)
+		c.reconnectIfNeeded()
+		return
+	}
+
+	if !resp.Accepted {
+		grpcLog("[gRPC] Rollback event rejected: %s", resp.Message)
+	} else {
+		grpcLog("[gRPC] Rollback event sent: step=%s", event.GetCurrentStep())
+	}
+}

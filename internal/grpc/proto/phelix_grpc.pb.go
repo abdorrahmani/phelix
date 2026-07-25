@@ -28,6 +28,7 @@ const (
 	PhelixService_HealthRemoveEndpoint_FullMethodName = "/phelix.PhelixService/HealthRemoveEndpoint"
 	PhelixService_ReportHealthResult_FullMethodName   = "/phelix.PhelixService/ReportHealthResult"
 	PhelixService_ReportAutoRestart_FullMethodName    = "/phelix.PhelixService/ReportAutoRestart"
+	PhelixService_ReportRollbackEvent_FullMethodName  = "/phelix.PhelixService/ReportRollbackEvent"
 )
 
 // PhelixServiceClient is the client API for PhelixService service.
@@ -57,6 +58,10 @@ type PhelixServiceClient interface {
 	ReportHealthResult(ctx context.Context, in *ReportHealthResultRequest, opts ...grpc.CallOption) (*ReportHealthResultResponse, error)
 	// ReportAutoRestart sends an auto-restart event from the daemon to the backend.
 	ReportAutoRestart(ctx context.Context, in *ReportAutoRestartRequest, opts ...grpc.CallOption) (*ReportAutoRestartResponse, error)
+	// ReportRollbackEvent sends a detailed rollback lifecycle event to the backend.
+	// Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
+	// emits its own event so the backend can reconstruct the full timeline.
+	ReportRollbackEvent(ctx context.Context, in *RollbackLifecycleEvent, opts ...grpc.CallOption) (*EventResponse, error)
 }
 
 type phelixServiceClient struct {
@@ -163,6 +168,16 @@ func (c *phelixServiceClient) ReportAutoRestart(ctx context.Context, in *ReportA
 	return out, nil
 }
 
+func (c *phelixServiceClient) ReportRollbackEvent(ctx context.Context, in *RollbackLifecycleEvent, opts ...grpc.CallOption) (*EventResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EventResponse)
+	err := c.cc.Invoke(ctx, PhelixService_ReportRollbackEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PhelixServiceServer is the server API for PhelixService service.
 // All implementations must embed UnimplementedPhelixServiceServer
 // for forward compatibility.
@@ -190,6 +205,10 @@ type PhelixServiceServer interface {
 	ReportHealthResult(context.Context, *ReportHealthResultRequest) (*ReportHealthResultResponse, error)
 	// ReportAutoRestart sends an auto-restart event from the daemon to the backend.
 	ReportAutoRestart(context.Context, *ReportAutoRestartRequest) (*ReportAutoRestartResponse, error)
+	// ReportRollbackEvent sends a detailed rollback lifecycle event to the backend.
+	// Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
+	// emits its own event so the backend can reconstruct the full timeline.
+	ReportRollbackEvent(context.Context, *RollbackLifecycleEvent) (*EventResponse, error)
 	mustEmbedUnimplementedPhelixServiceServer()
 }
 
@@ -226,6 +245,9 @@ func (UnimplementedPhelixServiceServer) ReportHealthResult(context.Context, *Rep
 }
 func (UnimplementedPhelixServiceServer) ReportAutoRestart(context.Context, *ReportAutoRestartRequest) (*ReportAutoRestartResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportAutoRestart not implemented")
+}
+func (UnimplementedPhelixServiceServer) ReportRollbackEvent(context.Context, *RollbackLifecycleEvent) (*EventResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportRollbackEvent not implemented")
 }
 func (UnimplementedPhelixServiceServer) mustEmbedUnimplementedPhelixServiceServer() {}
 func (UnimplementedPhelixServiceServer) testEmbeddedByValue()                       {}
@@ -388,6 +410,24 @@ func _PhelixService_ReportAutoRestart_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PhelixService_ReportRollbackEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackLifecycleEvent)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).ReportRollbackEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_ReportRollbackEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).ReportRollbackEvent(ctx, req.(*RollbackLifecycleEvent))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PhelixService_ServiceDesc is the grpc.ServiceDesc for PhelixService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -422,6 +462,10 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportAutoRestart",
 			Handler:    _PhelixService_ReportAutoRestart_Handler,
+		},
+		{
+			MethodName: "ReportRollbackEvent",
+			Handler:    _PhelixService_ReportRollbackEvent_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -10,6 +10,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
@@ -41,12 +42,12 @@ var RollbackCmd = &cobra.Command{
 		policy := deploy.DefaultRetention{Max: 5}
 
 		if rollbackList {
-			return listRollbackVersions(name, policy)
+			return listRollbackVersions(name, policy, appInfo)
 		}
 
+		// Resolve target version.
 		target := 0
 		if rollbackTo != "" {
-			// Accept either a version ID (v3, 3) or a unique tag name.
 			target, err = deploy.ResolveVersionOrTag(name, rollbackTo)
 			if err != nil {
 				return fmt.Errorf("%s %v", color.RedString("✗"), err)
@@ -59,57 +60,115 @@ var RollbackCmd = &cobra.Command{
 		}
 
 		// Check whether a deploy state exists (blue-green / rolling).
-		// If not, fall back to the classic rollback path: stop → copy
-		// versioned binary → start → promote.
 		state, deployErr := deploy.Load(name)
 		if deployErr != nil || state == nil || state.Mode == "" {
 			return rollbackClassic(appInfo, name, target)
 		}
 
 		// --- Zero-downtime rollback path (blue-green / rolling) ---
-		socket, err := proxy.DefaultSocketPath()
-		if err != nil {
-			return fmt.Errorf("%s could not determine proxy socket path: %v", color.RedString("✗"), err)
-		}
-		fmt.Printf("  %s Ensuring proxy daemon is running...\n", color.BlueString("→"))
-		if err := proxy.EnsureDaemon(context.Background(), "", 5*time.Second); err != nil {
-			return fmt.Errorf("%s %v\n  Start it manually with: %s",
-				color.RedString("✗"), err, color.CyanString("phelix proxy"))
-		}
-		proxyClient := proxy.NewClient(socket)
-		if err := proxyClient.Ping(context.Background()); err != nil {
-			return fmt.Errorf("%s %v\n  Start it first with: %s",
-				color.RedString("✗"), err, color.CyanString("phelix proxy"))
-		}
-
-		publicPort := state.PublicPort
-
-		fmt.Printf("%s Rolling back %s to v%d (zero-downtime via %s)\n",
-			color.BlueString("→"), color.CyanString("'%s'", name), target,
-			color.MagentaString(string(state.Mode)))
-
-		err = deploy.ExecuteRollback(context.Background(), deploy.RollbackOptions{
-			AppName:        name,
-			AppID:          appInfo.ID,
-			PublicPort:     publicPort,
-			TargetVersion:  target,
-			Launcher:       deploy.DefaultLauncher,
-			ProxyClient:    proxyClient,
-			HealthProvider: deploy.DefaultHealthProvider(),
-			Logger:         &colorLogger{},
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", name), target)
-		phelixgrpc.ReportEvent(appInfo.ID, name, "rollback", true, "", 0, "", fmt.Sprintf("v%d", target))
-		return nil
+		return rollbackZeroDowntime(appInfo, name, target, state)
 	},
 }
 
 func init() {
 	RollbackCmd.Flags().StringVar(&rollbackTo, "to", "", "Roll back to a specific version (e.g. v3, 3, or a tag name)")
 	RollbackCmd.Flags().BoolVar(&rollbackList, "list", false, "List retained versions with metadata")
+}
+
+// rollbackZeroDowntime handles rollback through the blue-green or rolling
+// deploy path with full lifecycle event reporting.
+func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, state *deploy.DeployState) error {
+	totalStart := time.Now()
+	strategy := string(state.Mode)
+
+	// Resolve current version for the reporter.
+	currentVer, _ := deploy.CurrentVersion(appName)
+	currentVerStr := fmt.Sprintf("v%d", currentVer)
+	targetVerStr := fmt.Sprintf("v%d", target)
+
+	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, strategy, strategy, currentVerStr, targetVerStr, rollbackTo)
+
+	// Populate metadata the backend needs for context.
+	r.SetMetadata("public_port", fmt.Sprintf("%d", state.PublicPort))
+	r.SetMetadata("app_directory", appInfo.Directory)
+	r.SetMetadata("app_port", fmt.Sprintf("%d", appInfo.Port))
+	r.SetMetadata("app_status", appInfo.Status)
+	r.SetMetadata("app_pid", fmt.Sprintf("%d", appInfo.PID))
+	r.SetMetadata("app_language", appInfo.Language)
+	r.SetMetadata("active_slot", state.ActiveSlot)
+	r.SetMetadata("replicas_count", fmt.Sprintf("%d", len(state.Replicas)))
+	r.SetMetadata("grace_seconds", fmt.Sprintf("%d", state.GraceSeconds))
+	if state.LastRollback != nil {
+		r.SetMetadata("last_rollback_from", fmt.Sprintf("v%d", state.LastRollback.FromVersion))
+		r.SetMetadata("last_rollback_to", fmt.Sprintf("v%d", state.LastRollback.ToVersion))
+		r.SetMetadata("last_rollback_at", state.LastRollback.At.Format(time.RFC3339))
+	}
+
+	// Step: init
+	r.Emit(phelixgrpc.RollbackStepInit, true, fmt.Sprintf("rollback %s to %s via %s", appName, targetVerStr, strategy), time.Since(totalStart), "")
+
+	// Step: version_resolving
+	stepStart := time.Now()
+	// Version is already resolved by the caller, just emit the resolution.
+	r.Emit(phelixgrpc.RollbackStepVersionResolved, true, fmt.Sprintf("target resolved to %s", targetVerStr), time.Since(stepStart), "")
+
+	// Step: proxy_ensuring
+	stepStart = time.Now()
+	socket, err := proxy.DefaultSocketPath()
+	if err != nil {
+		r.Emit(phelixgrpc.RollbackStepProxyEnsuring, false, "failed to determine proxy socket path", time.Since(totalStart), err.Error())
+		return fmt.Errorf("%s could not determine proxy socket path: %v", color.RedString("✗"), err)
+	}
+	fmt.Printf("  %s Ensuring proxy daemon is running...\n", color.BlueString("→"))
+	if err := proxy.EnsureDaemon(context.Background(), "", 5*time.Second); err != nil {
+		r.Emit(phelixgrpc.RollbackStepProxyEnsuring, false, "failed to start proxy daemon", time.Since(totalStart), err.Error())
+		return fmt.Errorf("%s %v\n  Start it manually with: %s",
+			color.RedString("✗"), err, color.CyanString("phelix proxy"))
+	}
+	r.Emit(phelixgrpc.RollbackStepProxyEnsuring, true, "proxy daemon running", time.Since(stepStart), "")
+
+	// Step: proxy_ready
+	stepStart = time.Now()
+	proxyClient := proxy.NewClient(socket)
+	if err := proxyClient.Ping(context.Background()); err != nil {
+		r.Emit(phelixgrpc.RollbackStepProxyReady, false, "proxy not responding", time.Since(totalStart), err.Error())
+		return fmt.Errorf("%s %v\n  Start it first with: %s",
+			color.RedString("✗"), err, color.CyanString("phelix proxy"))
+	}
+	r.Emit(phelixgrpc.RollbackStepProxyReady, true, "proxy ping successful", time.Since(stepStart), "")
+
+	publicPort := state.PublicPort
+	fmt.Printf("%s Rolling back %s to v%d (zero-downtime via %s)\n",
+		color.BlueString("→"), color.CyanString("'%s'", appName), target,
+		color.MagentaString(string(state.Mode)))
+
+	// Execute the zero-downtime rollback.
+	// Note: ExecuteRollback internally handles lock acquisition, state loading,
+	// health checks, proxy switching, and graceful stop. The CLI emits
+	// pre/post events around the call; the deploy package emits its own
+	// internal log lines via the Logger.
+	stepStart = time.Now()
+	err = deploy.ExecuteRollback(context.Background(), deploy.RollbackOptions{
+		AppName:        appName,
+		AppID:          appInfo.ID,
+		PublicPort:     publicPort,
+		TargetVersion:  target,
+		Launcher:       deploy.DefaultLauncher,
+		ProxyClient:    proxyClient,
+		HealthProvider: deploy.DefaultHealthProvider(),
+		Logger:         &colorLogger{},
+	})
+	rollbackDuration := time.Since(stepStart)
+	r.SetMetadata("rollback_duration_ms", fmt.Sprintf("%d", rollbackDuration.Milliseconds()))
+	if err != nil {
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "zero-downtime rollback failed", time.Since(totalStart), err.Error())
+		return err
+	}
+
+	// Step: complete
+	fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", appName), target)
+	r.Emit(phelixgrpc.RollbackStepComplete, true, fmt.Sprintf("zero-downtime rollback %s -> %s complete", currentVerStr, targetVerStr), time.Since(totalStart), "")
+	return nil
 }
 
 // rollbackClassic handles rollback for apps built with the classic
@@ -121,53 +180,92 @@ func init() {
 // current symlink updated) after the start succeeds. If the start fails, the
 // version exists on disk but the active instance is untouched.
 func rollbackClassic(appInfo *app.AppInfo, appName string, target int) error {
-	// Resolve versioned binary path.
+	totalStart := time.Now()
+	strategy := "classic"
+
+	// Resolve current version for the reporter.
+	currentVer, _ := deploy.CurrentVersion(appName)
+	currentVerStr := fmt.Sprintf("v%d", currentVer)
+	targetVerStr := fmt.Sprintf("v%d", target)
+
+	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, strategy, strategy, currentVerStr, targetVerStr, rollbackTo)
+
+	// Populate metadata the backend needs for context.
+	r.SetMetadata("app_directory", appInfo.Directory)
+	r.SetMetadata("app_port", fmt.Sprintf("%d", appInfo.Port))
+	r.SetMetadata("app_status", appInfo.Status)
+	r.SetMetadata("app_pid", fmt.Sprintf("%d", appInfo.PID))
+	r.SetMetadata("app_language", appInfo.Language)
+
+	// Step: init
+	r.Emit(phelixgrpc.RollbackStepInit, true, fmt.Sprintf("rollback %s to %s via classic", appName, targetVerStr), time.Since(totalStart), "")
+
+	// Step: version_resolving
+	stepStart := time.Now()
 	binPath, _, err := deploy.VersionPaths(appName, target)
 	if err != nil {
+		r.Emit(phelixgrpc.RollbackStepVersionResolved, false, "failed to resolve version paths", time.Since(totalStart), err.Error())
 		return fmt.Errorf("%s %v", color.RedString("✗"), err)
 	}
+	r.SetMetadata("binary_path", binPath)
+	r.Emit(phelixgrpc.RollbackStepVersionResolved, true, fmt.Sprintf("binary path: %s", binPath), time.Since(stepStart), "")
 
 	fmt.Printf("%s Rolling back %s to v%d (classic stop→start)\n",
 		color.BlueString("→"), color.CyanString("'%s'", appName), target)
 
-	// Stop the current instance if running.
+	// Step: stopping_old
 	if appInfo.Status == "running" {
+		stepStart = time.Now()
 		fmt.Printf("  %s Stopping current instance (PID %d)...\n", color.BlueString("→"), appInfo.PID)
+		r.SetMetadata("stopped_pid", fmt.Sprintf("%d", appInfo.PID))
 		if err := app.Manager.StopApplication(appInfo.ID); err != nil {
 			// Non-fatal: the process may have already exited.
 			fmt.Printf("  %s Warning: stop returned: %v\n", color.YellowString("⚠"), err)
+			r.Emit(phelixgrpc.RollbackStepOldStopped, true, fmt.Sprintf("stop returned warning: %v", err), time.Since(stepStart), "")
+		} else {
+			r.Emit(phelixgrpc.RollbackStepOldStopped, true, fmt.Sprintf("stopped PID %d", appInfo.PID), time.Since(stepStart), "")
 		}
 	}
 
-	// Copy the versioned binary to the expected app location so
-	// app.Manager.StartApplication can find it.
+	// Step: copying_binary
+	stepStart = time.Now()
 	destBin := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
 	fmt.Printf("  %s Copying v%d binary to %s...\n", color.BlueString("→"), target, destBin)
+	r.SetMetadata("dest_binary", destBin)
 	if err := copyFileForRollback(binPath, destBin); err != nil {
+		r.Emit(phelixgrpc.RollbackStepBinaryCopied, false, "failed to copy versioned binary", time.Since(totalStart), err.Error())
 		return fmt.Errorf("%s failed to copy versioned binary: %v", color.RedString("✗"), err)
 	}
+	r.Emit(phelixgrpc.RollbackStepBinaryCopied, true, fmt.Sprintf("binary copied to %s", destBin), time.Since(stepStart), "")
 
-	// Determine the port: use the existing app port, or fall back to default.
+	// Determine the port.
 	port := appInfo.Port
 	if port == 0 {
 		port = defaultPort
 	}
+	r.SetMetadata("port", fmt.Sprintf("%d", port))
 
-	// Start the app with the rolled-back binary.
+	// Step: starting_new
+	stepStart = time.Now()
 	fmt.Printf("  %s Starting rolled-back binary on port %d...\n", color.BlueString("→"), port)
 	if err := app.Manager.StartApplication(appInfo.ID, port, appName); err != nil {
-		// Deploy failed. The version exists on disk but is_current was
-		// never set and PromoteVersion was never called, so the user can
-		// retry without a broken "current" pointer.
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to start rolled-back application", time.Since(totalStart), err.Error())
 		return fmt.Errorf("%s failed to start rolled-back application: %v", color.RedString("✗"), err)
 	}
+	r.Emit(phelixgrpc.RollbackStepNewStarted, true, fmt.Sprintf("started on port %d", port), time.Since(stepStart), "")
 
-	// Deploy succeeded — promote the version.
+	// Step: promoting_version
+	stepStart = time.Now()
 	if err := deploy.PromoteVersion(appName, target, "classic"); err != nil {
 		fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
+		r.Emit(phelixgrpc.RollbackStepVersionPromoted, false, "version promotion warning", time.Since(stepStart), err.Error())
+	} else {
+		r.Emit(phelixgrpc.RollbackStepVersionPromoted, true, fmt.Sprintf("version %s promoted", targetVerStr), time.Since(stepStart), "")
 	}
 
+	// Step: complete
 	fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", appName), target)
+	r.Emit(phelixgrpc.RollbackStepComplete, true, fmt.Sprintf("classic rollback %s -> %s complete", currentVerStr, targetVerStr), time.Since(totalStart), "")
 	return nil
 }
 
@@ -204,16 +302,46 @@ func copyFileForRollback(src, dst string) error {
 	return out.Close()
 }
 
-func listRollbackVersions(appName string, policy deploy.RetentionPolicy) error {
+func listRollbackVersions(appName string, policy deploy.RetentionPolicy, appInfo *app.AppInfo) error {
+	totalStart := time.Now()
+
+	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, "list", "list", "", "", rollbackTo)
+	r.SetMetadata("app_directory", appInfo.Directory)
+	r.SetMetadata("app_status", appInfo.Status)
+	r.SetMetadata("app_language", appInfo.Language)
+
 	vers, err := deploy.ListVersionsForDisplay(appName, policy)
 	if err != nil {
+		r.Emit(phelixgrpc.RollbackStepListVersions, false, "failed to list versions", time.Since(totalStart), err.Error())
 		return fmt.Errorf("%s %v", color.RedString("✗"), err)
 	}
+
+	// Step: init
+	r.Emit(phelixgrpc.RollbackStepInit, true, "listing retained versions", time.Since(totalStart), "")
+
 	if len(vers) == 0 {
 		fmt.Printf("  No versioned builds recorded for %s yet.\n", color.CyanString("'%s'", appName))
+		r.Emit(phelixgrpc.RollbackStepListVersions, true, "no versions found", time.Since(totalStart), "")
 		return nil
 	}
 
+	// Build version list for the event.
+	pbVersions := make([]*pb.RollbackVersionEntry, 0, len(vers))
+	for _, v := range vers {
+		pbVersions = append(pbVersions, &pb.RollbackVersionEntry{
+			Version:        int32(v.Version),
+			Tag:            v.Tag,
+			GitCommit:      v.GitCommit,
+			BuildTimestamp: v.BuiltAt.UnixMilli(),
+			BinarySize:     v.SizeBytes,
+			Current:        v.IsCurrent,
+			PruneSoon:      deploy.WouldPruneOnNextBuild(appName, v.Version, policy),
+		})
+	}
+	r.SetVersionList(pbVersions)
+	r.SetMetadata("version_count", fmt.Sprintf("%d", len(vers)))
+
+	// Render table.
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader([]string{"Version", "Tag", "Commit", "Built", "Size", "Current", "Prune soon"})
 	table.SetBorder(true)
@@ -248,5 +376,7 @@ func listRollbackVersions(appName string, policy deploy.RetentionPolicy) error {
 		})
 	}
 	table.Render()
+
+	r.Emit(phelixgrpc.RollbackStepListVersions, true, fmt.Sprintf("listed %d versions", len(vers)), time.Since(totalStart), "")
 	return nil
 }
