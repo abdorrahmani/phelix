@@ -8,25 +8,9 @@ import (
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
-// MonitorService Interfaces following Interface Segregation Principle
-type MonitorService interface {
-	StartMonitoring() error
-	StopMonitoring() error
-	SendCommand(cmd Command) error
-	SendMessage(msgType string, payload interface{}) error
-}
-
-type WebSocketConnector interface {
-	Connect(token, sessionID string) error
-	Close() error
-	WriteJSON(v interface{}) error
-	ReadJSON(v interface{}) error
-	WriteMessage(messageType int, data []byte) error
-	SetReadDeadline(t time.Time) error
-	SetWriteDeadline(t time.Time) error
-	SetPongHandler(h func(string) error)
-}
-
+// MetricsCollector collects the data the monitoring daemon reports to the
+// backend. Implementations are transport-agnostic — they know nothing about
+// how the data is sent (previously WebSocket, now gRPC).
 type MetricsCollector interface {
 	CollectAppMetrics() []AppMetrics
 	CollectAppDetails() []AppDetails
@@ -35,21 +19,25 @@ type MetricsCollector interface {
 	CollectSelfLogs() ([]logs.LogEntry, error)
 }
 
+// CommandExecutor executes a remote-control command received from the
+// backend (e.g. restart/stop a managed application). Transport-agnostic.
 type CommandExecutor interface {
 	Execute(cmd Command) error
 }
 
-// CommandPayload Core types
+// CommandPayload describes a remote command targeting a specific app.
 type CommandPayload struct {
 	Type    string `json:"type"`
 	AppName string `json:"appName"`
 }
 
+// Command is a remote-control command received from the backend.
 type Command struct {
 	Type    string         `json:"type"`
 	Payload CommandPayload `json:"payload"`
 }
 
+// AppMetrics carries a single application's current CPU/RAM usage.
 type AppMetrics struct {
 	AppID       string  `json:"appID"`
 	ServerID    string  `json:"server_id"`
@@ -57,6 +45,7 @@ type AppMetrics struct {
 	MemoryUsage uint64  `json:"memoryUsage"`
 }
 
+// AppDetails carries a single application's identity/status/lifecycle info.
 type AppDetails struct {
 	ID          string           `json:"id"`
 	ServerID    string           `json:"server_id"`
@@ -69,10 +58,4 @@ type AppDetails struct {
 	Uptime      string           `json:"uptime"`
 	CreatedAt   time.Time        `json:"createdAt"`
 	UpdatedAt   time.Time        `json:"updatedAt"`
-}
-
-type Session struct {
-	SessionID string    `json:"sessionID"`
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"expiresAt"`
 }

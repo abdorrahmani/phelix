@@ -19,7 +19,6 @@ type Config struct {
 type AppConfig struct {
 	Mode    string `yaml:"mode"`
 	API     string `yaml:"api"`
-	WSSUrl  string `yaml:"wssUrl"`
 	GRPCUrl string `yaml:"grpcUrl"`
 }
 

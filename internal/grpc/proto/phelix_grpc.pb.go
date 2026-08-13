@@ -29,6 +29,7 @@ const (
 	PhelixService_ReportHealthResult_FullMethodName   = "/phelix.PhelixService/ReportHealthResult"
 	PhelixService_ReportAutoRestart_FullMethodName    = "/phelix.PhelixService/ReportAutoRestart"
 	PhelixService_ReportRollbackEvent_FullMethodName  = "/phelix.PhelixService/ReportRollbackEvent"
+	PhelixService_MonitorStream_FullMethodName        = "/phelix.PhelixService/MonitorStream"
 )
 
 // PhelixServiceClient is the client API for PhelixService service.
@@ -62,6 +63,15 @@ type PhelixServiceClient interface {
 	// Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
 	// emits its own event so the backend can reconstruct the full timeline.
 	ReportRollbackEvent(ctx context.Context, in *RollbackLifecycleEvent, opts ...grpc.CallOption) (*EventResponse, error)
+	// MonitorStream is the persistent, bidirectional monitoring channel that
+	// replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
+	// stream once and keeps it open for the lifetime of the process, pushing a
+	// continuous flow of MonitorEvent messages (server info, server metrics,
+	// per-app resource usage, per-app details, logs) roughly every 2 seconds.
+	// The backend may push MonitorControl messages back at any time (remote
+	// commands, keepalive pings). The CLI never opens a new connection per
+	// metric update — only a new stream after a disconnect/reconnect.
+	MonitorStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MonitorEvent, MonitorControl], error)
 }
 
 type phelixServiceClient struct {
@@ -178,6 +188,19 @@ func (c *phelixServiceClient) ReportRollbackEvent(ctx context.Context, in *Rollb
 	return out, nil
 }
 
+func (c *phelixServiceClient) MonitorStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MonitorEvent, MonitorControl], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &PhelixService_ServiceDesc.Streams[2], PhelixService_MonitorStream_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[MonitorEvent, MonitorControl]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type PhelixService_MonitorStreamClient = grpc.BidiStreamingClient[MonitorEvent, MonitorControl]
+
 // PhelixServiceServer is the server API for PhelixService service.
 // All implementations must embed UnimplementedPhelixServiceServer
 // for forward compatibility.
@@ -209,6 +232,15 @@ type PhelixServiceServer interface {
 	// Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
 	// emits its own event so the backend can reconstruct the full timeline.
 	ReportRollbackEvent(context.Context, *RollbackLifecycleEvent) (*EventResponse, error)
+	// MonitorStream is the persistent, bidirectional monitoring channel that
+	// replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
+	// stream once and keeps it open for the lifetime of the process, pushing a
+	// continuous flow of MonitorEvent messages (server info, server metrics,
+	// per-app resource usage, per-app details, logs) roughly every 2 seconds.
+	// The backend may push MonitorControl messages back at any time (remote
+	// commands, keepalive pings). The CLI never opens a new connection per
+	// metric update — only a new stream after a disconnect/reconnect.
+	MonitorStream(grpc.BidiStreamingServer[MonitorEvent, MonitorControl]) error
 	mustEmbedUnimplementedPhelixServiceServer()
 }
 
@@ -248,6 +280,9 @@ func (UnimplementedPhelixServiceServer) ReportAutoRestart(context.Context, *Repo
 }
 func (UnimplementedPhelixServiceServer) ReportRollbackEvent(context.Context, *RollbackLifecycleEvent) (*EventResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportRollbackEvent not implemented")
+}
+func (UnimplementedPhelixServiceServer) MonitorStream(grpc.BidiStreamingServer[MonitorEvent, MonitorControl]) error {
+	return status.Error(codes.Unimplemented, "method MonitorStream not implemented")
 }
 func (UnimplementedPhelixServiceServer) mustEmbedUnimplementedPhelixServiceServer() {}
 func (UnimplementedPhelixServiceServer) testEmbeddedByValue()                       {}
@@ -428,6 +463,13 @@ func _PhelixService_ReportRollbackEvent_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PhelixService_MonitorStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(PhelixServiceServer).MonitorStream(&grpc.GenericServerStream[MonitorEvent, MonitorControl]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type PhelixService_MonitorStreamServer = grpc.BidiStreamingServer[MonitorEvent, MonitorControl]
+
 // PhelixService_ServiceDesc is the grpc.ServiceDesc for PhelixService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -478,6 +520,12 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "AgentStream",
 			Handler:       _PhelixService_AgentStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "MonitorStream",
+			Handler:       _PhelixService_MonitorStream_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

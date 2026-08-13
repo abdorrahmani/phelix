@@ -16,7 +16,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - Cross-server status checking
 - Authentication and security
 - Application lifecycle management
-- WebSocket-based monitoring service
+- gRPC-based monitoring service (persistent, TLS-secured, auto-reconnecting)
 - **Encrypted environment variable management** (AES-256-GCM)
 - **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
 - **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
@@ -69,8 +69,8 @@ curl -fsSL https://phelix.anophel.com/install.sh | bash
 The installer **detects your operating system and architecture**, downloads the
 matching prebuilt binary (so you don't need Go/Rust preinstalled just to install
 Phelix), installs it to `/usr/local/bin/phelix`, and — on Linux — registers and
-enables a `phelix.service` **systemd** unit that starts the background WebSocket
-monitor and all managed apps on boot.
+enables a `phelix.service` **systemd** unit that starts the background gRPC
+monitor daemon and all managed apps on boot.
 
 ```bash
 phelix version              # verify the install
@@ -498,16 +498,17 @@ Known platforms: `linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `w
 
 ```bash
 phelix version [--short | --verbose]
-phelix monitor      # start the background WebSocket monitoring service
+phelix monitor      # start the background gRPC monitoring daemon
 ```
 
 ## Multi-Server Monitoring
 
 #### `phelix monitor`
-Starts the WebSocket monitoring service that:
+Starts the background gRPC monitoring daemon that:
+- Opens a single, long-lived, TLS-secured gRPC stream to the Phelix backend
 - Monitors application status across all servers
-- Sends application information to the central server
-- Automatically reconnects if the connection is lost
+- Sends application information, resource metrics, and logs to the central server roughly every 2 seconds
+- Automatically reconnects with exponential backoff if the connection is lost
 - Provides real-time updates for all managed applications
 
 It's normally started by the systemd unit created by `setup.sh`/`install.sh`, not run manually.

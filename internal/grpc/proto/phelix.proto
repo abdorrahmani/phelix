@@ -9,6 +9,7 @@ import "internal/grpc/proto/rollback.proto";
 import "internal/grpc/proto/metadata.proto";
 import "internal/grpc/proto/envelope.proto";
 import "internal/grpc/proto/health.proto";
+import "internal/grpc/proto/monitoring.proto";
 
 // PhelixService is the main service for CLI-to-backend communication.
 service PhelixService {
@@ -46,4 +47,14 @@ service PhelixService {
   // Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
   // emits its own event so the backend can reconstruct the full timeline.
   rpc ReportRollbackEvent(RollbackLifecycleEvent) returns (EventResponse);
+
+  // MonitorStream is the persistent, bidirectional monitoring channel that
+  // replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
+  // stream once and keeps it open for the lifetime of the process, pushing a
+  // continuous flow of MonitorEvent messages (server info, server metrics,
+  // per-app resource usage, per-app details, logs) roughly every 2 seconds.
+  // The backend may push MonitorControl messages back at any time (remote
+  // commands, keepalive pings). The CLI never opens a new connection per
+  // metric update — only a new stream after a disconnect/reconnect.
+  rpc MonitorStream(stream MonitorEvent) returns (stream MonitorControl);
 }

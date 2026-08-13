@@ -13,7 +13,7 @@
 #      the binary; skips gracefully when none is present.
 #   4. Installs it to <install-dir>/phelix (default /usr/local/bin).
 #   5. On Linux: registers + enables a phelix.service systemd unit that starts
-#      the background WebSocket monitor and all managed apps on boot.
+#      the background gRPC monitor daemon and all managed apps on boot.
 #      On macOS: installs the binary only (no systemd).
 #
 # This is the end-user counterpart of the in-repo setup.sh, which builds from
@@ -244,7 +244,7 @@ STARTUP
     local svc_user="${SUDO_USER:-${USER}}"
     ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<UNIT
 [Unit]
-Description=Phelix WebSocket Monitoring Service
+Description=Phelix gRPC Monitoring Service
 After=network.target
 
 [Service]

@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+import "internal/grpc/proto/ping.proto";
+
+// ============================================================================
+// Monitoring data messages
+//
+// These messages mirror the data that was previously transmitted through the
+// WebSocket monitor (internal/monitor). Field names and semantics match the
+// original JSON payloads 1:1 so the backend can preserve existing behavior
+// while switching transport.
+// ============================================================================
+
+// ServerInfo mirrors server.Info. Sent once when the monitor stream is
+// (re)established, exactly like the old "servers" WebSocket message.
+message ServerInfo {
+  string id = 1;
+  string hostname = 2;
+  string ip_v4 = 3;
+  string ip_v6 = 4;
+  string os_type = 5;
+  string os_full = 6;
+  string cpu_info = 7;
+  repeated string network_ifaces = 8;
+  int64 total_memory = 9;
+  int32 total_cpu_cores = 10;
+  int64 total_storage = 11;
+  string uptime = 12;
+  int64 last_reboot = 13;
+  string status = 14;
+  int64 created_at = 15;
+  string region = 16;
+  string architecture = 17;
+  string kernel_version = 18;
+  int64 swap_total = 19;
+}
+
+// ServerMetrics mirrors server.Metrics. Sent on every monitoring tick
+// (~2s), exactly like the old "server_metrics" WebSocket message.
+message ServerMetrics {
+  string server_id = 1;
+  uint64 used_memory = 2;
+  uint64 free_memory = 3;
+  double memory_percent = 4;
+  double cpu_usage_percent = 5;
+  uint64 used_storage = 6;
+  uint64 free_storage = 7;
+  double storage_percent = 8;
+  int64 timestamp = 9;
+  uint64 network_in = 10;
+  uint64 network_out = 11;
+  double load_avg_1min = 12;
+  double load_avg_5min = 13;
+  double load_avg_15min = 14;
+  uint64 swap_used = 15;
+  uint64 swap_free = 16;
+  double swap_percent = 17;
+  uint32 running_processes = 18;
+}
+
+// AppResourceMetrics mirrors monitor.AppMetrics (per-app CPU/RAM usage).
+// Sent on every monitoring tick, exactly like the old "metrics" WebSocket
+// message.
+message AppResourceMetrics {
+  string app_id = 1;
+  string server_id = 2;
+  double cpu_usage = 3;
+  uint64 memory_usage = 4;
+}
+
+// ApplicationInfo mirrors monitor.AppDetails. Sent on every monitoring tick,
+// exactly like the old "apps" WebSocket message.
+message ApplicationInfo {
+  string id = 1;
+  string server_id = 2;
+  string name = 3;
+  string status = 4;
+  string language = 5;
+  int32 port = 6;
+  string build_status = 7;
+  int32 pid = 8;
+  string uptime = 9;
+  int64 created_at = 10;
+  int64 updated_at = 11;
+}
+
+// LogSource distinguishes application logs from the CLI's own daemon logs,
+// matching the old "app_logs" vs "self_logs" WebSocket message types.
+enum LogSource {
+  LOG_SOURCE_UNSPECIFIED = 0;
+  LOG_SOURCE_APPLICATION = 1;
+  LOG_SOURCE_SELF = 2;
+}
+
+// MonitorLogEntry mirrors logs.LogEntry. Sent on every monitoring tick for
+// both application and self logs.
+message MonitorLogEntry {
+  string id = 1;
+  string server_id = 2;
+  string app_id = 3;
+  string log = 4;
+  int64 date = 5;
+  string level = 6;
+  LogSource source = 7;
+}
+
+// MonitorCommandRequest mirrors the old "command" WebSocket message payload
+// (monitor.CommandPayload): a remote-control instruction from the backend,
+// e.g. restart/stop/start a specific managed application.
+message MonitorCommandRequest {
+  string request_id = 1;
+  string type = 2;
+  string app_name = 3;
+}
+
+// MonitorCommandResult mirrors the old "command_response" WebSocket message
+// sent back to the backend after a command finishes executing.
+message MonitorCommandResult {
+  string request_id = 1;
+  string command = 2;
+  string app_name = 3;
+  string status = 4;
+  string error = 5;
+  int64 timestamp = 6;
+}
+
+// MonitorEvent is a single message sent from the CLI monitor daemon to the
+// backend over the long-lived MonitorStream. Exactly one payload is set per
+// event, mirroring the "type"/"payload" envelope used by the old WebSocket
+// protocol ("servers", "server_metrics", "metrics", "apps", "app_logs",
+// "self_logs", "command_response", "pong").
+//
+// The oneof is intentionally extensible: new monitoring signals can be added
+// as additional fields without breaking existing consumers.
+message MonitorEvent {
+  string server_id = 1;
+  int64 timestamp = 2;
+
+  oneof payload {
+    ServerInfo server_info = 10;
+    ServerMetrics server_metrics = 11;
+    AppResourceMetrics app_metrics = 12;
+    ApplicationInfo app_info = 13;
+    MonitorLogEntry log_entry = 14;
+    MonitorCommandResult command_result = 15;
+    Pong pong = 16;
+  }
+}
+
+// MonitorControl is a single message sent from the backend to the CLI
+// monitor daemon over the same long-lived MonitorStream. It mirrors the old
+// "command" and "ping" WebSocket message types sent by the backend.
+message MonitorControl {
+  oneof payload {
+    MonitorCommandRequest command = 1;
+    Ping ping = 2;
+  }
+}

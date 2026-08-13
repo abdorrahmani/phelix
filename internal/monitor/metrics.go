@@ -12,6 +12,13 @@ import (
 // appMetricsCollector Metrics collector implementation
 type appMetricsCollector struct{}
 
+// NewMetricsCollector returns the default MetricsCollector implementation,
+// backed by the app/server/logs packages. It is transport-agnostic and can
+// be reused by any monitoring transport (gRPC today, previously WebSocket).
+func NewMetricsCollector() MetricsCollector {
+	return &appMetricsCollector{}
+}
+
 func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 	var metrics []AppMetrics
 	apps := app.Manager.ListApplications()

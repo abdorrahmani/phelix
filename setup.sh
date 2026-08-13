@@ -34,7 +34,7 @@ sudo chmod +x /usr/local/bin/phelix-startup.sh
 echo "Creating systemd service..."
 sudo tee /etc/systemd/system/phelix.service > /dev/null << EOL
 [Unit]
-Description=Phelix WebSocket Monitoring Service
+Description=Phelix gRPC Monitoring Service
 After=network.target
 
 [Service]
@@ -59,6 +59,6 @@ sudo systemctl enable phelix.service
 sudo systemctl restart phelix.service
 
 echo "✅ Installation completed! You can now run 'phelix --help'."
-echo "The WebSocket monitoring service is running in the background."
+echo "The gRPC monitoring daemon is running in the background."
 echo "To check service status: sudo systemctl status phelix"
 echo "To view logs: sudo journalctl -u phelix -f"

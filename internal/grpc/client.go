@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/server"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 )
@@ -42,6 +44,25 @@ func NewClient() *Client {
 		reconnectCh: make(chan struct{}, 1),
 		reconnect:   newReconnectState(),
 	}
+}
+
+// transportCredentials selects the gRPC transport security for the
+// configured backend. Production traffic always uses TLS; only explicit
+// "dev" mode (see config.yml) is allowed to fall back to plaintext, and only
+// for local development against a backend that doesn't terminate TLS.
+//
+// This is intentionally NOT configurable from the production config file —
+// there is no insecure fallback for the production backend.
+func transportCredentials() credentials.TransportCredentials {
+	cfg := config.Get()
+	if cfg != nil && cfg.App.Mode == "dev" {
+		grpcLog("[gRPC] dev mode: using insecure (plaintext) transport credentials")
+		return insecure.NewCredentials()
+	}
+	// #nosec G402 -- default TLS config: verifies the server certificate
+	// against the system trust store, which is what we want for the
+	// production backend (no InsecureSkipVerify, no custom CA override).
+	return credentials.NewTLS(&tls.Config{})
 }
 
 // Connect establishes the gRPC connection to the backend.
@@ -76,7 +97,7 @@ func (c *Client) Connect() error {
 	conn, err := grpc.DialContext(
 		authCtx,
 		cfg.App.GRPCUrl,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(transportCredentials()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                keepaliveInterval,
 			Timeout:             keepaliveTimeout,
@@ -119,6 +140,10 @@ func (c *Client) Start() {
 
 	// Start agent stream for backend-to-CLI commands
 	go c.startAgentStream()
+
+	// Start the persistent monitoring stream (replaces the legacy
+	// WebSocket monitor). Runs for the lifetime of the client.
+	c.StartMonitorStream()
 }
 
 // Close gracefully shuts down the gRPC client.
@@ -136,6 +161,9 @@ func (c *Client) Close() {
 
 	// Stop agent stream
 	c.stopAgentStream()
+
+	// Stop the monitoring stream
+	stopMonitorStream()
 
 	if c.conn != nil {
 		if err := c.conn.Close(); err != nil {

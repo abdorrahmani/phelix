@@ -15,7 +15,7 @@ import (
 const DefaultGracePeriod = 30 * time.Second
 
 // Logger is the minimal logging contract the deploy flow needs. Implementations
-// forward to fmt.Println / color / the monitor websocket as appropriate.
+// forward to fmt.Println / color / the gRPC monitor stream as appropriate.
 type Logger interface {
 	Stepf(format string, args ...any)    // normal progress ("→ ...")
 	Infof(format string, args ...any)    // informational

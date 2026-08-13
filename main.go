@@ -14,16 +14,14 @@ import (
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
-	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/version"
 	"github.com/spf13/cobra"
 )
 
 var (
-	monitorService monitor.MonitorService
-	healthDaemon   *health.GlobalDaemon
-	done           = make(chan struct{})
-	isMonitorMode  bool
+	healthDaemon  *health.GlobalDaemon
+	done          = make(chan struct{})
+	isMonitorMode bool
 )
 
 func main() {
@@ -32,8 +30,6 @@ func main() {
 		log.Fatal(err)
 	}
 	isMonitorMode = len(os.Args) > 1 && os.Args[1] == "monitor"
-
-	monitorService = monitor.NewMonitorService()
 
 	healthDaemon = health.InitGlobalDaemon()
 
@@ -116,30 +112,7 @@ func main() {
 				}
 			}()
 
-			go func() {
-				for {
-					select {
-					case <-done:
-						return
-					default:
-						session, err := auth.GetValidSession()
-						if err != nil {
-							log.Printf("[Monitor] No valid session found: %v", err)
-							time.Sleep(5 * time.Second)
-							continue
-						}
-
-						log.Printf("[Monitor] Starting monitoring with session ID: %s", session.SessionID)
-						if err := monitorService.StartMonitoring(); err != nil {
-							log.Printf("[Monitor] Error starting monitoring: %v", err)
-							time.Sleep(5 * time.Second)
-							continue
-						}
-
-						time.Sleep(24 * time.Hour)
-					}
-				}
-			}()
+			log.Printf("[Monitor] gRPC monitor daemon running")
 
 			<-done
 		},

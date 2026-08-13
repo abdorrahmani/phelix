@@ -13,6 +13,13 @@ import (
 // Command executor implementation
 type appCommandExecutor struct{}
 
+// NewCommandExecutor returns the default CommandExecutor implementation. It
+// is transport-agnostic and can be reused by any monitoring transport (gRPC
+// today, previously WebSocket).
+func NewCommandExecutor() CommandExecutor {
+	return &appCommandExecutor{}
+}
+
 func (e *appCommandExecutor) Execute(cmd Command) error {
 	apps := app.Manager.ListApplications()
 	var targetAppID string
