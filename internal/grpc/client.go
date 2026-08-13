@@ -35,6 +35,7 @@ type Client struct {
 	reconnect     *reconnectState
 	connected     bool
 	cancel        context.CancelFunc
+	unreadySince  time.Time
 }
 
 // NewClient creates a new gRPC client instance.
@@ -110,10 +111,18 @@ func (c *Client) Connect() error {
 	}
 
 	c.mu.Lock()
+	oldConn := c.conn
 	c.conn = conn
 	c.serviceClient = pb.NewPhelixServiceClient(conn)
 	c.connected = true
+	c.unreadySince = time.Time{}
 	c.mu.Unlock()
+
+	// A full redial replaces the ClientConn outright. Close the previous one
+	// (if any) so its background transport/backoff goroutines don't leak.
+	if oldConn != nil && oldConn != conn {
+		_ = oldConn.Close()
+	}
 
 	grpcLog("[gRPC] Connected to %s", cfg.App.GRPCUrl)
 	return nil
@@ -189,27 +198,74 @@ func (c *Client) GetServiceClient() pb.PhelixServiceClient {
 	return c.serviceClient
 }
 
-// reconnectIfNeeded checks connection state and triggers reconnect if needed.
+// staleConnectionThreshold is how long the connection can sit in a
+// non-Ready state (despite being nudged) before we give up waiting on
+// gRPC's own transport-level recovery and force a brand-new dial. It is a
+// var (not a const) so tests can shorten it instead of waiting on the real
+// threshold.
+var staleConnectionThreshold = 45 * time.Second
+
+// reconnectIfNeeded checks connection state and triggers reconnect if
+// needed. It handles two distinct failure modes:
+//
+//  1. The ClientConn is gone/shut down entirely -> full redial.
+//  2. The ClientConn exists but isn't Ready (TransientFailure, or Idle —
+//     which gRPC only exits via an explicit Connect() call or a new RPC).
+//     We nudge it via conn.Connect() first, which is cheap and reuses all
+//     existing backoff state. If that doesn't bring it back to Ready
+//     within staleConnectionThreshold, we escalate to a full redial.
 func (c *Client) reconnectIfNeeded() {
-	c.mu.RLock()
+	c.mu.Lock()
 	conn := c.conn
-	c.mu.RUnlock()
 
 	if conn == nil {
+		c.mu.Unlock()
 		c.scheduleReconnect()
 		return
 	}
 
 	state := conn.GetState()
-	if state == connectivity.Shutdown || state == connectivity.TransientFailure {
+	if state == connectivity.Ready {
+		c.unreadySince = time.Time{}
+		c.mu.Unlock()
+		return
+	}
+
+	if c.unreadySince.IsZero() {
+		c.unreadySince = time.Now()
+	}
+	stuckFor := time.Since(c.unreadySince)
+	c.mu.Unlock()
+
+	if state == connectivity.Shutdown {
 		grpcLog("[gRPC] Connection state: %v, scheduling reconnect", state)
+		c.scheduleReconnect()
+		return
+	}
+
+	// TransientFailure and Idle both mean "not currently connected", but
+	// gRPC's own background reconnection may be paused (e.g. an idle
+	// ClientConn only resumes connecting when Connect() or an RPC is
+	// invoked). Nudge it directly rather than waiting indefinitely.
+	grpcLog("[gRPC] Connection state: %v (unready for %s), nudging", state, stuckFor.Round(time.Second))
+	conn.Connect()
+
+	// If nudging repeatedly hasn't helped within the threshold, the
+	// ClientConn itself may be wedged. Escalate to a full redial.
+	if stuckFor >= staleConnectionThreshold {
+		grpcLog("[gRPC] Connection stuck in %v for %s, forcing full reconnect", state, stuckFor.Round(time.Second))
+		c.mu.Lock()
+		c.unreadySince = time.Time{}
+		c.mu.Unlock()
 		c.scheduleReconnect()
 	}
 }
 
-// monitorConnection periodically checks the connection health.
+// monitorConnection periodically checks the connection health. The interval
+// is short so a stuck/idle connection is detected and nudged quickly rather
+// than silently waiting on gRPC's own transport-level recovery.
 func (c *Client) monitorConnection() {
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {

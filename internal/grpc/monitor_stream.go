@@ -104,6 +104,7 @@ func (c *Client) monitorStreamLoop() {
 
 		if err := c.runMonitorStream(); err != nil {
 			grpcLog("[gRPC Monitor] stream disconnected: %v", err)
+			c.reconnectIfNeeded()
 		}
 
 		select {

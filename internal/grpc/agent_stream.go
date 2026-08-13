@@ -38,6 +38,7 @@ func (c *Client) startAgentStream() {
 
 		if err := c.openAgentStream(); err != nil {
 			grpcLog("[gRPC Agent] Stream error: %v, reconnecting...", err)
+			c.reconnectIfNeeded()
 			time.Sleep(2 * time.Second)
 			continue
 		}
