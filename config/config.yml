@@ -1,4 +1,4 @@
 app:
-  mode: "dev" #production
-  api: "http://localhost/api/v1" # https://gophel.anophel.com/api/v1
-  wssUrl : "wss://localhost/api/v1" # "wss://gophel.anophel.com/api/v1"
+  mode: "production" #production
+  api: "https://phelix.anophel.com/api/v1" # https://phelix.anophel.com/api/v1
+  grpcUrl: "phelix.anophel.com:443" # "phelix.anophel.com:443"
