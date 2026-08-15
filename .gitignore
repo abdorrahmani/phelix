@@ -28,3 +28,10 @@ go.work.sum
 # env file
 .env
 
+# Compiled project binaries
+/phelix
+/app_1
+
+# Claude Code local settings
+/.claude/settings.local.json
+
