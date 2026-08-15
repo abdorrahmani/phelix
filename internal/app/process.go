@@ -73,6 +73,9 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	app.LogFile = logFile
 	app.BuildStatus = "built"
 	app.UpdatedAt = time.Now()
+	// The app was intentionally started; it should be restored the next time
+	// the monitor daemon launches (e.g. after a machine reboot).
+	app.AutoStart = true
 
 	return nil
 }

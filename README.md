@@ -69,18 +69,15 @@ curl -fsSL https://phelix.anophel.com/install.sh | bash
 The installer **detects your operating system and architecture**, downloads the
 matching prebuilt binary (so you don't need Go/Rust preinstalled just to install
 Phelix), installs it to `/usr/local/bin/phelix`, and — on Linux — registers and
-enables a `phelix.service` **systemd** unit that starts the background gRPC
-monitor daemon and all managed apps on boot.
+enables a `phelix.service` **systemd** unit that runs `phelix monitor` directly.
+The monitor daemon runs in the foreground: it restores the managed apps that
+were previously running and keeps a persistent TLS-secured gRPC connection to the
+backend, reconnecting with exponential backoff.
 
 ```bash
 phelix version              # verify the install
 sudo systemctl status phelix   # Linux: monitor service running?
 ```
-
-> The in-repo `setup.sh` is the developer-facing variant of the installer: it
-> builds from source with `go build`, installs the binary, and creates the same
-> systemd unit. The hosted `install.sh` is the end-user version that downloads a
-> prebuilt binary per-OS instead of requiring a local Go toolchain.
 
 ### Runtime dependencies
 
@@ -498,20 +495,33 @@ Known platforms: `linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `w
 
 ```bash
 phelix version [--short | --verbose]
-phelix monitor      # start the background gRPC monitoring daemon
+phelix monitor      # start the long-running gRPC monitoring daemon (foreground)
 ```
 
 ## Multi-Server Monitoring
 
 #### `phelix monitor`
-Starts the background gRPC monitoring daemon that:
+Starts the long-running gRPC monitoring daemon that:
+- Restores managed applications that were previously running (auto-start apps)
 - Opens a single, long-lived, TLS-secured gRPC stream to the Phelix backend
 - Monitors application status across all servers
 - Sends application information, resource metrics, and logs to the central server roughly every 2 seconds
 - Automatically reconnects with exponential backoff if the connection is lost
 - Provides real-time updates for all managed applications
 
-It's normally started by the systemd unit created by `setup.sh`/`install.sh`, not run manually.
+It runs in the **foreground** and stays attached to the terminal when invoked
+manually. On Linux it is normally started by the systemd unit created by
+`setup.sh`/`install.sh`, which supervises `phelix monitor` directly
+(`/usr/local/bin/phelix monitor` as `ExecStart`) — there is no backgrounding
+shell wrapper. Manage it with:
+
+```bash
+sudo systemctl start phelix
+sudo systemctl restart phelix
+sudo systemctl stop phelix
+sudo systemctl status phelix
+sudo journalctl -u phelix -f
+```
 
 #### Server management
 Phelix can monitor multiple servers simultaneously. Each server running Phelix will:
@@ -595,4 +605,4 @@ Retention: the last **5** versions are kept by default (configurable per plan); 
 
 - Documentation: [phelix.anophel.com/docs](https://phelix.anophel.com/docs)
 
-oject is licensed under the MIT License — see the `LICENSE` file for details.
+object is licensed under the MIT License — see the `LICENSE` file for details.

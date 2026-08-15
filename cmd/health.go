@@ -641,11 +641,13 @@ func runHealthDaemonForeground() error {
 	c := grpcClient.GetClient()
 	go c.Start()
 
-	// Wait for connection to establish
+	// Wait for the connection to establish before deciding whether backend
+	// reporting is available.
 	time.Sleep(2 * time.Second)
 
 	if c.IsConnected() {
-		reporter := grpcClient.NewGrpcHealthReporter(c.GetServiceClient())
+
+		reporter := grpcClient.NewGrpcHealthReporter(c)
 		globalDaemon.SetReporter(reporter)
 		fmt.Println("  Backend reporting: gRPC")
 	} else {

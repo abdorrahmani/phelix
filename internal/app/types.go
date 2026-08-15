@@ -16,6 +16,7 @@ type AppManagerInterface interface {
 	SaveState() error
 	LoadState() error
 	RemoveApplication(id string) error
+	RestoreAutoStartApps() (int, error)
 }
 
 // AppInfo represents the state of a single application
@@ -36,6 +37,11 @@ type AppInfo struct {
 	Language string
 	// NoUpload indicates whether this app should be uploaded/shared with the server
 	NoUpload bool
+	// AutoStart indicates the app was intentionally started and should be
+	// restored the next time the phelix monitor daemon launches (e.g. after a
+	// machine reboot). Set to true whenever the app is started, cleared on an
+	// intentional StopApplication. Persisted in apps.json as "auto_start".
+	AutoStart bool
 }
 
 // AppStatus represents the current status of an application

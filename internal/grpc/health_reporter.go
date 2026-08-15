@@ -12,16 +12,27 @@ import (
 
 // GrpcHealthReporter implements health.HealthReporter and sends health data via gRPC.
 type GrpcHealthReporter struct {
-	client pb.PhelixServiceClient
+	client *Client
 }
 
-// NewGrpcHealthReporter creates a reporter with the given gRPC client.
-func NewGrpcHealthReporter(client pb.PhelixServiceClient) *GrpcHealthReporter {
+// NewGrpcHealthReporter creates a reporter backed by the given gRPC client. The
+// underlying PhelixServiceClient is resolved on every send rather than captured
+// once: the Client replaces its connection on each reconnect, so holding on to
+// a single stub would silently stop reporting after the first redial.
+func NewGrpcHealthReporter(client *Client) *GrpcHealthReporter {
 	return &GrpcHealthReporter{client: client}
 }
 
 // SendHealthCheckResult sends a health check result to the backend via gRPC.
 func (r *GrpcHealthReporter) SendHealthCheckResult(result *health.HealthCheckResult, appID string, appName string) error {
+	if r.client == nil {
+		return nil
+	}
+	serviceClient := r.client.GetServiceClient()
+	if !r.client.IsConnected() || serviceClient == nil {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -45,7 +56,7 @@ func (r *GrpcHealthReporter) SendHealthCheckResult(result *health.HealthCheckRes
 		errMsg = *result.Error
 	}
 
-	resp, err := r.client.ReportHealthResult(authCtx, &pb.ReportHealthResultRequest{
+	resp, err := serviceClient.ReportHealthResult(authCtx, &pb.ReportHealthResultRequest{
 		AppId:        appID,
 		AppName:      appName,
 		EndpointName: result.EndpointName,
@@ -68,6 +79,14 @@ func (r *GrpcHealthReporter) SendHealthCheckResult(result *health.HealthCheckRes
 
 // SendAutoRestartEvent sends an auto-restart event to the backend via gRPC.
 func (r *GrpcHealthReporter) SendAutoRestartEvent(record *health.AutoRestartRecord) error {
+	if r.client == nil {
+		return nil
+	}
+	serviceClient := r.client.GetServiceClient()
+	if !r.client.IsConnected() || serviceClient == nil {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -78,7 +97,7 @@ func (r *GrpcHealthReporter) SendAutoRestartEvent(record *health.AutoRestartReco
 		return err
 	}
 
-	resp, err := r.client.ReportAutoRestart(authCtx, &pb.ReportAutoRestartRequest{
+	resp, err := serviceClient.ReportAutoRestart(authCtx, &pb.ReportAutoRestartRequest{
 		AppId:              record.AppID,
 		AppName:            record.AppName,
 		Reason:             record.Reason,

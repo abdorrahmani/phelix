@@ -1,129 +1,79 @@
 package monitor
 
 import (
-	"bufio"
 	"fmt"
 	"log"
-	"os"
-	"os/exec"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 )
 
-// Command executor implementation
+// appCommandExecutor executes lifecycle commands issued by the backend.
 type appCommandExecutor struct{}
 
-// NewCommandExecutor returns the default CommandExecutor implementation. It
-// is transport-agnostic and can be reused by any monitoring transport (gRPC
-// today, previously WebSocket).
+// NewCommandExecutor returns the default CommandExecutor implementation. It is
+// transport-agnostic and can be reused by any monitoring transport (gRPC today,
+// previously WebSocket).
 func NewCommandExecutor() CommandExecutor {
 	return &appCommandExecutor{}
 }
 
-func (e *appCommandExecutor) Execute(cmd Command) error {
+// resolvedApp is the identity of a managed app resolved by name or ID.
+type resolvedApp struct {
+	ID   string
+	Name string
+	Port int
+}
+
+// resolveApp finds a managed app by name or ID, mirroring how CLI commands
+// resolve an identifier.
+func resolveApp(identifier string) (*resolvedApp, error) {
 	apps := app.Manager.ListApplications()
-	var targetAppID string
-	var targetAppName string
-
-	// First try to find by app name
-	for _, app := range apps {
-		if app.Name == cmd.Payload.AppName {
-			targetAppID = app.ID
-			targetAppName = app.Name
-			break
+	for _, a := range apps {
+		if a.Name == identifier || a.ID == identifier {
+			return &resolvedApp{ID: a.ID, Name: a.Name, Port: a.Port}, nil
 		}
 	}
+	return nil, fmt.Errorf("app not found: %s", identifier)
+}
 
-	// If not found by name, try to use the appName as ID directly
-	if targetAppID == "" {
-		// Check if the appName is actually an ID
-		for _, app := range apps {
-			if app.ID == cmd.Payload.AppName {
-				targetAppID = app.ID
-				targetAppName = app.Name
-				break
-			}
-		}
-	}
-
-	if targetAppID == "" {
-		return fmt.Errorf("app not found: %s", cmd.Payload.AppName)
-	}
-
-	log.Printf("Executing command '%s' for app '%s' (ID: %s)", cmd.Payload.Type, targetAppName, targetAppID)
-
-	// Find the phelix executable in PATH
-	phelixPath, err := exec.LookPath("phelix")
+// Execute runs a lifecycle command against a managed application.
+//
+// The common types (start/stop/restart) are dispatched in-process through the
+// app manager so they work regardless of the daemon's environment — in
+// particular under systemd, where the PATH may not include the directory the
+// phelix binary lives in. Unknown types fall back to a `phelix <type> <id>`
+// subprocess, preserving the previous behavior for any future command.
+func (e *appCommandExecutor) Execute(cmd Command) error {
+	target, err := resolveApp(cmd.Payload.AppName)
 	if err != nil {
-		return fmt.Errorf("failed to find phelix executable: %v", err)
+		return err
 	}
 
-	// Create the command with the correct format: phelix commandName ID
-	execCmd := exec.Command(phelixPath, cmd.Payload.Type, targetAppID)
+	log.Printf("Executing command '%s' for app '%s' (ID: %s)", cmd.Payload.Type, target.Name, target.ID)
 
-	// Set up environment with Go variables
-	env := os.Environ()
-	env = append(env,
-		"GOROOT=/usr/local/go",
-		"GOPATH="+os.Getenv("HOME")+"/go",
-	)
+	switch cmd.Payload.Type {
+	case "start":
+		// Reuse the app's persisted port so `start` never overrides it with a
+		// default.
+		return app.Manager.StartApplication(target.ID, target.Port, target.Name)
+	case "stop":
+		return app.Manager.StopApplication(target.ID)
+	case "restart":
+		return app.Manager.RestartApplication(target.ID)
+	}
 
-	// Add Go paths to PATH
-	path := os.Getenv("PATH")
-	goRoot := "/usr/local/go/bin"
-	goPath := os.Getenv("HOME") + "/go/bin"
-	env = append(env, "PATH="+goRoot+":"+goPath+":"+path)
+	return e.execFallback(cmd, target.ID)
+}
 
-	execCmd.Env = env
-
-	// Set working directory to the current directory
-	execCmd.Dir = "."
-
-	// Create pipes for stdout and stderr
-	stdout, err := execCmd.StdoutPipe()
+// execFallback shells out to `phelix <type> <id>` for command types the app
+// manager does not handle in-process.
+func (e *appCommandExecutor) execFallback(cmd Command, appID string) error {
+	execCmd, err := newPhelixCommand(cmd.Payload.Type, appID)
 	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %v", err)
+		return err
 	}
-	stderr, err := execCmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe: %v", err)
-	}
-
-	// Start the command
-	if err := execCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start command: %v", err)
-	}
-
-	// Create channels to handle output
-	stdoutDone := make(chan struct{})
-	stderrDone := make(chan struct{})
-
-	// Handle stdout
-	go func() {
-		defer close(stdoutDone)
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			log.Printf("[Command stdout] %s", scanner.Text())
-		}
-	}()
-
-	// Handle stderr
-	go func() {
-		defer close(stderrDone)
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			log.Printf("[Command stderr] %s", scanner.Text())
-		}
-	}()
-
-	// Wait for command to complete
-	if err := execCmd.Wait(); err != nil {
+	if err := runPhelixCommand(execCmd); err != nil {
 		return fmt.Errorf("command failed: %v", err)
 	}
-
-	// Wait for output handling to complete
-	<-stdoutDone
-	<-stderrDone
-
 	return nil
 }

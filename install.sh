@@ -12,8 +12,10 @@
 #   3. Verifies an optional SHA-256 checksum when one is published alongside
 #      the binary; skips gracefully when none is present.
 #   4. Installs it to <install-dir>/phelix (default /usr/local/bin).
-#   5. On Linux: registers + enables a phelix.service systemd unit that starts
-#      the background gRPC monitor daemon and all managed apps on boot.
+#   5. On Linux: registers + enables a phelix.service systemd unit that runs
+#      `phelix monitor` directly in the foreground. The daemon restores the
+#      managed apps that were previously running and keeps its TLS gRPC
+#      connection to the backend alive, reconnecting with exponential backoff.
 #      On macOS: installs the binary only (no systemd).
 #
 # This is the end-user counterpart of the in-repo setup.sh, which builds from
@@ -170,6 +172,8 @@ do_uninstall() {
     fi
 
     ${SUDO} rm -f "${INSTALL_DIR}/${SERVICE_NAME}"
+    # Removes the legacy startup wrapper from older installs; the current
+    # installer writes a direct unit and never creates this file.
     ${SUDO} rm -f "${INSTALL_DIR}/${SERVICE_NAME}-startup.sh"
 
     # Note: managed apps and ~/.phelix state are intentionally left in place.
@@ -221,39 +225,36 @@ install_binary() {
 }
 
 setup_systemd() {
-    local start_script="${INSTALL_DIR}/${SERVICE_NAME}-startup.sh"
-
     info "Configuring systemd service..."
     local SUDO=""
     [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 
-    # Startup wrapper: start the monitor daemon, give it a moment, then start
-    # any managed apps (mirrors the in-repo setup.sh).
-    ${SUDO} tee "${start_script}" >/dev/null <<'STARTUP'
-#!/usr/bin/env bash
-# Created by the Phelix installer. Starts the background monitor and all
-# managed applications on boot / service (re)start.
-set -e
-/usr/local/bin/phelix monitor &
-sleep 5
-/usr/local/bin/phelix start
-STARTUP
-    ${SUDO} chmod 0755 "${start_script}"
-
     # systemd unit. Runs as the invoking (non-root) user when installed via sudo.
+    #
+    # ExecStart runs `phelix monitor` DIRECTLY — no startup wrapper. The monitor
+    # daemon runs in the foreground: it loads local state, restores managed apps
+    # that were previously running, opens its TLS gRPC connection to the backend,
+    # and reconnects with exponential backoff. systemd supervises the daemon
+    # process itself, so `systemctl stop` delivers a clean SIGTERM.
+    #
+    # KillMode=process stops only the monitor process on stop/restart, keeping
+    # managed application processes alive across monitor restarts.
     local svc_user="${SUDO_USER:-${USER}}"
     ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<UNIT
 [Unit]
-Description=Phelix gRPC Monitoring Service
-After=network.target
+Description=Phelix Node Agent
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=${svc_user}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${start_script}
+ExecStart=${INSTALL_DIR}/phelix monitor
 Restart=always
 RestartSec=5
+TimeoutStopSec=30
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
@@ -262,7 +263,28 @@ UNIT
     ${SUDO} systemctl daemon-reload
     ${SUDO} systemctl enable "${SERVICE_NAME}.service"
     ${SUDO} systemctl restart "${SERVICE_NAME}.service"
-    success "Enabled and started ${C_CYAN}${SERVICE_NAME}.service${C_RESET}"
+
+    # Verify the service actually came up as active. Poll briefly in case the
+    # daemon takes a moment to start; on failure print useful diagnostics so a
+    # broken install is debuggable instead of silent.
+    info "Verifying ${SERVICE_NAME}.service is active..."
+    local deadline=15
+    local i
+    for i in $(seq 1 "${deadline}"); do
+        if ${SUDO} systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+            success "${SERVICE_NAME}.service is active (running)"
+            return 0
+        fi
+        sleep 1
+    done
+
+    error "${SERVICE_NAME}.service is not active. Diagnostics:"
+    ${SUDO} systemctl status "${SERVICE_NAME}.service" --no-pager || true
+    error "Recent journal:"
+    ${SUDO} journalctl -u "${SERVICE_NAME}.service" -n 50 --no-pager || true
+    error "Process check:"
+    ${SUDO} pgrep -af phelix || true
+    fail "${SERVICE_NAME}.service failed to start. See diagnostics above."
 }
 
 # ---------------------------------------------------------------------------
@@ -355,11 +377,11 @@ BANNER
             setup_systemd
         else
             warn "systemctl not found; skipping service setup."
-            warn "Run 'phelix monitor &' manually, or create your own init unit."
+            warn "Run 'phelix monitor' in the foreground, or create your own init unit."
         fi
     elif [ "${OS}" = "darwin" ]; then
         info "macOS: binary installed. No systemd on macOS — start the monitor manually:"
-        info "  ${C_CYAN}phelix monitor &${C_RESET}"
+        info "  ${C_CYAN}phelix monitor${C_RESET}   # run in the foreground"
         info "Or use launchd / a background-session script for auto-start."
     fi
 

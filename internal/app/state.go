@@ -71,6 +71,7 @@ func (m *AppManager) SaveState() error {
 		Directory   string    `json:"directory"`
 		Language    string    `json:"language"`
 		NoUpload    bool      `json:"no_upload"`
+		AutoStart   bool      `json:"auto_start"`
 	}
 
 	savedApps := make(map[string]SavedApp)
@@ -89,6 +90,7 @@ func (m *AppManager) SaveState() error {
 			Directory:   app.Directory,
 			Language:    app.Language,
 			NoUpload:    app.NoUpload,
+			AutoStart:   app.AutoStart,
 		}
 	}
 
@@ -146,6 +148,7 @@ func (m *AppManager) LoadState() error {
 		Directory   string    `json:"directory"`
 		Language    string    `json:"language"`
 		NoUpload    bool      `json:"no_upload"`
+		AutoStart   bool      `json:"auto_start"`
 	}
 
 	var savedApps map[string]SavedApp
@@ -198,6 +201,13 @@ func (m *AppManager) LoadState() error {
 		// restore language and no-upload flag
 		appInfo.Language = saved.Language
 		appInfo.NoUpload = saved.NoUpload
+
+		// AutoStart records that this app was intentionally started; on a fresh
+		// daemon launch (boot / monitor restart) it is the signal that the app
+		// should be restored. Seed it from legacy state files: anything saved
+		// as "running" gets auto-start intent even if the "auto_start" field
+		// predates this version.
+		appInfo.AutoStart = saved.AutoStart || saved.Status == "running"
 
 		// Update status based on process state
 		if isRunning {

@@ -84,6 +84,9 @@ func (m *AppManager) StopApplication(id string) error {
 
 	app.Status = "stopped"
 	app.Cmd = nil
+	// An explicit stop clears auto-start intent: the app must not be restored
+	// automatically the next time the monitor daemon launches.
+	app.AutoStart = false
 	return m.SaveState()
 }
 

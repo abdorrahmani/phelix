@@ -4,61 +4,24 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"github.com/abdorrahmani/phelix/cmd"
 	"github.com/abdorrahmani/phelix/cmd/auth"
 	"github.com/abdorrahmani/phelix/config"
-	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/health"
-	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/version"
 	"github.com/spf13/cobra"
 )
 
-var (
-	healthDaemon  *health.GlobalDaemon
-	done          = make(chan struct{})
-	isMonitorMode bool
-)
+var healthDaemon *health.GlobalDaemon
 
 func main() {
 	err := config.Load()
 	if err != nil {
 		log.Fatal(err)
 	}
-	isMonitorMode = len(os.Args) > 1 && os.Args[1] == "monitor"
 
 	healthDaemon = health.InitGlobalDaemon()
-
-	if isMonitorMode {
-		grpcClient := phelixgrpc.InitGlobalClient()
-		go grpcClient.Start()
-
-		go func() {
-			time.Sleep(2 * time.Second)
-			if c := phelixgrpc.GetClient(); c != nil && c.IsConnected() {
-				reporter := phelixgrpc.NewGrpcHealthReporter(c.GetServiceClient())
-				healthDaemon.SetReporter(reporter)
-			}
-			if err := healthDaemon.Start(); err != nil {
-				log.Printf("[Health] Failed to start global daemon: %v", err)
-			}
-		}()
-	}
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		if c := phelixgrpc.GetClient(); c != nil {
-			c.Close()
-		}
-		close(done)
-		os.Exit(0)
-	}()
 
 	rootCmd := &cobra.Command{
 		Use:     "phelix",
@@ -81,43 +44,6 @@ func main() {
 		},
 	}
 
-	monitorCmd := &cobra.Command{
-		Use:   "monitor",
-		Short: "Start the monitoring service",
-		Run: func(cobraCmd *cobra.Command, args []string) {
-
-			go func() {
-				for {
-					select {
-					case <-done:
-						return
-					default:
-						logs.RemovePreviousLogs()
-						logs.RemoveSelfLogs()
-						time.Sleep(1 * time.Minute)
-					}
-				}
-			}()
-
-			go func() {
-				tricker := time.NewTicker(15 * time.Minute)
-				defer tricker.Stop()
-				for {
-					select {
-					case <-done:
-						return
-					case <-tricker.C:
-						logs.RemovePreviousLogs()
-					}
-				}
-			}()
-
-			log.Printf("[Monitor] gRPC monitor daemon running")
-
-			<-done
-		},
-	}
-
 	rootCmd.AddCommand(cmd.BuildCmd)
 	rootCmd.AddCommand(cmd.RebuildCmd)
 	rootCmd.AddCommand(cmd.RollbackCmd)
@@ -134,7 +60,7 @@ func main() {
 	rootCmd.AddCommand(cmd.ProxyCmd)
 	rootCmd.AddCommand(cmd.DockerizeCmd)
 	rootCmd.AddCommand(cmd.DeployCmd)
-	rootCmd.AddCommand(monitorCmd)
+	rootCmd.AddCommand(cmd.MonitorCmd)
 
 	rootCmd.AddCommand(cmd.VersionCmd)
 	rootCmd.SetVersionTemplate("Phelix CLI {{.Version}}\n")
