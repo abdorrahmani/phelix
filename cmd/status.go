@@ -8,6 +8,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 )
 
@@ -40,20 +41,23 @@ func displayStatus(status app.AppStatus) {
 }
 
 func createStatusTable() *tablewriter.Table {
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"ID", "Name", "Language", "Status", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
-	table.SetBorder(true)
-	table.SetRowLine(true)
-	table.SetColumnAlignment([]int{
-		tablewriter.ALIGN_LEFT,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-	})
+	table := tablewriter.NewTable(os.Stdout,
+		tablewriter.WithRendition(tw.Rendition{
+			Settings: tw.Settings{Separators: tw.Separators{BetweenRows: tw.On}},
+		}),
+		tablewriter.WithConfig(tablewriter.Config{
+			Header: tw.CellConfig{
+				Alignment: tw.CellAlignment{Global: tw.AlignCenter},
+			},
+			Row: tw.CellConfig{
+				Alignment: tw.CellAlignment{
+					Global:    tw.AlignCenter,
+					PerColumn: []tw.Align{tw.AlignLeft},
+				},
+			},
+		}),
+	)
+	table.Header([]string{"ID", "Name", "Language", "Status", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
 	return table
 }
 

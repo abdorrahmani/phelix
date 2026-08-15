@@ -347,9 +347,8 @@ func listRollbackVersions(appName string, policy deploy.RetentionPolicy, appInfo
 	r.SetMetadata("version_count", fmt.Sprintf("%d", len(vers)))
 
 	// Render table.
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Version", "Tag", "Commit", "Built", "Size", "Current", "Prune soon"})
-	table.SetBorder(true)
+	table := tablewriter.NewTable(os.Stdout)
+	table.Header([]string{"Version", "Tag", "Commit", "Built", "Size", "Current", "Prune soon"})
 	for _, v := range vers {
 		commit := v.GitCommit
 		if commit == "" {

@@ -11,6 +11,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 )
 
@@ -36,21 +37,23 @@ var ListCmd = &cobra.Command{
 }
 
 func createTable() *tablewriter.Table {
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"ID", "Name", "Version", "Status", "Language", "PID", "Uptime", "Deploy", "Proxy"})
-	table.SetBorder(true)
-	table.SetRowLine(true)
-	table.SetColumnAlignment([]int{
-		tablewriter.ALIGN_LEFT,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-		tablewriter.ALIGN_CENTER,
-	})
+	table := tablewriter.NewTable(os.Stdout,
+		tablewriter.WithRendition(tw.Rendition{
+			Settings: tw.Settings{Separators: tw.Separators{BetweenRows: tw.On}},
+		}),
+		tablewriter.WithConfig(tablewriter.Config{
+			Header: tw.CellConfig{
+				Alignment: tw.CellAlignment{Global: tw.AlignCenter},
+			},
+			Row: tw.CellConfig{
+				Alignment: tw.CellAlignment{
+					Global:    tw.AlignCenter,
+					PerColumn: []tw.Align{tw.AlignLeft},
+				},
+			},
+		}),
+	)
+	table.Header([]string{"ID", "Name", "Version", "Status", "Language", "PID", "Uptime", "Deploy", "Proxy"})
 	return table
 }
 

@@ -107,11 +107,8 @@ func (td *TerminalDisplay) draw() {
 	}
 
 	// Create table
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"NAME", "URL", "LATENCY", "CODE", "STATUS", "LAST CHECK"})
-	table.SetBorder(true)
-	table.SetRowLine(false)
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
+	table := tablewriter.NewTable(os.Stdout)
+	table.Header([]string{"NAME", "URL", "LATENCY", "CODE", "STATUS", "LAST CHECK"})
 
 	// Add rows
 	for endpointName, result := range status {
@@ -120,23 +117,13 @@ func (td *TerminalDisplay) draw() {
 			continue
 		}
 
-		row := []string{
+		table.Append([]string{
 			endpointName,
 			td.truncateURL(endpointConfig.URL),
 			td.formatLatency(result.LatencyMs),
 			td.formatStatusCode(result.StatusCode),
 			td.formatStatus(result.Status),
 			td.formatCheckTime(result.CheckedAt),
-		}
-
-		// Color the row based on status
-		table.Rich(row, []tablewriter.Colors{
-			{},
-			{},
-			{},
-			{},
-			td.getStatusColors(result.Status),
-			{},
 		})
 	}
 
@@ -184,21 +171,7 @@ func (td *TerminalDisplay) formatStatusCode(code *int) string {
 
 // formatStatus formats status with appropriate coloring
 func (td *TerminalDisplay) formatStatus(status string) string {
-	return status
-}
-
-// getStatusColors returns table writer colors based on status
-func (td *TerminalDisplay) getStatusColors(status string) tablewriter.Colors {
-	switch status {
-	case "UP":
-		return tablewriter.Colors{tablewriter.FgGreenColor}
-	case "DOWN":
-		return tablewriter.Colors{tablewriter.FgRedColor}
-	case "TIMEOUT":
-		return tablewriter.Colors{tablewriter.FgYellowColor}
-	default:
-		return tablewriter.Colors{}
-	}
+	return colorizeStatus(status)
 }
 
 // formatCheckTime formats the last check time
@@ -238,11 +211,8 @@ func PrintStatusTable(appID, appName string, daemon *Daemon) {
 	status := daemon.GetStatus(appID)
 
 	// Create table
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"NAME", "URL", "LATENCY", "CODE", "STATUS", "LAST CHECK"})
-	table.SetBorder(true)
-	table.SetRowLine(false)
-	table.SetAlignment(tablewriter.ALIGN_LEFT)
+	table := tablewriter.NewTable(os.Stdout)
+	table.Header([]string{"NAME", "URL", "LATENCY", "CODE", "STATUS", "LAST CHECK"})
 
 	for endpointName, endpointConfig := range config.Endpoints {
 		result := status[endpointName]
@@ -253,22 +223,13 @@ func PrintStatusTable(appID, appName string, daemon *Daemon) {
 			}
 		}
 
-		row := []string{
+		table.Append([]string{
 			endpointName,
 			truncateURLDisplay(endpointConfig.URL),
 			formatLatencyDisplay(result.LatencyMs),
 			formatStatusCodeDisplay(result.StatusCode),
-			result.Status,
+			colorizeStatus(result.Status),
 			formatCheckTimeDisplay(result.CheckedAt),
-		}
-
-		table.Rich(row, []tablewriter.Colors{
-			{},
-			{},
-			{},
-			{},
-			getStatusColorsDisplay(result.Status),
-			{},
 		})
 	}
 
@@ -297,16 +258,18 @@ func formatStatusCodeDisplay(code *int) string {
 	return fmt.Sprintf("%d", *code)
 }
 
-func getStatusColorsDisplay(status string) tablewriter.Colors {
+// colorizeStatus wraps a health status value with its status color
+// (green for UP, red for DOWN, yellow for TIMEOUT).
+func colorizeStatus(status string) string {
 	switch status {
 	case "UP":
-		return tablewriter.Colors{tablewriter.FgGreenColor}
+		return color.GreenString(status)
 	case "DOWN":
-		return tablewriter.Colors{tablewriter.FgRedColor}
+		return color.RedString(status)
 	case "TIMEOUT":
-		return tablewriter.Colors{tablewriter.FgYellowColor}
+		return color.YellowString(status)
 	default:
-		return tablewriter.Colors{}
+		return status
 	}
 }
 
