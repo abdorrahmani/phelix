@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // SidecarConfig defines a recognized sidecar service for docker-compose generation.
@@ -120,7 +122,10 @@ func GenerateCompose(cfg ComposeConfig) string {
 // WriteComposeFile writes the generated docker-compose.yml to projectRoot.
 func WriteComposeFile(projectRoot string, cfg ComposeConfig) error {
 	content := GenerateCompose(cfg)
-	return os.WriteFile(filepath.Join(projectRoot, "docker-compose.yml"), []byte(content), 0o644)
+	if err := os.WriteFile(filepath.Join(projectRoot, "docker-compose.yml"), []byte(content), 0o644); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to write docker-compose.yml", err)
+	}
+	return nil
 }
 
 // HasExistingCompose reports whether a docker-compose.yml already exists.

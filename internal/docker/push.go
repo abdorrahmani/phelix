@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/env"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // PushConfig holds parameters for pushing an image to a registry.
@@ -43,16 +44,20 @@ func PushImage(cfg PushConfig) error {
 	if err != nil {
 		outputStr := string(output)
 
-		// Distinguish "not logged in" from other push failures
+		// Distinguish "not logged in" from other push failures. The raw docker
+		// output is only inspected locally to make this distinction; it is never
+		// embedded verbatim in the returned error (it may contain registry auth
+		// details). The exit status stays reachable through the wrapped cause.
 		if isAuthError(outputStr) {
-			return fmt.Errorf(
+			return phelixerr.Newf(
+				phelixerr.CodePermissionDenied,
 				"not logged in to registry %q — run `docker login %s` first, "+
 					"or use `phelix env set` to store registry credentials",
 				registryHost(cfg.Registry), cfg.Registry,
 			)
 		}
 
-		return fmt.Errorf("docker push failed: %w\nOutput:\n%s", err, outputStr)
+		return phelixerr.Wrap(phelixerr.CodeDocker, "docker push failed", err)
 	}
 
 	return nil
@@ -63,60 +68,63 @@ func PushImage(cfg PushConfig) error {
 func StoreRegistryCredentials(registry, username, passwordOrToken string) error {
 	masterKey, err := env.GetMasterKey()
 	if err != nil {
-		return fmt.Errorf("failed to get master key for credential storage: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeEncryption, "failed to get master key for credential storage", err)
 	}
 
 	// Store username
 	encUser, err := env.EncryptData(username, masterKey)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt username: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeEncryption, "failed to encrypt username", err)
 	}
 	// Store password/token
 	encPass, err := env.EncryptData(passwordOrToken, masterKey)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt password: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeEncryption, "failed to encrypt password", err)
 	}
 
 	// Write to ~/.phelix/registry/<registry>.enc
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to resolve home directory", err)
 	}
 	regDir := filepath.Join(home, ".phelix", "registry")
 	if err := os.MkdirAll(regDir, 0o700); err != nil {
-		return err
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create registry credentials directory %s", regDir)
 	}
 
 	credFile := filepath.Join(regDir, registrySlug(registry)+".enc")
 	content := fmt.Sprintf("username:%s\npassword:%s", encUser, encPass)
-	return os.WriteFile(credFile, []byte(content), 0o600)
+	if err := os.WriteFile(credFile, []byte(content), 0o600); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write registry credentials %s", credFile)
+	}
+	return nil
 }
 
 // LoadRegistryCredentials retrieves and decrypts stored registry credentials.
 func LoadRegistryCredentials(registry string) (username, password string, err error) {
 	masterKey, err := env.GetMasterKey()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get master key: %w", err)
+		return "", "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to get master key", err)
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", "", err
+		return "", "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to resolve home directory", err)
 	}
 
 	credFile := filepath.Join(home, ".phelix", "registry", registrySlug(registry)+".enc")
 	data, err := os.ReadFile(credFile)
 	if os.IsNotExist(err) {
-		return "", "", fmt.Errorf("no stored credentials for registry %q", registry)
+		return "", "", phelixerr.Newf(phelixerr.CodeNotFound, "no stored credentials for registry %q", registry)
 	}
 	if err != nil {
-		return "", "", err
+		return "", "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read registry credentials %s", credFile)
 	}
 
 	// Parse the stored format: "username:<enc>\npassword:<enc>"
 	lines := strings.SplitN(string(data), "\n", 2)
 	if len(lines) < 2 {
-		return "", "", fmt.Errorf("corrupted credential file for %q", registry)
+		return "", "", phelixerr.Newf(phelixerr.CodeEncryption, "corrupted credential file for %q", registry)
 	}
 
 	for _, line := range lines {
@@ -128,12 +136,12 @@ func LoadRegistryCredentials(registry string) (username, password string, err er
 		case "username":
 			username, err = env.DecryptData(parts[1], masterKey)
 			if err != nil {
-				return "", "", fmt.Errorf("failed to decrypt username: %w", err)
+				return "", "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to decrypt username", err)
 			}
 		case "password":
 			password, err = env.DecryptData(parts[1], masterKey)
 			if err != nil {
-				return "", "", fmt.Errorf("failed to decrypt password: %w", err)
+				return "", "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to decrypt password", err)
 			}
 		}
 	}

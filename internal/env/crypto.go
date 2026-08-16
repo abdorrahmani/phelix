@@ -5,31 +5,32 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"io"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // EncryptData encrypts plaintext using AES-256-GCM with the provided key
 func EncryptData(plaintext string, key []byte) (string, error) {
 	// Ensure key is 32 bytes for AES-256
 	if len(key) != 32 {
-		return "", fmt.Errorf("invalid key size: expected 32 bytes, got %d", len(key))
+		return "", phelixerr.Newf(phelixerr.CodeEncryption, "invalid key size: expected 32 bytes, got %d", len(key))
 	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %v", err)
+		return "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to create cipher", err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %v", err)
+		return "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to create GCM", err)
 	}
 
 	// Create nonce (12 bytes is standard for GCM)
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("failed to generate nonce: %v", err)
+		return "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to generate nonce", err)
 	}
 
 	// Encrypt
@@ -41,28 +42,28 @@ func EncryptData(plaintext string, key []byte) (string, error) {
 func DecryptData(ciphertext string, key []byte) (string, error) {
 	// Ensure key is 32 bytes for AES-256
 	if len(key) != 32 {
-		return "", fmt.Errorf("invalid key size: expected 32 bytes, got %d", len(key))
+		return "", phelixerr.Newf(phelixerr.CodeEncryption, "invalid key size: expected 32 bytes, got %d", len(key))
 	}
 
 	// Decode hex
 	data, err := hex.DecodeString(ciphertext)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode hex: %v", err)
+		return "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to decode hex", err)
 	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("failed to create cipher: %v", err)
+		return "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to create cipher", err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %v", err)
+		return "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to create GCM", err)
 	}
 
 	nonceSize := gcm.NonceSize()
 	if len(data) < nonceSize {
-		return "", fmt.Errorf("ciphertext too short")
+		return "", phelixerr.New(phelixerr.CodeEncryption, "ciphertext too short")
 	}
 
 	// Extract nonce and actual ciphertext
@@ -71,7 +72,7 @@ func DecryptData(ciphertext string, key []byte) (string, error) {
 	// Decrypt
 	plaintext, err := gcm.Open(nil, nonce, ciphertext_only, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to decrypt: %v", err)
+		return "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to decrypt", err)
 	}
 
 	return string(plaintext), nil
@@ -81,7 +82,7 @@ func DecryptData(ciphertext string, key []byte) (string, error) {
 func GenerateMasterKey() ([]byte, error) {
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, fmt.Errorf("failed to generate master key: %v", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeEncryption, "failed to generate master key", err)
 	}
 	return key, nil
 }

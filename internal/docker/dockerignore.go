@@ -3,6 +3,8 @@ package docker
 import (
 	"os"
 	"path/filepath"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // DefaultDockerignore returns a sensible .dockerignore content for Go/Rust projects.
@@ -66,5 +68,8 @@ func WriteDockerignore(projectRoot string) error {
 	if HasExistingDockerignore(projectRoot) {
 		return nil
 	}
-	return os.WriteFile(filepath.Join(projectRoot, ".dockerignore"), []byte(DefaultDockerignore()), 0o644)
+	if err := os.WriteFile(filepath.Join(projectRoot, ".dockerignore"), []byte(DefaultDockerignore()), 0o644); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to write .dockerignore", err)
+	}
+	return nil
 }

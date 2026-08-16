@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/builder"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // goVersion is the Go version installed by the official-tarball fallback path.
@@ -31,7 +32,7 @@ func Install(lang builder.Language) error {
 	case builder.Rust:
 		return installRust()
 	default:
-		return fmt.Errorf("unsupported language: %s", lang)
+		return phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unsupported language: %s", lang)
 	}
 }
 
@@ -49,7 +50,7 @@ func installRust() error {
 // installRustUnix installs Rust via rustup (no privileges required).
 func installRustUnix() error {
 	if _, err := exec.LookPath("curl"); err != nil {
-		return fmt.Errorf("curl is required to install rustup but was not found")
+		return phelixerr.New(phelixerr.CodeToolchainNotFound, "curl is required to install rustup but was not found")
 	}
 	// sh -c 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable'
 	cmd := exec.Command("sh", "-c",
@@ -58,7 +59,7 @@ func installRustUnix() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rustup installer failed: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "rustup installer failed", err)
 	}
 
 	refreshPath()
@@ -77,18 +78,18 @@ func installRustWindows() error {
 
 	tmp, err := os.CreateTemp("", "rustup-init*.exe")
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to create temp file", err)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 	_ = tmp.Close()
 
 	if err := downloadFile("https://win.rustup.rs/x86_64", tmpPath); err != nil {
-		return fmt.Errorf("failed to download rustup-init.exe: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "failed to download rustup-init.exe", err)
 	}
 
 	if err := runCommand(tmpPath, "-y", "--default-toolchain", "stable"); err != nil {
-		return fmt.Errorf("rustup installer failed: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "rustup installer failed", err)
 	}
 
 	refreshPath()
@@ -135,7 +136,7 @@ func installGoLinux() error {
 func installGoUnixTarball() error {
 	arch := goArch(runtime.GOARCH)
 	if arch == "" {
-		return fmt.Errorf("unsupported architecture for Go install: %s", runtime.GOARCH)
+		return phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unsupported architecture for Go install: %s", runtime.GOARCH)
 	}
 
 	osName := runtime.GOOS
@@ -145,7 +146,7 @@ func installGoUnixTarball() error {
 	defer os.Remove(tmpArchive)
 
 	if err := downloadFile(url, tmpArchive); err != nil {
-		return fmt.Errorf("failed to download Go tarball: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "failed to download Go tarball", err)
 	}
 
 	target := "/usr/local"
@@ -162,7 +163,7 @@ func installGoUnixTarball() error {
 	}
 
 	if err := extract(); err != nil {
-		return fmt.Errorf("failed to extract Go tarball: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to extract Go tarball", err)
 	}
 
 	refreshPath()
@@ -181,7 +182,7 @@ func installGoWindows() error {
 
 	arch := goArch(runtime.GOARCH)
 	if arch == "" {
-		return fmt.Errorf("unsupported architecture for Go install: %s", runtime.GOARCH)
+		return phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unsupported architecture for Go install: %s", runtime.GOARCH)
 	}
 	msiURL := fmt.Sprintf("https://go.dev/dl/go%s.windows-%s.msi", goVersion, arch)
 
@@ -189,11 +190,11 @@ func installGoWindows() error {
 	defer os.Remove(tmpMSI)
 
 	if err := downloadFile(msiURL, tmpMSI); err != nil {
-		return fmt.Errorf("failed to download Go MSI: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "failed to download Go MSI", err)
 	}
 	// msiexec requires elevation; runPrivileged handles Windows via runas.
 	if err := runPrivileged("msiexec", []string{"/i", tmpMSI, "/quiet"}); err != nil {
-		return fmt.Errorf("failed to install Go MSI: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to install Go MSI", err)
 	}
 	refreshPath()
 	return nil
@@ -315,21 +316,21 @@ func isPermissionError(err error) bool {
 func downloadFile(url, dest string) error {
 	resp, err := http.Get(url) //nolint:gosec // URL is constructed from trusted constants
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "failed to download file", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected HTTP status %d for %s", resp.StatusCode, url)
+		return phelixerr.Newf(phelixerr.CodeNetwork, "unexpected HTTP status %d while downloading", resp.StatusCode)
 	}
 
 	out, err := os.Create(dest)
 	if err != nil {
-		return err
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create download file %s", dest)
 	}
 	defer out.Close()
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "failed to write downloaded file", err)
 	}
 	return nil
 }

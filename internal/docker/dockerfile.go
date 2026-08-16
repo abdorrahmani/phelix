@@ -1,10 +1,11 @@
 package docker
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // DockerfileGenerator produces multi-stage Dockerfiles optimized for layer caching.
@@ -135,7 +136,10 @@ func (g *DockerfileGenerator) generateRust() string {
 func (g *DockerfileGenerator) WriteDockerfile() error {
 	content := g.Generate()
 	if content == "" {
-		return fmt.Errorf("unsupported language: %s", g.Language)
+		return phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unsupported language: %s", g.Language)
 	}
-	return os.WriteFile(filepath.Join(g.ProjectRoot, "Dockerfile"), []byte(content), 0o644)
+	if err := os.WriteFile(filepath.Join(g.ProjectRoot, "Dockerfile"), []byte(content), 0o644); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to write Dockerfile", err)
+	}
+	return nil
 }

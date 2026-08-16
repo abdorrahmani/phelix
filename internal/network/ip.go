@@ -1,6 +1,10 @@
 package network
 
-import "net"
+import (
+	"net"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+)
 
 func isPublicIP(ip net.IP) bool {
 	//IPv4
@@ -44,7 +48,7 @@ func GetPublicIPs() ([]string, []string, error) {
 	var ipv4List, ipv6List []string
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, phelixerr.Wrap(phelixerr.CodeNetwork, "failed to enumerate network interfaces", err)
 	}
 
 	for _, addr := range addrs {

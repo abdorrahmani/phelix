@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
@@ -53,12 +54,12 @@ func (c *Client) openAgentStream() error {
 	serverID := server.GetServerID()
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeConnection, "attach auth metadata for agent stream", err)
 	}
 
 	stream, err := c.serviceClient.AgentStream(authCtx)
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeConnection, "open agent stream", err)
 	}
 
 	agentStream.mu.Lock()
@@ -77,7 +78,7 @@ func (c *Client) openAgentStream() error {
 			},
 		},
 	}); err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeConnection, "announce presence on agent stream", err)
 	}
 
 	// Process incoming commands
@@ -88,7 +89,7 @@ func (c *Client) openAgentStream() error {
 			return nil
 		}
 		if err != nil {
-			return err
+			return phelixerr.Wrap(phelixerr.CodeConnection, "receive from agent stream", err)
 		}
 
 		c.handleServerMessage(stream, msg)

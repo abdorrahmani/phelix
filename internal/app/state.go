@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 var (
@@ -96,7 +98,7 @@ func (m *AppManager) SaveState() error {
 
 	data, err := json.MarshalIndent(savedApps, "", "  ")
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to marshal application state", err)
 	}
 
 	// Serialize file operations to avoid concurrent writes
@@ -105,9 +107,12 @@ func (m *AppManager) SaveState() error {
 
 	tmpFile := stateFile + ".tmp"
 	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return err
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write state file %s", tmpFile)
 	}
-	return os.Rename(tmpFile, stateFile)
+	if err := os.Rename(tmpFile, stateFile); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to replace state file %s", stateFile)
+	}
+	return nil
 }
 
 // LoadState loads the state from disk
@@ -119,18 +124,18 @@ func (m *AppManager) LoadState() error {
 		// If file doesn't exist, create it with empty state
 		if err := os.MkdirAll(filepath.Dir(stateFile), 0755); err != nil {
 			fileMutex.Unlock()
-			return err
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to create state directory", err)
 		}
 		if err := os.WriteFile(stateFile, []byte("{}"), 0644); err != nil {
 			fileMutex.Unlock()
-			return err
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to initialize state file", err)
 		}
 		// Release lock and return after creating file
 		fileMutex.Unlock()
 		return nil
 	} else if err != nil {
 		fileMutex.Unlock()
-		return err
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read state file %s", stateFile)
 	}
 	fileMutex.Unlock()
 

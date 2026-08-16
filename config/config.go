@@ -3,9 +3,9 @@ package config
 import (
 	"bytes"
 	_ "embed"
-	"fmt"
 	"sync"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/spf13/viper"
 )
 
@@ -36,13 +36,16 @@ func Load() error {
 		if readErr := viper.ReadConfig(
 			bytes.NewBuffer(embeddedConfig),
 		); readErr != nil {
-			err = fmt.Errorf("unable to read embedded config: %v", readErr)
+			err = phelixerr.Wrap(phelixerr.CodeConfiguration, "unable to read embedded config", readErr)
 			return
 		}
 
 		var c Config
+		// Classified as CodeConfiguration: this is the embedded config, so an
+		// unmarshal failure is a malformed-config problem, never a missing-file
+		// one.
 		if unmarshalErr := viper.Unmarshal(&c); unmarshalErr != nil {
-			err = fmt.Errorf("unable to decode config: %v", unmarshalErr)
+			err = phelixerr.Wrap(phelixerr.CodeConfiguration, "unable to decode config", unmarshalErr)
 			return
 		}
 		cfg = &c

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // AppManager manages the lifecycle of applications
@@ -37,12 +39,16 @@ func (m *AppManager) StartApplication(id string, port int, name string) error {
 	defer m.Lock.Unlock()
 
 	if err := m.LoadState(); err != nil {
-		return fmt.Errorf("failed to load state: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
 	if app, exists := m.Apps[id]; exists {
 		if app.Status == "running" {
-			return fmt.Errorf("application '%s' (ID: %s) is already running on PID %d", app.Name, id, app.PID)
+			return phelixerr.Newf(
+				phelixerr.CodeAlreadyExists,
+				"application '%s' (ID: %s) is already running on PID %d",
+				app.Name, id, app.PID,
+			)
 		}
 		if app.Name != "" {
 			name = app.Name
@@ -67,12 +73,12 @@ func (m *AppManager) StopApplication(id string) error {
 	defer m.Lock.Unlock()
 
 	if err := m.LoadState(); err != nil {
-		return fmt.Errorf("failed to load state: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
 	app, exists := m.Apps[id]
 	if !exists {
-		return fmt.Errorf("application %s not found", id)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found", id)
 	}
 
 	if app.Status != "running" {
@@ -109,21 +115,21 @@ func (m *AppManager) RestartApplication(id string) error {
 	defer m.Lock.Unlock()
 
 	if err := m.LoadState(); err != nil {
-		return fmt.Errorf("failed to load state: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
 	app, exists := m.Apps[id]
 	if !exists {
-		return fmt.Errorf("application %s not found", id)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found", id)
 	}
 
 	if err := m.stopApplicationProcess(app); err != nil {
-		return fmt.Errorf("failed to stop application: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to stop application", err)
 	}
 
 	logFile := filepath.Join(logDir, fmt.Sprintf("%s.log", id))
 	if err := m.startApplicationProcess(id, app.Name, app.Port, logFile); err != nil {
-		return fmt.Errorf("failed to start application: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to start application", err)
 	}
 
 	return m.SaveState()
@@ -169,7 +175,7 @@ func (m *AppManager) StatusApplication(identifier string) (AppStatus, error) {
 	defer m.Lock.Unlock()
 
 	if err := m.LoadState(); err != nil {
-		return AppStatus{}, fmt.Errorf("failed to load state: %v", err)
+		return AppStatus{}, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
 	app, exists := m.Apps[identifier]
@@ -184,7 +190,7 @@ func (m *AppManager) StatusApplication(identifier string) (AppStatus, error) {
 		}
 	}
 	if !exists {
-		return AppStatus{}, fmt.Errorf("application not found with ID or Name: %s", identifier)
+		return AppStatus{}, phelixerr.Newf(phelixerr.CodeNotFound, "application not found with ID or Name: %s", identifier)
 	}
 
 	// Verify process status
@@ -207,7 +213,7 @@ func (m *AppManager) StatusApplication(identifier string) (AppStatus, error) {
 	if app.Status == "running" {
 		ramUsage, cpuUsage, err := m.getProcessMetrics(app.PID)
 		if err != nil {
-			return status, fmt.Errorf("failed to get process metrics: %v", err)
+			return status, phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to get process metrics", err)
 		}
 		status.RAMUsage = ramUsage
 		status.CPUUsage = cpuUsage
@@ -222,18 +228,18 @@ func (m *AppManager) RemoveApplication(id string) error {
 	defer m.Lock.Unlock()
 
 	if err := m.LoadState(); err != nil {
-		return fmt.Errorf("failed to load state: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
 	app, exists := m.Apps[id]
 	if !exists {
-		return fmt.Errorf("application %s not found", id)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found", id)
 	}
 
 	// Stop the application if it's running
 	if app.Status == "running" {
 		if err := m.stopApplicationProcess(app); err != nil {
-			return fmt.Errorf("failed to stop application before removal: %v", err)
+			return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to stop application before removal", err)
 		}
 	}
 
@@ -241,14 +247,14 @@ func (m *AppManager) RemoveApplication(id string) error {
 	if app.Directory != "" {
 		binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
 		if err := os.Remove(binaryPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove application binary: %v", err)
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to remove application binary %s", binaryPath)
 		}
 	}
 
 	// Remove the log file if it exists
 	if app.LogFile != "" {
 		if err := os.Remove(app.LogFile); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove log file: %v", err)
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to remove log file %s", app.LogFile)
 		}
 	}
 

@@ -2,7 +2,6 @@ package auth
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 
 	"github.com/abdorrahmani/phelix/config"
@@ -87,11 +86,12 @@ func performLogout(session *Session) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		// The response body is intentionally NOT embedded: it may contain
+		// session tokens or stack traces. Only the status is surfaced.
 		return phelixerr.Newf(
 			phelixerr.CodeNetwork,
-			"logout failed: server returned %s",
-			string(body),
+			"logout failed: server returned HTTP %d",
+			resp.StatusCode,
 		)
 	}
 	return nil

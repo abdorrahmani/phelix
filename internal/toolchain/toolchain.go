@@ -5,6 +5,7 @@ import (
 	"os/exec"
 
 	"github.com/abdorrahmani/phelix/internal/builder"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // toolBinary maps each supported language to its primary CLI binary.
@@ -47,13 +48,14 @@ func EnsureTool(lang builder.Language, promptFn func(msg string) bool) error {
 	msg := fmt.Sprintf("%s is not installed. Install it now?", name)
 
 	if !promptFn(msg) {
-		return fmt.Errorf("%s not installed and installation was declined.\n\n%s",
+		return phelixerr.Newf(phelixerr.CodeToolchainNotFound,
+			"%s not installed and installation was declined.\n\n%s",
 			name, ManualInstructions(lang))
 	}
 
 	if err := Install(lang); err != nil {
-		return fmt.Errorf("failed to install %s: %v\n\n%s",
-			name, err, ManualInstructions(lang))
+		return phelixerr.Wrapf(phelixerr.CodeToolchainNotFound, err,
+			"failed to install %s.\n\n%s", name, ManualInstructions(lang))
 	}
 
 	return nil

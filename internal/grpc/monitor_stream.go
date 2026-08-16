@@ -2,11 +2,11 @@ package grpc
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"sync"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/server"
@@ -51,9 +51,12 @@ func (s *monitorStreamManager) send(event *pb.MonitorEvent) error {
 	s.mu.Unlock()
 
 	if stream == nil {
-		return fmt.Errorf("monitor stream is not connected")
+		return phelixerr.New(phelixerr.CodeConnection, "monitor stream is not connected")
 	}
-	return stream.Send(event)
+	if err := stream.Send(event); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeConnection, "failed to send monitor event", err)
+	}
+	return nil
 }
 
 func (s *monitorStreamManager) pause() {
@@ -126,12 +129,12 @@ func (c *Client) runMonitorStream() error {
 	serverID := server.GetServerID()
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
-		return fmt.Errorf("auth metadata: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeConnection, "attach auth metadata for monitor stream", err)
 	}
 
 	stream, err := c.serviceClient.MonitorStream(authCtx)
 	if err != nil {
-		return fmt.Errorf("open stream: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeConnection, "open monitor stream", err)
 	}
 
 	monitorStream.mu.Lock()
@@ -276,7 +279,7 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
 func (c *Client) sendMonitorServerInfo() error {
 	info := server.GetServerInfo()
 	if info == nil {
-		return fmt.Errorf("server info not initialized")
+		return phelixerr.New(phelixerr.CodeServer, "server info not initialized")
 	}
 	event := &pb.MonitorEvent{
 		ServerId:  server.GetServerID(),

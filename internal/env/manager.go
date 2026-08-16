@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // EnvManager handles encrypted environment variable storage and retrieval
@@ -54,25 +56,25 @@ func GetMasterKey() ([]byte, error) {
 			}
 		}
 	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to read master key: %v", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read master key %s", keyPath)
 	}
 
 	// Generate new key if it doesn't exist
 	key, err := GenerateMasterKey()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate master key: %v", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeEncryption, "failed to generate master key", err)
 	}
 
 	// Create ~/.phelix directory if it doesn't exist
 	phelixDir := filepath.Dir(keyPath)
 	if err := os.MkdirAll(phelixDir, 0700); err != nil {
-		return nil, fmt.Errorf("failed to create .phelix directory: %v", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create .phelix directory %s", phelixDir)
 	}
 
 	// Save key in hex format
 	keyHex := fmt.Sprintf("%x", key)
 	if err := os.WriteFile(keyPath, []byte(keyHex), 0600); err != nil {
-		return nil, fmt.Errorf("failed to save master key: %v", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeEncryption, err, "failed to save master key %s", keyPath)
 	}
 
 	return key, nil
@@ -87,7 +89,7 @@ func GetEnvFilePath(appID string) (string, error) {
 
 	envDir := filepath.Join(homeDir, ".phelix", "envs")
 	if err := os.MkdirAll(envDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create envs directory: %v", err)
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create envs directory %s", envDir)
 	}
 
 	return filepath.Join(envDir, fmt.Sprintf("%s.env.enc", appID)), nil
@@ -112,12 +114,12 @@ func (m *EnvManager) LoadEnvStore(appID string) (*EnvStore, error) {
 			Entries: make(map[string]EnvEntry),
 		}, nil
 	} else if err != nil {
-		return nil, fmt.Errorf("failed to read env file: %v", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read env file %s", envPath)
 	}
 
 	var store EnvStore
 	if err := json.Unmarshal(data, &store); err != nil {
-		return nil, fmt.Errorf("failed to parse env file: %v", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to parse env file %s", envPath)
 	}
 
 	return &store, nil
@@ -135,11 +137,11 @@ func (m *EnvManager) SaveEnvStore(store *EnvStore) error {
 
 	data, err := json.MarshalIndent(store, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal env store: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to marshal env store", err)
 	}
 
 	if err := os.WriteFile(envPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write env file: %v", err)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write env file %s", envPath)
 	}
 
 	return nil
@@ -160,7 +162,7 @@ func (m *EnvManager) SetEnv(appID, key, value string) error {
 	// Encrypt the value
 	encryptedValue, err := EncryptData(value, masterKey)
 	if err != nil {
-		return fmt.Errorf("failed to encrypt value: %v", err)
+		return phelixerr.Wrapf(phelixerr.CodeEncryption, err, "failed to encrypt value for %q", key)
 	}
 
 	now := time.Now()
@@ -183,7 +185,7 @@ func (m *EnvManager) GetEnv(appID, key string) (string, error) {
 
 	entry, exists := store.Entries[key]
 	if !exists {
-		return "", fmt.Errorf("environment variable '%s' not found", key)
+		return "", phelixerr.Newf(phelixerr.CodeNotFound, "environment variable '%s' not found", key)
 	}
 
 	masterKey, err := GetMasterKey()
@@ -194,7 +196,7 @@ func (m *EnvManager) GetEnv(appID, key string) (string, error) {
 	// Decrypt the value
 	value, err := DecryptData(entry.Value, masterKey)
 	if err != nil {
-		return "", fmt.Errorf("failed to decrypt value: %v", err)
+		return "", phelixerr.Wrapf(phelixerr.CodeEncryption, err, "failed to decrypt value for %q", key)
 	}
 
 	return value, nil
@@ -224,7 +226,7 @@ func (m *EnvManager) UnsetEnv(appID, key string) error {
 	}
 
 	if _, exists := store.Entries[key]; !exists {
-		return fmt.Errorf("environment variable '%s' not found", key)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "environment variable '%s' not found", key)
 	}
 
 	delete(store.Entries, key)
@@ -249,7 +251,7 @@ func (m *EnvManager) GetAllEnvVars(appID string) (map[string]string, error) {
 		// Decrypt each value
 		value, err := DecryptData(entry.Value, masterKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt env var '%s': %v", key, err)
+			return nil, phelixerr.Wrapf(phelixerr.CodeEncryption, err, "failed to decrypt env var '%s'", key)
 		}
 		result[key] = value
 	}
@@ -324,11 +326,11 @@ func (m *EnvManager) ClearAllEnv(appID string) error {
 
 	data, err := json.MarshalIndent(store, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal env store: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to marshal env store", err)
 	}
 
 	if err := os.WriteFile(envPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write env file: %v", err)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write env file %s", envPath)
 	}
 
 	return nil

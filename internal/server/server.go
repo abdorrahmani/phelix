@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/network"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
@@ -76,19 +77,19 @@ func getProcessCount() (uint32, error) {
 func Initialize() error {
 	// Load or generate server ID
 	if err := loadOrGenerateServerID(); err != nil {
-		return fmt.Errorf("failed to load/generate server ID: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeServer, "failed to load/generate server ID", err)
 	}
 
 	// Get hostname
 	hostname, err := os.Hostname()
 	if err != nil {
-		return fmt.Errorf("failed to get hostname: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get hostname", err)
 	}
 
 	// Get IP addresses
 	ipv4List, ipv6List, err := network.GetPublicIPs()
 	if err != nil {
-		return fmt.Errorf("failed to get public IPs: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "failed to get public IPs", err)
 	}
 
 	// Convert IP lists to comma-separated strings
@@ -98,7 +99,7 @@ func Initialize() error {
 	// Get CPU info
 	cpuInfo, err := cpu.Info()
 	if err != nil {
-		return fmt.Errorf("failed to get CPU info: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get CPU info", err)
 	}
 	cpuInfoStr := ""
 	if len(cpuInfo) > 0 {
@@ -108,19 +109,19 @@ func Initialize() error {
 	// Get memory info
 	memInfo, err := mem.VirtualMemory()
 	if err != nil {
-		return fmt.Errorf("failed to get memory info: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get memory info", err)
 	}
 
 	// Get disk info
 	diskInfo, err := disk.Usage("/")
 	if err != nil {
-		return fmt.Errorf("failed to get disk info: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get disk info", err)
 	}
 
 	// Get OS info
 	hostInfo, err := host.Info()
 	if err != nil {
-		return fmt.Errorf("failed to get host info: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get host info", err)
 	}
 
 	// Get uptime and last reboot
@@ -144,7 +145,7 @@ func Initialize() error {
 	// Get swap info
 	swapInfo, err := mem.SwapMemory()
 	if err != nil {
-		return fmt.Errorf("failed to get swap info: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get swap info", err)
 	}
 
 	// Collect network interface names and MACs
@@ -263,7 +264,7 @@ func fallbackHash() (string, error) {
 func loadOrGenerateServerID() error {
 	// Create .phelix directory if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(serverIDFile), 0755); err != nil {
-		return fmt.Errorf("⚠ Failed to create .phelix directory: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to create .phelix directory", err)
 	}
 
 	// Try to read existing server ID
@@ -277,16 +278,16 @@ func loadOrGenerateServerID() error {
 	if os.IsNotExist(err) {
 		serverID, err = generateServerID()
 		if err != nil {
-			return err
+			return phelixerr.Wrap(phelixerr.CodeServer, "failed to generate server ID", err)
 		}
 
 		if err := os.WriteFile(serverIDFile, []byte(serverID), 0600); err != nil {
-			return fmt.Errorf("⚠ Failed to save server ID: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save server ID", err)
 		}
 		return nil
 	}
 
-	return fmt.Errorf("⚠ Failed to read server ID file: %w", err)
+	return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read server ID file", err)
 }
 
 // GetServerInfo returns the server information
@@ -304,43 +305,43 @@ func CollectMetrics() (*Metrics, error) {
 	// Get memory info
 	memInfo, err := mem.VirtualMemory()
 	if err != nil {
-		return nil, fmt.Errorf("⚠ Failed to get memory info: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get memory info", err)
 	}
 
 	// Get CPU usage
 	cpuPercent, err := cpu.Percent(time.Second, false)
 	if err != nil {
-		return nil, fmt.Errorf("⚠ Failed to get CPU usage: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get CPU usage", err)
 	}
 
 	// Get disk info
 	diskInfo, err := disk.Usage("/")
 	if err != nil {
-		return nil, fmt.Errorf("⚠ Failed to get disk info: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get disk info", err)
 	}
 
 	// Get network stats
 	networkIn, networkOut, err := getNetworkStats()
 	if err != nil {
-		return nil, fmt.Errorf("⚠ Failed to get network stats: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeNetwork, "failed to get network stats", err)
 	}
 
 	// Get load average
 	loadAvg1, loadAvg5, loadAvg15, err := getLoadAverage()
 	if err != nil {
-		return nil, fmt.Errorf("⚠ Failed to get load average: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get load average", err)
 	}
 
 	// Get swap info
 	swapInfo, err := mem.SwapMemory()
 	if err != nil {
-		return nil, fmt.Errorf("⚠ Failed to get swap info: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get swap info", err)
 	}
 
 	// Get process count
 	procCount, err := getProcessCount()
 	if err != nil {
-		return nil, fmt.Errorf("⚠ Failed to get process count: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get process count", err)
 	}
 
 	// Update server status based on current metrics

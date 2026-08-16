@@ -2,11 +2,12 @@ package health
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // ConfigManager handles persistence of health check configurations
@@ -26,13 +27,13 @@ func InitConfigManager() (*ConfigManager, error) {
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, err
+		return nil, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to resolve home directory", err)
 	}
 
 	// Persist per-app under ~/.phelix/apps/<AppName>/health.json
 	basePath := filepath.Join(home, ".phelix", "apps")
 	if err := os.MkdirAll(basePath, 0755); err != nil {
-		return nil, err
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create health config directory %s", basePath)
 	}
 
 	configMgr = &ConfigManager{
@@ -42,7 +43,7 @@ func InitConfigManager() (*ConfigManager, error) {
 
 	// Load all existing configs
 	if err := configMgr.loadAllConfigs(); err != nil {
-		return nil, fmt.Errorf("failed to load health configs: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to load health configs", err)
 	}
 
 	return configMgr, nil
@@ -71,16 +72,19 @@ func (cm *ConfigManager) SaveConfig(appID string, config *AppHealthConfig) error
 	}
 	appConfigPath := filepath.Join(cm.basePath, appFolder)
 	if err := os.MkdirAll(appConfigPath, 0755); err != nil {
-		return err
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create app config directory %s", appConfigPath)
 	}
 
 	filePath := filepath.Join(appConfigPath, "health.json")
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to marshal health config", err)
 	}
 
-	return os.WriteFile(filePath, data, 0644)
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write health config %s", filePath)
+	}
+	return nil
 }
 
 // GetConfig retrieves a health check configuration
@@ -112,7 +116,7 @@ func (cm *ConfigManager) loadAllConfigs() error {
 		if os.IsNotExist(err) {
 			return nil // basePath doesn't exist yet
 		}
-		return err
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to list health config directory %s", cm.basePath)
 	}
 
 	for _, entry := range entries {
@@ -152,16 +156,19 @@ func (cm *ConfigManager) SaveHistory(appID, endpointName string, history *Health
 	}
 	appHistoryPath := filepath.Join(cm.basePath, appFolder, "health", "history")
 	if err := os.MkdirAll(appHistoryPath, 0755); err != nil {
-		return err
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create health history directory %s", appHistoryPath)
 	}
 
 	filePath := filepath.Join(appHistoryPath, endpointName+".json")
 	data, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to marshal health history", err)
 	}
 
-	return os.WriteFile(filePath, data, 0644)
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write health history %s", filePath)
+	}
+	return nil
 }
 
 // GetHistory retrieves health check history for an endpoint
@@ -200,7 +207,7 @@ func (cm *ConfigManager) SaveAutoRestartRecord(appID string, record *AutoRestart
 	}
 	appPath := filepath.Join(cm.basePath, appFolder, "health")
 	if err := os.MkdirAll(appPath, 0755); err != nil {
-		return err
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create health directory %s", appPath)
 	}
 
 	// Keep last 100 restart records
@@ -218,5 +225,8 @@ func (cm *ConfigManager) SaveAutoRestartRecord(appID string, record *AutoRestart
 	}
 
 	data, _ := json.MarshalIndent(records, "", "  ")
-	return os.WriteFile(recordsPath, data, 0644)
+	if err := os.WriteFile(recordsPath, data, 0644); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write restart records %s", recordsPath)
+	}
+	return nil
 }

@@ -3,11 +3,12 @@ package grpc
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -23,16 +24,25 @@ func loadSession() (*sessionData, error) {
 	path := filepath.Join(os.Getenv("HOME"), ".phelix", "session.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read session file: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, phelixerr.New(
+				phelixerr.CodeUnauthenticated,
+				"no active session found. Please run 'phelix auth login' first",
+			)
+		}
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read session file %s", path)
 	}
 
 	var session sessionData
 	if err := json.Unmarshal(data, &session); err != nil {
-		return nil, fmt.Errorf("failed to parse session file: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to parse session file", err)
 	}
 
 	if time.Now().After(session.ExpiresAt) {
-		return nil, fmt.Errorf("session expired")
+		return nil, phelixerr.New(
+			phelixerr.CodeSessionExpired,
+			"session has expired. Please re-authenticate",
+		)
 	}
 
 	return &session, nil

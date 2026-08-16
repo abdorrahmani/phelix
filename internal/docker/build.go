@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
 )
 
@@ -85,15 +86,15 @@ func BuildImage(cfg BuildConfig) (*BuildResult, error) {
 	// We merge both streams into a single indented view.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeDocker, "failed to create stdout pipe", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeDocker, "failed to create stderr pipe", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start docker build: %w", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeDocker, "failed to start docker build", err)
 	}
 
 	// Stream both pipes concurrently; collect all output for error reporting.
@@ -114,7 +115,10 @@ func BuildImage(cfg BuildConfig) (*BuildResult, error) {
 	}
 
 	if err != nil {
-		return result, fmt.Errorf("docker build failed: %w", err)
+		// ExitError carries the exit code; the wrapped cause preserves it for
+		// exit-status introspection. The full build output is NOT included here:
+		// it can contain build-arg values and registry credentials.
+		return result, phelixerr.Wrap(phelixerr.CodeDocker, "docker build failed", err)
 	}
 
 	// Extract the image ID from output if available
@@ -140,9 +144,10 @@ func streamPipe(r io.Reader, output *strings.Builder, dim *color.Color) {
 // TagImage tags a built image with a new tag.
 func TagImage(sourceImage, targetImage string) error {
 	cmd := exec.Command("docker", "tag", sourceImage, targetImage)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("docker tag failed: %w\nOutput:\n%s", err, string(output))
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// Exit status preserved via the wrapped cause; docker's stderr is not
+		// dumped (it may include registry auth details).
+		return phelixerr.Wrap(phelixerr.CodeDocker, "docker tag failed", err)
 	}
 	return nil
 }
@@ -167,9 +172,10 @@ func extractImageID(output string) string {
 // CheckDockerAvailable verifies that the docker CLI is installed and accessible.
 func CheckDockerAvailable() error {
 	cmd := exec.Command("docker", "version")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("docker is not available or not running: %w\nOutput:\n%s", err, string(output))
+	if _, err := cmd.CombinedOutput(); err != nil {
+		// The CLI's stderr is not dumped: it may contain registry/daemon auth
+		// details. The cause is preserved so the exit status stays inspectable.
+		return phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available or not running", err)
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/env"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -26,17 +27,17 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 func (m *AppManager) startApplicationProcess(id string, name string, port int, logFile string) error {
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to open log file: %v", err)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to open log file %s", logFile)
 	}
 	defer f.Close()
 
 	app, exists := m.Apps[id]
 	if !exists {
-		return fmt.Errorf("application %s not found", id)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found", id)
 	}
 
 	if app.Directory == "" {
-		return fmt.Errorf("application directory not found for ID %s", id)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "application directory not found for ID %s", id)
 	}
 
 	binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
@@ -57,7 +58,12 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	cmd.Env = envVars
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start failed: %v", err)
+		return phelixerr.Wrapf(
+			phelixerr.CodeProcessFailed,
+			err,
+			"failed to start application %q (ID: %s)",
+			name, id,
+		)
 	}
 
 	app.Cmd = cmd
@@ -118,7 +124,7 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 		// app.Cmd is nil (loaded from persisted state) — operate by PID.
 		proc, err := os.FindProcess(app.PID)
 		if err != nil {
-			return fmt.Errorf("failed to find process %d: %v", app.PID, err)
+			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "failed to find process %d", app.PID)
 		}
 
 		// Send SIGTERM and poll until the process exits or 5 s elapses.
@@ -139,7 +145,11 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 	// SIGKILL is asynchronous for a process managed by an earlier invocation,
 	// so give the kernel a short, bounded interval to finish termination.
 	if !m.waitForProcessExit(app.PID, time.Second) {
-		return fmt.Errorf("failed to stop application '%s' (ID: %s): process still running", app.Name, app.ID)
+		return phelixerr.Newf(
+			phelixerr.CodeProcessFailed,
+			"failed to stop application '%s' (ID: %s): process still running",
+			app.Name, app.ID,
+		)
 	}
 
 	return nil
@@ -173,8 +183,11 @@ func (m *AppManager) getProcessMetrics(pid int) (uint64, float64, error) {
 
 	// Check if process is actually running
 	running, err := p.IsRunning()
-	if err != nil || !running {
-		return 0, 0, fmt.Errorf("process is not running")
+	if err != nil {
+		return 0, 0, phelixerr.Wrap(phelixerr.CodeProcessFailed, "process is not running", err)
+	}
+	if !running {
+		return 0, 0, phelixerr.New(phelixerr.CodeProcessFailed, "process is not running")
 	}
 
 	var ramUsage uint64
@@ -218,5 +231,8 @@ func (m *AppManager) isProcessRunning(pid int) bool {
 
 // ensureLogDirectory ensures the log directory exists
 func (m *AppManager) ensureLogDirectory() error {
-	return os.MkdirAll(logDir, 0755)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create log directory %s", logDir)
+	}
+	return nil
 }

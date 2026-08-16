@@ -1,9 +1,10 @@
 package docker
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // Language represents the detected project language for dockerization.
@@ -25,12 +26,12 @@ func DetectLanguage(projectRoot string) (Language, error) {
 
 	switch {
 	case goFound && rustFound:
-		return "", fmt.Errorf("ambiguous project: both go.mod and Cargo.toml found in %s", projectRoot)
+		return "", phelixerr.Newf(phelixerr.CodeUnsupportedProject, "ambiguous project: both go.mod and Cargo.toml found in %s", projectRoot)
 	case goFound:
 		return LanguageGo, nil
 	case rustFound:
 		return LanguageRust, nil
 	default:
-		return "", fmt.Errorf("unsupported project: neither go.mod nor Cargo.toml found in %s", projectRoot)
+		return "", phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unsupported project: neither go.mod nor Cargo.toml found in %s", projectRoot)
 	}
 }

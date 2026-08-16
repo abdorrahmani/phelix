@@ -1,10 +1,10 @@
 package monitor
 
 import (
-	"fmt"
 	"log"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // appCommandExecutor executes lifecycle commands issued by the backend.
@@ -33,7 +33,7 @@ func resolveApp(identifier string) (*resolvedApp, error) {
 			return &resolvedApp{ID: a.ID, Name: a.Name, Port: a.Port}, nil
 		}
 	}
-	return nil, fmt.Errorf("app not found: %s", identifier)
+	return nil, phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", identifier)
 }
 
 // Execute runs a lifecycle command against a managed application.
@@ -73,7 +73,8 @@ func (e *appCommandExecutor) execFallback(cmd Command, appID string) error {
 		return err
 	}
 	if err := runPhelixCommand(execCmd); err != nil {
-		return fmt.Errorf("command failed: %v", err)
+		// %w (not %v) so the inner exit status remains inspectable.
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "command failed", err)
 	}
 	return nil
 }

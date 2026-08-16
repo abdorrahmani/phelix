@@ -1,8 +1,9 @@
 package app
 
 import (
-	"fmt"
 	"log"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // RestoreAutoStartApps restarts every application flagged for auto-start that
@@ -20,7 +21,7 @@ func (m *AppManager) RestoreAutoStartApps() (int, error) {
 	defer m.Lock.Unlock()
 
 	if err := m.LoadState(); err != nil {
-		return 0, fmt.Errorf("failed to load state: %w", err)
+		return 0, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
 	restored := 0
@@ -45,7 +46,7 @@ func (m *AppManager) RestoreAutoStartApps() (int, error) {
 		// startApplicationProcess updates each AppInfo in memory; persist so a
 		// crash right after restore still reflects the running PIDs.
 		if err := m.SaveState(); err != nil {
-			return restored, fmt.Errorf("failed to save state after restoring apps: %w", err)
+			return restored, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save state after restoring apps", err)
 		}
 	}
 

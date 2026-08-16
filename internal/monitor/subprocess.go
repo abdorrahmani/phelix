@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // newPhelixCommand builds the `phelix <type> <id>` subprocess for command types
@@ -14,7 +16,7 @@ func newPhelixCommand(cmdType, appID string) (*exec.Cmd, error) {
 	// Find the phelix executable in PATH
 	phelixPath, err := exec.LookPath("phelix")
 	if err != nil {
-		return nil, err
+		return nil, phelixerr.Wrap(phelixerr.CodeProcessFailed, "phelix executable not found in PATH", err)
 	}
 
 	execCmd := exec.Command(phelixPath, cmdType, appID)
@@ -44,15 +46,15 @@ func newPhelixCommand(cmdType, appID string) (*exec.Cmd, error) {
 func runPhelixCommand(execCmd *exec.Cmd) error {
 	stdout, err := execCmd.StdoutPipe()
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to create stdout pipe", err)
 	}
 	stderr, err := execCmd.StderrPipe()
 	if err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to create stderr pipe", err)
 	}
 
 	if err := execCmd.Start(); err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to start command", err)
 	}
 
 	stdoutDone := make(chan struct{})
@@ -74,7 +76,7 @@ func runPhelixCommand(execCmd *exec.Cmd) error {
 	}()
 
 	if err := execCmd.Wait(); err != nil {
-		return err
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "command failed", err)
 	}
 
 	<-stdoutDone

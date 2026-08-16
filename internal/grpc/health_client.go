@@ -4,10 +4,32 @@ import (
 	"context"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
+
+// rpcFailed converts a gRPC RPC failure into a structured Phelix error. The
+// code is derived from the gRPC status code so Unauthenticated, PermissionDenied,
+// Unavailable and DeadlineExceeded remain distinguishable — not every RPC
+// failure is a connection failure. The original status error is preserved as
+// the cause so status.Code / errors.Is still inspect it through the wrap.
+func rpcFailed(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	code := phelixerr.CodeConnection
+	if mapped := phelixerr.FromGRPC(err); mapped != nil {
+		if e := phelixerr.AsError(mapped); e != nil {
+			code = e.Code
+		}
+	}
+	if code == phelixerr.CodeUnknown {
+		code = phelixerr.CodeConnection
+	}
+	return phelixerr.Wrapf(code, err, "failed to %s", operation)
+}
 
 // sendHealthSetConfigWithClient sends a HealthSetConfigRequest using the given client.
 func sendHealthSetConfigWithClient(c *Client, req *pb.HealthSetConfigRequest) error {
@@ -22,7 +44,7 @@ func sendHealthSetConfigWithClient(c *Client, req *pb.HealthSetConfigRequest) er
 
 	resp, err := c.serviceClient.HealthSetConfig(authCtx, req)
 	if err != nil {
-		return err
+		return rpcFailed("send health configuration", err)
 	}
 	if !resp.Success {
 		grpcLog("[gRPC] HealthSetConfig rejected: %s", resp.GetError())
@@ -43,7 +65,7 @@ func sendHealthAddEndpointWithClient(c *Client, req *pb.HealthAddEndpointRequest
 
 	resp, err := c.serviceClient.HealthAddEndpoint(authCtx, req)
 	if err != nil {
-		return err
+		return rpcFailed("add health endpoint", err)
 	}
 	if !resp.Success {
 		grpcLog("[gRPC] HealthAddEndpoint rejected: %s", resp.GetError())
@@ -64,7 +86,7 @@ func sendHealthRemoveEndpointWithClient(c *Client, req *pb.HealthRemoveEndpointR
 
 	resp, err := c.serviceClient.HealthRemoveEndpoint(authCtx, req)
 	if err != nil {
-		return err
+		return rpcFailed("remove health endpoint", err)
 	}
 	if !resp.Success {
 		grpcLog("[gRPC] HealthRemoveEndpoint rejected: %s", resp.GetError())

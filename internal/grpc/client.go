@@ -3,12 +3,12 @@ package grpc
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/abdorrahmani/phelix/config"
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"google.golang.org/grpc"
@@ -83,7 +83,7 @@ func (c *Client) Connect() error {
 	serverID := server.GetServerID()
 	if serverID == "" {
 		grpcLog("[gRPC] No server ID available after initialization")
-		return fmt.Errorf("no server ID available")
+		return phelixerr.New(phelixerr.CodeServer, "no server ID available")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), connectionTimeout)
@@ -107,7 +107,12 @@ func (c *Client) Connect() error {
 		grpc.WithBlock(),
 	)
 	if err != nil {
-		return err
+		return phelixerr.Wrapf(
+			phelixerr.CodeConnection,
+			err,
+			"failed to connect to %s",
+			cfg.App.GRPCUrl,
+		)
 	}
 
 	c.mu.Lock()

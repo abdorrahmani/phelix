@@ -3,7 +3,6 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -60,12 +59,12 @@ func SendAppsToServer() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		data, _ := io.ReadAll(resp.Body)
+		// The response body is intentionally NOT embedded: it may contain
+		// session tokens or stack traces. Only the status is surfaced.
 		return phelixerr.Newf(
 			phelixerr.CodeServer,
-			"server returned %d: %s",
+			"server returned HTTP %d",
 			resp.StatusCode,
-			string(data),
 		)
 	}
 
