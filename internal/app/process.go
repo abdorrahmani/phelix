@@ -19,12 +19,7 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 		return false
 	}
 
-	p, err := process.NewProcess(int32(app.PID))
-	if err != nil {
-		return false
-	}
-	running, _ := p.IsRunning()
-	return running
+	return m.isProcessRunning(app.PID)
 }
 
 // startApplicationProcess starts the application process and updates the app info
@@ -85,6 +80,14 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 	if app.PID <= 0 {
 		return nil
 	}
+	// A process that has already exited (including a zombie that has not yet
+	// been reaped by its parent) no longer holds resources such as the app's
+	// listening port. Treat it as stopped instead of trying to signal its stale
+	// PID. gopsutil's IsRunning reports zombies as running because their /proc
+	// entry still exists.
+	if !m.isProcessRunning(app.PID) {
+		return nil
+	}
 
 	if app.Cmd != nil && app.Cmd.Process != nil {
 		// In-process handle available — use it directly.
@@ -131,31 +134,12 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// Reap the child process to avoid zombie entry.
-		syscall.Wait4(app.PID, nil, 0, nil)
 	}
 
-	// Final verification with gopsutil.
-	time.Sleep(500 * time.Millisecond)
-	p, err := process.NewProcess(int32(app.PID))
-	if err == nil {
-		alive, _ := p.IsRunning()
-		if alive {
-			fmt.Println("Process is still running, using system kill command")
-			if killErr := exec.Command("kill", "-9", fmt.Sprintf("%d", app.PID)).Run(); killErr != nil {
-				fmt.Printf("  kill -9 failed: %v\n", killErr)
-			}
-			time.Sleep(1 * time.Second)
-		}
-	}
-
-	// One last check.
-	p, err = process.NewProcess(int32(app.PID))
-	if err == nil {
-		alive, _ := p.IsRunning()
-		if alive {
-			return fmt.Errorf("failed to stop application '%s' (ID: %s): process still running", app.Name, app.ID)
-		}
+	// SIGKILL is asynchronous for a process managed by an earlier invocation,
+	// so give the kernel a short, bounded interval to finish termination.
+	if !m.waitForProcessExit(app.PID, time.Second) {
+		return fmt.Errorf("failed to stop application '%s' (ID: %s): process still running", app.Name, app.ID)
 	}
 
 	return nil
@@ -211,7 +195,9 @@ func (m *AppManager) getProcessMetrics(pid int) (uint64, float64, error) {
 	return ramUsage, cpuUsage, nil
 }
 
-// isProcessRunning checks if a process is running via gopsutil.
+// isProcessRunning checks whether a PID represents a live process. A zombie
+// still has a PID and is reported as running by gopsutil, but has already
+// exited and cannot keep an application port open.
 func (m *AppManager) isProcessRunning(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -221,8 +207,13 @@ func (m *AppManager) isProcessRunning(pid int) bool {
 	if err != nil {
 		return false
 	}
-	running, _ := p.IsRunning()
-	return running
+	running, err := p.IsRunning()
+	if err != nil || !running {
+		return false
+	}
+
+	status, err := p.Status()
+	return err != nil || status != "Z"
 }
 
 // ensureLogDirectory ensures the log directory exists

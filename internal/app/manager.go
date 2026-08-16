@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // AppManager manages the lifecycle of applications
@@ -75,6 +76,17 @@ func (m *AppManager) StopApplication(id string) error {
 	}
 
 	if app.Status != "running" {
+		// State can be stale when an earlier Phelix invocation was terminated or
+		// the child was reaped by another parent. Stopping an already-exited app
+		// is successful and makes `phelix stop` safe to retry.
+		if !m.isProcessRunning(app.PID) {
+			app.Status = "stopped"
+			app.PID = 0
+			app.Cmd = nil
+			app.AutoStart = false
+			app.UpdatedAt = time.Now()
+			return m.SaveState()
+		}
 		return fmt.Errorf("application '%s' (ID: %s) is not running", app.Name, id)
 	}
 
@@ -83,6 +95,7 @@ func (m *AppManager) StopApplication(id string) error {
 	}
 
 	app.Status = "stopped"
+	app.PID = 0
 	app.Cmd = nil
 	// An explicit stop clears auto-start intent: the app must not be restored
 	// automatically the next time the monitor daemon launches.

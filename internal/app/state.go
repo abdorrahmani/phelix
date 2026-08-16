@@ -214,6 +214,10 @@ func (m *AppManager) LoadState() error {
 			appInfo.Status = "running"
 		} else if saved.Status == "running" {
 			appInfo.Status = "stopped"
+			// Do not retain a dead PID. Apart from being misleading in status
+			// output, a zombie PID may remain visible in /proc indefinitely when
+			// its parent does not reap it.
+			appInfo.PID = 0
 		}
 
 		// Only update timestamp if status changed
