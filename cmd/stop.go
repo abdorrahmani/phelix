@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/spf13/cobra"
 )
@@ -16,7 +17,7 @@ var StopCmd = &cobra.Command{
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf(" ⚠ Failed to load app state: %v", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		appInfo, err := GetAppInfo(identifier)
@@ -26,7 +27,13 @@ var StopCmd = &cobra.Command{
 
 		if err := app.Manager.StopApplication(appInfo.ID); err != nil {
 			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", false, err.Error(), 0, "", "")
-			return fmt.Errorf(" ⚠ Failed to stop application '%s' (ID: %s) : %v", appInfo.Name, appInfo.ID, err)
+			return phelixerr.Wrapf(
+				phelixerr.CodeProcessFailed,
+				err,
+				"failed to stop application %q (ID: %s)",
+				appInfo.Name,
+				appInfo.ID,
+			)
 		}
 
 		fmt.Printf("✓ Application '%s' (ID: %s) stopped successfully\n", appInfo.Name, appInfo.ID)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	grpcClient "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/spf13/cobra"
@@ -44,7 +45,7 @@ var healthSetCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load app state: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		appID, err := resolveAppID(args[0])
@@ -54,13 +55,13 @@ var healthSetCmd = &cobra.Command{
 
 		appInfo := findApp(appID)
 		if appInfo == nil {
-			return fmt.Errorf("app not found: %s", args[0])
+			return phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", args[0])
 		}
 
 		// Initialize config manager
 		configMgr, err := health.InitConfigManager()
 		if err != nil {
-			return fmt.Errorf("failed to initialize config: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize config", err)
 		}
 
 		// Get or create config
@@ -80,7 +81,7 @@ var healthSetCmd = &cobra.Command{
 			interval = healthInterval
 			// Validate duration format
 			if _, err := time.ParseDuration(interval); err != nil {
-				return fmt.Errorf("invalid interval format: %s", interval)
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid interval format: %s", interval)
 			}
 		}
 
@@ -94,7 +95,7 @@ var healthSetCmd = &cobra.Command{
 		if healthTimeout != "" {
 			timeout = healthTimeout
 			if _, err := time.ParseDuration(timeout); err != nil {
-				return fmt.Errorf("invalid timeout format: %s", timeout)
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid timeout format: %s", timeout)
 			}
 		}
 
@@ -131,7 +132,7 @@ var healthSetCmd = &cobra.Command{
 			case health.TierModeAuto, health.TierModeHTTP, health.TierModeTCPOnly, health.TierModeNone:
 				mode = health.DeployTierMode(healthMode)
 			default:
-				return fmt.Errorf("invalid --mode %q: must be one of auto, http, tcp-only, none", healthMode)
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid --mode %q: must be one of auto, http, tcp-only, none", healthMode)
 			}
 		}
 		config.DeployTier = &health.DeployTierConfig{
@@ -144,7 +145,7 @@ var healthSetCmd = &cobra.Command{
 
 		// Save config
 		if err := configMgr.SaveConfig(appID, config); err != nil {
-			return fmt.Errorf("failed to save config: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
 		}
 
 		// Sync to backend via gRPC
@@ -164,7 +165,7 @@ var healthAddCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load app state: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		appID, err := resolveAppID(args[0])
@@ -174,21 +175,21 @@ var healthAddCmd = &cobra.Command{
 
 		appInfo := findApp(appID)
 		if appInfo == nil {
-			return fmt.Errorf("app not found: %s", args[0])
+			return phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", args[0])
 		}
 
 		if healthName == "" {
-			return fmt.Errorf("endpoint name is required (--name)")
+			return phelixerr.New(phelixerr.CodeInvalidArgument, "endpoint name is required (--name)")
 		}
 
 		if healthURL == "" {
-			return fmt.Errorf("endpoint URL is required (--url)")
+			return phelixerr.New(phelixerr.CodeInvalidArgument, "endpoint URL is required (--url)")
 		}
 
 		// Initialize config manager
 		configMgr, err := health.InitConfigManager()
 		if err != nil {
-			return fmt.Errorf("failed to initialize config: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize config", err)
 		}
 
 		// Get or create config
@@ -204,7 +205,7 @@ var healthAddCmd = &cobra.Command{
 
 		// Check if endpoint already exists
 		if _, exists := config.Endpoints[healthName]; exists {
-			return fmt.Errorf("endpoint '%s' already exists", healthName)
+			return phelixerr.Newf(phelixerr.CodeAlreadyExists, "endpoint %q already exists", healthName)
 		}
 
 		// Parse parameters
@@ -212,7 +213,7 @@ var healthAddCmd = &cobra.Command{
 		if healthInterval != "" {
 			interval = healthInterval
 			if _, err := time.ParseDuration(interval); err != nil {
-				return fmt.Errorf("invalid interval format: %s", interval)
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid interval format: %s", interval)
 			}
 		}
 
@@ -225,7 +226,7 @@ var healthAddCmd = &cobra.Command{
 		if healthTimeout != "" {
 			timeout = healthTimeout
 			if _, err := time.ParseDuration(timeout); err != nil {
-				return fmt.Errorf("invalid timeout format: %s", timeout)
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid timeout format: %s", timeout)
 			}
 		}
 
@@ -246,7 +247,7 @@ var healthAddCmd = &cobra.Command{
 
 		// Save config locally
 		if err := configMgr.SaveConfig(appID, config); err != nil {
-			return fmt.Errorf("failed to save config: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
 		}
 
 		// Sync to backend via gRPC
@@ -267,7 +268,7 @@ var healthRemoveCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load app state: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		appID, err := resolveAppID(args[0])
@@ -277,31 +278,31 @@ var healthRemoveCmd = &cobra.Command{
 
 		appInfo := findApp(appID)
 		if appInfo == nil {
-			return fmt.Errorf("app not found: %s", args[0])
+			return phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", args[0])
 		}
 
 		if healthName == "" {
-			return fmt.Errorf("endpoint name is required (--name)")
+			return phelixerr.New(phelixerr.CodeInvalidArgument, "endpoint name is required (--name)")
 		}
 
 		// Initialize config manager
 		configMgr, err := health.InitConfigManager()
 		if err != nil {
-			return fmt.Errorf("failed to initialize config: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize config", err)
 		}
 
 		config := configMgr.GetConfig(appID)
 		if config == nil {
-			return fmt.Errorf("no health checks configured for this app")
+			return phelixerr.New(phelixerr.CodeNotFound, "no health checks configured for this app")
 		}
 
 		if _, exists := config.Endpoints[healthName]; !exists {
-			return fmt.Errorf("endpoint '%s' not found", healthName)
+			return phelixerr.Newf(phelixerr.CodeNotFound, "endpoint %q not found", healthName)
 		}
 
 		delete(config.Endpoints, healthName)
 		if err := configMgr.SaveConfig(appID, config); err != nil {
-			return fmt.Errorf("failed to save config: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
 		}
 
 		// Sync to backend via gRPC
@@ -319,7 +320,7 @@ var healthListCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load app state: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		appID, err := resolveAppID(args[0])
@@ -329,13 +330,13 @@ var healthListCmd = &cobra.Command{
 
 		appInfo := findApp(appID)
 		if appInfo == nil {
-			return fmt.Errorf("app not found: %s", args[0])
+			return phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", args[0])
 		}
 
 		// Initialize config manager
 		configMgr, err := health.InitConfigManager()
 		if err != nil {
-			return fmt.Errorf("failed to initialize config: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize config", err)
 		}
 
 		config := configMgr.GetConfig(appID)
@@ -373,7 +374,7 @@ var healthStatusCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load app state: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		appID, err := resolveAppID(args[0])
@@ -383,7 +384,7 @@ var healthStatusCmd = &cobra.Command{
 
 		appInfo := findApp(appID)
 		if appInfo == nil {
-			return fmt.Errorf("app not found: %s", args[0])
+			return phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", args[0])
 		}
 
 		// Try the global daemon first
@@ -429,7 +430,7 @@ var healthWatchCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load app state: %w", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		appID, err := resolveAppID(args[0])
@@ -439,7 +440,7 @@ var healthWatchCmd = &cobra.Command{
 
 		appInfo := findApp(appID)
 		if appInfo == nil {
-			return fmt.Errorf("app not found: %s", args[0])
+			return phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", args[0])
 		}
 
 		// Get the global daemon
@@ -594,7 +595,7 @@ func startDaemonBackground() error {
 		c.Stderr = devnull
 	}
 	if err := c.Start(); err != nil {
-		return fmt.Errorf("✗ failed to start health daemon: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to start health daemon", err)
 	}
 	_ = c.Process.Release()
 
@@ -611,7 +612,7 @@ func startDaemonBackground() error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("✗ health daemon did not start within 5s")
+	return phelixerr.New(phelixerr.CodeTimeout, "health daemon did not start within 5s")
 }
 
 // runHealthDaemonForeground is the long-running daemon loop executed by the
@@ -626,7 +627,7 @@ func runHealthDaemonForeground() error {
 
 	// Write PID file
 	if err := writeHealthDaemonPID(); err != nil {
-		return fmt.Errorf("failed to write PID file: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to write PID file", err)
 	}
 	defer removeHealthDaemonPIDFile()
 
@@ -655,7 +656,7 @@ func runHealthDaemonForeground() error {
 	}
 
 	if err := globalDaemon.Start(); err != nil {
-		return fmt.Errorf("failed to start daemon: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to start daemon", err)
 	}
 
 	fmt.Println("Health check daemon started")
@@ -708,7 +709,7 @@ func findApp(appID string) *app.AppListItem {
 func runOneShotHealthCheck(appID string, appInfo *app.AppListItem) error {
 	configMgr, err := health.InitConfigManager()
 	if err != nil {
-		return fmt.Errorf("failed to initialize config: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize config", err)
 	}
 
 	config := configMgr.GetConfig(appID)

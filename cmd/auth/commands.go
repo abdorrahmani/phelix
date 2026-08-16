@@ -2,9 +2,9 @@ package auth
 
 import (
 	"fmt"
-	"log"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -27,8 +27,12 @@ var LoginCmd = &cobra.Command{
 		}
 
 		if err := authenticate(username, apiKey); err != nil {
-			log.Printf("⚠ Authentication failed: %v", err)
-			return err
+			return phelixerr.Wrapf(
+				phelixerr.CodeInvalidCredentials,
+				err,
+				"authentication failed for username %q",
+				username,
+			)
 		}
 
 		printWelcome(username)
@@ -52,7 +56,11 @@ var StatusCmd = &cobra.Command{
 		}
 
 		if err := VerifySession(session); err != nil {
-			return fmt.Errorf("⚠ session invalid: %w", err)
+			return phelixerr.Wrapf(
+				phelixerr.CodeUnauthenticated,
+				err,
+				"session invalid",
+			)
 		}
 
 		printSession(session)
@@ -96,7 +104,6 @@ func printWelcome(username string) {
 	fmt.Printf("Hi %s, welcome to Phelix!\n", bold(username))
 	fmt.Printf("You can monitor your apps at %s\n", green("phelix.anophel.com"))
 	fmt.Printf("%s\n\n", green("Authentication successful!"))
-	log.Printf("✓ Authentication successful for %s", username)
 }
 
 // cyan color func for the banner.

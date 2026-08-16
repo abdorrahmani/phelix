@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"log"
 	"os"
 
 	"github.com/abdorrahmani/phelix/cmd"
@@ -18,7 +16,10 @@ var healthDaemon *health.GlobalDaemon
 func main() {
 	err := config.Load()
 	if err != nil {
-		log.Fatal(err)
+		// config.Load runs before the command tree exists; render through the
+		// CLI error boundary so even early failures use the same presentation
+		// and exit-code mapping.
+		os.Exit(cmd.RenderError(err, cmd.Debug))
 	}
 
 	healthDaemon = health.InitGlobalDaemon()
@@ -27,20 +28,25 @@ func main() {
 		Use:     "phelix",
 		Short:   "Phelix - Go/Rust Application Manager",
 		Version: version.Version,
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Errors are rendered exactly once by the top-level Execute() handler
+		// below. Silence cobra's own printing so nothing is duplicated.
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// `phelix auth status` requires a valid session before the command
+			// body runs. Returning an error routes it through the central CLI
+			// error renderer (stderr + mapped exit code) instead of printing
+			// directly and os.Exit(1).
 			if cmd.Name() == "auth" && len(args) > 0 && args[0] == "status" {
 				session, err := auth.GetValidSession()
 				if err != nil {
-					fmt.Printf("Authentication required: %v\n", err)
-					fmt.Println("Please run 'phelix auth login' to authenticate first")
-					os.Exit(1)
+					return err
 				}
 				if err := auth.VerifySession(session); err != nil {
-					fmt.Printf("Invalid session: %v\n", err)
-					fmt.Println("Please run 'phelix auth login' again")
-					os.Exit(1)
+					return err
 				}
 			}
+			return nil
 		},
 	}
 
@@ -65,8 +71,13 @@ func main() {
 	rootCmd.AddCommand(cmd.VersionCmd)
 	rootCmd.SetVersionTemplate("Phelix CLI {{.Version}}\n")
 
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+	// Global flags: --debug is the single debug switch shared by all
+	// subcommands. It is bound to cmd.Debug so the error renderer (which reads
+	// the same variable) discloses the root cause chain only in debug mode.
+	rootCmd.PersistentFlags().BoolVar(&cmd.Debug, "debug", false, "Show verbose error details and debug output")
+
+	err = rootCmd.Execute()
+	if err != nil {
+		os.Exit(cmd.RenderError(err, cmd.Debug))
 	}
 }

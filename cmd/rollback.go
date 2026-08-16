@@ -9,6 +9,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/proxy"
@@ -35,7 +36,7 @@ var RollbackCmd = &cobra.Command{
 		name := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("%s failed to load state: %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
 		appInfo, err := GetAppInfo(name)
@@ -55,12 +56,12 @@ var RollbackCmd = &cobra.Command{
 		if rollbackTo != "" {
 			target, err = deploy.ResolveVersionOrTag(name, rollbackTo)
 			if err != nil {
-				return fmt.Errorf("%s %v", color.RedString("✗"), err)
+				return phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "could not resolve rollback target", err)
 			}
 		} else {
 			target, err = deploy.PreviousVersion(name)
 			if err != nil {
-				return fmt.Errorf("%s %v", color.RedString("✗"), err)
+				return phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "could not resolve previous version", err)
 			}
 		}
 
@@ -122,13 +123,17 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	socket, err := proxy.DefaultSocketPath()
 	if err != nil {
 		r.Emit(phelixgrpc.RollbackStepProxyEnsuring, false, "failed to determine proxy socket path", time.Since(totalStart), err.Error())
-		return fmt.Errorf("%s could not determine proxy socket path: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
 	}
 	fmt.Printf("  %s Ensuring proxy daemon is running...\n", color.BlueString("→"))
 	if err := proxy.EnsureDaemon(context.Background(), "", 5*time.Second); err != nil {
 		r.Emit(phelixgrpc.RollbackStepProxyEnsuring, false, "failed to start proxy daemon", time.Since(totalStart), err.Error())
-		return fmt.Errorf("%s %v\n  Start it manually with: %s",
-			color.RedString("✗"), err, color.CyanString("phelix proxy"))
+		return phelixerr.Wrapf(
+			phelixerr.CodeProxy,
+			err,
+			"could not start proxy daemon\n  Start it manually with: %s",
+			color.CyanString("phelix proxy"),
+		)
 	}
 	r.Emit(phelixgrpc.RollbackStepProxyEnsuring, true, "proxy daemon running", time.Since(stepStart), "")
 
@@ -137,8 +142,12 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	proxyClient := proxy.NewClient(socket)
 	if err := proxyClient.Ping(context.Background()); err != nil {
 		r.Emit(phelixgrpc.RollbackStepProxyReady, false, "proxy not responding", time.Since(totalStart), err.Error())
-		return fmt.Errorf("%s %v\n  Start it first with: %s",
-			color.RedString("✗"), err, color.CyanString("phelix proxy"))
+		return phelixerr.Wrapf(
+			phelixerr.CodeConnection,
+			err,
+			"proxy daemon did not respond\n  Start it first with: %s",
+			color.CyanString("phelix proxy"),
+		)
 	}
 	r.Emit(phelixgrpc.RollbackStepProxyReady, true, "proxy ping successful", time.Since(stepStart), "")
 
@@ -167,7 +176,7 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	r.SetMetadata("rollback_duration_ms", fmt.Sprintf("%d", rollbackDuration.Milliseconds()))
 	if err != nil {
 		r.Emit(phelixgrpc.RollbackStepFailed, false, "zero-downtime rollback failed", time.Since(totalStart), err.Error())
-		return err
+		return phelixerr.Wrap(phelixerr.CodeRollbackFailed, "zero-downtime rollback failed", err)
 	}
 
 	// Step: complete
@@ -210,7 +219,7 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int) error {
 	binPath, _, err := deploy.VersionPaths(appName, target)
 	if err != nil {
 		r.Emit(phelixgrpc.RollbackStepVersionResolved, false, "failed to resolve version paths", time.Since(totalStart), err.Error())
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "failed to resolve version paths", err)
 	}
 	r.SetMetadata("binary_path", binPath)
 	r.Emit(phelixgrpc.RollbackStepVersionResolved, true, fmt.Sprintf("binary path: %s", binPath), time.Since(stepStart), "")
@@ -239,7 +248,7 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int) error {
 	r.SetMetadata("dest_binary", destBin)
 	if err := copyFileForRollback(binPath, destBin); err != nil {
 		r.Emit(phelixgrpc.RollbackStepBinaryCopied, false, "failed to copy versioned binary", time.Since(totalStart), err.Error())
-		return fmt.Errorf("%s failed to copy versioned binary: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeRollbackFailed, "failed to copy versioned binary", err)
 	}
 	r.Emit(phelixgrpc.RollbackStepBinaryCopied, true, fmt.Sprintf("binary copied to %s", destBin), time.Since(stepStart), "")
 
@@ -255,7 +264,13 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int) error {
 	fmt.Printf("  %s Starting rolled-back binary on port %d...\n", color.BlueString("→"), port)
 	if err := app.Manager.StartApplication(appInfo.ID, port, appName); err != nil {
 		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to start rolled-back application", time.Since(totalStart), err.Error())
-		return fmt.Errorf("%s failed to start rolled-back application: %v", color.RedString("✗"), err)
+		return phelixerr.Wrapf(
+			phelixerr.CodeRollbackFailed,
+			err,
+			"failed to start rolled-back application %q (ID: %s)",
+			appName,
+			appInfo.ID,
+		)
 	}
 	r.Emit(phelixgrpc.RollbackStepNewStarted, true, fmt.Sprintf("started on port %d", port), time.Since(stepStart), "")
 
@@ -318,7 +333,7 @@ func listRollbackVersions(appName string, policy deploy.RetentionPolicy, appInfo
 	vers, err := deploy.ListVersionsForDisplay(appName, policy)
 	if err != nil {
 		r.Emit(phelixgrpc.RollbackStepListVersions, false, "failed to list versions", time.Since(totalStart), err.Error())
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to list versions", err)
 	}
 
 	// Step: init

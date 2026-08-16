@@ -73,7 +73,7 @@ func AsError(err error) *Error {
 // or CodeUnknown when err is nil or carries no structured code.
 func CodeOf(err error) Code {
 	if err == nil {
-		return CodeOK
+		return CodeUnknown
 	}
 	if e := AsError(err); e != nil {
 		return e.Code

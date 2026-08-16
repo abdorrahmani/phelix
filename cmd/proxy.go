@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -54,7 +55,7 @@ var proxyStatusCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		socket, err := proxy.DefaultSocketPath()
 		if err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
 		}
 		client := proxy.NewClient(socket)
 		if err := client.Ping(context.Background()); err != nil {
@@ -65,7 +66,7 @@ var proxyStatusCmd = &cobra.Command{
 
 		statuses, err := client.Status(context.Background(), "")
 		if err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeProxy, "failed to query proxy status", err)
 		}
 
 		fmt.Printf("%s Proxy daemon is running\n", color.GreenString("✓"))
@@ -101,7 +102,7 @@ var proxyStopCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		socket, err := proxy.DefaultSocketPath()
 		if err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
 		}
 		client := proxy.NewClient(socket)
 		if !client.IsRunning() {
@@ -109,7 +110,7 @@ var proxyStopCmd = &cobra.Command{
 			return nil
 		}
 		if err := client.Shutdown(context.Background()); err != nil {
-			return fmt.Errorf("%s failed to stop proxy: %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeProxy, "failed to stop proxy", err)
 		}
 		fmt.Printf("%s Proxy daemon stopped\n", color.GreenString("✓"))
 		return nil
@@ -127,7 +128,7 @@ func init() {
 func startProxyBackground() error {
 	socket, err := proxy.DefaultSocketPath()
 	if err != nil {
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
 	}
 	client := proxy.NewClient(socket)
 	if client.IsRunning() {
@@ -149,7 +150,7 @@ func startProxyBackground() error {
 		cmd.Stderr = devnull
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("%s failed to start proxy daemon: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeProxy, "failed to start proxy daemon", err)
 	}
 	_ = cmd.Process.Release()
 
@@ -165,8 +166,11 @@ func startProxyBackground() error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("%s proxy daemon did not become reachable on %s within 5s",
-		color.RedString("✗"), socket)
+	return phelixerr.Newf(
+		phelixerr.CodeTimeout,
+		"proxy daemon did not become reachable on %s within 5s",
+		socket,
+	)
 }
 
 // runProxyForeground is the long-running daemon loop. It is what the detached
@@ -174,18 +178,18 @@ func startProxyBackground() error {
 func runProxyForeground() error {
 	socket, err := proxy.DefaultSocketPath()
 	if err != nil {
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
 	}
 
 	// Refuse a second foreground instance if one is already answering.
 	existing := proxy.NewClient(socket)
 	if existing.IsRunning() {
-		return fmt.Errorf("%s proxy daemon already running on %s", color.RedString("✗"), socket)
+		return phelixerr.Newf(phelixerr.CodeProxy, "proxy daemon already running on %s", socket)
 	}
 
 	daemon := proxy.NewDaemon(socket)
 	if err := daemon.Run(); err != nil {
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeProxy, "proxy daemon failed to start", err)
 	}
 
 	fmt.Printf("%s Proxy daemon listening on %s\n", color.GreenString("✓"), color.CyanString(socket))
@@ -200,7 +204,7 @@ func runProxyForeground() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := daemon.Shutdown(ctx); err != nil {
-		return fmt.Errorf("%s shutdown error: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeProxy, "proxy shutdown error", err)
 	}
 	fmt.Printf("%s Proxy daemon stopped\n", color.GreenString("✓"))
 	return nil

@@ -2,11 +2,11 @@ package auth
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/abdorrahmani/phelix/config"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // authenticate performs login with the given credentials.
@@ -14,7 +14,7 @@ func authenticate(username, apiKey string) error {
 	cfg := config.Get()
 	req, err := http.NewRequest("POST", cfg.App.API+"/auth/phelix", nil)
 	if err != nil {
-		return fmt.Errorf("⚠ error creating request: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "error creating request", err)
 	}
 
 	req.Header.Set("X-API-Key", apiKey)
@@ -22,12 +22,16 @@ func authenticate(username, apiKey string) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("⚠ error sending request: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "error sending request", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("⚠ invalid credentials: status code %d", resp.StatusCode)
+		return phelixerr.Newf(
+			phelixerr.CodeInvalidCredentials,
+			"invalid credentials: status code %d",
+			resp.StatusCode,
+		)
 	}
 
 	var result struct {
@@ -36,7 +40,7 @@ func authenticate(username, apiKey string) error {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("⚠ error decoding response: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "error decoding response", err)
 	}
 
 	return storeSession(result.Session, result.Token)
@@ -55,12 +59,12 @@ func VerifySession(session *Session) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("⚠ error verifying session: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "error verifying session", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("⚠ invalid session")
+		return phelixerr.New(phelixerr.CodeSessionExpired, "invalid session")
 	}
 
 	return nil
@@ -78,13 +82,17 @@ func performLogout(session *Session) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("⚠ error sending logout request: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "error sending logout request", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("⚠ logout failed: %s", string(body))
+		return phelixerr.Newf(
+			phelixerr.CodeNetwork,
+			"logout failed: server returned %s",
+			string(body),
+		)
 	}
 	return nil
 }

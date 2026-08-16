@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +20,7 @@ var LogCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("⚠ Failed to load app state: %v", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		if len(args) == 0 {
@@ -46,7 +47,7 @@ func displaySelfLogs() error {
 
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("⚠ Failed to open log file: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to open log file", err)
 	}
 	defer f.Close()
 
@@ -56,7 +57,12 @@ func displaySelfLogs() error {
 func displayLogs(appInfo *app.AppInfo) error {
 	f, err := os.Open(appInfo.LogFile)
 	if err != nil {
-		return fmt.Errorf("⚠ Failed to open log file %s: %v", appInfo.LogFile, err)
+		return phelixerr.Wrapf(
+			phelixerr.CodeFilesystem,
+			err,
+			"failed to open log file %s",
+			appInfo.LogFile,
+		)
 	}
 	defer f.Close()
 
@@ -85,7 +91,7 @@ func streamLogs(name string, f *os.File) error {
 func displayHistoricalLogs(f *os.File) error {
 	lastLines, err := getLastNLines(f, 10)
 	if err != nil {
-		return fmt.Errorf("⚠ Failed to read historical logs: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read historical logs", err)
 	}
 
 	for _, line := range lastLines {
@@ -93,7 +99,7 @@ func displayHistoricalLogs(f *os.File) error {
 	}
 
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("⚠ Failed to seek to end of log file: %v", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to seek to end of log file", err)
 	}
 
 	return nil

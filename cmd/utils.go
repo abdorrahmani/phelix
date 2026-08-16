@@ -1,9 +1,8 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -19,7 +18,11 @@ func GetAppInfo(identifier string) (*app.AppInfo, error) {
 			return a, nil
 		}
 	}
-	return nil, fmt.Errorf("application not found with ID or Name: %s", identifier)
+	return nil, phelixerr.Newf(
+		phelixerr.CodeNotFound,
+		"application not found with ID or Name: %s",
+		identifier,
+	)
 }
 
 // DetermineAppParameters determines the name and port to use for an application

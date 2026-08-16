@@ -2,10 +2,11 @@ package auth
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 const sessionFileName = "session.json"
@@ -34,7 +35,12 @@ func readSession() (*Session, error) {
 func storeSession(sessionID, token string) error {
 	sessionDir := filepath.Join(os.Getenv("HOME"), ".phelix")
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
-		return fmt.Errorf("⚠ error creating session directory %s: %w", sessionDir, err)
+		return phelixerr.Wrapf(
+			phelixerr.CodeFilesystem,
+			err,
+			"error creating session directory %s",
+			sessionDir,
+		)
 	}
 
 	session := Session{
@@ -45,7 +51,7 @@ func storeSession(sessionID, token string) error {
 
 	data, err := json.Marshal(session)
 	if err != nil {
-		return fmt.Errorf("⚠ error serializing session: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "error serializing session", err)
 	}
 
 	return os.WriteFile(getSessionFilePath(), data, 0600)
@@ -60,11 +66,17 @@ func removeSession() error {
 func GetValidSession() (*Session, error) {
 	session, err := readSession()
 	if err != nil {
-		return nil, fmt.Errorf("⚠ no active session found. Please run 'phelix auth' first")
+		return nil, phelixerr.New(
+			phelixerr.CodeUnauthenticated,
+			"no active session found. Please run 'phelix auth login' first",
+		)
 	}
 
 	if time.Now().After(session.ExpiresAt) {
-		return nil, fmt.Errorf("⚠ session has expired. Please re-authenticate")
+		return nil, phelixerr.New(
+			phelixerr.CodeSessionExpired,
+			"session has expired. Please re-authenticate",
+		)
 	}
 	return session, nil
 }

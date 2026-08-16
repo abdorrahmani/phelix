@@ -41,16 +41,17 @@ func Redact(s string) string {
 	out := s
 	for _, pat := range credentialPatterns {
 		idx := 0
+		lowPat := strings.ToLower(pat)
 		lowOut := strings.ToLower(out)
 		for {
-			pos := strings.Index(lowOut[idx:], strings.ToLower(pat))
+			pos := strings.Index(lowOut[idx:], lowPat)
 			if pos < 0 {
 				break
 			}
 			pos += idx
-			end := min(pos+len(pat), len(out))
+			end := pos + len(pat)
 			// If this is a key= style marker, mask the rest of the token too.
-			if strings.HasSuffix(lowOut[pos:end], "=") || strings.EqualFold(pat, "Bearer ") {
+			if pat[len(pat)-1] == '=' || strings.EqualFold(pat, "Bearer ") {
 				j := end
 				for j < len(out) && (isTokenChar(out[j]) || out[j] == '.' || out[j] == '-' || out[j] == '_') {
 					j++

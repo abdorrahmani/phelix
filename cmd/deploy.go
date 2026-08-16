@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -22,7 +23,7 @@ var deployUnlockCmd = &cobra.Command{
 
 		state, err := deploy.Load(appName)
 		if err != nil {
-			return fmt.Errorf("%s Could not load deploy state: %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeDeployFailed, "could not load deploy state", err)
 		}
 
 		if state.OpLock == nil {
@@ -36,7 +37,7 @@ var deployUnlockCmd = &cobra.Command{
 
 		state.OpLock = nil
 		if err := deploy.Store(state); err != nil {
-			return fmt.Errorf("%s Failed to save state: %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save deploy state", err)
 		}
 
 		fmt.Printf("%s Deploy lock cleared for %s\n", color.GreenString("✓"), color.CyanString("'%s'", appName))

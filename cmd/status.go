@@ -6,6 +6,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
@@ -20,12 +21,12 @@ var StatusCmd = &cobra.Command{
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("failed to load state: %v", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
 		status, err := app.Manager.StatusApplication(identifier)
 		if err != nil {
-			return fmt.Errorf("error getting status: %v", err)
+			return phelixerr.Wrap(phelixerr.CodeProcessFailed, "error getting status", err)
 		}
 
 		displayStatus(status)

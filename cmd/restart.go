@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/spf13/cobra"
 )
@@ -16,7 +17,7 @@ var RestartCmd = &cobra.Command{
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("⚠ Failed to load state: %v", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
 		appInfo, err := GetAppInfo(identifier)
@@ -27,7 +28,13 @@ var RestartCmd = &cobra.Command{
 		fmt.Printf("• Restarting Application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
 		if err := app.Manager.RestartApplication(appInfo.ID); err != nil {
 			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
-			return fmt.Errorf("⚠ Restart failed: %v", err)
+			return phelixerr.Wrapf(
+				phelixerr.CodeProcessFailed,
+				err,
+				"failed to restart application %q (ID: %s)",
+				appInfo.Name,
+				appInfo.ID,
+			)
 		}
 
 		fmt.Printf("✓ Application '%s' (ID: %s) restarted successfully\n", appInfo.Name, appInfo.ID)

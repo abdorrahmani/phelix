@@ -10,6 +10,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/docker"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/fatih/color"
@@ -60,24 +61,24 @@ encryption mechanism as environment variables (via the internal/env package).`,
 
 		// Load state
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("%s Failed to load state: %w", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
 		// Check Docker availability
 		if err := docker.CheckDockerAvailable(); err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available", err)
 		}
 
 		// Get project root
 		currentDir, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("%s failed to get current directory: %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
 		}
 
 		// Detect language
 		lang, err := docker.DetectLanguage(currentDir)
 		if err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeUnsupportedProject, "could not detect project language", err)
 		}
 
 		// --- Matrix dockerize path ---
@@ -95,7 +96,7 @@ encryption mechanism as environment variables (via the internal/env package).`,
 		} else {
 			fmt.Printf("  %s Generating multi-stage Dockerfile for %s...\n", color.BlueString("→"), color.GreenString(string(lang)))
 			if err := gen.WriteDockerfile(); err != nil {
-				return fmt.Errorf("%s failed to generate Dockerfile: %v", color.RedString("✗"), err)
+				return phelixerr.Wrap(phelixerr.CodeDocker, "failed to generate Dockerfile", err)
 			}
 			fmt.Printf("  %s Dockerfile created\n", color.GreenString("✓"))
 		}
@@ -106,7 +107,7 @@ encryption mechanism as environment variables (via the internal/env package).`,
 		} else {
 			fmt.Printf("  %s Generating .dockerignore...\n", color.BlueString("→"))
 			if err := docker.WriteDockerignore(currentDir); err != nil {
-				return fmt.Errorf("%s failed to generate .dockerignore: %v", color.RedString("✗"), err)
+				return phelixerr.Wrap(phelixerr.CodeDocker, "failed to generate .dockerignore", err)
 			}
 			fmt.Printf("  %s .dockerignore created\n", color.GreenString("✓"))
 		}
@@ -150,7 +151,7 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			Labels:      labels,
 		})
 		if err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeDocker, "docker image build failed", err)
 		}
 
 		fmt.Printf("  %s Image built in %s\n", color.GreenString("✓"), color.YellowString(buildResult.Duration.String()))
@@ -176,7 +177,7 @@ encryption mechanism as environment variables (via the internal/env package).`,
 				ImageName: imageName,
 				Registry:  dockerizeRegistry,
 			}); err != nil {
-				return fmt.Errorf("%s %v", color.RedString("✗"), err)
+				return phelixerr.Wrap(phelixerr.CodeDocker, "docker image push failed", err)
 			}
 			fmt.Printf("  %s Pushed successfully\n", color.GreenString("✓"))
 		}
@@ -198,7 +199,7 @@ encryption mechanism as environment variables (via the internal/env package).`,
 					AppPort:   appPort,
 					DependsOn: dockerizeDependsOn,
 				}); err != nil {
-					return fmt.Errorf("%s failed to generate docker-compose.yml: %v", color.RedString("✗"), err)
+					return phelixerr.Wrap(phelixerr.CodeDocker, "failed to generate docker-compose.yml", err)
 				}
 				fmt.Printf("  %s docker-compose.yml created\n", color.GreenString("✓"))
 				fmt.Printf("  %s Phelix does NOT manage compose-defined services. Use: docker compose up -d\n",
@@ -252,13 +253,15 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 		langEnum = builder.Rust
 	}
 	if len(versions) == 0 {
-		return fmt.Errorf("%s matrix mode requires version flags: use --go-versions or --rust-versions",
-			color.RedString("✗"))
+		return phelixerr.Newf(
+			phelixerr.CodeInvalidArgument,
+			"matrix mode requires version flags: use --go-versions or --rust-versions",
+		)
 	}
 
 	plan, err := matrix.ParsePlan(langEnum, versions, dockerizePlatforms)
 	if err != nil {
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix build plan", err)
 	}
 
 	fmt.Printf("%s Docker matrix build: %s (%d combinations)\n",
@@ -270,7 +273,7 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 
 	// Ensure buildx is available for multi-arch builds.
 	if err := matrix.EnsureBuildx(); err != nil {
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeDocker, "docker buildx is required for this build", err)
 	}
 
 	dmb := &matrix.DockerMatrixBuilder{
@@ -299,7 +302,7 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 	// Handle push with fail-closed semantics.
 	if push {
 		if err := dmb.PushImages(results, pushPartial); err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeDocker, "docker image push failed", err)
 		}
 		fmt.Printf("  %s All images pushed\n", color.GreenString("✓"))
 	}
@@ -333,8 +336,11 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 	}
 
 	if report.Failed > 0 {
-		return fmt.Errorf("matrix dockerize completed with %d failure(s) out of %d combinations",
-			report.Failed, report.Total)
+		return phelixerr.Newf(
+			phelixerr.CodeBuildFailed,
+			"matrix dockerize completed with %d failure(s) out of %d combinations",
+			report.Failed, report.Total,
+		)
 	}
 
 	return nil

@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
@@ -46,6 +46,7 @@ var BuildCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateSession(); err != nil {
+			return err
 		}
 
 		name := args[0]
@@ -54,7 +55,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("%s Failed to load state: %w", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
 		if err := validateUniqueName(name); err != nil {
@@ -64,14 +65,18 @@ var BuildCmd = &cobra.Command{
 		// Get project root
 		currentDir, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("%s failed to get current directory: %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
 		}
 
 		// Detect language
 		buildMgr := builder.NewBuildManager()
 		lang := buildMgr.DetectLanguage(currentDir)
 		if !lang.IsSupported() {
-			return fmt.Errorf("%s unsupported or unknown project language: %s", color.RedString("✗"), lang)
+			return phelixerr.Newf(
+				phelixerr.CodeUnsupportedProject,
+				"unsupported or unknown project language: %s",
+				lang,
+			)
 		}
 
 		// --- Matrix build path ---
@@ -86,7 +91,7 @@ var BuildCmd = &cobra.Command{
 		// Check toolchain; prompt to install if missing
 		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
 		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
 		}
 
 		id := app.Manager.GenerateAppID()
@@ -126,7 +131,6 @@ var BuildCmd = &cobra.Command{
 		if !noUpload {
 			fmt.Printf("%s Uploading app information to server...\n", color.BlueString("→"))
 			if err := auth.SendAppsToServer(); err != nil {
-				log.Printf("%s Error sending apps to server: %v", color.YellowString("⚠"), err)
 				fmt.Printf("%s Warning: Failed to send app information to server: %v\n", color.YellowString("⚠"), err)
 			}
 		} else {
@@ -179,12 +183,12 @@ func init() {
 func validateSession() error {
 	sessionFile := filepath.Join(os.Getenv("HOME"), ".phelix", "session.json")
 	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
-		return fmt.Errorf("⚠ Authentication required. Please run 'phelix auth' first")
+		return phelixerr.New(phelixerr.CodeUnauthenticated, "authentication required; please run 'phelix auth login' first")
 	}
 
 	data, err := os.ReadFile(sessionFile)
 	if err != nil {
-		return fmt.Errorf(" ⚠ error reading session file: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "error reading session file", err)
 	}
 
 	var session struct {
@@ -194,11 +198,11 @@ func validateSession() error {
 	}
 
 	if err := json.Unmarshal(data, &session); err != nil {
-		return fmt.Errorf("⚠ error parsing session file: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "error parsing session file", err)
 	}
 
 	if time.Now().After(session.ExpiresAt) {
-		return fmt.Errorf("⚠ session expired. Please run 'phelix auth' again")
+		return phelixerr.New(phelixerr.CodeSessionExpired, "session expired; please run 'phelix auth login' again")
 	}
 
 	return nil
@@ -206,7 +210,7 @@ func validateSession() error {
 
 func validateName(name string) error {
 	if name == "" {
-		return fmt.Errorf("⚠ application name cannot be empty")
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "application name cannot be empty")
 	}
 	return nil
 }
@@ -214,7 +218,11 @@ func validateName(name string) error {
 func validateUniqueName(name string) error {
 	for _, app := range app.Manager.(*app.AppManager).Apps {
 		if app.Name == name {
-			return fmt.Errorf("⚠ application name '%s' is already in use", name)
+			return phelixerr.Newf(
+				phelixerr.CodeAlreadyExists,
+				"application name %q is already in use",
+				name,
+			)
 		}
 	}
 	return nil
@@ -225,7 +233,7 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 		now := time.Now()
 		currentDir, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("%s failed to get current directory: %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
 		}
 
 		// Convert lang to string
@@ -249,14 +257,18 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 		}
 		return appManager.SaveState()
 	}
-	return fmt.Errorf("%s invalid app manager type", color.RedString("✗"))
+	return phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
 }
 
 func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager) error {
 	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
 	appInfo := app.Manager.(*app.AppManager).Apps[id]
 	if appInfo == nil {
-		return fmt.Errorf("%s application %s not found in state (it may have been removed by a concurrent operation); please retry", color.RedString("✗"), id)
+		return phelixerr.Newf(
+			phelixerr.CodeNotFound,
+			"application %s not found in state (it may have been removed by a concurrent operation); please retry",
+			id,
+		)
 	}
 	projectRoot := appInfo.Directory
 
@@ -286,7 +298,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 				_ = appManager.SaveState()
 			}
 		}
-		return fmt.Errorf("%s build preparation failed: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", err)
 	}
 
 	fmt.Printf("  %s Building with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
@@ -300,7 +312,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 				_ = appManager.SaveState()
 			}
 		}
-		return fmt.Errorf("%s build failed: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)
 	}
 
 	duration := buildMgr.GetBuildDuration(buildCtx)
@@ -326,7 +338,11 @@ func startApplication(id, name string) error {
 func startApplicationOnPort(id, name string, port int) error {
 	fmt.Printf("  %s Starting application on port %d...\n", color.BlueString("→"), port)
 	if err := app.Manager.StartApplication(id, port, name); err != nil {
-		return fmt.Errorf("%s failed to start application: %w", color.RedString("✗"), err)
+		return phelixerr.Wrap(
+			phelixerr.CodeProcessFailed,
+			fmt.Sprintf("failed to start application %q (ID: %s)", name, id),
+			err,
+		)
 	}
 	return nil
 }
@@ -348,14 +364,17 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 		versions = rustVersions
 	}
 	if len(versions) == 0 {
-		return fmt.Errorf("%s matrix mode requires version flags: use --go-versions or --rust-versions for %s projects",
-			color.RedString("✗"), lang)
+		return phelixerr.Newf(
+			phelixerr.CodeInvalidArgument,
+			"matrix mode requires version flags: use --go-versions or --rust-versions for %s projects",
+			lang,
+		)
 	}
 
 	// Parse the build plan.
 	plan, err := matrix.ParsePlan(lang, versions, platforms)
 	if err != nil {
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix build plan", err)
 	}
 
 	fmt.Printf("%s Matrix build: %s (%d combinations)\n",
@@ -385,7 +404,11 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 		rb := &matrix.RustMatrixBuilder{ProjectRoot: projectRoot, AppName: name, Debug: buildDebug}
 		buildFn = rb.Build
 	default:
-		return fmt.Errorf("%s unsupported language for matrix build: %s", color.RedString("✗"), lang)
+		return phelixerr.Newf(
+			phelixerr.CodeUnsupportedProject,
+			"unsupported language for matrix build: %s",
+			lang,
+		)
 	}
 
 	// Execute with bounded concurrency.
@@ -436,8 +459,11 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 	// Return an error if any combination failed, so the CLI exit code is non-zero.
 	// The user sees the full report above — this just ensures scripts can detect failures.
 	if report.Failed > 0 {
-		return fmt.Errorf("matrix build completed with %d failure(s) out of %d combinations",
-			report.Failed, report.Total)
+		return phelixerr.Newf(
+			phelixerr.CodeBuildFailed,
+			"matrix build completed with %d failure(s) out of %d combinations",
+			report.Failed, report.Total,
+		)
 	}
 
 	return nil

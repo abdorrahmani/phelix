@@ -1,4 +1,4 @@
 app:
-  mode: "production" #production
-  api: "https://phelix.anophel.com/api/v1" # https://phelix.anophel.com/api/v1
-  grpcUrl: "phelix.anophel.com:443" # "phelix.anophel.com:443"
+  mode: "dev" #production
+  api: "https://phelix.local/api/v1" # https://phelix.anophel.com/api/v1
+  grpcUrl: "phelix.local:50051" # "phelix.anophel.com:443"

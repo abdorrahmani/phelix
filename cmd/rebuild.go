@@ -9,6 +9,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
@@ -36,7 +37,7 @@ var RebuildCmd = &cobra.Command{
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("%s Failed to load state: %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
 		appInfo, err := GetAppInfo(identifier)
@@ -54,13 +55,17 @@ var RebuildCmd = &cobra.Command{
 		}
 
 		if !lang.IsSupported() {
-			return fmt.Errorf("%s unsupported or unknown project language: %s", color.RedString("✗"), lang)
+			return phelixerr.Newf(
+				phelixerr.CodeUnsupportedProject,
+				"unsupported or unknown project language: %s",
+				lang,
+			)
 		}
 
 		// Check toolchain; prompt to install if missing
 		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
 		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), err)
+			return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
 		}
 
 		fmt.Printf("%s Rebuilding application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID))
@@ -90,7 +95,7 @@ var RebuildCmd = &cobra.Command{
 		// from corrupting versions.json or double-assigning version numbers.
 		release, lockErr := deploy.AcquireDeployLock(name, "rebuild")
 		if lockErr != nil {
-			return fmt.Errorf("%s %v", color.RedString("✗"), lockErr)
+			return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lockErr)
 		}
 		defer release()
 
@@ -119,7 +124,13 @@ var RebuildCmd = &cobra.Command{
 		if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
 			// Deploy failed. Version exists on disk but is_current is
 			// false and PromoteVersion was never called.
-			return fmt.Errorf("%s Failed to start rebuilt application %s (ID: %s): %v", color.RedString("✗"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
+			return phelixerr.Wrapf(
+				phelixerr.CodeProcessFailed,
+				err,
+				"failed to start rebuilt application %q (ID: %s)",
+				name,
+				appInfo.ID,
+			)
 		}
 
 		// Deploy succeeded — promote the version.
@@ -152,21 +163,29 @@ func init() {
 func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) error {
 	socket, err := proxy.DefaultSocketPath()
 	if err != nil {
-		return fmt.Errorf("%s could not determine proxy socket path: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
 	}
 
 	// Ensure the proxy daemon is up. If the user hasn't started it yet, spawn
 	// it in the background so blue-green/rolling "just work".
 	fmt.Printf("  %s Ensuring proxy daemon is running...\n", color.BlueString("→"))
 	if err := proxy.EnsureDaemon(context.Background(), "", 5*time.Second); err != nil {
-		return fmt.Errorf("%s %v\n  Start it manually with: %s",
-			color.RedString("✗"), err, color.CyanString("phelix proxy"))
+		return phelixerr.Wrapf(
+			phelixerr.CodeProxy,
+			err,
+			"could not start proxy daemon\n  Start it manually with: %s",
+			color.CyanString("phelix proxy"),
+		)
 	}
 
 	proxyClient := proxy.NewClient(socket)
 	if err := proxyClient.Ping(context.Background()); err != nil {
-		return fmt.Errorf("%s %v\n  Start it first with: %s",
-			color.RedString("✗"), err, color.CyanString("phelix proxy"))
+		return phelixerr.Wrapf(
+			phelixerr.CodeConnection,
+			err,
+			"proxy daemon did not respond\n  Start it first with: %s",
+			color.CyanString("phelix proxy"),
+		)
 	}
 
 	logger := &colorLogger{}
@@ -193,13 +212,13 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 					return filepath.Join(info.Directory, fmt.Sprintf("app_%s", appID)), nil
 				}
 			}
-			return "", fmt.Errorf("could not locate built binary for %s", appID)
+			return "", phelixerr.Newf(phelixerr.CodeNotFound, "could not locate built binary for %s", appID)
 		},
 	}
 
 	release, err := deploy.AcquireDeployLock(name, "deploy")
 	if err != nil {
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
 	}
 	defer release()
 
@@ -287,7 +306,7 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 	}
 
 	if appInfo.Directory == "" {
-		return fmt.Errorf("%s Application directory not found for ID %s", color.RedString("✗"), id)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "application directory not found for ID %s", id)
 	}
 
 	projectRoot := appInfo.Directory
@@ -299,7 +318,11 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 	}
 
 	if !lang.IsSupported() {
-		return fmt.Errorf("%s unsupported or unknown project language: %s", color.RedString("✗"), lang)
+		return phelixerr.Newf(
+			phelixerr.CodeUnsupportedProject,
+			"unsupported or unknown project language: %s",
+			lang,
+		)
 	}
 
 	outputPath := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", id))
@@ -324,7 +347,7 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 				_ = appManager.SaveState()
 			}
 		}
-		return fmt.Errorf("%s rebuild preparation failed: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild preparation failed", err)
 	}
 
 	fmt.Printf("  %s Rebuilding with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
@@ -338,7 +361,7 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 				_ = appManager.SaveState()
 			}
 		}
-		return fmt.Errorf("%s rebuild failed: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild failed", err)
 	}
 
 	duration := buildMgr.GetBuildDuration(buildCtx)

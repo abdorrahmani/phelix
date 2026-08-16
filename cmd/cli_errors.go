@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
@@ -49,11 +50,32 @@ const (
 	ExitEncryption = 70 // encryption failure
 )
 
+// isUsageError reports whether err is a command-usage error raised by cobra
+// itself (arg-count / required-flag validation). These arrive as plain
+// errors before any RunE body executes, so they carry no structured code;
+// classifying them at the boundary keeps the 2 (usage) exit code consistent
+// without touching every command's Args validator.
+func isUsageError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.HasPrefix(msg, "requires at least ") &&
+		strings.Contains(msg, "arg(s)") ||
+		strings.HasPrefix(msg, "accepts at most ") ||
+		strings.HasPrefix(msg, "accepts ") && strings.Contains(msg, "arg(s)") ||
+		strings.HasPrefix(msg, "accepts between ") ||
+		strings.HasPrefix(msg, `required flag(s) "`) && strings.HasSuffix(msg, `" not set`)
+}
+
 // ExitCodeFor maps a structured (or plain) error to a process exit code.
 // Unknown / unwrapped errors resolve to a generic failure.
 func ExitCodeFor(err error) int {
 	if err == nil {
 		return ExitOK
+	}
+	if isUsageError(err) {
+		return ExitUsage
 	}
 	switch phelixerr.CodeOf(err) {
 	case phelixerr.CodeOK:
@@ -123,6 +145,12 @@ func hintFor(err error) string {
 func renderCLIError(err error, debug bool) int {
 	exitCode := ExitCodeFor(err)
 	code := phelixerr.CodeOf(err)
+	if isUsageError(err) {
+		// Cobra's arg/flag validation errors are plain errors; present them
+		// under the usage category rather than UNKNOWN so the user sees a
+		// meaningful code alongside the 2 exit status.
+		code = phelixerr.CodeInvalidArgument
+	}
 	msg := phelixerr.Redact(err.Error())
 	if msg == "" {
 		msg = "operation failed"

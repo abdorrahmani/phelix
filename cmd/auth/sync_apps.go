@@ -3,7 +3,6 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/config"
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // SendAppsToServer uploads the list of running apps to the Phelix server.
@@ -18,7 +18,11 @@ func SendAppsToServer() error {
 	cfg := config.Get()
 	session, err := GetValidSession()
 	if err != nil {
-		return fmt.Errorf("⚠ authentication required. Please run 'phelix auth login'")
+		return phelixerr.Wrap(
+			phelixerr.CodeUnauthenticated,
+			"authentication required; please run 'phelix auth login'",
+			err,
+		)
 	}
 
 	appList := app.Manager.ListApplications()
@@ -42,7 +46,7 @@ func SendAppsToServer() error {
 	body, _ := json.Marshal(map[string]any{"apps": appDetails})
 	req, err := http.NewRequest("POST", cfg.App.API+"/phelix/apps", bytes.NewBuffer(body))
 	if err != nil {
-		return fmt.Errorf("⚠ error creating request: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "error creating request", err)
 	}
 
 	req.Header.Set("X-Session-ID", session.SessionID)
@@ -51,13 +55,18 @@ func SendAppsToServer() error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("⚠ error sending request: %w", err)
+		return phelixerr.Wrap(phelixerr.CodeNetwork, "error sending request", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("⚠ server returned %d: %s", resp.StatusCode, string(data))
+		return phelixerr.Newf(
+			phelixerr.CodeServer,
+			"server returned %d: %s",
+			resp.StatusCode,
+			string(data),
+		)
 	}
 
 	log.Printf("[Monitor] Successfully sent apps to server")

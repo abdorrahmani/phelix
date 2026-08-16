@@ -3,9 +3,11 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -22,9 +24,8 @@ var StartCmd = &cobra.Command{
 	Long:  "Starts an existing application. With --ensure, it becomes idempotent: build the app if it does not exist, start it if stopped, and rebuild/start if startup fails.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-
 		if err := app.Manager.LoadState(); err != nil {
-			return fmt.Errorf("⚠ Failed to load state: %v", err)
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
 		// If no ID or AppName provided, start all apps
@@ -36,6 +37,7 @@ var StartCmd = &cobra.Command{
 			}
 
 			fmt.Println(color.BlueString("→") + " Starting all applications...")
+			var failed []string
 			for _, a := range apps {
 				if a.Status == "running" {
 					fmt.Printf("  %s %s (ID: %s) is already running\n", color.GreenString("✓"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID))
@@ -44,11 +46,22 @@ var StartCmd = &cobra.Command{
 
 				fmt.Printf("  %s Starting %s (ID: %s) on port %d...\n", color.BlueString("→"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), a.Port)
 				if err := app.Manager.StartApplication(a.ID, a.Port, a.Name); err != nil {
+					// Collect per-app failures and return a single aggregated
+					// error at the end so the CLI renders one error block.
 					fmt.Printf("    %s Failed to start %s (ID: %s): %v\n", color.RedString("✗"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), err)
+					failed = append(failed, fmt.Sprintf("%s: %v", a.Name, err))
 					continue
 				}
 				fmt.Printf("    %s %s started successfully\n", color.GreenString("✓"), color.CyanString("'%s'", a.Name))
 				phelixgrpc.ReportEvent(a.ID, a.Name, "start", true, "", 0, "", "")
+			}
+			if len(failed) > 0 {
+				return phelixerr.Newf(
+					phelixerr.CodeProcessFailed,
+					"failed to start %d application(s)\n%s",
+					len(failed),
+					strings.Join(failed, "\n"),
+				)
 			}
 			return nil
 		}
@@ -75,7 +88,11 @@ var StartCmd = &cobra.Command{
 
 		if err := app.Manager.StartApplication(appInfo.ID, usePort, name); err != nil {
 			if !startEnsure {
-				return fmt.Errorf("%s Failed to start application %s (ID: %s): %v", color.RedString("✗"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
+				return phelixerr.Wrap(
+					phelixerr.CodeProcessFailed,
+					fmt.Sprintf("failed to start application %q (ID: %s)", name, appInfo.ID),
+					err,
+				)
 			}
 
 			fmt.Printf("%s Start failed for application %s (ID: %s): %v\n", color.YellowString("⚠"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
@@ -98,7 +115,11 @@ var StartCmd = &cobra.Command{
 			}
 
 			if err := app.Manager.StartApplication(appInfo.ID, usePort, name); err != nil {
-				return fmt.Errorf("%s Failed to start rebuilt application %s (ID: %s): %v", color.RedString("✗"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
+				return phelixerr.Wrap(
+					phelixerr.CodeProcessFailed,
+					fmt.Sprintf("failed to start rebuilt application %q (ID: %s)", name, appInfo.ID),
+					err,
+				)
 			}
 
 			fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), usePort)
@@ -130,19 +151,23 @@ func ensureNewApplication(name string, port int) error {
 	// Get current directory
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("%s failed to get current directory: %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
 	}
 
 	// Detect language
 	buildMgr := builder.NewBuildManager()
 	lang := buildMgr.DetectLanguage(cwd)
 	if !lang.IsSupported() {
-		return fmt.Errorf("%s unsupported or unknown project language: %s", color.RedString("✗"), lang)
+		return phelixerr.Newf(
+			phelixerr.CodeUnsupportedProject,
+			"unsupported or unknown project language: %s",
+			lang,
+		)
 	}
 
 	// Validate tools
 	if err := buildMgr.ValidateTools(lang); err != nil {
-		return fmt.Errorf("%s %v", color.RedString("✗"), err)
+		return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain validation failed", err)
 	}
 
 	fmt.Printf("%s Application %s does not exist. Building it with ID: %s\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(id))

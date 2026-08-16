@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/env"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/spf13/cobra"
 )
@@ -28,7 +29,7 @@ Examples:
 		// Get app info to validate it exists
 		appInfo, err := GetAppInfo(appIdentifier)
 		if err != nil {
-			return fmt.Errorf("application not found: %v", err)
+			return err
 		}
 
 		appID := appInfo.ID
@@ -40,7 +41,10 @@ Examples:
 		switch subcommand {
 		case "set":
 			if len(args) < 3 {
-				return fmt.Errorf("usage: phelix env set <AppName> <KEY=VALUE> [KEY=VALUE ...]")
+				return phelixerr.Newf(
+					phelixerr.CodeInvalidArgument,
+					"usage: phelix env set <AppName> <KEY=VALUE> [KEY=VALUE ...]",
+				)
 			}
 
 			// Process all KEY=VALUE pairs
@@ -48,14 +52,23 @@ Examples:
 				kvPair := args[i]
 				parts := strings.SplitN(kvPair, "=", 2)
 				if len(parts) != 2 {
-					return fmt.Errorf("invalid format: %s (expected KEY=VALUE)", kvPair)
+					return phelixerr.Newf(
+						phelixerr.CodeInvalidArgument,
+						"invalid format: %s (expected KEY=VALUE)",
+						kvPair,
+					)
 				}
 
 				key := strings.TrimSpace(parts[0])
 				value := parts[1]
 
 				if err := env.Instance.SetEnv(appID, key, value); err != nil {
-					return fmt.Errorf("failed to set env var '%s': %v", key, err)
+					return phelixerr.Wrapf(
+						phelixerr.CodeEncryption,
+						err,
+						"failed to set env var %q",
+						key,
+					)
 				}
 
 				fmt.Printf("✓ Set '%s' for application '%s'\n", key, appName)
@@ -64,13 +77,21 @@ Examples:
 
 		case "get":
 			if len(args) < 3 {
-				return fmt.Errorf("usage: phelix env get <AppName> <KEY>")
+				return phelixerr.Newf(
+					phelixerr.CodeInvalidArgument,
+					"usage: phelix env get <AppName> <KEY>",
+				)
 			}
 
 			key := args[2]
 			value, err := env.Instance.GetEnv(appID, key)
 			if err != nil {
-				return fmt.Errorf("failed to get env var: %v", err)
+				return phelixerr.Wrapf(
+					phelixerr.CodeEncryption,
+					err,
+					"failed to get env var %q",
+					key,
+				)
 			}
 
 			// Mask if sensitive
@@ -80,7 +101,7 @@ Examples:
 		case "list":
 			vars, err := env.Instance.ListEnv(appID)
 			if err != nil {
-				return fmt.Errorf("failed to list env vars: %v", err)
+				return phelixerr.Wrap(phelixerr.CodeEncryption, "failed to list env vars", err)
 			}
 
 			if len(vars) == 0 {
@@ -95,12 +116,20 @@ Examples:
 
 		case "unset":
 			if len(args) < 3 {
-				return fmt.Errorf("usage: phelix env unset <AppName> <KEY>")
+				return phelixerr.Newf(
+					phelixerr.CodeInvalidArgument,
+					"usage: phelix env unset <AppName> <KEY>",
+				)
 			}
 
 			key := args[2]
 			if err := env.Instance.UnsetEnv(appID, key); err != nil {
-				return fmt.Errorf("failed to unset env var: %v", err)
+				return phelixerr.Wrapf(
+					phelixerr.CodeEncryption,
+					err,
+					"failed to unset env var %q",
+					key,
+				)
 			}
 
 			fmt.Printf("✓ Unset '%s' for application '%s'\n", key, appName)
@@ -108,7 +137,10 @@ Examples:
 
 		case "check":
 			if len(args) < 3 {
-				return fmt.Errorf("usage: phelix env check <AppName> <KEY>")
+				return phelixerr.Newf(
+					phelixerr.CodeInvalidArgument,
+					"usage: phelix env check <AppName> <KEY>",
+				)
 			}
 
 			key := args[2]
@@ -122,7 +154,11 @@ Examples:
 			fmt.Printf("✓ Environment variable '%s' is set for application '%s'\n", key, appName)
 
 		default:
-			return fmt.Errorf("unknown subcommand: %s\nUse: set, get, list, unset, check", subcommand)
+			return phelixerr.Newf(
+				phelixerr.CodeInvalidArgument,
+				"unknown subcommand: %s\nUse: set, get, list, unset, check",
+				subcommand,
+			)
 		}
 
 		return nil
