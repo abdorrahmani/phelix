@@ -14,10 +14,11 @@ package deploy
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // Slot names for blue-green deploys.
@@ -155,14 +156,14 @@ func statePath(appName string) (string, error) {
 // Store persists the DeployState to disk atomically (write tmp + rename).
 func Store(s *DeployState) error {
 	if s == nil || s.AppName == "" {
-		return fmt.Errorf("deploy: cannot store state without an app name")
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: cannot store state without an app name")
 	}
 	path, err := statePath(s.AppName)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("deploy: create state dir: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: create state dir")
 	}
 
 	s.UpdatedAt = time.Now()
@@ -190,7 +191,7 @@ func Load(appName string) (*DeployState, error) {
 	}
 	var s DeployState
 	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, fmt.Errorf("deploy: decode %s: %w", path, err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "deploy: decode %s", path)
 	}
 	return &s, nil
 }

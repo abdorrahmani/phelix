@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 )
@@ -57,12 +58,12 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 		src = BuilderSource(r.Builder)
 	}
 	if src == nil {
-		return fmt.Errorf("deploy: no BuildSource or Builder configured")
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: no BuildSource or Builder configured")
 	}
 
 	state, err := LoadOrInit(r.AppName, ModeRolling, r.PublicPort)
 	if err != nil {
-		return fmt.Errorf("failed to load deploy state: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
 	state.Replicas = ensureReplicaMap(state.Replicas, r.Replicas)
@@ -73,11 +74,11 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	log.Stepf("%s", src.Describe())
 	binaryPath, envPath, err := src.Build(ctx)
 	if err != nil {
-		return fmt.Errorf("prepare deploy artifact: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact")
 	}
 	envOverlay, err := EnvOverlayFromSnapshot(envPath, r.AppID)
 	if err != nil {
-		return fmt.Errorf("env snapshot: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "env snapshot")
 	}
 
 	targetVer := targetVersionFromSource(src)
@@ -99,7 +100,7 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	indices := replicaIndices(state.Replicas)
 	for _, key := range indices {
 		if err := r.rollOne(ctx, state, binaryPath, envOverlay, targetVer, key, tier, tierCfg, grace); err != nil {
-			return fmt.Errorf("rolling deploy failed at replica %s: %w", key, err)
+			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "rolling deploy failed at replica %s", key)
 		}
 	}
 
@@ -138,7 +139,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	log.Stepf("replica %s: starting from %s", key, binaryPath)
 	proc, port, err := r.Launcher(ctx, binaryPath, envOverlay)
 	if err != nil {
-		return fmt.Errorf("start: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "start replica %s", key)
 	}
 	inst := &Instance{
 		Slot:       key,
@@ -159,7 +160,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 		inst.Status = "failed"
 		inst.PID = 0
 		_ = Store(state)
-		return fmt.Errorf("health check (%w); other replicas left serving", err)
+		return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed, err, "replica %s failed health check; other replicas left serving", key)
 	}
 
 	// 5. Re-add to the proxy backend set: primary = the lowest-index healthy

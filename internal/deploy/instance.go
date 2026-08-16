@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -89,15 +90,15 @@ type InstanceLauncher func(ctx context.Context, binaryPath string, env []string)
 // the binary happens to be a CLI that exits without a subcommand).
 func DefaultLauncher(_ context.Context, binaryPath string, env []string) (Process, int, error) {
 	if binaryPath == "" {
-		return nil, 0, errors.New("deploy: binary path is empty")
+		return nil, 0, phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: binary path is empty")
 	}
 	if _, err := os.Stat(binaryPath); err != nil {
-		return nil, 0, fmt.Errorf("deploy: binary not found: %w", err)
+		return nil, 0, phelixerr.Wrapf(phelixerr.CodeNotFound, err, "deploy: binary not found")
 	}
 
 	port, err := freePort()
 	if err != nil {
-		return nil, 0, fmt.Errorf("deploy: allocate internal port: %w", err)
+		return nil, 0, phelixerr.Wrapf(phelixerr.CodePortUnavailable, err, "deploy: allocate internal port")
 	}
 
 	logFile, err := openInstanceLog(binaryPath, port)
@@ -116,7 +117,7 @@ func DefaultLauncher(_ context.Context, binaryPath string, env []string) (Proces
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		return nil, 0, fmt.Errorf("deploy: start instance: %w", err)
+		return nil, 0, phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "deploy: start instance")
 	}
 
 	errCh := make(chan error, 1)
@@ -212,7 +213,7 @@ func GracefulStop(ctx context.Context, proc Process, grace time.Duration, inFlig
 
 	if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		report.Elapsed = time.Since(start)
-		return report, fmt.Errorf("deploy: SIGKILL failed: %w", err)
+		return report, phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "deploy: SIGKILL failed")
 	}
 	<-waitCh // reap
 	report.ForceKilled = true
@@ -264,7 +265,7 @@ func (p *pidProcess) Wait() error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return errors.New("deploy: timed out waiting for pid to exit")
+	return phelixerr.New(phelixerr.CodeProcessFailed, "deploy: timed out waiting for pid to exit")
 }
 
 // findProcess locates a running process by PID. Returns a nil Process (not an

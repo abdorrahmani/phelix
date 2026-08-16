@@ -2,11 +2,12 @@ package deploy
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // DeployLock records an in-flight deploy or rollback in deploy.json so two
@@ -36,8 +37,14 @@ func AcquireDeployLock(appName, operation string) (release func(), err error) {
 			// Stale lock — previous holder crashed or was killed. Clear it.
 			state.OpLock = nil
 		} else {
-			return nil, fmt.Errorf("deploy: %q already has %q in progress since %s (pid %d)",
-				appName, state.OpLock.Operation, state.OpLock.StartedAt.Format(time.RFC3339), state.OpLock.PID)
+			// A live operation holds the deploy lock — surface the holder's
+			// operation and start time (not lock-internal layout) so the user
+			// can decide whether it is genuinely stale.
+			return nil, phelixerr.Newf(
+				phelixerr.CodeDeployLocked,
+				"deploy: %q already has a %q operation in progress since %s",
+				appName, state.OpLock.Operation, state.OpLock.StartedAt.Format(time.RFC3339),
+			)
 		}
 	}
 	state.OpLock = &DeployLock{

@@ -1,11 +1,12 @@
 package builder
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // RustBuilder builds Rust projects
@@ -24,12 +25,12 @@ func (rb *RustBuilder) Name() Language {
 // Validate checks if a valid Rust project exists at the given root
 func (rb *RustBuilder) Validate(projectRoot string) error {
 	if _, err := os.Stat(projectRoot); os.IsNotExist(err) {
-		return fmt.Errorf("project root does not exist: %s", projectRoot)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", projectRoot)
 	}
 
 	cargoPath := filepath.Join(projectRoot, "Cargo.toml")
 	if _, err := os.Stat(cargoPath); os.IsNotExist(err) {
-		return fmt.Errorf("no Cargo.toml found in project root")
+		return phelixerr.New(phelixerr.CodeUnsupportedProject, "no Cargo.toml found in project root")
 	}
 
 	return nil
@@ -48,9 +49,18 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 	cmd := exec.Command("cargo", args...)
 	cmd.Dir = config.ProjectRoot
 
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("cargo build failed: %v\nOutput:\n%s", err, string(output))
+		// Compiler/command output is intentionally not dumped into the error
+		// (it can be large); the underlying *exec.ExitError stays reachable
+		// through the wrap.
+		return phelixerr.Wrapf(
+			phelixerr.CodeBuildFailed,
+			err,
+			"cargo build failed for %s (%s)",
+			config.Name,
+			config.Language,
+		)
 	}
 
 	// In the actual process, after cargo build completes, we'll copy the binary
@@ -152,7 +162,7 @@ func (rb *RustBuilder) findMostRecentBinary(projectRoot string, buildType string
 	targetDir := filepath.Join(projectRoot, "target", buildType)
 	entries, err := os.ReadDir(targetDir)
 	if err != nil {
-		return "", fmt.Errorf("failed to read target directory: %v", err)
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read target directory")
 	}
 
 	var newest os.DirEntry
@@ -174,7 +184,7 @@ func (rb *RustBuilder) findMostRecentBinary(projectRoot string, buildType string
 	}
 
 	if newest == nil {
-		return "", fmt.Errorf("no binary found in target/%s", buildType)
+		return "", phelixerr.Newf(phelixerr.CodeNotFound, "no binary found in target/%s", buildType)
 	}
 
 	return filepath.Join(targetDir, newest.Name()), nil
@@ -184,11 +194,11 @@ func (rb *RustBuilder) findMostRecentBinary(projectRoot string, buildType string
 func CopyBuiltBinary(sourcePath string, outputPath string) error {
 	data, err := os.ReadFile(sourcePath)
 	if err != nil {
-		return fmt.Errorf("failed to read built binary: %v", err)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read built binary")
 	}
 
 	if err := os.WriteFile(outputPath, data, 0755); err != nil {
-		return fmt.Errorf("failed to write output binary: %v", err)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write output binary")
 	}
 
 	return nil
@@ -206,7 +216,7 @@ func BuildAndCopyRust(config BuildConfig) error {
 	// Get binary path
 	binaryPath, err := rb.GetBinaryPath(config)
 	if err != nil {
-		return fmt.Errorf("failed to locate built binary: %v", err)
+		return phelixerr.Wrapf(phelixerr.CodeNotFound, err, "failed to locate built binary")
 	}
 
 	// Copy to output path

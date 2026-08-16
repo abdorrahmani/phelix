@@ -1,12 +1,13 @@
 package builder
 
 import (
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // GoBuilder builds Go projects
@@ -25,7 +26,7 @@ func (gb *GoBuilder) Name() Language {
 // Validate checks if a valid Go project exists at the given root
 func (gb *GoBuilder) Validate(projectRoot string) error {
 	if _, err := os.Stat(projectRoot); os.IsNotExist(err) {
-		return fmt.Errorf("project root does not exist: %s", projectRoot)
+		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", projectRoot)
 	}
 
 	// Check for go.mod or main.go
@@ -54,14 +55,14 @@ func (gb *GoBuilder) Validate(projectRoot string) error {
 		return nil
 	}
 
-	return fmt.Errorf("no valid Go project found: missing go.mod or main.go")
+	return phelixerr.New(phelixerr.CodeUnsupportedProject, "no valid Go project found: missing go.mod or main.go")
 }
 
 // Build performs a Go build
 func (gb *GoBuilder) Build(config BuildConfig) error {
 	mainFile, err := gb.findMainFile(config.ProjectRoot)
 	if err != nil {
-		return fmt.Errorf("failed to find main.go: %v", err)
+		return phelixerr.Wrapf(phelixerr.CodeUnsupportedProject, err, "failed to find main.go")
 	}
 
 	relPath, _ := filepath.Rel(config.ProjectRoot, mainFile)
@@ -80,9 +81,19 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 	cmd := exec.Command("go", args...)
 	cmd.Dir = config.ProjectRoot
 
-	output, err := cmd.CombinedOutput()
+	_, err = cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("go build failed: %v\nOutput:\n%s", err, string(output))
+		// The full compiler/command output is intentionally NOT embedded in the
+		// error: it can be large and may contain file paths; the underlying
+		// *exec.ExitError (and its exit code) is preserved through the wrap so
+		// errors.As / errors.Is still reach it.
+		return phelixerr.Wrapf(
+			phelixerr.CodeBuildFailed,
+			err,
+			"go build failed for %s (%s)",
+			config.Name,
+			config.Language,
+		)
 	}
 
 	return nil
@@ -93,7 +104,7 @@ func (gb *GoBuilder) GetBinaryPath(config BuildConfig) (string, error) {
 	if _, err := os.Stat(config.OutputPath); err == nil {
 		return config.OutputPath, nil
 	}
-	return "", fmt.Errorf("built binary not found at %s", config.OutputPath)
+	return "", phelixerr.Newf(phelixerr.CodeNotFound, "built binary not found at %s", config.OutputPath)
 }
 
 // GetBuildFlags returns Go build flags
@@ -140,10 +151,10 @@ func (gb *GoBuilder) findMainFile(root string) (string, error) {
 		return nil
 	})
 	if err != nil && err != io.EOF {
-		return "", fmt.Errorf("error searching for main.go: %w", err)
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "error searching for main.go")
 	}
 	if mainFile == "" {
-		return "", fmt.Errorf("no main.go file found in the project")
+		return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
 	}
 	return mainFile, nil
 }

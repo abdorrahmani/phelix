@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // RustMatrixBuilder handles Rust cross-compilation via the `cross` tool.
@@ -52,10 +54,13 @@ type RustMatrixBuilder struct {
 func CheckCrossInstalled() error {
 	_, err := exec.LookPath("cross")
 	if err != nil {
-		return fmt.Errorf(
-			"the `cross` tool is required for Rust cross-compilation but was not found. " +
-				"Install it with: cargo install cross --git https://github.com/cross-rs/cross\n" +
-				"Then ensure Docker is running (cross builds inside Docker containers).")
+		// Preserve the exec.LookPath cause (os.IsNotExist) for root-cause inspection.
+		return phelixerr.Wrapf(
+			phelixerr.CodeToolchainNotFound,
+			err,
+			"the `cross` tool is required for Rust cross-compilation but was not found. "+
+				"Install it with: cargo install cross --git https://github.com/cross-rs/cross — "+
+				"then ensure Docker is running (cross builds inside Docker containers).")
 	}
 	return nil
 }
@@ -109,7 +114,7 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	outDir := filepath.Join(r.ProjectRoot, "builds", "matrix", c.ID())
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("create output dir: %w", err)
+		result.Error = phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "create output dir")
 		return result
 	}
 
@@ -131,9 +136,12 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("cross build failed: %w\n%s", err, stderr.String())
+		// Keep the *exec.ExitError reachable; compiler output goes to the debug log.
+		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "cross build failed for %s (target %s)", r.AppName, triple)
 		logLine("error: %v", err)
-		logLine("stderr: %s", stderr.String())
+		if s := stderr.String(); s != "" {
+			logLine("stderr: %s", s)
+		}
 		return result
 	}
 
@@ -144,7 +152,7 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		binPath += ".exe"
 		if _, err := os.Stat(binPath); err != nil {
 			result.Status = "failed"
-			result.Error = fmt.Errorf("built binary not found at expected path: %s", binPath)
+			result.Error = phelixerr.Newf(phelixerr.CodeNotFound, "built binary not found at expected path for %s (target %s)", r.AppName, triple)
 			return result
 		}
 	}
@@ -153,7 +161,7 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	outBin := filepath.Join(outDir, c.BinaryName(r.AppName))
 	if err := copyBinary(binPath, outBin); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("copy binary: %w", err)
+		result.Error = phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "copy binary")
 		return result
 	}
 
@@ -168,7 +176,7 @@ func (r *RustMatrixBuilder) getPkgName() (string, error) {
 	cargoPath := filepath.Join(r.ProjectRoot, "Cargo.toml")
 	data, err := os.ReadFile(cargoPath)
 	if err != nil {
-		return "", fmt.Errorf("read Cargo.toml: %w", err)
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "read Cargo.toml")
 	}
 
 	for _, line := range strings.Split(string(data), "\n") {
@@ -180,7 +188,7 @@ func (r *RustMatrixBuilder) getPkgName() (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("could not find package name in Cargo.toml")
+	return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "could not find package name in Cargo.toml")
 }
 
 // platformToRustTriple converts an os/arch pair to a Rust target triple.
@@ -202,7 +210,8 @@ func platformToRustTriple(goOS, goArch string) (string, error) {
 	if triple, ok := triples[key]; ok {
 		return triple, nil
 	}
-	return "", fmt.Errorf(
+	return "", phelixerr.Newf(
+		phelixerr.CodeInvalidArgument,
 		"no Rust target triple mapping for platform %s/%s — "+
 			"check `rustup target list` for available targets", goOS, goArch)
 }

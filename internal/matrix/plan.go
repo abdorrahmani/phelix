@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+
 	"github.com/abdorrahmani/phelix/internal/builder"
 )
 
@@ -71,10 +73,10 @@ var knownPlatforms = map[string]bool{
 // flags before any builds start.
 func ParsePlan(lang builder.Language, versions []string, platforms []string) (*MatrixPlan, error) {
 	if len(versions) == 0 {
-		return nil, fmt.Errorf("matrix: at least one %s version must be specified", lang)
+		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one %s version must be specified", lang)
 	}
 	if len(platforms) == 0 {
-		return nil, fmt.Errorf("matrix: at least one platform must be specified")
+		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one platform must be specified")
 	}
 
 	knownVersions := knownGoVersions
@@ -94,7 +96,7 @@ func ParsePlan(lang builder.Language, versions []string, platforms []string) (*M
 		v = strings.TrimPrefix(v, "rust")
 		v = strings.TrimPrefix(v, "v")
 		if !knownVersions[v] {
-			return nil, fmt.Errorf("matrix: unknown %s version %q — known: %s",
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: unknown %s version %q — known: %s",
 				lang, v, formatKnown(knownVersions))
 		}
 		cleanVersions = append(cleanVersions, v)
@@ -110,7 +112,7 @@ func ParsePlan(lang builder.Language, versions []string, platforms []string) (*M
 			continue
 		}
 		if !knownPlatforms[p] {
-			return nil, fmt.Errorf("matrix: unknown platform %q — known: %s",
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: unknown platform %q — known: %s",
 				p, formatKnown(knownPlatforms))
 		}
 		cleanPlatforms = append(cleanPlatforms, p)

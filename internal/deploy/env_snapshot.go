@@ -8,6 +8,7 @@ import (
 	"time"
 
 	envpkg "github.com/abdorrahmani/phelix/internal/env"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // snapshotEnvForVersion copies the app's live encrypted env store to env/vN.enc.
@@ -36,7 +37,7 @@ func snapshotEnvForVersion(appName, appID string, ver int) (string, error) {
 		return dst, nil
 	}
 	if err := copyFile(src, dst, 0o644); err != nil {
-		return "", fmt.Errorf("deploy: snapshot env v%d: %w", ver, err)
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: snapshot env v%d", ver)
 	}
 	return dst, nil
 }
@@ -55,7 +56,7 @@ func EnvOverlayFromSnapshot(envPath, appID string) ([]string, error) {
 	}
 	var store envpkg.EnvStore
 	if err := json.Unmarshal(data, &store); err != nil {
-		return nil, fmt.Errorf("deploy: parse env snapshot: %w", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "deploy: parse env snapshot")
 	}
 	if store.AppID == "" {
 		store.AppID = appID
@@ -69,7 +70,9 @@ func EnvOverlayFromSnapshot(envPath, appID string) ([]string, error) {
 	for key, entry := range store.Entries {
 		val, err := envpkg.DecryptData(entry.Value, masterKey)
 		if err != nil {
-			return nil, fmt.Errorf("deploy: decrypt env %q: %w", key, err)
+			// key is the env VAR NAME (e.g. "DATABASE_URL"), never the value —
+			// safe to embed.
+			return nil, phelixerr.Wrapf(phelixerr.CodeEncryption, err, "deploy: decrypt env %q", key)
 		}
 		out = append(out, fmt.Sprintf("%s=%s", key, val))
 	}

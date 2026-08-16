@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // DefaultSocketPath returns the path to the proxy control unix socket under
@@ -92,11 +94,11 @@ func NewDaemon(socketPath string) *Daemon {
 func (d *Daemon) Run() error {
 	_ = os.Remove(d.socketPath) // best-effort: clear any stale socket
 	if err := os.MkdirAll(filepath.Dir(d.socketPath), 0o755); err != nil {
-		return fmt.Errorf("proxy: create socket dir: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "proxy: create socket dir")
 	}
 	ln, err := net.Listen("unix", d.socketPath)
 	if err != nil {
-		return fmt.Errorf("proxy: listen %s: %w", d.socketPath, err)
+		return phelixerr.Wrapf(phelixerr.CodePortUnavailable, err, "proxy: listen %s", d.socketPath)
 	}
 	d.listener = ln
 
@@ -154,10 +156,10 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 // If an app with the same name exists it is replaced (the old listener closed).
 func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backends []Target) error {
 	if appName == "" {
-		return errors.New("appName is required")
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "proxy: appName is required")
 	}
 	if primary.Host == "" {
-		return errors.New("primary target host is required")
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "proxy: primary target host is required")
 	}
 
 	p := New(appName, publicPort, primary)
@@ -207,7 +209,7 @@ func (d *Daemon) SwitchApp(appName string, primary Target, backends []Target) er
 	p, ok := d.proxies[appName]
 	d.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("app %q is not enrolled with the proxy daemon", appName)
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "proxy: app %q is not enrolled with the proxy daemon", appName)
 	}
 	if len(backends) > 0 {
 		p.SetTarget(primary, backends...)
@@ -356,7 +358,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	dialer := net.Dialer{Timeout: c.timeout}
 	conn, err := dialer.DialContext(ctx, "unix", c.socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("proxy: dial control socket: %w (is 'phelix proxy' running?)", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConnection, err, "proxy: dial control socket (is 'phelix proxy' running?)")
 	}
 	defer conn.Close()
 
@@ -373,17 +375,17 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 	body = append(body, '\n')
 	if _, err := conn.Write(body); err != nil {
-		return nil, fmt.Errorf("proxy: write control socket: %w", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConnection, err, "proxy: write control socket")
 	}
 
 	reader := bufio.NewReader(conn)
 	data, err := reader.ReadBytes('\n')
 	if err != nil {
-		return nil, fmt.Errorf("proxy: read control socket: %w", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConnection, err, "proxy: read control socket")
 	}
 	var resp Response
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("proxy: decode control response: %w", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "proxy: decode control response")
 	}
 	return &resp, nil
 }
@@ -397,7 +399,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return err
 	}
 	if !resp.OK {
-		return errors.New("proxy: ping failed: " + resp.Error)
+		return phelixerr.Newf(phelixerr.CodeProxy, "proxy: ping failed: %s", resp.Error)
 	}
 	return nil
 }
@@ -409,7 +411,7 @@ func (c *Client) Add(ctx context.Context, appName string, publicPort int, primar
 		return err
 	}
 	if !resp.OK {
-		return errors.New("proxy: add failed: " + resp.Error)
+		return phelixerr.Newf(phelixerr.CodeProxy, "proxy: add failed: %s", resp.Error)
 	}
 	return nil
 }
@@ -421,7 +423,7 @@ func (c *Client) Switch(ctx context.Context, appName string, primary Target, bac
 		return err
 	}
 	if !resp.OK {
-		return errors.New("proxy: switch failed: " + resp.Error)
+		return phelixerr.Newf(phelixerr.CodeProxy, "proxy: switch failed: %s", resp.Error)
 	}
 	return nil
 }
@@ -433,7 +435,7 @@ func (c *Client) Remove(ctx context.Context, appName string) error {
 		return err
 	}
 	if !resp.OK {
-		return errors.New("proxy: remove failed: " + resp.Error)
+		return phelixerr.Newf(phelixerr.CodeProxy, "proxy: remove failed: %s", resp.Error)
 	}
 	return nil
 }
@@ -445,7 +447,7 @@ func (c *Client) Status(ctx context.Context, appName string) ([]AppStatus, error
 		return nil, err
 	}
 	if !resp.OK {
-		return nil, errors.New("proxy: status failed: " + resp.Error)
+		return nil, phelixerr.Newf(phelixerr.CodeProxy, "proxy: status failed: %s", resp.Error)
 	}
 	return resp.Status, nil
 }
@@ -457,7 +459,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 		return err
 	}
 	if !resp.OK {
-		return errors.New("proxy: shutdown failed: " + resp.Error)
+		return phelixerr.Newf(phelixerr.CodeProxy, "proxy: shutdown failed: %s", resp.Error)
 	}
 	// Wait briefly for the socket to disappear so callers can report success.
 	deadline := time.Now().Add(3 * time.Second)
@@ -512,7 +514,7 @@ func EnsureDaemon(ctx context.Context, phelixBin string, wait time.Duration) err
 		}
 	}
 	if _, err := os.Stat(phelixBin); err != nil {
-		return fmt.Errorf("proxy: cannot locate phelix executable to start daemon: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeProxy, err, "proxy: cannot locate phelix executable to start daemon")
 	}
 
 	// Spawn detached: own session, stdio to /dev/null, survive this CLI exit.
@@ -527,7 +529,7 @@ func EnsureDaemon(ctx context.Context, phelixBin string, wait time.Duration) err
 		cmd.Stderr = devnull
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("proxy: failed to start daemon: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeProxy, err, "proxy: failed to start daemon")
 	}
 	// Release the child so it isn't reaped/killed when this process exits.
 	_ = cmd.Process.Release()
@@ -547,5 +549,5 @@ func EnsureDaemon(ctx context.Context, phelixBin string, wait time.Duration) err
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("proxy: daemon did not become reachable on %s within %s", socket, wait)
+	return phelixerr.Newf(phelixerr.CodeTimeout, "proxy: daemon did not become reachable on %s within %s", socket, wait)
 }

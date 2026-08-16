@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+
 	"github.com/abdorrahmani/phelix/internal/app"
 )
 
@@ -40,7 +42,7 @@ var daemon *Daemon
 func InitDaemon() (*Daemon, error) {
 	configMgr, err := InitConfigManager()
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize config manager: %w", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to initialize config manager")
 	}
 
 	daemon = &Daemon{
@@ -80,7 +82,7 @@ func (d *Daemon) Start() error {
 	d.mu.Lock()
 	if d.isRunning {
 		d.mu.Unlock()
-		return fmt.Errorf("daemon is already running")
+		return phelixerr.New(phelixerr.CodeServer, "health daemon is already running")
 	}
 	d.isRunning = true
 	d.mu.Unlock()
@@ -89,7 +91,7 @@ func (d *Daemon) Start() error {
 
 	// Get all apps
 	if err := app.Manager.LoadState(); err != nil {
-		return fmt.Errorf("failed to load app state: %w", err)
+		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load app state")
 	}
 
 	apps := app.Manager.ListApplications()
@@ -129,7 +131,7 @@ func (d *Daemon) Stop() error {
 	d.mu.Lock()
 	if !d.isRunning {
 		d.mu.Unlock()
-		return fmt.Errorf("daemon is not running")
+		return phelixerr.New(phelixerr.CodeServer, "health daemon is not running")
 	}
 	d.isRunning = false
 	d.mu.Unlock()

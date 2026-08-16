@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // VersionMeta is one row in ~/.phelix/apps/<AppName>/versions.json.
@@ -133,7 +135,7 @@ func LoadVersions(appName string) (*VersionsFile, error) {
 	}
 	var vf VersionsFile
 	if err := json.Unmarshal(data, &vf); err != nil {
-		return nil, fmt.Errorf("deploy: decode versions.json: %w", err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "deploy: decode versions.json")
 	}
 	return &vf, nil
 }
@@ -201,12 +203,12 @@ func PreviousVersion(appName string) (int, error) {
 		cur = vf.Versions[len(vf.Versions)-1].Version
 	}
 	if cur <= 1 {
-		return 0, fmt.Errorf("deploy: no previous version to roll back to for %q (current v%d)", appName, cur)
+		return 0, phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: no previous version to roll back to for %q (current v%d)", appName, cur)
 	}
 	prev := cur - 1
 	if !versionExists(vf, prev) {
 		list := formatAvailableVersions(vf)
-		return 0, fmt.Errorf("deploy: version v%d is not available for %q; available: %s", prev, appName, list)
+		return 0, phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: version v%d is not available for %q; available: %s", prev, appName, list)
 	}
 	return prev, nil
 }
@@ -228,7 +230,7 @@ func VersionPaths(appName string, ver int) (binaryPath, envPath string, err erro
 	}
 	if !versionExists(vf, ver) {
 		list := formatAvailableVersions(vf)
-		return "", "", fmt.Errorf("deploy: version v%d does not exist for %q; available: %s", ver, appName, list)
+		return "", "", phelixerr.Newf(phelixerr.CodeVersionNotFound, "deploy: version v%d does not exist for %q; available: %s", ver, appName, list)
 	}
 	dir, err := versionDir(appName, ver)
 	if err != nil {
@@ -237,7 +239,7 @@ func VersionPaths(appName string, ver int) (binaryPath, envPath string, err erro
 	binaryPath = filepath.Join(dir, "binary")
 	if _, err := os.Stat(binaryPath); err != nil {
 		list := formatAvailableVersions(vf)
-		return "", "", fmt.Errorf("deploy: binary for v%d missing for %q; available: %s", ver, appName, list)
+		return "", "", phelixerr.Newf(phelixerr.CodeVersionNotFound, "deploy: binary for v%d missing for %q; available: %s", ver, appName, list)
 	}
 	envPath, _ = envSnapshotPath(appName, ver)
 	if _, err := os.Stat(envPath); os.IsNotExist(err) {
@@ -288,7 +290,7 @@ func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, po
 	}
 	destBin := filepath.Join(vdir, "binary")
 	if err := copyFile(builtBinaryPath, destBin, 0o755); err != nil {
-		return nil, fmt.Errorf("deploy: store binary v%d: %w", ver, err)
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: store binary v%d", ver)
 	}
 	info, err := os.Stat(destBin)
 	if err != nil {
@@ -374,7 +376,7 @@ func PromoteVersion(appName string, ver int, deployMode string) error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("deploy: cannot promote unknown version v%d for %q", ver, appName)
+		return phelixerr.Newf(phelixerr.CodeVersionNotFound, "deploy: cannot promote unknown version v%d for %q", ver, appName)
 	}
 	if err := saveVersions(appName, vf); err != nil {
 		return err
@@ -513,7 +515,7 @@ func ParseVersionArg(s string) (int, error) {
 	s = strings.TrimPrefix(s, "V")
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 1 {
-		return 0, fmt.Errorf("invalid version %q (expected vN or N)", s)
+		return 0, phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid version %q (expected vN or N)", s)
 	}
 	return n, nil
 }
@@ -525,7 +527,7 @@ func ParseVersionArg(s string) (int, error) {
 func ResolveVersionOrTag(appName, input string) (int, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
-		return 0, fmt.Errorf("empty version or tag")
+		return 0, phelixerr.New(phelixerr.CodeInvalidArgument, "empty version or tag")
 	}
 
 	// First try parsing as a version number.
@@ -536,7 +538,7 @@ func ResolveVersionOrTag(appName, input string) (int, error) {
 		}
 		if !versionExists(vf, ver) {
 			list := formatAvailableVersions(vf)
-			return 0, fmt.Errorf("version %q does not exist for %q; available: %s", input, appName, list)
+			return 0, phelixerr.Newf(phelixerr.CodeVersionNotFound, "version %q does not exist for %q; available: %s", input, appName, list)
 		}
 		return ver, nil
 	}
@@ -554,7 +556,7 @@ func ResolveVersionOrTag(appName, input string) (int, error) {
 	}
 	switch len(matches) {
 	case 0:
-		return 0, fmt.Errorf("tag %q not found for %q", input, appName)
+		return 0, phelixerr.Newf(phelixerr.CodeVersionNotFound, "tag %q not found for %q", input, appName)
 	case 1:
 		return matches[0].Version, nil
 	default:
@@ -562,7 +564,7 @@ func ResolveVersionOrTag(appName, input string) (int, error) {
 		for i, m := range matches {
 			vers[i] = fmt.Sprintf("v%d", m.Version)
 		}
-		return 0, fmt.Errorf("tag %q is ambiguous for %q — matches %s; use a version ID instead",
+		return 0, phelixerr.Newf(phelixerr.CodeVersionNotFound, "tag %q is ambiguous for %q — matches %s; use a version ID instead",
 			input, appName, strings.Join(vers, ", "))
 	}
 }

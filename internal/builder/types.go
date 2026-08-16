@@ -1,9 +1,10 @@
 package builder
 
 import (
-	"fmt"
 	"strings"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // Language represents a programming language supported by Phelix
@@ -104,7 +105,7 @@ func (bf *BuilderFactory) GetBuilder(lang Language) (BuilderInterface, error) {
 	if builder, exists := bf.builders[lang]; exists {
 		return builder, nil
 	}
-	return nil, fmt.Errorf("unsupported language: %s", lang)
+	return nil, phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unsupported language: %s", lang)
 }
 
 // GetSupportedLanguages returns a list of supported languages

@@ -1,10 +1,11 @@
 package health
 
 import (
-	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // GlobalDaemon manages a singleton health check daemon instance
@@ -88,7 +89,7 @@ func (gd *GlobalDaemon) Start() error {
 		return nil
 	}
 
-	return fmt.Errorf("failed to start health daemon after %d attempts: %w", gd.maxInitAttempts, err)
+	return phelixerr.Wrapf(phelixerr.CodeServer, err, "failed to start health daemon after %d attempts", gd.maxInitAttempts)
 }
 
 // GetDaemon returns the underlying daemon (blocking until it's initialized on first call)
@@ -110,7 +111,7 @@ func (gd *GlobalDaemon) GetDaemon() (*Daemon, error) {
 		gd.mu.RUnlock()
 	}
 
-	return nil, fmt.Errorf("daemon not initialized within 5 seconds")
+	return nil, phelixerr.New(phelixerr.CodeServer, "daemon not initialized within 5 seconds")
 }
 
 // Stop stops the daemon

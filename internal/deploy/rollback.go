@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // DetectGitCommit returns the HEAD commit hash for projectRoot when git is
@@ -77,7 +79,7 @@ type RollbackOptions struct {
 // checks and leave DeployState inconsistent with the proxy.
 func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	if opts.AppName == "" {
-		return fmt.Errorf("deploy: rollback requires app name")
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: rollback requires app name")
 	}
 	fromVer, _ := CurrentVersion(opts.AppName)
 
@@ -92,10 +94,10 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		toVer = va.TargetVersion()
 	}
 	if toVer <= 0 {
-		return fmt.Errorf("deploy: could not resolve rollback target version for %q", opts.AppName)
+		return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: could not resolve rollback target version for %q", opts.AppName)
 	}
 	if fromVer > 0 && toVer == fromVer {
-		return fmt.Errorf("deploy: already running v%d; nothing to roll back to", fromVer)
+		return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: already running v%d; nothing to roll back to", fromVer)
 	}
 
 	release, err := AcquireDeployLock(opts.AppName, "rollback")
@@ -112,7 +114,11 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	state, err := Load(opts.AppName)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("deploy: no deploy state for %q — rollback requires a prior zero-downtime deploy", opts.AppName)
+			return phelixerr.Newf(
+				phelixerr.CodeRollbackTargetNotFound,
+				"deploy: no deploy state for %q — rollback requires a prior zero-downtime deploy",
+				opts.AppName,
+			)
 		}
 		return err
 	}
@@ -177,10 +183,13 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		}
 		deployErr = r.Deploy(ctx)
 	default:
-		deployErr = fmt.Errorf("deploy: rollback unsupported for mode %q", state.Mode)
+		deployErr = phelixerr.Newf(phelixerr.CodeRollbackFailed, "deploy: rollback unsupported for mode %q", state.Mode)
 	}
 	if deployErr != nil {
-		return fmt.Errorf("rollback failed: %w; active instance untouched", deployErr)
+		// "active instance untouched" is only claimed on this path because the
+		// blue-green/rolling rollback abort leaves the previous instance active
+		// (the deploy layer already guarantees that on failure).
+		return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, deployErr, "rollback failed; active instance untouched")
 	}
 
 	// Record the successful rollback in state and audit log.

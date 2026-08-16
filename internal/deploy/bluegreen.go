@@ -2,10 +2,10 @@ package deploy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 )
@@ -103,13 +103,13 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		src = BuilderSource(bg.Builder)
 	}
 	if src == nil {
-		return bg.failf("deploy: no BuildSource or Builder configured")
+		return bg.failf(phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: no BuildSource or Builder configured"))
 	}
 
 	// 1. Load / initialise state.
 	state, err := LoadOrInit(bg.AppName, ModeBlueGreen, bg.PublicPort)
 	if err != nil {
-		return bg.failf("failed to load deploy state: %w", err)
+		return bg.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state"))
 	}
 	state.AppID = bg.AppID
 	inactive := state.InactiveSlot()
@@ -124,19 +124,19 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	log.Stepf("%s for slot %s", src.Describe(), inactive)
 	binaryPath, envPath, err := src.Build(ctx)
 	if err != nil {
-		return bg.failf("prepare deploy artifact failed: %w", err)
+		return bg.failf(phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact failed"))
 	}
 	log.Successf("artifact ready: %s", binaryPath)
 	envOverlay, err := EnvOverlayFromSnapshot(envPath, bg.AppID)
 	if err != nil {
-		return bg.failf("load env snapshot: %w", err)
+		return bg.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "load env snapshot"))
 	}
 
 	// 4. Start the new instance on a free internal port.
 	log.Stepf("starting new instance on slot %s", inactive)
 	proc, port, err := bg.Launcher(ctx, binaryPath, envOverlay)
 	if err != nil {
-		return bg.failf("start instance failed: %w", err)
+		return bg.failf(phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "start instance failed"))
 	}
 	targetVer := targetVersionFromSource(src)
 	newInst := &Instance{
@@ -179,7 +179,11 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		newInst.Status = "failed"
 		newInst.PID = 0
 		_ = Store(state)
-		return bg.failf("deploy aborted: new instance unhealthy (%w); active instance untouched", err)
+		return bg.failf(phelixerr.Wrapf(
+			phelixerr.CodeHealthCheckFailed,
+			err,
+			"deploy aborted: new instance unhealthy; active instance untouched",
+		))
 	}
 	newInst.Status = "running"
 	if state.Health == nil {
@@ -198,24 +202,24 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
 			_ = Store(state)
-			return errors.New("deploy aborted: no proxy client (is 'phelix proxy' running?)")
+			return bg.failf(phelixerr.New(phelixerr.CodeProxy, "deploy aborted: no proxy client (is 'phelix proxy' running?)"))
 		}
 		if !proxyOK {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
 			_ = Store(state)
-			return errors.New("deploy aborted: proxy daemon unreachable (is 'phelix proxy' running?)")
+			return bg.failf(phelixerr.New(phelixerr.CodeConnection, "deploy aborted: proxy daemon unreachable (is 'phelix proxy' running?)"))
 		}
 		if err := bg.ProxyClient.Add(ctx, bg.AppName, bg.PublicPort, primary); err != nil {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
 			_ = Store(state)
-			return bg.failf("enrol app with proxy: %w", err)
+			return bg.failf(phelixerr.Wrapf(phelixerr.CodeProxy, err, "enrol app with proxy failed"))
 		}
 		log.Successf("enrolled %s with proxy on public port %d -> slot %s", bg.AppName, bg.PublicPort, inactive)
 	} else {
 		if bg.ProxyClient == nil {
-			return errors.New("deploy aborted: no proxy client for switch")
+			return bg.failf(phelixerr.New(phelixerr.CodeProxy, "deploy aborted: no proxy client for switch"))
 		}
 		if err := bg.ProxyClient.Switch(ctx, bg.AppName, primary); err != nil {
 			// The new instance is healthy and running; we switch failure means
@@ -224,7 +228,11 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 			newInst.Status = "failed"
 			_ = Store(state)
-			return bg.failf("deploy aborted: proxy switch failed (%w); active instance untouched", err)
+			return bg.failf(phelixerr.Wrapf(
+				phelixerr.CodeProxy,
+				err,
+				"deploy aborted: proxy switch failed; active instance untouched",
+			))
 		}
 		log.Successf("traffic switched to slot %s (zero downtime)", inactive)
 	}
@@ -284,7 +292,7 @@ func (bg *BlueGreen) healthCfg() *health.DeployTierConfig {
 
 func (bg *BlueGreen) pingProxy(ctx context.Context) error {
 	if bg.ProxyClient == nil {
-		return errors.New("no proxy client")
+		return phelixerr.New(phelixerr.CodeProxy, "no proxy client")
 	}
 	return bg.ProxyClient.Ping(ctx)
 }
@@ -296,10 +304,12 @@ func (bg *BlueGreen) inFlight(appName string) int64 {
 	return bg.InFlight(appName)
 }
 
-// failf wraps an error so Deploy's callers see a clear message. It also logs.
-func (bg *BlueGreen) failf(format string, args ...any) error {
-	err := fmt.Errorf(format, args...)
-	bg.logger().Errorf("%v", err)
+// failf logs err and returns it unchanged so Deploy's callers see a single
+// structured error. It is the one place blue-green errors reach the Logger.
+func (bg *BlueGreen) failf(err error) error {
+	if err != nil {
+		bg.logger().Errorf("%v", err)
+	}
 	return err
 }
 

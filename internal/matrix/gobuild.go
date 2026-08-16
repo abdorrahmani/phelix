@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // GoMatrixBuilder handles Go-specific matrix builds. Two strategies:
@@ -116,7 +118,7 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	// Native cross-compilation path.
 	if cgo, err := DetectCgo(g.ProjectRoot); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("failed to scan for cgo usage: %w", err)
+		result.Error = phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to scan for cgo usage")
 		return result
 	} else if cgo {
 		// CGO detected — cross-compilation without a C cross-compiler
@@ -124,7 +126,8 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		// target. Rather than silently shipping broken artifacts, we fail
 		// with a clear message.
 		result.Status = "failed"
-		result.Error = fmt.Errorf(
+		result.Error = phelixerr.Newf(
+			phelixerr.CodeUnsupportedProject,
 			"cgo detected in project source — cross-compiling Go with CGO enabled "+
 				"requires a configured C cross-toolchain (e.g. gcc-aarch64-linux-gnu) "+
 				"for target %s. Either: (1) install the cross-compiler and set "+
@@ -144,11 +147,10 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		return result
 	}
 
-	// Output path: builds/matrix/{combo-id}/{AppName}_{arch}_{lang}_{version}
 	outDir := filepath.Join(g.ProjectRoot, "builds", "matrix", c.ID())
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("create output dir: %w", err)
+		result.Error = phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "create output dir")
 		return result
 	}
 	outPath := filepath.Join(outDir, c.BinaryName(g.AppName))
@@ -169,9 +171,13 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("go build failed: %w\n%s", err, stderr.String())
+		// The underlying *exec.ExitError (with exit code) stays reachable via
+		// errors.As; the full compiler output is captured only in the debug log.
+		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "go build failed for %s (%s/%s)", g.AppName, c.OS, c.Arch)
 		logLine("error: %v", err)
-		logLine("stderr: %s", stderr.String())
+		if s := stderr.String(); s != "" {
+			logLine("stderr: %s", s)
+		}
 		return result
 	}
 
@@ -216,7 +222,7 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	outDir := filepath.Join(g.ProjectRoot, "builds", "matrix", c.ID())
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("create output dir: %w", err)
+		result.Error = phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "create output dir")
 		return result
 	}
 	outPath := filepath.Join(outDir, c.BinaryName(g.AppName))
@@ -270,9 +276,13 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("docker go build failed: %w\n%s", err, stderr.String())
+		// Keep the *exec.ExitError (and its exit code) reachable; the container
+		// output goes to the debug log only.
+		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "docker go build failed for %s (%s/%s)", g.AppName, c.OS, c.Arch)
 		logLine("error: %v", err)
-		logLine("stderr: %s", stderr.String())
+		if s := stderr.String(); s != "" {
+			logLine("stderr: %s", s)
+		}
 		return result
 	}
 
@@ -317,7 +327,7 @@ func (g *GoMatrixBuilder) findMainPackage() (string, error) {
 		return "", err
 	}
 	if mainDir == "" {
-		return "", fmt.Errorf("no Go main package found in %s", g.ProjectRoot)
+		return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "no Go main package found in project root")
 	}
 
 	rel, err := filepath.Rel(g.ProjectRoot, mainDir)

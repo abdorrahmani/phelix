@@ -11,7 +11,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -21,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // Target describes one routable backend instance.
@@ -172,13 +173,15 @@ func (p *Proxy) Start() error {
 	p.mu.Lock()
 	if p.started.Swap(true) {
 		p.mu.Unlock()
-		return errors.New("proxy: already started")
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "proxy: already started")
 	}
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", p.PublicPort))
 	if err != nil {
 		p.started.Store(false)
 		p.mu.Unlock()
-		return fmt.Errorf("proxy: listen on :%d: %w", p.PublicPort, err)
+		// Preserve the underlying bind error (address in use, permission, ...)
+		// so errors.Is / errors.As still reach the OS cause.
+		return phelixerr.Wrapf(phelixerr.CodePortUnavailable, err, "proxy: listen on :%d", p.PublicPort)
 	}
 	p.server = &http.Server{
 		Handler:           p.rp,

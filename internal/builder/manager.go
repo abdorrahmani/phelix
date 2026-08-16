@@ -1,12 +1,13 @@
 package builder
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // BuildManager orchestrates the build process
@@ -94,7 +95,7 @@ func (bm *BuildManager) PrepareBuild(
 	}
 
 	if !lang.IsSupported() {
-		return nil, fmt.Errorf("unsupported or unknown project language: %s", lang)
+		return nil, phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unsupported or unknown project language: %s", lang)
 	}
 
 	// Get the builder for this language
@@ -166,14 +167,20 @@ func (bm *BuildManager) ValidateTools(lang Language) error {
 	switch lang {
 	case Go:
 		if !bm.IsToolInstalled("go") {
-			return fmt.Errorf("Go toolchain not found. Please install Go from https://golang.org/dl")
+			return phelixerr.New(
+				phelixerr.CodeToolchainNotFound,
+				"Go toolchain not found. Please install Go from https://golang.org/dl",
+			)
 		}
 	case Rust:
 		if !bm.IsToolInstalled("cargo") {
-			return fmt.Errorf("Rust toolchain not found. Please install Rust from https://rustup.rs")
+			return phelixerr.New(
+				phelixerr.CodeToolchainNotFound,
+				"Rust toolchain not found. Please install Rust from https://rustup.rs",
+			)
 		}
 	default:
-		return fmt.Errorf("unknown language: %s", lang)
+		return phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unknown language: %s", lang)
 	}
 	return nil
 }

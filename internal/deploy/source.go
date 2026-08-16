@@ -3,6 +3,8 @@ package deploy
 import (
 	"context"
 	"fmt"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // BuildSource supplies the binary and encrypted-env snapshot for one deploy
@@ -103,7 +105,7 @@ type FreshBuildSource struct {
 
 func (f *FreshBuildSource) Build(ctx context.Context) (string, string, error) {
 	if f.BuildFn == nil {
-		return "", "", fmt.Errorf("deploy: FreshBuildSource has no BuildFn")
+		return "", "", phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: FreshBuildSource has no BuildFn")
 	}
 	built, err := f.BuildFn(ctx, f.AppID, f.ExtraArgs)
 	if err != nil {

@@ -2,12 +2,13 @@ package health
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // Tier identifies which deploy-time health-check strategy is in use.
@@ -281,15 +282,17 @@ func WaitForHealthy(ctx context.Context, tier Tier, cfg *DeployTierConfig, host 
 		if !first {
 			select {
 			case <-ctx.Done():
+				// Preserve the context cause (cancel / deadline) so callers can
+				// errors.Is against context.Canceled / context.DeadlineExceeded.
 				return ctx.Err()
 			case <-time.After(time.Until(deadline)):
-				return fmt.Errorf("health check timed out after %s (tier %s, %d/%d consecutive successes)",
+				return phelixerr.Newf(phelixerr.CodeHealthCheckFailed, "health check timed out after %s (tier %s, %d/%d consecutive successes)",
 					timeout, tier, consecutive, retries)
 			case <-ticker.C:
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("health check timed out after %s (tier %s, %d/%d consecutive successes)",
+			return phelixerr.Newf(phelixerr.CodeHealthCheckFailed, "health check timed out after %s (tier %s, %d/%d consecutive successes)",
 				timeout, tier, consecutive, retries)
 		}
 

@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // DockerMatrixBuilder handles Docker image matrix builds.
@@ -99,7 +101,7 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 
 	logLine("image:    %s", imageName)
 	logLine("platform: %s", c.Platform)
-	logLine("command:  docker %s", strings.Join(args, " "))
+	logLine("command:  docker %s", redactCommand(args))
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 
@@ -107,9 +109,14 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
-		result.Error = fmt.Errorf("docker build failed for %s: %w\n%s", c.Platform, err, stderr.String())
+		// Keep the *exec.ExitError reachable; low-level docker output goes only
+		// to the debug log, never into the structured error. Build args already
+		// redacted above, so the command line in the log is safe.
+		result.Error = phelixerr.Wrapf(phelixerr.CodeDocker, err, "docker build failed for %s", c.Platform)
 		logLine("error: %v", err)
-		logLine("stderr: %s", stderr.String())
+		if s := stderr.String(); s != "" {
+			logLine("stderr: %s", phelixerr.Redact(s))
+		}
 		return result
 	}
 
@@ -117,6 +124,37 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 	result.Status = "success"
 	result.Artifact = imageName
 	return result
+}
+
+// redactCommand renders an exec command-line for a debug log, masking the
+// VALUES of KEY=value-style arguments (e.g. "--build-arg DB_PASSWORD=hunter2").
+// Keys are preserved so the log stays actionable; values never appear. This is
+// defense in depth on top of [phelixerr.Redact]: build args can carry registry
+// credentials, tokens and secrets, and the debug log is captured into the
+// per-combination result before any downstream redaction sees it.
+func redactCommand(args []string) string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		// "--build-arg" and "--label" take their payload as the NEXT argument:
+		// "--build-arg", "KEY=value". Mask the payload but keep the flag and key.
+		if (a == "--build-arg" || a == "--label") && i+1 < len(args) {
+			out[i] = a
+			next := args[i+1]
+			if k, v, ok := strings.Cut(next, "="); ok && k != "" && v != "" {
+				out[i+1] = k + "=***"
+			} else {
+				out[i+1] = "***"
+			}
+			continue
+		}
+		// Joined form: "--build-arg=KEY=value", or any other KEY=value arg.
+		if k, v, ok := strings.Cut(a, "="); ok && k != "" && v != "" && k != "--build-arg" && k != "--label" {
+			out[i] = k + "=***"
+			continue
+		}
+		out[i] = a
+	}
+	return strings.Join(out, " ")
 }
 
 // PushImages pushes all successfully-built images. This enforces fail-closed
@@ -135,7 +173,8 @@ func (d *DockerMatrixBuilder) PushImages(results []Result, pushPartial bool) err
 	failed := Failed(results)
 
 	if len(failed) > 0 && !pushPartial {
-		return fmt.Errorf(
+		return phelixerr.Newf(
+			phelixerr.CodeDocker,
 			"refusing to push: %d of %d combinations failed to build. "+
 				"Fix the failures and re-run, or use --push-partial to push only the %d successful images.\n"+
 				"Failed combinations:\n%s",
@@ -143,8 +182,12 @@ func (d *DockerMatrixBuilder) PushImages(results []Result, pushPartial bool) err
 			formatFailedList(failed))
 	}
 
+	// Fail-closed: no successful images at all — nothing to push.
 	if len(succeeded) == 0 {
-		return fmt.Errorf("nothing to push: all combinations failed")
+		if len(failed) > 0 {
+			return phelixerr.Newf(phelixerr.CodeDocker, "nothing to push: all %d combinations failed", len(failed))
+		}
+		return phelixerr.New(phelixerr.CodeDocker, "nothing to push: no images to push")
 	}
 
 	for _, r := range succeeded {
@@ -152,7 +195,7 @@ func (d *DockerMatrixBuilder) PushImages(results []Result, pushPartial bool) err
 			continue
 		}
 		if err := d.pushOne(r.Artifact); err != nil {
-			return fmt.Errorf("push %s: %w", r.Artifact, err)
+			return phelixerr.Wrapf(phelixerr.CodeDocker, err, "push %s", r.Artifact)
 		}
 	}
 
@@ -168,7 +211,7 @@ func (d *DockerMatrixBuilder) PushImages(results []Result, pushPartial bool) err
 // create` to assemble the manifest without re-building.
 func (d *DockerMatrixBuilder) BuildMultiArchManifest(ctx context.Context, results []Result, tag string) (*Result, error) {
 	if len(results) == 0 {
-		return nil, fmt.Errorf("no images to create manifest from")
+		return nil, phelixerr.New(phelixerr.CodeDocker, "no images to create manifest from")
 	}
 
 	manifestTag := fmt.Sprintf("%s:%s", "phelix-build", tag)
@@ -185,7 +228,7 @@ func (d *DockerMatrixBuilder) BuildMultiArchManifest(ctx context.Context, result
 	}
 
 	if len(refs) == 0 {
-		return nil, fmt.Errorf("no successful images to create manifest from")
+		return nil, phelixerr.New(phelixerr.CodeDocker, "no successful images to create manifest from")
 	}
 
 	args := append([]string{"buildx", "imagetools", "create", "-t", manifestTag}, refs...)
@@ -194,7 +237,9 @@ func (d *DockerMatrixBuilder) BuildMultiArchManifest(ctx context.Context, result
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("docker buildx imagetools create failed: %w\n%s", err, stderr.String())
+		// Keep the *exec.ExitError reachable; underlying docker output is not
+		// needed in the structured error.
+		return nil, phelixerr.Wrapf(phelixerr.CodeDocker, err, "docker buildx imagetools create failed for %s", manifestTag)
 	}
 
 	return &Result{
@@ -206,9 +251,9 @@ func (d *DockerMatrixBuilder) BuildMultiArchManifest(ctx context.Context, result
 
 func (d *DockerMatrixBuilder) pushOne(imageRef string) error {
 	cmd := exec.Command("docker", "push", imageRef)
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("push failed: %w\nOutput:\n%s", err, string(output))
+		return phelixerr.Wrapf(phelixerr.CodeDocker, err, "push failed for %s", imageRef)
 	}
 	return nil
 }
@@ -216,7 +261,7 @@ func (d *DockerMatrixBuilder) pushOne(imageRef string) error {
 func formatFailedList(results []Result) string {
 	var b strings.Builder
 	for _, r := range results {
-		fmt.Fprintf(&b, "  - %s: %v\n", r.Combination.ID(), r.Error)
+		fmt.Fprintf(&b, "  - %s: %v\n", r.Combination.ID(), phelixerr.Redact(r.Error.Error()))
 	}
 	return b.String()
 }
@@ -235,9 +280,11 @@ func BuildImageSimple(ctx context.Context, projectRoot, imageName string, buildA
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = projectRoot
 
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("docker build failed: %w\n%s", err, string(output))
+		// Never embed the raw docker output (it repeats build args); the
+		// *exec.ExitError with exit code preserves the root cause.
+		return nil, phelixerr.Wrapf(phelixerr.CodeDocker, err, "docker build failed for %s", imageName)
 	}
 
 	return &Result{
@@ -250,12 +297,12 @@ func BuildImageSimple(ctx context.Context, projectRoot, imageName string, buildA
 // Ensure Docker buildx is available for multi-platform builds.
 func EnsureBuildx() error {
 	cmd := exec.Command("docker", "buildx", "version")
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf(
-			"docker buildx is required for multi-arch builds but is not available: %w\n%s"+
-				"Install BuildKit: https://docs.docker.com/build/buildx/install/",
-			err, string(output))
+		// The full buildx version output is not useful in the error and could
+		// contain environment info; keep the exit-status cause and a hint.
+		return phelixerr.Wrapf(phelixerr.CodeDocker, err,
+			"docker buildx is required for multi-arch builds but is not available; install BuildKit: https://docs.docker.com/build/buildx/install/")
 	}
 	return nil
 }

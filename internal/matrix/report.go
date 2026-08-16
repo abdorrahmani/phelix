@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+
 	"github.com/fatih/color"
 )
 
@@ -128,17 +130,17 @@ func (r *Report) PrintTerminal() {
 func (r *Report) WriteJSON(projectRoot string) (string, error) {
 	reportDir := filepath.Join(projectRoot, "builds", "matrix")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
-		return "", fmt.Errorf("create report dir: %w", err)
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "create report dir")
 	}
 
 	path := filepath.Join(reportDir, "report.json")
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("marshal report: %w", err)
+		return "", phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "marshal report")
 	}
 
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return "", fmt.Errorf("write report: %w", err)
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "write report")
 	}
 
 	return path, nil
