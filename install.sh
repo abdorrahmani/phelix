@@ -80,13 +80,93 @@ have_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# download <url> <output-path>
+# ---------------------------------------------------------------------------
+# Progress output
+# ---------------------------------------------------------------------------
+# Live progress bars are painted only when stdout is a TTY (so `curl | bash`
+# one-liners show them, but piped/scripted installs keep a clean log). During
+# downloads curl/wget draw their own byte-accurate bar; with_progress paints an
+# indeterminate bar for steps whose duration is unknown.
+if [ -t 1 ]; then
+    PROGRESS_ON=1
+else
+    PROGRESS_ON=0
+fi
+
+BAR_WIDTH=40
+
+# with_progress <label> <cmd> [args...]
+# Runs <cmd...> while showing an animated, single-line progress bar. Returns
+# the command's exit status. The animated line is erased before the caller
+# continues so its own success/error message starts on a fresh line.
+with_progress() {
+    local label="$1"
+    shift
+
+    if [ "${PROGRESS_ON}" -ne 1 ]; then
+        info "${label}..."
+        "$@"
+        return $?
+    fi
+
+    local -a spin=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' )
+    local cell=0 head=0 dir=1 i=0 pid ch
+    local bar=""
+
+    "$@" &
+    pid=$!
+
+    # Animation loop paints the bar on one line until the background command
+    # exits; `set +e` is needed so a failing `wait` below doesn't abort.
+    set +e
+    while kill -0 "${pid}" 2>/dev/null; do
+        bar=""
+        for (( cell=0; cell<BAR_WIDTH; cell++ )); do
+            if (( cell < head )); then
+                ch="${C_GREEN}█${C_RESET}"
+            elif (( cell == head )); then
+                ch="${C_CYAN}▓${C_RESET}"
+            else
+                ch="░"
+            fi
+            bar+="${ch}"
+        done
+        printf "\r\033[K%s %s %s  %s" \
+            "${C_BLUE}${C_BOLD}▸${C_RESET}" "${label}" "${bar}" "${spin[$(( i % ${#spin[@]} ))]}"
+        sleep 0.1
+        i=$(( i + 1 ))
+        head=$(( head + dir ))
+        if (( dir == 1 && head >= BAR_WIDTH - 1 )); then
+            dir=-1
+        elif (( dir == -1 && head <= 0 )); then
+            dir=1
+        fi
+    done
+    wait "${pid}"
+    local rc=$?
+    set -e
+    printf "\r\033[K"
+    return "${rc}"
+}
+
+# download <url> <output-path> [progress]
+# Uses curl or wget (whichever is installed). Pass "progress" as the third
+# argument to draw a live bar during the byte transfer; otherwise the download
+# stays quiet so checksum sidecars and piped installs don't flash output.
 download() {
-    local url="$1" out="$2"
+    local url="$1" out="$2" mode="${3:-quiet}"
     if have_cmd curl; then
-        curl -fsSL "${url}" -o "${out}"
+        if [ "${mode}" = "progress" ] && [ "${PROGRESS_ON}" -eq 1 ]; then
+            curl -fSL --progress-bar "${url}" -o "${out}"
+        else
+            curl -fsSL "${url}" -o "${out}"
+        fi
     elif have_cmd wget; then
-        wget -q --show-progress=off -O "${out}" "${url}"
+        if [ "${mode}" = "progress" ] && [ "${PROGRESS_ON}" -eq 1 ]; then
+            wget -q --show-progress -O "${out}" "${url}"
+        else
+            wget -q -O "${out}" "${url}"
+        fi
     else
         fail "neither curl nor wget is installed; cannot download"
     fi
@@ -192,18 +272,15 @@ install_binary() {
     local download_url="${release_root}/${binary_name}"
 
     info "Downloading Phelix ${C_CYAN}${VERSION}${C_RESET} for ${C_CYAN}${os}/${arch}${C_RESET}..."
-    download "${download_url}" "${TMPDIR_WORK}/${binary_name}"
+    download "${download_url}" "${TMPDIR_WORK}/${binary_name}" progress
 
     # Optional SHA-256 verification. We fetch <binary>.sha256 only if it exists;
     # if it does, verify; if not, warn and continue (no half-baked check).
     local checksum_url="${download_url}.sha256"
     if http_exists "${checksum_url}"; then
-        info "Verifying SHA-256 checksum..."
-        download "${checksum_url}" "${TMPDIR_WORK}/${binary_name}.sha256"
-        need_cmd sha256sum
-        # checksum file is expected as: "<hex>  <filename>"
-        ( cd "${TMPDIR_WORK}" && sha256sum -c "${binary_name}.sha256" >/dev/null ) \
-            || fail "checksum verification failed for ${binary_name}"
+        with_progress "Verifying SHA-256 checksum" \
+            bash -c 'cd "$1" && sha256sum -c "$2.sha256" >/dev/null' \
+            _ "${TMPDIR_WORK}" "${binary_name}"
         success "Checksum OK."
     else
         warn "No checksum published for this release; skipping verification."
@@ -219,8 +296,9 @@ install_binary() {
         SUDO="sudo"
     fi
 
-    ${SUDO} mkdir -p "${INSTALL_DIR}"
-    ${SUDO} install -m 0755 "${TMPDIR_WORK}/${binary_name}" "${target}"
+    with_progress "Installing binary to ${target}" \
+        bash -c "${SUDO} mkdir -p \"\$1\" && ${SUDO} install -m 0755 \"\$2\" \"\$3\"" \
+        _ "${INSTALL_DIR}" "${TMPDIR_WORK}/${binary_name}" "${target}"
     success "Installed binary to ${C_CYAN}${target}${C_RESET}"
 }
 
@@ -262,21 +340,26 @@ UNIT
 
     ${SUDO} systemctl daemon-reload
     ${SUDO} systemctl enable "${SERVICE_NAME}.service"
-    ${SUDO} systemctl restart "${SERVICE_NAME}.service"
+    with_progress "Restarting ${SERVICE_NAME}.service" \
+        ${SUDO} systemctl restart "${SERVICE_NAME}.service"
 
     # Verify the service actually came up as active. Poll briefly in case the
     # daemon takes a moment to start; on failure print useful diagnostics so a
     # broken install is debuggable instead of silent.
-    info "Verifying ${SERVICE_NAME}.service is active..."
-    local deadline=15
-    local i
-    for i in $(seq 1 "${deadline}"); do
-        if ${SUDO} systemctl is-active --quiet "${SERVICE_NAME}.service"; then
-            success "${SERVICE_NAME}.service is active (running)"
-            return 0
-        fi
-        sleep 1
-    done
+    local active_rc=0
+    with_progress "Waiting for ${SERVICE_NAME}.service to become active" bash -c "
+        deadline=15
+        for _ in \$(seq 1 \"\${deadline}\"); do
+            ${SUDO} systemctl is-active --quiet \"${SERVICE_NAME}.service\" && exit 0
+            sleep 1
+        done
+        exit 1
+    " || active_rc=$?
+
+    if [ "${active_rc}" -eq 0 ]; then
+        success "${SERVICE_NAME}.service is active (running)"
+        return 0
+    fi
 
     error "${SERVICE_NAME}.service is not active. Diagnostics:"
     ${SUDO} systemctl status "${SERVICE_NAME}.service" --no-pager || true
