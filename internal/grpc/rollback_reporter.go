@@ -335,11 +335,14 @@ func (r *RollbackReporter) Emit(step string, success bool, msg string, duration 
 		r.event.ServerId = server.GetServerID()
 	}
 
-	// Attach auth identity to every event so the backend can attribute
-	// the rollback to a specific user session without reading headers.
-	if sid, tok := loadSessionIdentity(); sid != "" {
+	// Attach the session identity to every event so the backend can attribute
+	// the rollback to a specific user session. We deliberately send ONLY the
+	// session ID: the raw token never leaves the client in the event body. The
+	// backend authenticates the request via the gRPC authorization metadata
+	// attached by attachAuthMetadata, so putting the token here too would be a
+	// second, unredacted copy of a credential in a serialized message.
+	if sid, _ := loadSessionIdentity(); sid != "" {
 		r.event.UserId = sid
-		r.event.SessionToken = tok
 	}
 
 	// Enqueue for background gRPC send (non-blocking).
@@ -492,12 +495,14 @@ func SendVersionListForApp(appID, appName, appDir string) {
 		},
 	}
 
-	// Fill server ID and auth identity.
+	// Fill server ID and auth identity. The session token is intentionally not
+	// carried in the event body — the request is authenticated via gRPC
+	// authorization metadata, and the raw token must never be serialized into a
+	// message that could be logged, forwarded, or inspected in transit.
 	_ = server.Initialize()
 	event.ServerId = server.GetServerID()
-	if sid, tok := loadSessionIdentity(); sid != "" {
+	if sid, _ := loadSessionIdentity(); sid != "" {
 		event.UserId = sid
-		event.SessionToken = tok
 	}
 
 	enqueueRollbackEvent(event)

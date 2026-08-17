@@ -69,6 +69,13 @@ func transportCredentials() credentials.TransportCredentials {
 // Connect establishes the gRPC connection to the backend.
 func (c *Client) Connect() error {
 	cfg := config.Get()
+	if cfg == nil {
+		// No config loaded yet — this client is not configured to talk to
+		// any backend. Return a proper error instead of dereferencing a nil
+		// pointer; callers that run in the background (e.g. the rollback
+		// event sender) must be able to handle the failure.
+		return phelixerr.New(phelixerr.CodeConfiguration, "gRPC client has no configuration loaded")
+	}
 	if cfg.App.GRPCUrl == "" {
 		grpcLog("[gRPC] No gRPC URL configured, skipping connection")
 		return nil

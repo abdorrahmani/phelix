@@ -11,6 +11,9 @@ import (
 // authenticate performs login with the given credentials.
 func authenticate(username, apiKey string) error {
 	cfg := config.Get()
+	if cfg == nil {
+		return phelixerr.New(phelixerr.CodeConfiguration, "no configuration loaded")
+	}
 	req, err := http.NewRequest("POST", cfg.App.API+"/auth/phelix", nil)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeNetwork, "error creating request", err)
@@ -48,6 +51,9 @@ func authenticate(username, apiKey string) error {
 // VerifySession checks if the session is still valid.
 func VerifySession(session *Session) error {
 	cfg := config.Get()
+	if cfg == nil {
+		return phelixerr.New(phelixerr.CodeConfiguration, "no configuration loaded")
+	}
 	req, err := http.NewRequest("GET", cfg.App.API+"/auth/phelix/status", nil)
 	if err != nil {
 		return err
@@ -72,6 +78,9 @@ func VerifySession(session *Session) error {
 // performLogout invalidates the current session on the server.
 func performLogout(session *Session) error {
 	cfg := config.Get()
+	if cfg == nil {
+		return phelixerr.New(phelixerr.CodeConfiguration, "no configuration loaded")
+	}
 	req, err := http.NewRequest("POST", cfg.App.API+"/auth/phelix/logout", nil)
 	if err != nil {
 		return err

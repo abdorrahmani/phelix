@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -93,7 +94,7 @@ func (m *AppManager) StopApplication(id string) error {
 			app.UpdatedAt = time.Now()
 			return m.SaveState()
 		}
-		return fmt.Errorf("application '%s' (ID: %s) is not running", app.Name, id)
+		return phelixerr.Newf(phelixerr.CodeProcessFailed, "application '%s' (ID: %s) is not running", app.Name, id)
 	}
 
 	if err := m.stopApplicationProcess(app); err != nil {
@@ -141,7 +142,11 @@ func (m *AppManager) ListApplications() []AppListItem {
 	defer m.Lock.Unlock()
 
 	if err := m.LoadState(); err != nil {
-		fmt.Println("Failed to load state:", err)
+		// ListApplications cannot fail the caller (its signature returns only a
+		// list), but the diagnostic must not pollute stdout — a caller's
+		// processable output. Emit it on the daemon log instead; callers that
+		// need strict behavior check LoadState themselves.
+		log.Printf("[List] Failed to load state: %v", err)
 		return nil
 	}
 

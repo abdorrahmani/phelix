@@ -26,7 +26,10 @@ var StatusCmd = &cobra.Command{
 
 		status, err := app.Manager.StatusApplication(identifier)
 		if err != nil {
-			return phelixerr.Wrap(phelixerr.CodeProcessFailed, "error getting status", err)
+			// Return as-is: StatusApplication already produces a precise code
+			// (NOT_FOUND for a missing app), and re-wrapping with PROCESS_FAILED
+			// would mask it and turn exit 12 into a generic exit 1.
+			return err
 		}
 
 		displayStatus(status)

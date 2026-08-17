@@ -102,7 +102,12 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 		}
 
 		if err := app.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			fmt.Println("Failed to send SIGTERM:", err)
+			return phelixerr.Wrapf(
+				phelixerr.CodeProcessFailed,
+				err,
+				"failed to send SIGTERM to application '%s' (ID: %s)",
+				app.Name, app.ID,
+			)
 		}
 
 		done := make(chan error, 1)
@@ -112,13 +117,15 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 
 		select {
 		case <-time.After(5 * time.Second):
-			fmt.Println("Process did not stop gracefully, attempting SIGKILL")
+			// Graceful stop timed out — fall back to SIGKILL. This is a
+			// recovery path, not a failure of the stop itself, so it does not
+			// return an error; the SIGKILL outcome is verified below.
 			_ = app.Cmd.Process.Kill()
 			<-done // reap the child so it doesn't linger as zombie
-		case err := <-done:
-			if err != nil {
-				fmt.Println("Process exited with error:", err)
-			}
+		case <-done:
+			// The process exited. Its exit status is conveyed by the
+			// final waitForProcessExit check; a non-zero exit here is not
+			// an error of the stop operation itself.
 		}
 	} else {
 		// app.Cmd is nil (loaded from persisted state) — operate by PID.
@@ -129,12 +136,18 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 
 		// Send SIGTERM and poll until the process exits or 5 s elapses.
 		if err := proc.Signal(syscall.SIGTERM); err != nil {
-			fmt.Println("Failed to send SIGTERM:", err)
+			return phelixerr.Wrapf(
+				phelixerr.CodeProcessFailed,
+				err,
+				"failed to send SIGTERM to application '%s' (ID: %s)",
+				app.Name, app.ID,
+			)
 		}
 
 		terminated := m.waitForProcessExit(app.PID, 5*time.Second)
 		if !terminated {
-			fmt.Println("Process did not stop gracefully, attempting SIGKILL")
+			// Graceful stop timed out — fall back to SIGKILL (recovery path;
+			// the SIGKILL outcome is verified below).
 			_ = proc.Kill()
 			// Give SIGKILL a moment to take effect.
 			time.Sleep(500 * time.Millisecond)

@@ -15,6 +15,9 @@ import (
 // SendAppsToServer uploads the list of running apps to the Phelix server.
 func SendAppsToServer() error {
 	cfg := config.Get()
+	if cfg == nil {
+		return phelixerr.New(phelixerr.CodeConfiguration, "no configuration loaded")
+	}
 	session, err := GetValidSession()
 	if err != nil {
 		return phelixerr.Wrap(
@@ -59,8 +62,7 @@ func SendAppsToServer() error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// The response body is intentionally NOT embedded: it may contain
-		// session tokens or stack traces. Only the status is surfaced.
+
 		return phelixerr.Newf(
 			phelixerr.CodeServer,
 			"server returned HTTP %d",

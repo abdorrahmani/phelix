@@ -2,6 +2,7 @@ package logs
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -65,15 +66,15 @@ func RemovePreviousLogs() {
 
 		info, err := os.Stat(logFile)
 		if err != nil {
-			fmt.Printf("Failed to stat log file %s: %v", logFile, err)
+			log.Printf("[Logs] Failed to stat log file %s: %v", logFile, err)
 			continue
 		}
 
 		if info.Size() > MaxLogSize {
-			fmt.Printf("Log file %s too large (%d bytes)", logFile, info.Size())
+			log.Printf("[Logs] Trimming oversized log file %s (%d bytes)", logFile, info.Size())
 			err := trimLogFile(logFile)
 			if err != nil {
-				fmt.Printf("Failed to remove log file %s: %v", logFile, err)
+				log.Printf("[Logs] Failed to trim log file %s: %v", logFile, err)
 			}
 		}
 	}

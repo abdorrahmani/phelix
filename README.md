@@ -567,10 +567,47 @@ Retention: the last **5** versions are kept by default (configurable per plan); 
 
 ## Error Handling
 
+- Errors are rendered **once, on stderr**, with a short code, the message, and
+  an actionable hint (e.g. `phelix auth login` for auth failures). Successful
+  output stays on stdout and is never polluted with error text.
 - Authentication errors prompt you to run `phelix auth login`.
-- Build errors are displayed with detailed output.
+- Build errors show the failing stage and a hint (run with `--debug` for the
+  underlying root cause).
 - Connection errors are logged and retried automatically.
 - Server communication errors are handled gracefully, without crashing the CLI.
+- **Root causes are preserved.** Wrapped errors keep the underlying cause
+  reachable via `errors.Is` / `errors.As`, so `os.IsNotExist`, `exec.ExitError`,
+  and gRPC `status.Code` still work on the cause.
+- **`--debug`**: passes the flag to any command to render the full error chain
+  (root cause included) on stderr. It never discloses secrets — every rendered
+  string is run through `phelixerr.Redact` in both normal and debug mode.
+
+### Exit codes
+
+Exit codes are part of the CLI's script-facing contract: **same category ⇒ same
+exit code**, so automation can rely on them:
+
+| Exit | Category | Typical codes |
+|-----:|----------|---------------|
+| 0 | success | — |
+| 1 | generic failure | `UNKNOWN`, `SERVER_ERROR`, `ENCRYPTION_ERROR`, plain errors |
+| 2 | invalid usage / arguments | `INVALID_ARGUMENT`, `VALIDATION` |
+| 10 | authentication | `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `SESSION_EXPIRED` |
+| 11 | permission | `PERMISSION_DENIED` |
+| 12 | not found | `NOT_FOUND`, `VERSION_NOT_FOUND`, `ROLLBACK_TARGET_NOT_FOUND` |
+| 20 | build | `BUILD_FAILED`, `BUILD_TIMEOUT`, `TOOLCHAIN_NOT_FOUND`, `UNSUPPORTED_PROJECT` |
+| 21 | deploy | `DEPLOY_FAILED`, `INSTANCE_START_FAILED`, `HEALTH_CHECK_FAILED`, `DEPLOY_LOCKED` |
+| 22 | rollback | `ROLLBACK_FAILED` |
+| 30 | network | `CONNECTION_ERROR`, `PORT_UNAVAILABLE` |
+| 40 | configuration | `CONFIGURATION_ERROR` |
+| 50 | docker | `DOCKER_ERROR` |
+| 60 | timeout | `TIMEOUT` |
+| 70 | encryption | `ENCRYPTION_ERROR` |
+
+Examples: `phelix status no-such-app` exits **12** (`NOT_FOUND`);
+`phelix status` (missing required argument) exits **2**. See
+[`docs/error-architecture.md`](docs/error-architecture.md) for the full error
+architecture, code inventory, and developer guidelines.
 
 ## Best Practices
 

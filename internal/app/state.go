@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,9 +29,11 @@ func init() {
 	stateFile = filepath.Join(homeDir, ".phelix", "apps.json")
 	logDir = filepath.Join(homeDir, ".phelix", "logs")
 
-	// Ensure directories exist
+	// Ensure directories exist. This runs at package-init time, before any
+	// error boundary exists, so the diagnostic goes to the daemon log (stderr)
+	// rather than polluting stdout — and it cannot be returned to the caller.
 	if err := ensureDirectories(); err != nil {
-		fmt.Printf("Warning: Failed to create required directories: %v\n", err)
+		log.Printf("Warning: Failed to create required directories: %v", err)
 	}
 }
 
