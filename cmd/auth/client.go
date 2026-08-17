@@ -98,7 +98,7 @@ type authUser struct {
 func VerifySession(session *Session) (*SessionStatus, error) {
 	cfg := config.Get()
 	if cfg == nil {
-		return phelixerr.New(phelixerr.CodeConfiguration, "no configuration loaded")
+		return nil, phelixerr.New(phelixerr.CodeConfiguration, "no configuration loaded")
 	}
 	req, err := http.NewRequest("GET", cfg.App.API+"/auth/phelix/status", nil)
 	if err != nil {
