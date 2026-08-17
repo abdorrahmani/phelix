@@ -42,7 +42,7 @@ func main() {
 				if err != nil {
 					return err
 				}
-				if err := auth.VerifySession(session); err != nil {
+				if _, err := auth.VerifySession(session); err != nil {
 					return err
 				}
 			}
