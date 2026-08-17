@@ -55,7 +55,8 @@ var StatusCmd = &cobra.Command{
 			return err
 		}
 
-		if err := VerifySession(session); err != nil {
+		status, err := VerifySession(session)
+		if err != nil {
 			return phelixerr.Wrapf(
 				phelixerr.CodeUnauthenticated,
 				err,
@@ -63,7 +64,7 @@ var StatusCmd = &cobra.Command{
 			)
 		}
 
-		printSession(session)
+		printSession(session, status)
 		return nil
 	},
 }
@@ -109,9 +110,19 @@ func printWelcome(username string) {
 // cyan color func for the banner.
 var cyan = color.New(color.FgCyan)
 
-func printSession(session *Session) {
+func printSession(session *Session, status *SessionStatus) {
 	green := color.New(color.FgGreen).SprintFunc()
-	fmt.Printf("• Authenticated as: %s\n", green(session.SessionID))
-	fmt.Printf("• Token: %s\n", session.Token)
+	who := session.Username
+	if who == "" && status != nil && status.User != "" {
+		who = status.User
+	}
+	if who == "" {
+		who = session.SessionID
+	}
+	fmt.Printf("• Authenticated as: %s\n", green(who))
+	if status != nil {
+		fmt.Printf("• Session: %s\n", status.SessionID)
+		fmt.Printf("• CLI: %s (%s/%s)\n", status.CliVersion, status.OS, status.Arch)
+	}
 	fmt.Printf("• Expires at: %s\n", session.ExpiresAt.Format(time.RFC1123))
 }

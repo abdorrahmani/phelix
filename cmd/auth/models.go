@@ -6,14 +6,21 @@ import "time"
 type Session struct {
 	SessionID string    `json:"sessionID"`
 	Token     string    `json:"token"`
+	Username  string    `json:"username"`
+	UserID    uint      `json:"userID"`
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-// SessionStatus represents the current authentication status.
+// SessionStatus represents the current authentication status, as returned by
+// GET /auth/phelix/status.
 type SessionStatus struct {
-	User      string `json:"user"`
-	SessionID string `json:"sessionID"`
-	ExpiresAt string `json:"expiresAt"`
+	User       string `json:"user"`
+	SessionID  string `json:"sessionID"`
+	Device     string `json:"device"`
+	CliVersion string `json:"cliVersion"`
+	OS         string `json:"os"`
+	Arch       string `json:"arch"`
+	ExpiresAt  string `json:"expiresAt"`
 }
 
 // AppDetail represents an application's runtime details.
