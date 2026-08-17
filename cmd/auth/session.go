@@ -32,7 +32,7 @@ func readSession() (*Session, error) {
 }
 
 // storeSession saves the session to disk.
-func storeSession(sessionID, token string) error {
+func storeSession(session *Session) error {
 	sessionDir := filepath.Join(os.Getenv("HOME"), ".phelix")
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
 		return phelixerr.Wrapf(
@@ -41,12 +41,6 @@ func storeSession(sessionID, token string) error {
 			"error creating session directory %s",
 			sessionDir,
 		)
-	}
-
-	session := Session{
-		SessionID: sessionID,
-		Token:     token,
-		ExpiresAt: time.Now().Add(time.Hour * 24 * 30 * 3),
 	}
 
 	data, err := json.Marshal(session)
@@ -60,6 +54,23 @@ func storeSession(sessionID, token string) error {
 // removeSession deletes the session file.
 func removeSession() error {
 	return os.Remove(getSessionFilePath())
+}
+
+// defaultSessionTTL is the fallback lifetime when the server response omits
+// expiresAt. The documented default expiry is ~3 months.
+const defaultSessionTTL = 24 * 30 * 3 * time.Hour
+
+// parseExpiry parses the RFC 3339 expiresAt value returned by the backend. An
+// empty value is tolerated and falls back to the default TTL.
+func parseExpiry(s string) (time.Time, error) {
+	if s == "" {
+		return time.Now().Add(defaultSessionTTL), nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t, nil
 }
 
 // GetValidSession returns a valid, non-expired session.
