@@ -518,18 +518,26 @@ func (x *AppResourceMetrics) GetMemoryUsage() uint64 {
 // ApplicationInfo mirrors monitor.AppDetails. Sent on every monitoring tick,
 // exactly like the old "apps" WebSocket message.
 type ApplicationInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	ServerId      string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
-	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
-	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
-	Language      string                 `protobuf:"bytes,5,opt,name=language,proto3" json:"language,omitempty"`
-	Port          int32                  `protobuf:"varint,6,opt,name=port,proto3" json:"port,omitempty"`
-	BuildStatus   string                 `protobuf:"bytes,7,opt,name=build_status,json=buildStatus,proto3" json:"build_status,omitempty"`
-	Pid           int32                  `protobuf:"varint,8,opt,name=pid,proto3" json:"pid,omitempty"`
-	Uptime        string                 `protobuf:"bytes,9,opt,name=uptime,proto3" json:"uptime,omitempty"`
-	CreatedAt     int64                  `protobuf:"varint,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     int64                  `protobuf:"varint,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	ServerId    string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	Name        string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Status      string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	Language    string                 `protobuf:"bytes,5,opt,name=language,proto3" json:"language,omitempty"`
+	Port        int32                  `protobuf:"varint,6,opt,name=port,proto3" json:"port,omitempty"`
+	BuildStatus string                 `protobuf:"bytes,7,opt,name=build_status,json=buildStatus,proto3" json:"build_status,omitempty"`
+	Pid         int32                  `protobuf:"varint,8,opt,name=pid,proto3" json:"pid,omitempty"`
+	Uptime      string                 `protobuf:"bytes,9,opt,name=uptime,proto3" json:"uptime,omitempty"`
+	CreatedAt   int64                  `protobuf:"varint,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt   int64                  `protobuf:"varint,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// Application configuration blocks (process/networking/logging/storage).
+	// Populated whenever the CLI knows the values; absent/missing groups mean
+	// the CLI has no configuration to report. AppConfig is sent on every
+	// monitoring tick alongside the fields above.
+	Process       *AppProcess    `protobuf:"bytes,20,opt,name=process,proto3" json:"process,omitempty"`
+	Networking    *AppNetworking `protobuf:"bytes,21,opt,name=networking,proto3" json:"networking,omitempty"`
+	Logging       *AppLogging    `protobuf:"bytes,22,opt,name=logging,proto3" json:"logging,omitempty"`
+	Storage       *AppStorage    `protobuf:"bytes,23,opt,name=storage,proto3" json:"storage,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -641,6 +649,486 @@ func (x *ApplicationInfo) GetUpdatedAt() int64 {
 	return 0
 }
 
+func (x *ApplicationInfo) GetProcess() *AppProcess {
+	if x != nil {
+		return x.Process
+	}
+	return nil
+}
+
+func (x *ApplicationInfo) GetNetworking() *AppNetworking {
+	if x != nil {
+		return x.Networking
+	}
+	return nil
+}
+
+func (x *ApplicationInfo) GetLogging() *AppLogging {
+	if x != nil {
+		return x.Logging
+	}
+	return nil
+}
+
+func (x *ApplicationInfo) GetStorage() *AppStorage {
+	if x != nil {
+		return x.Storage
+	}
+	return nil
+}
+
+// AppProcess describes how the CLI launches and supervises a managed app.
+type AppProcess struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	WorkingDir         string                 `protobuf:"bytes,1,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
+	Executable         string                 `protobuf:"bytes,2,opt,name=executable,proto3" json:"executable,omitempty"`
+	StartCommand       string                 `protobuf:"bytes,3,opt,name=start_command,json=startCommand,proto3" json:"start_command,omitempty"`
+	StopCommand        string                 `protobuf:"bytes,4,opt,name=stop_command,json=stopCommand,proto3" json:"stop_command,omitempty"`
+	MaxCpuPercent      int32                  `protobuf:"varint,5,opt,name=max_cpu_percent,json=maxCpuPercent,proto3" json:"max_cpu_percent,omitempty"`
+	MaxMemoryMb        int64                  `protobuf:"varint,6,opt,name=max_memory_mb,json=maxMemoryMb,proto3" json:"max_memory_mb,omitempty"`
+	MaxOpenFiles       int64                  `protobuf:"varint,7,opt,name=max_open_files,json=maxOpenFiles,proto3" json:"max_open_files,omitempty"`
+	MaxProcesses       int64                  `protobuf:"varint,8,opt,name=max_processes,json=maxProcesses,proto3" json:"max_processes,omitempty"`
+	AutoRestart        bool                   `protobuf:"varint,9,opt,name=auto_restart,json=autoRestart,proto3" json:"auto_restart,omitempty"`
+	CrashLoopBackoff   int32                  `protobuf:"varint,10,opt,name=crash_loop_backoff,json=crashLoopBackoff,proto3" json:"crash_loop_backoff,omitempty"` // seconds
+	GracefulShutdown   int32                  `protobuf:"varint,11,opt,name=graceful_shutdown,json=gracefulShutdown,proto3" json:"graceful_shutdown,omitempty"`   // seconds
+	MaxRestartAttempts int32                  `protobuf:"varint,12,opt,name=max_restart_attempts,json=maxRestartAttempts,proto3" json:"max_restart_attempts,omitempty"`
+	RestartDelayMs     int32                  `protobuf:"varint,13,opt,name=restart_delay_ms,json=restartDelayMs,proto3" json:"restart_delay_ms,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *AppProcess) Reset() {
+	*x = AppProcess{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppProcess) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppProcess) ProtoMessage() {}
+
+func (x *AppProcess) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppProcess.ProtoReflect.Descriptor instead.
+func (*AppProcess) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AppProcess) GetWorkingDir() string {
+	if x != nil {
+		return x.WorkingDir
+	}
+	return ""
+}
+
+func (x *AppProcess) GetExecutable() string {
+	if x != nil {
+		return x.Executable
+	}
+	return ""
+}
+
+func (x *AppProcess) GetStartCommand() string {
+	if x != nil {
+		return x.StartCommand
+	}
+	return ""
+}
+
+func (x *AppProcess) GetStopCommand() string {
+	if x != nil {
+		return x.StopCommand
+	}
+	return ""
+}
+
+func (x *AppProcess) GetMaxCpuPercent() int32 {
+	if x != nil {
+		return x.MaxCpuPercent
+	}
+	return 0
+}
+
+func (x *AppProcess) GetMaxMemoryMb() int64 {
+	if x != nil {
+		return x.MaxMemoryMb
+	}
+	return 0
+}
+
+func (x *AppProcess) GetMaxOpenFiles() int64 {
+	if x != nil {
+		return x.MaxOpenFiles
+	}
+	return 0
+}
+
+func (x *AppProcess) GetMaxProcesses() int64 {
+	if x != nil {
+		return x.MaxProcesses
+	}
+	return 0
+}
+
+func (x *AppProcess) GetAutoRestart() bool {
+	if x != nil {
+		return x.AutoRestart
+	}
+	return false
+}
+
+func (x *AppProcess) GetCrashLoopBackoff() int32 {
+	if x != nil {
+		return x.CrashLoopBackoff
+	}
+	return 0
+}
+
+func (x *AppProcess) GetGracefulShutdown() int32 {
+	if x != nil {
+		return x.GracefulShutdown
+	}
+	return 0
+}
+
+func (x *AppProcess) GetMaxRestartAttempts() int32 {
+	if x != nil {
+		return x.MaxRestartAttempts
+	}
+	return 0
+}
+
+func (x *AppProcess) GetRestartDelayMs() int32 {
+	if x != nil {
+		return x.RestartDelayMs
+	}
+	return 0
+}
+
+// AppNetworking describes how a managed app is exposed to the network.
+type AppNetworking struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ListenPort       int32                  `protobuf:"varint,1,opt,name=listen_port,json=listenPort,proto3" json:"listen_port,omitempty"`
+	BindAddress      string                 `protobuf:"bytes,2,opt,name=bind_address,json=bindAddress,proto3" json:"bind_address,omitempty"`
+	PublicDomain     string                 `protobuf:"bytes,3,opt,name=public_domain,json=publicDomain,proto3" json:"public_domain,omitempty"`
+	BasePath         string                 `protobuf:"bytes,4,opt,name=base_path,json=basePath,proto3" json:"base_path,omitempty"`
+	TlsEnabled       bool                   `protobuf:"varint,5,opt,name=tls_enabled,json=tlsEnabled,proto3" json:"tls_enabled,omitempty"`
+	CertPath         string                 `protobuf:"bytes,6,opt,name=cert_path,json=certPath,proto3" json:"cert_path,omitempty"`
+	KeyPath          string                 `protobuf:"bytes,7,opt,name=key_path,json=keyPath,proto3" json:"key_path,omitempty"`
+	ProxyEnabled     bool                   `protobuf:"varint,8,opt,name=proxy_enabled,json=proxyEnabled,proto3" json:"proxy_enabled,omitempty"`
+	CorsEnabled      bool                   `protobuf:"varint,9,opt,name=cors_enabled,json=corsEnabled,proto3" json:"cors_enabled,omitempty"`
+	AllowedOrigins   []string               `protobuf:"bytes,10,rep,name=allowed_origins,json=allowedOrigins,proto3" json:"allowed_origins,omitempty"`
+	RateLimitEnabled bool                   `protobuf:"varint,11,opt,name=rate_limit_enabled,json=rateLimitEnabled,proto3" json:"rate_limit_enabled,omitempty"`
+	RateLimitRps     int32                  `protobuf:"varint,12,opt,name=rate_limit_rps,json=rateLimitRps,proto3" json:"rate_limit_rps,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *AppNetworking) Reset() {
+	*x = AppNetworking{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppNetworking) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppNetworking) ProtoMessage() {}
+
+func (x *AppNetworking) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppNetworking.ProtoReflect.Descriptor instead.
+func (*AppNetworking) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *AppNetworking) GetListenPort() int32 {
+	if x != nil {
+		return x.ListenPort
+	}
+	return 0
+}
+
+func (x *AppNetworking) GetBindAddress() string {
+	if x != nil {
+		return x.BindAddress
+	}
+	return ""
+}
+
+func (x *AppNetworking) GetPublicDomain() string {
+	if x != nil {
+		return x.PublicDomain
+	}
+	return ""
+}
+
+func (x *AppNetworking) GetBasePath() string {
+	if x != nil {
+		return x.BasePath
+	}
+	return ""
+}
+
+func (x *AppNetworking) GetTlsEnabled() bool {
+	if x != nil {
+		return x.TlsEnabled
+	}
+	return false
+}
+
+func (x *AppNetworking) GetCertPath() string {
+	if x != nil {
+		return x.CertPath
+	}
+	return ""
+}
+
+func (x *AppNetworking) GetKeyPath() string {
+	if x != nil {
+		return x.KeyPath
+	}
+	return ""
+}
+
+func (x *AppNetworking) GetProxyEnabled() bool {
+	if x != nil {
+		return x.ProxyEnabled
+	}
+	return false
+}
+
+func (x *AppNetworking) GetCorsEnabled() bool {
+	if x != nil {
+		return x.CorsEnabled
+	}
+	return false
+}
+
+func (x *AppNetworking) GetAllowedOrigins() []string {
+	if x != nil {
+		return x.AllowedOrigins
+	}
+	return nil
+}
+
+func (x *AppNetworking) GetRateLimitEnabled() bool {
+	if x != nil {
+		return x.RateLimitEnabled
+	}
+	return false
+}
+
+func (x *AppNetworking) GetRateLimitRps() int32 {
+	if x != nil {
+		return x.RateLimitRps
+	}
+	return 0
+}
+
+// AppLogging describes how a managed app's output is captured and rotated.
+type AppLogging struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	JsonLogs          bool                   `protobuf:"varint,1,opt,name=json_logs,json=jsonLogs,proto3" json:"json_logs,omitempty"`
+	PersistentLogs    bool                   `protobuf:"varint,2,opt,name=persistent_logs,json=persistentLogs,proto3" json:"persistent_logs,omitempty"`
+	LogLevel          string                 `protobuf:"bytes,3,opt,name=log_level,json=logLevel,proto3" json:"log_level,omitempty"`
+	LogFilePath       string                 `protobuf:"bytes,4,opt,name=log_file_path,json=logFilePath,proto3" json:"log_file_path,omitempty"`
+	StderrFilePath    string                 `protobuf:"bytes,5,opt,name=stderr_file_path,json=stderrFilePath,proto3" json:"stderr_file_path,omitempty"`
+	LogFormat         string                 `protobuf:"bytes,6,opt,name=log_format,json=logFormat,proto3" json:"log_format,omitempty"`
+	RotationEnabled   bool                   `protobuf:"varint,7,opt,name=rotation_enabled,json=rotationEnabled,proto3" json:"rotation_enabled,omitempty"`
+	RotationMaxSizeMb int32                  `protobuf:"varint,8,opt,name=rotation_max_size_mb,json=rotationMaxSizeMb,proto3" json:"rotation_max_size_mb,omitempty"`
+	RotationMaxFiles  int32                  `protobuf:"varint,9,opt,name=rotation_max_files,json=rotationMaxFiles,proto3" json:"rotation_max_files,omitempty"`
+	RotationCompress  bool                   `protobuf:"varint,10,opt,name=rotation_compress,json=rotationCompress,proto3" json:"rotation_compress,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *AppLogging) Reset() {
+	*x = AppLogging{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppLogging) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppLogging) ProtoMessage() {}
+
+func (x *AppLogging) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppLogging.ProtoReflect.Descriptor instead.
+func (*AppLogging) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *AppLogging) GetJsonLogs() bool {
+	if x != nil {
+		return x.JsonLogs
+	}
+	return false
+}
+
+func (x *AppLogging) GetPersistentLogs() bool {
+	if x != nil {
+		return x.PersistentLogs
+	}
+	return false
+}
+
+func (x *AppLogging) GetLogLevel() string {
+	if x != nil {
+		return x.LogLevel
+	}
+	return ""
+}
+
+func (x *AppLogging) GetLogFilePath() string {
+	if x != nil {
+		return x.LogFilePath
+	}
+	return ""
+}
+
+func (x *AppLogging) GetStderrFilePath() string {
+	if x != nil {
+		return x.StderrFilePath
+	}
+	return ""
+}
+
+func (x *AppLogging) GetLogFormat() string {
+	if x != nil {
+		return x.LogFormat
+	}
+	return ""
+}
+
+func (x *AppLogging) GetRotationEnabled() bool {
+	if x != nil {
+		return x.RotationEnabled
+	}
+	return false
+}
+
+func (x *AppLogging) GetRotationMaxSizeMb() int32 {
+	if x != nil {
+		return x.RotationMaxSizeMb
+	}
+	return 0
+}
+
+func (x *AppLogging) GetRotationMaxFiles() int32 {
+	if x != nil {
+		return x.RotationMaxFiles
+	}
+	return 0
+}
+
+func (x *AppLogging) GetRotationCompress() bool {
+	if x != nil {
+		return x.RotationCompress
+	}
+	return false
+}
+
+// AppStorage describes where a managed app stores its data on disk.
+type AppStorage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Volumes       []string               `protobuf:"bytes,1,rep,name=volumes,proto3" json:"volumes,omitempty"`
+	DataDir       string                 `protobuf:"bytes,2,opt,name=data_dir,json=dataDir,proto3" json:"data_dir,omitempty"`
+	TempDir       string                 `protobuf:"bytes,3,opt,name=temp_dir,json=tempDir,proto3" json:"temp_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AppStorage) Reset() {
+	*x = AppStorage{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppStorage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppStorage) ProtoMessage() {}
+
+func (x *AppStorage) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppStorage.ProtoReflect.Descriptor instead.
+func (*AppStorage) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *AppStorage) GetVolumes() []string {
+	if x != nil {
+		return x.Volumes
+	}
+	return nil
+}
+
+func (x *AppStorage) GetDataDir() string {
+	if x != nil {
+		return x.DataDir
+	}
+	return ""
+}
+
+func (x *AppStorage) GetTempDir() string {
+	if x != nil {
+		return x.TempDir
+	}
+	return ""
+}
+
 // MonitorLogEntry mirrors logs.LogEntry. Sent on every monitoring tick for
 // both application and self logs.
 type MonitorLogEntry struct {
@@ -658,7 +1146,7 @@ type MonitorLogEntry struct {
 
 func (x *MonitorLogEntry) Reset() {
 	*x = MonitorLogEntry{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[4]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -670,7 +1158,7 @@ func (x *MonitorLogEntry) String() string {
 func (*MonitorLogEntry) ProtoMessage() {}
 
 func (x *MonitorLogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[4]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -683,7 +1171,7 @@ func (x *MonitorLogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorLogEntry.ProtoReflect.Descriptor instead.
 func (*MonitorLogEntry) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{4}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *MonitorLogEntry) GetId() string {
@@ -749,7 +1237,7 @@ type MonitorCommandRequest struct {
 
 func (x *MonitorCommandRequest) Reset() {
 	*x = MonitorCommandRequest{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[5]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -761,7 +1249,7 @@ func (x *MonitorCommandRequest) String() string {
 func (*MonitorCommandRequest) ProtoMessage() {}
 
 func (x *MonitorCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[5]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -774,7 +1262,7 @@ func (x *MonitorCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorCommandRequest.ProtoReflect.Descriptor instead.
 func (*MonitorCommandRequest) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{5}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MonitorCommandRequest) GetRequestId() string {
@@ -814,7 +1302,7 @@ type MonitorCommandResult struct {
 
 func (x *MonitorCommandResult) Reset() {
 	*x = MonitorCommandResult{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[6]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -826,7 +1314,7 @@ func (x *MonitorCommandResult) String() string {
 func (*MonitorCommandResult) ProtoMessage() {}
 
 func (x *MonitorCommandResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[6]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -839,7 +1327,7 @@ func (x *MonitorCommandResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorCommandResult.ProtoReflect.Descriptor instead.
 func (*MonitorCommandResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{6}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *MonitorCommandResult) GetRequestId() string {
@@ -912,7 +1400,7 @@ type MonitorEvent struct {
 
 func (x *MonitorEvent) Reset() {
 	*x = MonitorEvent{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[7]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -924,7 +1412,7 @@ func (x *MonitorEvent) String() string {
 func (*MonitorEvent) ProtoMessage() {}
 
 func (x *MonitorEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[7]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -937,7 +1425,7 @@ func (x *MonitorEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorEvent.ProtoReflect.Descriptor instead.
 func (*MonitorEvent) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{7}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MonitorEvent) GetServerId() string {
@@ -1086,7 +1574,7 @@ type MonitorControl struct {
 
 func (x *MonitorControl) Reset() {
 	*x = MonitorControl{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[8]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1098,7 +1586,7 @@ func (x *MonitorControl) String() string {
 func (*MonitorControl) ProtoMessage() {}
 
 func (x *MonitorControl) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[8]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1111,7 +1599,7 @@ func (x *MonitorControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorControl.ProtoReflect.Descriptor instead.
 func (*MonitorControl) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{8}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MonitorControl) GetPayload() isMonitorControl_Payload {
@@ -1213,7 +1701,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x1b\n" +
 	"\tcpu_usage\x18\x03 \x01(\x01R\bcpuUsage\x12!\n" +
-	"\fmemory_usage\x18\x04 \x01(\x04R\vmemoryUsage\"\xa5\x02\n" +
+	"\fmemory_usage\x18\x04 \x01(\x04R\vmemoryUsage\"\xe6\x03\n" +
 	"\x0fApplicationInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x12\n" +
@@ -1228,7 +1716,67 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"created_at\x18\n" +
 	" \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\x03R\tupdatedAt\"\xbc\x01\n" +
+	"updated_at\x18\v \x01(\x03R\tupdatedAt\x12,\n" +
+	"\aprocess\x18\x14 \x01(\v2\x12.phelix.AppProcessR\aprocess\x125\n" +
+	"\n" +
+	"networking\x18\x15 \x01(\v2\x15.phelix.AppNetworkingR\n" +
+	"networking\x12,\n" +
+	"\alogging\x18\x16 \x01(\v2\x12.phelix.AppLoggingR\alogging\x12,\n" +
+	"\astorage\x18\x17 \x01(\v2\x12.phelix.AppStorageR\astorage\"\x86\x04\n" +
+	"\n" +
+	"AppProcess\x12\x1f\n" +
+	"\vworking_dir\x18\x01 \x01(\tR\n" +
+	"workingDir\x12\x1e\n" +
+	"\n" +
+	"executable\x18\x02 \x01(\tR\n" +
+	"executable\x12#\n" +
+	"\rstart_command\x18\x03 \x01(\tR\fstartCommand\x12!\n" +
+	"\fstop_command\x18\x04 \x01(\tR\vstopCommand\x12&\n" +
+	"\x0fmax_cpu_percent\x18\x05 \x01(\x05R\rmaxCpuPercent\x12\"\n" +
+	"\rmax_memory_mb\x18\x06 \x01(\x03R\vmaxMemoryMb\x12$\n" +
+	"\x0emax_open_files\x18\a \x01(\x03R\fmaxOpenFiles\x12#\n" +
+	"\rmax_processes\x18\b \x01(\x03R\fmaxProcesses\x12!\n" +
+	"\fauto_restart\x18\t \x01(\bR\vautoRestart\x12,\n" +
+	"\x12crash_loop_backoff\x18\n" +
+	" \x01(\x05R\x10crashLoopBackoff\x12+\n" +
+	"\x11graceful_shutdown\x18\v \x01(\x05R\x10gracefulShutdown\x120\n" +
+	"\x14max_restart_attempts\x18\f \x01(\x05R\x12maxRestartAttempts\x12(\n" +
+	"\x10restart_delay_ms\x18\r \x01(\x05R\x0erestartDelayMs\"\xb3\x03\n" +
+	"\rAppNetworking\x12\x1f\n" +
+	"\vlisten_port\x18\x01 \x01(\x05R\n" +
+	"listenPort\x12!\n" +
+	"\fbind_address\x18\x02 \x01(\tR\vbindAddress\x12#\n" +
+	"\rpublic_domain\x18\x03 \x01(\tR\fpublicDomain\x12\x1b\n" +
+	"\tbase_path\x18\x04 \x01(\tR\bbasePath\x12\x1f\n" +
+	"\vtls_enabled\x18\x05 \x01(\bR\n" +
+	"tlsEnabled\x12\x1b\n" +
+	"\tcert_path\x18\x06 \x01(\tR\bcertPath\x12\x19\n" +
+	"\bkey_path\x18\a \x01(\tR\akeyPath\x12#\n" +
+	"\rproxy_enabled\x18\b \x01(\bR\fproxyEnabled\x12!\n" +
+	"\fcors_enabled\x18\t \x01(\bR\vcorsEnabled\x12'\n" +
+	"\x0fallowed_origins\x18\n" +
+	" \x03(\tR\x0eallowedOrigins\x12,\n" +
+	"\x12rate_limit_enabled\x18\v \x01(\bR\x10rateLimitEnabled\x12$\n" +
+	"\x0erate_limit_rps\x18\f \x01(\x05R\frateLimitRps\"\x93\x03\n" +
+	"\n" +
+	"AppLogging\x12\x1b\n" +
+	"\tjson_logs\x18\x01 \x01(\bR\bjsonLogs\x12'\n" +
+	"\x0fpersistent_logs\x18\x02 \x01(\bR\x0epersistentLogs\x12\x1b\n" +
+	"\tlog_level\x18\x03 \x01(\tR\blogLevel\x12\"\n" +
+	"\rlog_file_path\x18\x04 \x01(\tR\vlogFilePath\x12(\n" +
+	"\x10stderr_file_path\x18\x05 \x01(\tR\x0estderrFilePath\x12\x1d\n" +
+	"\n" +
+	"log_format\x18\x06 \x01(\tR\tlogFormat\x12)\n" +
+	"\x10rotation_enabled\x18\a \x01(\bR\x0frotationEnabled\x12/\n" +
+	"\x14rotation_max_size_mb\x18\b \x01(\x05R\x11rotationMaxSizeMb\x12,\n" +
+	"\x12rotation_max_files\x18\t \x01(\x05R\x10rotationMaxFiles\x12+\n" +
+	"\x11rotation_compress\x18\n" +
+	" \x01(\bR\x10rotationCompress\"\\\n" +
+	"\n" +
+	"AppStorage\x12\x18\n" +
+	"\avolumes\x18\x01 \x03(\tR\avolumes\x12\x19\n" +
+	"\bdata_dir\x18\x02 \x01(\tR\adataDir\x12\x19\n" +
+	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\xbc\x01\n" +
 	"\x0fMonitorLogEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x15\n" +
@@ -1286,37 +1834,45 @@ func file_internal_grpc_proto_monitoring_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_grpc_proto_monitoring_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(LogSource)(0),                // 0: phelix.LogSource
 	(*ServerInfo)(nil),            // 1: phelix.ServerInfo
 	(*ServerMetrics)(nil),         // 2: phelix.ServerMetrics
 	(*AppResourceMetrics)(nil),    // 3: phelix.AppResourceMetrics
 	(*ApplicationInfo)(nil),       // 4: phelix.ApplicationInfo
-	(*MonitorLogEntry)(nil),       // 5: phelix.MonitorLogEntry
-	(*MonitorCommandRequest)(nil), // 6: phelix.MonitorCommandRequest
-	(*MonitorCommandResult)(nil),  // 7: phelix.MonitorCommandResult
-	(*MonitorEvent)(nil),          // 8: phelix.MonitorEvent
-	(*MonitorControl)(nil),        // 9: phelix.MonitorControl
-	(*Pong)(nil),                  // 10: phelix.Pong
-	(*Ping)(nil),                  // 11: phelix.Ping
+	(*AppProcess)(nil),            // 5: phelix.AppProcess
+	(*AppNetworking)(nil),         // 6: phelix.AppNetworking
+	(*AppLogging)(nil),            // 7: phelix.AppLogging
+	(*AppStorage)(nil),            // 8: phelix.AppStorage
+	(*MonitorLogEntry)(nil),       // 9: phelix.MonitorLogEntry
+	(*MonitorCommandRequest)(nil), // 10: phelix.MonitorCommandRequest
+	(*MonitorCommandResult)(nil),  // 11: phelix.MonitorCommandResult
+	(*MonitorEvent)(nil),          // 12: phelix.MonitorEvent
+	(*MonitorControl)(nil),        // 13: phelix.MonitorControl
+	(*Pong)(nil),                  // 14: phelix.Pong
+	(*Ping)(nil),                  // 15: phelix.Ping
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
-	0,  // 0: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
-	1,  // 1: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	2,  // 2: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	3,  // 3: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	4,  // 4: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	5,  // 5: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	7,  // 6: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	10, // 7: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	6,  // 8: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	11, // 9: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	5,  // 0: phelix.ApplicationInfo.process:type_name -> phelix.AppProcess
+	6,  // 1: phelix.ApplicationInfo.networking:type_name -> phelix.AppNetworking
+	7,  // 2: phelix.ApplicationInfo.logging:type_name -> phelix.AppLogging
+	8,  // 3: phelix.ApplicationInfo.storage:type_name -> phelix.AppStorage
+	0,  // 4: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
+	1,  // 5: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	2,  // 6: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	3,  // 7: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	4,  // 8: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	9,  // 9: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	11, // 10: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	14, // 11: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	10, // 12: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	15, // 13: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -1325,7 +1881,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		return
 	}
 	file_internal_grpc_proto_ping_proto_init()
-	file_internal_grpc_proto_monitoring_proto_msgTypes[7].OneofWrappers = []any{
+	file_internal_grpc_proto_monitoring_proto_msgTypes[11].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
 		(*MonitorEvent_AppMetrics)(nil),
@@ -1334,7 +1890,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_CommandResult)(nil),
 		(*MonitorEvent_Pong)(nil),
 	}
-	file_internal_grpc_proto_monitoring_proto_msgTypes[8].OneofWrappers = []any{
+	file_internal_grpc_proto_monitoring_proto_msgTypes[12].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),
 		(*MonitorControl_Ping)(nil),
 	}
@@ -1344,7 +1900,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_monitoring_proto_rawDesc), len(file_internal_grpc_proto_monitoring_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -3,6 +3,7 @@ package monitor
 import (
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
@@ -45,7 +46,8 @@ type AppMetrics struct {
 	MemoryUsage uint64  `json:"memoryUsage"`
 }
 
-// AppDetails carries a single application's identity/status/lifecycle info.
+// AppDetails carries a single application's identity/status/lifecycle info
+// plus its reported configuration (process/networking/logging/storage).
 type AppDetails struct {
 	ID          string           `json:"id"`
 	ServerID    string           `json:"server_id"`
@@ -58,4 +60,9 @@ type AppDetails struct {
 	Uptime      string           `json:"uptime"`
 	CreatedAt   time.Time        `json:"createdAt"`
 	UpdatedAt   time.Time        `json:"updatedAt"`
+
+	Process    app.AppProcessConfig    `json:"process,omitempty"`
+	Networking app.AppNetworkingConfig `json:"networking,omitempty"`
+	Logging    app.AppLoggingConfig    `json:"logging,omitempty"`
+	Storage    app.AppStorageConfig    `json:"storage,omitempty"`
 }

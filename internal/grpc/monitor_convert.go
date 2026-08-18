@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"github.com/abdorrahmani/phelix/internal/app"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
@@ -76,9 +77,12 @@ func toProtoAppMetrics(m monitor.AppMetrics) *pb.AppResourceMetrics {
 }
 
 // toProtoAppInfo converts monitor.AppDetails to its protobuf representation.
-// Mirrors the old "apps" WebSocket message.
+// Mirrors the old "apps" WebSocket message. The configuration groups
+// (process/networking/logging/storage) are converted to their proto
+// counterparts and attached; they are omitted when the app has no
+// configuration to report.
 func toProtoAppInfo(a monitor.AppDetails) *pb.ApplicationInfo {
-	return &pb.ApplicationInfo{
+	info := &pb.ApplicationInfo{
 		Id:          a.ID,
 		ServerId:    a.ServerID,
 		Name:        a.Name,
@@ -90,6 +94,79 @@ func toProtoAppInfo(a monitor.AppDetails) *pb.ApplicationInfo {
 		Uptime:      a.Uptime,
 		CreatedAt:   a.CreatedAt.UnixMilli(),
 		UpdatedAt:   a.UpdatedAt.UnixMilli(),
+	}
+
+	info.Process = toProtoAppProcess(a.Process)
+	info.Networking = toProtoAppNetworking(a.Networking)
+	info.Logging = toProtoAppLogging(a.Logging)
+	info.Storage = toProtoAppStorage(a.Storage)
+
+	return info
+}
+
+// toProtoAppProcess converts app.AppProcessConfig to its protobuf
+// representation.
+func toProtoAppProcess(p app.AppProcessConfig) *pb.AppProcess {
+	return &pb.AppProcess{
+		WorkingDir:         p.WorkingDir,
+		Executable:         p.Executable,
+		StartCommand:       p.StartCommand,
+		StopCommand:        p.StopCommand,
+		MaxCpuPercent:      int32(p.MaxCPUPercent),
+		MaxMemoryMb:        p.MaxMemoryMB,
+		MaxOpenFiles:       p.MaxOpenFiles,
+		MaxProcesses:       p.MaxProcesses,
+		AutoRestart:        p.AutoRestart,
+		CrashLoopBackoff:   int32(p.CrashLoopBackoff),
+		GracefulShutdown:   int32(p.GracefulShutdown),
+		MaxRestartAttempts: int32(p.MaxRestartAttempts),
+		RestartDelayMs:     int32(p.RestartDelayMs),
+	}
+}
+
+// toProtoAppNetworking converts app.AppNetworkingConfig to its protobuf
+// representation.
+func toProtoAppNetworking(n app.AppNetworkingConfig) *pb.AppNetworking {
+	return &pb.AppNetworking{
+		ListenPort:       int32(n.ListenPort),
+		BindAddress:      n.BindAddress,
+		PublicDomain:     n.PublicDomain,
+		BasePath:         n.BasePath,
+		TlsEnabled:       n.TLSEnabled,
+		CertPath:         n.CertPath,
+		KeyPath:          n.KeyPath,
+		ProxyEnabled:     n.ProxyEnabled,
+		CorsEnabled:      n.CORSEnabled,
+		AllowedOrigins:   n.AllowedOrigins,
+		RateLimitEnabled: n.RateLimitEnabled,
+		RateLimitRps:     int32(n.RateLimitRPS),
+	}
+}
+
+// toProtoAppLogging converts app.AppLoggingConfig to its protobuf
+// representation.
+func toProtoAppLogging(l app.AppLoggingConfig) *pb.AppLogging {
+	return &pb.AppLogging{
+		JsonLogs:          l.JSONLogs,
+		PersistentLogs:    l.PersistentLogs,
+		LogLevel:          l.LogLevel,
+		LogFilePath:       l.LogFilePath,
+		StderrFilePath:    l.StderrFilePath,
+		LogFormat:         l.LogFormat,
+		RotationEnabled:   l.RotationEnabled,
+		RotationMaxSizeMb: int32(l.RotationMaxSizeMB),
+		RotationMaxFiles:  int32(l.RotationMaxFiles),
+		RotationCompress:  l.RotationCompress,
+	}
+}
+
+// toProtoAppStorage converts app.AppStorageConfig to its protobuf
+// representation.
+func toProtoAppStorage(s app.AppStorageConfig) *pb.AppStorage {
+	return &pb.AppStorage{
+		Volumes: s.Volumes,
+		DataDir: s.DataDir,
+		TempDir: s.TempDir,
 	}
 }
 

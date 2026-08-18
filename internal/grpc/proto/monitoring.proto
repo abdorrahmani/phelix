@@ -86,6 +86,69 @@ message ApplicationInfo {
   string uptime = 9;
   int64 created_at = 10;
   int64 updated_at = 11;
+
+  // Application configuration blocks (process/networking/logging/storage).
+  // Populated whenever the CLI knows the values; absent/missing groups mean
+  // the CLI has no configuration to report. AppConfig is sent on every
+  // monitoring tick alongside the fields above.
+  AppProcess process = 20;
+  AppNetworking networking = 21;
+  AppLogging logging = 22;
+  AppStorage storage = 23;
+}
+
+// AppProcess describes how the CLI launches and supervises a managed app.
+message AppProcess {
+  string working_dir = 1;
+  string executable = 2;
+  string start_command = 3;
+  string stop_command = 4;
+  int32 max_cpu_percent = 5;
+  int64 max_memory_mb = 6;
+  int64 max_open_files = 7;
+  int64 max_processes = 8;
+  bool auto_restart = 9;
+  int32 crash_loop_backoff = 10; // seconds
+  int32 graceful_shutdown = 11;  // seconds
+  int32 max_restart_attempts = 12;
+  int32 restart_delay_ms = 13;
+}
+
+// AppNetworking describes how a managed app is exposed to the network.
+message AppNetworking {
+  int32 listen_port = 1;
+  string bind_address = 2;
+  string public_domain = 3;
+  string base_path = 4;
+  bool tls_enabled = 5;
+  string cert_path = 6;
+  string key_path = 7;
+  bool proxy_enabled = 8;
+  bool cors_enabled = 9;
+  repeated string allowed_origins = 10;
+  bool rate_limit_enabled = 11;
+  int32 rate_limit_rps = 12;
+}
+
+// AppLogging describes how a managed app's output is captured and rotated.
+message AppLogging {
+  bool json_logs = 1;
+  bool persistent_logs = 2;
+  string log_level = 3;
+  string log_file_path = 4;
+  string stderr_file_path = 5;
+  string log_format = 6;
+  bool rotation_enabled = 7;
+  int32 rotation_max_size_mb = 8;
+  int32 rotation_max_files = 9;
+  bool rotation_compress = 10;
+}
+
+// AppStorage describes where a managed app stores its data on disk.
+message AppStorage {
+  repeated string volumes = 1;
+  string data_dir = 2;
+  string temp_dir = 3;
 }
 
 // LogSource distinguishes application logs from the CLI's own daemon logs,

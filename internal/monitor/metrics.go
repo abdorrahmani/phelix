@@ -59,6 +59,10 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 			Uptime:      appInfo.Uptime,
 			CreatedAt:   appInfo.CreatedAt,
 			UpdatedAt:   appInfo.UpdatedAt,
+			Process:     appInfo.Process,
+			Networking:  appInfo.Networking,
+			Logging:     appInfo.Logging,
+			Storage:     appInfo.Storage,
 		})
 	}
 	return apps

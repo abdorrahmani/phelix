@@ -169,6 +169,10 @@ func (m *AppManager) ListApplications() []AppListItem {
 			CreatedAt:   app.CreatedAt,
 			UpdatedAt:   app.UpdatedAt,
 			Language:    app.Language,
+			Process:     app.Config().Process,
+			Networking:  app.Config().Networking,
+			Logging:     app.Config().Logging,
+			Storage:     app.Config().Storage,
 		})
 	}
 	return appList
