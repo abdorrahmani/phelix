@@ -95,6 +95,15 @@ type ServerInfo struct {
 	Architecture  string                 `protobuf:"bytes,17,opt,name=architecture,proto3" json:"architecture,omitempty"`
 	KernelVersion string                 `protobuf:"bytes,18,opt,name=kernel_version,json=kernelVersion,proto3" json:"kernel_version,omitempty"`
 	SwapTotal     int64                  `protobuf:"varint,19,opt,name=swap_total,json=swapTotal,proto3" json:"swap_total,omitempty"`
+	// Server-settings groups (agent-reported DEFAULTS). The CLI auto-detects
+	// the current host state and product defaults and reports them here.
+	// A nil/absent group means the CLI has no configuration to report — the
+	// same semantics as ApplicationInfo's config groups (fields 20-23 on that
+	// message). These are DEFAULTS only; the backend owns real configuration
+	// through its own API.
+	Connection    *ServerConnection `protobuf:"bytes,20,opt,name=connection,proto3" json:"connection,omitempty"`
+	Alert         *ServerAlert      `protobuf:"bytes,21,opt,name=alert,proto3" json:"alert,omitempty"`
+	Security      *ServerSecurity   `protobuf:"bytes,22,opt,name=security,proto3" json:"security,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -262,6 +271,315 @@ func (x *ServerInfo) GetSwapTotal() int64 {
 	return 0
 }
 
+func (x *ServerInfo) GetConnection() *ServerConnection {
+	if x != nil {
+		return x.Connection
+	}
+	return nil
+}
+
+func (x *ServerInfo) GetAlert() *ServerAlert {
+	if x != nil {
+		return x.Alert
+	}
+	return nil
+}
+
+func (x *ServerInfo) GetSecurity() *ServerSecurity {
+	if x != nil {
+		return x.Security
+	}
+	return nil
+}
+
+// ServerConnection mirrors the backend server's ServerConnection model: how
+// the backend should reach this host over SSH. ssh_password and private_key
+// are WRITE-ONLY — the agent sends them, but the backend must never echo
+// them back to the CLI/UI or persist them anywhere they can be read back.
+// public_key is READ-ONLY (agent-to-backend only).
+type ServerConnection struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SshPort       int32                  `protobuf:"varint,1,opt,name=ssh_port,json=sshPort,proto3" json:"ssh_port,omitempty"`            // listening sshd port; CLI default 22
+	SshUser       string                 `protobuf:"bytes,2,opt,name=ssh_user,json=sshUser,proto3" json:"ssh_user,omitempty"`             // SSH user; CLI default "phelix"
+	AuthMethod    string                 `protobuf:"bytes,3,opt,name=auth_method,json=authMethod,proto3" json:"auth_method,omitempty"`    // "key" or "password"; CLI default "key"
+	SshPassword   string                 `protobuf:"bytes,4,opt,name=ssh_password,json=sshPassword,proto3" json:"ssh_password,omitempty"` // WRITE-ONLY, never serialized back
+	PrivateKey    string                 `protobuf:"bytes,5,opt,name=private_key,json=privateKey,proto3" json:"private_key,omitempty"`    // WRITE-ONLY, never serialized back
+	PublicKey     string                 `protobuf:"bytes,6,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`       // READ-ONLY
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerConnection) Reset() {
+	*x = ServerConnection{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerConnection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerConnection) ProtoMessage() {}
+
+func (x *ServerConnection) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerConnection.ProtoReflect.Descriptor instead.
+func (*ServerConnection) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ServerConnection) GetSshPort() int32 {
+	if x != nil {
+		return x.SshPort
+	}
+	return 0
+}
+
+func (x *ServerConnection) GetSshUser() string {
+	if x != nil {
+		return x.SshUser
+	}
+	return ""
+}
+
+func (x *ServerConnection) GetAuthMethod() string {
+	if x != nil {
+		return x.AuthMethod
+	}
+	return ""
+}
+
+func (x *ServerConnection) GetSshPassword() string {
+	if x != nil {
+		return x.SshPassword
+	}
+	return ""
+}
+
+func (x *ServerConnection) GetPrivateKey() string {
+	if x != nil {
+		return x.PrivateKey
+	}
+	return ""
+}
+
+func (x *ServerConnection) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+// ServerAlert mirrors the backend server's ServerAlert model: alert
+// thresholds (percentages) and the toggles that enable each alert class.
+// The CLI reports its defaults (80/90/90, toggles off); the backend owns
+// the real values through its API. Thresholds are always populated with
+// concrete values by the CLI — treat 0 as a real value, never as "unset".
+type ServerAlert struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	CpuThreshold          float64                `protobuf:"fixed64,1,opt,name=cpu_threshold,json=cpuThreshold,proto3" json:"cpu_threshold,omitempty"`    // percent; CLI default 80
+	RamThreshold          float64                `protobuf:"fixed64,2,opt,name=ram_threshold,json=ramThreshold,proto3" json:"ram_threshold,omitempty"`    // percent; CLI default 90
+	DiskThreshold         float64                `protobuf:"fixed64,3,opt,name=disk_threshold,json=diskThreshold,proto3" json:"disk_threshold,omitempty"` // percent; CLI default 90
+	CpuSpikeAlerts        bool                   `protobuf:"varint,4,opt,name=cpu_spike_alerts,json=cpuSpikeAlerts,proto3" json:"cpu_spike_alerts,omitempty"`
+	MemoryPressureAlerts  bool                   `protobuf:"varint,5,opt,name=memory_pressure_alerts,json=memoryPressureAlerts,proto3" json:"memory_pressure_alerts,omitempty"`
+	DiskSpaceAlerts       bool                   `protobuf:"varint,6,opt,name=disk_space_alerts,json=diskSpaceAlerts,proto3" json:"disk_space_alerts,omitempty"`
+	AppCrashAlerts        bool                   `protobuf:"varint,7,opt,name=app_crash_alerts,json=appCrashAlerts,proto3" json:"app_crash_alerts,omitempty"`
+	AgentDisconnectAlerts bool                   `protobuf:"varint,8,opt,name=agent_disconnect_alerts,json=agentDisconnectAlerts,proto3" json:"agent_disconnect_alerts,omitempty"`
+	WeeklyDigest          bool                   `protobuf:"varint,9,opt,name=weekly_digest,json=weeklyDigest,proto3" json:"weekly_digest,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *ServerAlert) Reset() {
+	*x = ServerAlert{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerAlert) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerAlert) ProtoMessage() {}
+
+func (x *ServerAlert) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerAlert.ProtoReflect.Descriptor instead.
+func (*ServerAlert) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ServerAlert) GetCpuThreshold() float64 {
+	if x != nil {
+		return x.CpuThreshold
+	}
+	return 0
+}
+
+func (x *ServerAlert) GetRamThreshold() float64 {
+	if x != nil {
+		return x.RamThreshold
+	}
+	return 0
+}
+
+func (x *ServerAlert) GetDiskThreshold() float64 {
+	if x != nil {
+		return x.DiskThreshold
+	}
+	return 0
+}
+
+func (x *ServerAlert) GetCpuSpikeAlerts() bool {
+	if x != nil {
+		return x.CpuSpikeAlerts
+	}
+	return false
+}
+
+func (x *ServerAlert) GetMemoryPressureAlerts() bool {
+	if x != nil {
+		return x.MemoryPressureAlerts
+	}
+	return false
+}
+
+func (x *ServerAlert) GetDiskSpaceAlerts() bool {
+	if x != nil {
+		return x.DiskSpaceAlerts
+	}
+	return false
+}
+
+func (x *ServerAlert) GetAppCrashAlerts() bool {
+	if x != nil {
+		return x.AppCrashAlerts
+	}
+	return false
+}
+
+func (x *ServerAlert) GetAgentDisconnectAlerts() bool {
+	if x != nil {
+		return x.AgentDisconnectAlerts
+	}
+	return false
+}
+
+func (x *ServerAlert) GetWeeklyDigest() bool {
+	if x != nil {
+		return x.WeeklyDigest
+	}
+	return false
+}
+
+// ServerSecurity mirrors the backend server's ServerSecurity model. ssh_root_login
+// carries the sshd PermitRootLogin value verbatim (yes / prohibit-password / no).
+type ServerSecurity struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	FirewallEnabled    bool                   `protobuf:"varint,1,opt,name=firewall_enabled,json=firewallEnabled,proto3" json:"firewall_enabled,omitempty"`
+	AutoUpdates        bool                   `protobuf:"varint,2,opt,name=auto_updates,json=autoUpdates,proto3" json:"auto_updates,omitempty"`
+	SshRootLogin       string                 `protobuf:"bytes,3,opt,name=ssh_root_login,json=sshRootLogin,proto3" json:"ssh_root_login,omitempty"`                    // sshd PermitRootLogin; CLI default "prohibit-password"
+	IpAllowlistEnabled bool                   `protobuf:"varint,4,opt,name=ip_allowlist_enabled,json=ipAllowlistEnabled,proto3" json:"ip_allowlist_enabled,omitempty"` // CLI default false
+	AllowedIps         []string               `protobuf:"bytes,5,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`                            // empty list = none, not unset
+	OpenPorts          []int32                `protobuf:"varint,6,rep,packed,name=open_ports,json=openPorts,proto3" json:"open_ports,omitempty"`                       // distinct listening TCP ports, sorted ascending
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *ServerSecurity) Reset() {
+	*x = ServerSecurity{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerSecurity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerSecurity) ProtoMessage() {}
+
+func (x *ServerSecurity) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerSecurity.ProtoReflect.Descriptor instead.
+func (*ServerSecurity) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ServerSecurity) GetFirewallEnabled() bool {
+	if x != nil {
+		return x.FirewallEnabled
+	}
+	return false
+}
+
+func (x *ServerSecurity) GetAutoUpdates() bool {
+	if x != nil {
+		return x.AutoUpdates
+	}
+	return false
+}
+
+func (x *ServerSecurity) GetSshRootLogin() string {
+	if x != nil {
+		return x.SshRootLogin
+	}
+	return ""
+}
+
+func (x *ServerSecurity) GetIpAllowlistEnabled() bool {
+	if x != nil {
+		return x.IpAllowlistEnabled
+	}
+	return false
+}
+
+func (x *ServerSecurity) GetAllowedIps() []string {
+	if x != nil {
+		return x.AllowedIps
+	}
+	return nil
+}
+
+func (x *ServerSecurity) GetOpenPorts() []int32 {
+	if x != nil {
+		return x.OpenPorts
+	}
+	return nil
+}
+
 // ServerMetrics mirrors server.Metrics. Sent on every monitoring tick
 // (~2s), exactly like the old "server_metrics" WebSocket message.
 type ServerMetrics struct {
@@ -290,7 +608,7 @@ type ServerMetrics struct {
 
 func (x *ServerMetrics) Reset() {
 	*x = ServerMetrics{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[1]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -302,7 +620,7 @@ func (x *ServerMetrics) String() string {
 func (*ServerMetrics) ProtoMessage() {}
 
 func (x *ServerMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[1]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -315,7 +633,7 @@ func (x *ServerMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerMetrics.ProtoReflect.Descriptor instead.
 func (*ServerMetrics) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{1}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ServerMetrics) GetServerId() string {
@@ -459,7 +777,7 @@ type AppResourceMetrics struct {
 
 func (x *AppResourceMetrics) Reset() {
 	*x = AppResourceMetrics{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[2]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -471,7 +789,7 @@ func (x *AppResourceMetrics) String() string {
 func (*AppResourceMetrics) ProtoMessage() {}
 
 func (x *AppResourceMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[2]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -484,7 +802,7 @@ func (x *AppResourceMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppResourceMetrics.ProtoReflect.Descriptor instead.
 func (*AppResourceMetrics) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{2}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AppResourceMetrics) GetAppId() string {
@@ -544,7 +862,7 @@ type ApplicationInfo struct {
 
 func (x *ApplicationInfo) Reset() {
 	*x = ApplicationInfo{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[3]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -556,7 +874,7 @@ func (x *ApplicationInfo) String() string {
 func (*ApplicationInfo) ProtoMessage() {}
 
 func (x *ApplicationInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[3]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -569,7 +887,7 @@ func (x *ApplicationInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplicationInfo.ProtoReflect.Descriptor instead.
 func (*ApplicationInfo) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{3}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ApplicationInfo) GetId() string {
@@ -699,7 +1017,7 @@ type AppProcess struct {
 
 func (x *AppProcess) Reset() {
 	*x = AppProcess{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[4]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -711,7 +1029,7 @@ func (x *AppProcess) String() string {
 func (*AppProcess) ProtoMessage() {}
 
 func (x *AppProcess) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[4]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -724,7 +1042,7 @@ func (x *AppProcess) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppProcess.ProtoReflect.Descriptor instead.
 func (*AppProcess) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{4}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *AppProcess) GetWorkingDir() string {
@@ -839,7 +1157,7 @@ type AppNetworking struct {
 
 func (x *AppNetworking) Reset() {
 	*x = AppNetworking{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[5]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +1169,7 @@ func (x *AppNetworking) String() string {
 func (*AppNetworking) ProtoMessage() {}
 
 func (x *AppNetworking) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[5]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +1182,7 @@ func (x *AppNetworking) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppNetworking.ProtoReflect.Descriptor instead.
 func (*AppNetworking) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{5}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *AppNetworking) GetListenPort() int32 {
@@ -970,7 +1288,7 @@ type AppLogging struct {
 
 func (x *AppLogging) Reset() {
 	*x = AppLogging{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[6]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -982,7 +1300,7 @@ func (x *AppLogging) String() string {
 func (*AppLogging) ProtoMessage() {}
 
 func (x *AppLogging) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[6]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -995,7 +1313,7 @@ func (x *AppLogging) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppLogging.ProtoReflect.Descriptor instead.
 func (*AppLogging) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{6}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *AppLogging) GetJsonLogs() bool {
@@ -1080,7 +1398,7 @@ type AppStorage struct {
 
 func (x *AppStorage) Reset() {
 	*x = AppStorage{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[7]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1092,7 +1410,7 @@ func (x *AppStorage) String() string {
 func (*AppStorage) ProtoMessage() {}
 
 func (x *AppStorage) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[7]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1105,7 +1423,7 @@ func (x *AppStorage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppStorage.ProtoReflect.Descriptor instead.
 func (*AppStorage) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{7}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AppStorage) GetVolumes() []string {
@@ -1146,7 +1464,7 @@ type MonitorLogEntry struct {
 
 func (x *MonitorLogEntry) Reset() {
 	*x = MonitorLogEntry{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[8]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1158,7 +1476,7 @@ func (x *MonitorLogEntry) String() string {
 func (*MonitorLogEntry) ProtoMessage() {}
 
 func (x *MonitorLogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[8]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1171,7 +1489,7 @@ func (x *MonitorLogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorLogEntry.ProtoReflect.Descriptor instead.
 func (*MonitorLogEntry) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{8}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MonitorLogEntry) GetId() string {
@@ -1237,7 +1555,7 @@ type MonitorCommandRequest struct {
 
 func (x *MonitorCommandRequest) Reset() {
 	*x = MonitorCommandRequest{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[9]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1249,7 +1567,7 @@ func (x *MonitorCommandRequest) String() string {
 func (*MonitorCommandRequest) ProtoMessage() {}
 
 func (x *MonitorCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[9]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1262,7 +1580,7 @@ func (x *MonitorCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorCommandRequest.ProtoReflect.Descriptor instead.
 func (*MonitorCommandRequest) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{9}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MonitorCommandRequest) GetRequestId() string {
@@ -1302,7 +1620,7 @@ type MonitorCommandResult struct {
 
 func (x *MonitorCommandResult) Reset() {
 	*x = MonitorCommandResult{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[10]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1314,7 +1632,7 @@ func (x *MonitorCommandResult) String() string {
 func (*MonitorCommandResult) ProtoMessage() {}
 
 func (x *MonitorCommandResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[10]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1327,7 +1645,7 @@ func (x *MonitorCommandResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorCommandResult.ProtoReflect.Descriptor instead.
 func (*MonitorCommandResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{10}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MonitorCommandResult) GetRequestId() string {
@@ -1400,7 +1718,7 @@ type MonitorEvent struct {
 
 func (x *MonitorEvent) Reset() {
 	*x = MonitorEvent{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[11]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1412,7 +1730,7 @@ func (x *MonitorEvent) String() string {
 func (*MonitorEvent) ProtoMessage() {}
 
 func (x *MonitorEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[11]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1425,7 +1743,7 @@ func (x *MonitorEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorEvent.ProtoReflect.Descriptor instead.
 func (*MonitorEvent) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{11}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *MonitorEvent) GetServerId() string {
@@ -1574,7 +1892,7 @@ type MonitorControl struct {
 
 func (x *MonitorControl) Reset() {
 	*x = MonitorControl{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[12]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1586,7 +1904,7 @@ func (x *MonitorControl) String() string {
 func (*MonitorControl) ProtoMessage() {}
 
 func (x *MonitorControl) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[12]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1599,7 +1917,7 @@ func (x *MonitorControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorControl.ProtoReflect.Descriptor instead.
 func (*MonitorControl) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{12}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *MonitorControl) GetPayload() isMonitorControl_Payload {
@@ -1647,7 +1965,7 @@ var File_internal_grpc_proto_monitoring_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
-	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\"\xb8\x04\n" +
+	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\"\xd1\x05\n" +
 	"\n" +
 	"ServerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
@@ -1672,7 +1990,41 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\farchitecture\x18\x11 \x01(\tR\farchitecture\x12%\n" +
 	"\x0ekernel_version\x18\x12 \x01(\tR\rkernelVersion\x12\x1d\n" +
 	"\n" +
-	"swap_total\x18\x13 \x01(\x03R\tswapTotal\"\x86\x05\n" +
+	"swap_total\x18\x13 \x01(\x03R\tswapTotal\x128\n" +
+	"\n" +
+	"connection\x18\x14 \x01(\v2\x18.phelix.ServerConnectionR\n" +
+	"connection\x12)\n" +
+	"\x05alert\x18\x15 \x01(\v2\x13.phelix.ServerAlertR\x05alert\x122\n" +
+	"\bsecurity\x18\x16 \x01(\v2\x16.phelix.ServerSecurityR\bsecurity\"\xcc\x01\n" +
+	"\x10ServerConnection\x12\x19\n" +
+	"\bssh_port\x18\x01 \x01(\x05R\asshPort\x12\x19\n" +
+	"\bssh_user\x18\x02 \x01(\tR\asshUser\x12\x1f\n" +
+	"\vauth_method\x18\x03 \x01(\tR\n" +
+	"authMethod\x12!\n" +
+	"\fssh_password\x18\x04 \x01(\tR\vsshPassword\x12\x1f\n" +
+	"\vprivate_key\x18\x05 \x01(\tR\n" +
+	"privateKey\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x06 \x01(\tR\tpublicKey\"\x91\x03\n" +
+	"\vServerAlert\x12#\n" +
+	"\rcpu_threshold\x18\x01 \x01(\x01R\fcpuThreshold\x12#\n" +
+	"\rram_threshold\x18\x02 \x01(\x01R\framThreshold\x12%\n" +
+	"\x0edisk_threshold\x18\x03 \x01(\x01R\rdiskThreshold\x12(\n" +
+	"\x10cpu_spike_alerts\x18\x04 \x01(\bR\x0ecpuSpikeAlerts\x124\n" +
+	"\x16memory_pressure_alerts\x18\x05 \x01(\bR\x14memoryPressureAlerts\x12*\n" +
+	"\x11disk_space_alerts\x18\x06 \x01(\bR\x0fdiskSpaceAlerts\x12(\n" +
+	"\x10app_crash_alerts\x18\a \x01(\bR\x0eappCrashAlerts\x126\n" +
+	"\x17agent_disconnect_alerts\x18\b \x01(\bR\x15agentDisconnectAlerts\x12#\n" +
+	"\rweekly_digest\x18\t \x01(\bR\fweeklyDigest\"\xf6\x01\n" +
+	"\x0eServerSecurity\x12)\n" +
+	"\x10firewall_enabled\x18\x01 \x01(\bR\x0ffirewallEnabled\x12!\n" +
+	"\fauto_updates\x18\x02 \x01(\bR\vautoUpdates\x12$\n" +
+	"\x0essh_root_login\x18\x03 \x01(\tR\fsshRootLogin\x120\n" +
+	"\x14ip_allowlist_enabled\x18\x04 \x01(\bR\x12ipAllowlistEnabled\x12\x1f\n" +
+	"\vallowed_ips\x18\x05 \x03(\tR\n" +
+	"allowedIps\x12\x1d\n" +
+	"\n" +
+	"open_ports\x18\x06 \x03(\x05R\topenPorts\"\x86\x05\n" +
 	"\rServerMetrics\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1f\n" +
 	"\vused_memory\x18\x02 \x01(\x04R\n" +
@@ -1834,45 +2186,51 @@ func file_internal_grpc_proto_monitoring_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_grpc_proto_monitoring_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(LogSource)(0),                // 0: phelix.LogSource
 	(*ServerInfo)(nil),            // 1: phelix.ServerInfo
-	(*ServerMetrics)(nil),         // 2: phelix.ServerMetrics
-	(*AppResourceMetrics)(nil),    // 3: phelix.AppResourceMetrics
-	(*ApplicationInfo)(nil),       // 4: phelix.ApplicationInfo
-	(*AppProcess)(nil),            // 5: phelix.AppProcess
-	(*AppNetworking)(nil),         // 6: phelix.AppNetworking
-	(*AppLogging)(nil),            // 7: phelix.AppLogging
-	(*AppStorage)(nil),            // 8: phelix.AppStorage
-	(*MonitorLogEntry)(nil),       // 9: phelix.MonitorLogEntry
-	(*MonitorCommandRequest)(nil), // 10: phelix.MonitorCommandRequest
-	(*MonitorCommandResult)(nil),  // 11: phelix.MonitorCommandResult
-	(*MonitorEvent)(nil),          // 12: phelix.MonitorEvent
-	(*MonitorControl)(nil),        // 13: phelix.MonitorControl
-	(*Pong)(nil),                  // 14: phelix.Pong
-	(*Ping)(nil),                  // 15: phelix.Ping
+	(*ServerConnection)(nil),      // 2: phelix.ServerConnection
+	(*ServerAlert)(nil),           // 3: phelix.ServerAlert
+	(*ServerSecurity)(nil),        // 4: phelix.ServerSecurity
+	(*ServerMetrics)(nil),         // 5: phelix.ServerMetrics
+	(*AppResourceMetrics)(nil),    // 6: phelix.AppResourceMetrics
+	(*ApplicationInfo)(nil),       // 7: phelix.ApplicationInfo
+	(*AppProcess)(nil),            // 8: phelix.AppProcess
+	(*AppNetworking)(nil),         // 9: phelix.AppNetworking
+	(*AppLogging)(nil),            // 10: phelix.AppLogging
+	(*AppStorage)(nil),            // 11: phelix.AppStorage
+	(*MonitorLogEntry)(nil),       // 12: phelix.MonitorLogEntry
+	(*MonitorCommandRequest)(nil), // 13: phelix.MonitorCommandRequest
+	(*MonitorCommandResult)(nil),  // 14: phelix.MonitorCommandResult
+	(*MonitorEvent)(nil),          // 15: phelix.MonitorEvent
+	(*MonitorControl)(nil),        // 16: phelix.MonitorControl
+	(*Pong)(nil),                  // 17: phelix.Pong
+	(*Ping)(nil),                  // 18: phelix.Ping
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
-	5,  // 0: phelix.ApplicationInfo.process:type_name -> phelix.AppProcess
-	6,  // 1: phelix.ApplicationInfo.networking:type_name -> phelix.AppNetworking
-	7,  // 2: phelix.ApplicationInfo.logging:type_name -> phelix.AppLogging
-	8,  // 3: phelix.ApplicationInfo.storage:type_name -> phelix.AppStorage
-	0,  // 4: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
-	1,  // 5: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	2,  // 6: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	3,  // 7: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	4,  // 8: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	9,  // 9: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	11, // 10: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	14, // 11: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	10, // 12: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	15, // 13: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	2,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
+	3,  // 1: phelix.ServerInfo.alert:type_name -> phelix.ServerAlert
+	4,  // 2: phelix.ServerInfo.security:type_name -> phelix.ServerSecurity
+	8,  // 3: phelix.ApplicationInfo.process:type_name -> phelix.AppProcess
+	9,  // 4: phelix.ApplicationInfo.networking:type_name -> phelix.AppNetworking
+	10, // 5: phelix.ApplicationInfo.logging:type_name -> phelix.AppLogging
+	11, // 6: phelix.ApplicationInfo.storage:type_name -> phelix.AppStorage
+	0,  // 7: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
+	1,  // 8: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	5,  // 9: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	6,  // 10: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	7,  // 11: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	12, // 12: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	14, // 13: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	17, // 14: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	13, // 15: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	18, // 16: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -1881,7 +2239,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		return
 	}
 	file_internal_grpc_proto_ping_proto_init()
-	file_internal_grpc_proto_monitoring_proto_msgTypes[11].OneofWrappers = []any{
+	file_internal_grpc_proto_monitoring_proto_msgTypes[14].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
 		(*MonitorEvent_AppMetrics)(nil),
@@ -1890,7 +2248,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_CommandResult)(nil),
 		(*MonitorEvent_Pong)(nil),
 	}
-	file_internal_grpc_proto_monitoring_proto_msgTypes[12].OneofWrappers = []any{
+	file_internal_grpc_proto_monitoring_proto_msgTypes[15].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),
 		(*MonitorControl_Ping)(nil),
 	}
@@ -1900,7 +2258,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_monitoring_proto_rawDesc), len(file_internal_grpc_proto_monitoring_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

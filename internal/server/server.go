@@ -190,6 +190,14 @@ func Initialize() error {
 		SwapTotal:     int64(swapInfo.Total),
 	}
 
+	// Attach the effective server settings (auto-detected defaults, persisted
+	// across restarts). Detection is sync.Once-guarded and never fails.
+	if s := EnsureSettings(); s != nil {
+		serverInfo.Connection = &s.Connection
+		serverInfo.Alert = &s.Alert
+		serverInfo.Security = &s.Security
+	}
+
 	return nil
 }
 

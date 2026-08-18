@@ -14,7 +14,7 @@ func toProtoServerInfo(info *server.Info) *pb.ServerInfo {
 	if info == nil {
 		return nil
 	}
-	return &pb.ServerInfo{
+	out := &pb.ServerInfo{
 		Id:            info.ID,
 		Hostname:      info.Hostname,
 		IpV4:          info.IPv4,
@@ -34,6 +34,67 @@ func toProtoServerInfo(info *server.Info) *pb.ServerInfo {
 		Architecture:  info.Architecture,
 		KernelVersion: info.KernelVersion,
 		SwapTotal:     info.SwapTotal,
+	}
+
+	// Server-settings groups (agent-reported defaults). Nil groups stay nil on
+	// the wire — same semantics as ApplicationInfo's config groups.
+	out.Connection = toProtoServerConnection(info.Connection)
+	out.Alert = toProtoServerAlert(info.Alert)
+	out.Security = toProtoServerSecurity(info.Security)
+
+	return out
+}
+
+// toProtoServerConnection converts the Connection settings to its protobuf
+// representation. ssh_password and private_key are WRITE-ONLY: they are sent
+// agent→backend but the backend must never serialize them back. public_key
+// is READ-ONLY.
+func toProtoServerConnection(c *server.ServerConnection) *pb.ServerConnection {
+	if c == nil {
+		return nil
+	}
+	return &pb.ServerConnection{
+		SshPort:     int32(c.SSHPort),
+		SshUser:     c.SSHUser,
+		AuthMethod:  c.AuthMethod,
+		SshPassword: c.SSHPassword,
+		PrivateKey:  c.PrivateKey,
+		PublicKey:   c.PublicKey,
+	}
+}
+
+// toProtoServerAlert converts the Alert settings to its protobuf
+// representation.
+func toProtoServerAlert(a *server.ServerAlert) *pb.ServerAlert {
+	if a == nil {
+		return nil
+	}
+	return &pb.ServerAlert{
+		CpuThreshold:          a.CPUThreshold,
+		RamThreshold:          a.RAMThreshold,
+		DiskThreshold:         a.DiskThreshold,
+		CpuSpikeAlerts:        a.CPUSpikeAlerts,
+		MemoryPressureAlerts:  a.MemoryPressureAlerts,
+		DiskSpaceAlerts:       a.DiskSpaceAlerts,
+		AppCrashAlerts:        a.AppCrashAlerts,
+		AgentDisconnectAlerts: a.AgentDisconnectAlerts,
+		WeeklyDigest:          a.WeeklyDigest,
+	}
+}
+
+// toProtoServerSecurity converts the Security settings to its protobuf
+// representation.
+func toProtoServerSecurity(s *server.ServerSecurity) *pb.ServerSecurity {
+	if s == nil {
+		return nil
+	}
+	return &pb.ServerSecurity{
+		FirewallEnabled:    s.FirewallEnabled,
+		AutoUpdates:        s.AutoUpdates,
+		SshRootLogin:       s.SSHRootLogin,
+		IpAllowlistEnabled: s.IPAllowlistEnabled,
+		AllowedIps:         s.AllowedIPs,
+		OpenPorts:          s.OpenPorts,
 	}
 }
 

@@ -37,6 +37,58 @@ message ServerInfo {
   string architecture = 17;
   string kernel_version = 18;
   int64 swap_total = 19;
+
+  // Server-settings groups (agent-reported DEFAULTS). The CLI auto-detects
+  // the current host state and product defaults and reports them here.
+  // A nil/absent group means the CLI has no configuration to report — the
+  // same semantics as ApplicationInfo's config groups (fields 20-23 on that
+  // message). These are DEFAULTS only; the backend owns real configuration
+  // through its own API.
+  ServerConnection connection = 20;
+  ServerAlert alert = 21;
+  ServerSecurity security = 22;
+}
+
+// ServerConnection mirrors the backend server's ServerConnection model: how
+// the backend should reach this host over SSH. ssh_password and private_key
+// are WRITE-ONLY — the agent sends them, but the backend must never echo
+// them back to the CLI/UI or persist them anywhere they can be read back.
+// public_key is READ-ONLY (agent-to-backend only).
+message ServerConnection {
+  int32 ssh_port = 1;       // listening sshd port; CLI default 22
+  string ssh_user = 2;      // SSH user; CLI default "phelix"
+  string auth_method = 3;   // "key" or "password"; CLI default "key"
+  string ssh_password = 4;  // WRITE-ONLY, never serialized back
+  string private_key = 5;   // WRITE-ONLY, never serialized back
+  string public_key = 6;    // READ-ONLY
+}
+
+// ServerAlert mirrors the backend server's ServerAlert model: alert
+// thresholds (percentages) and the toggles that enable each alert class.
+// The CLI reports its defaults (80/90/90, toggles off); the backend owns
+// the real values through its API. Thresholds are always populated with
+// concrete values by the CLI — treat 0 as a real value, never as "unset".
+message ServerAlert {
+  double cpu_threshold = 1;  // percent; CLI default 80
+  double ram_threshold = 2;  // percent; CLI default 90
+  double disk_threshold = 3; // percent; CLI default 90
+  bool cpu_spike_alerts = 4;
+  bool memory_pressure_alerts = 5;
+  bool disk_space_alerts = 6;
+  bool app_crash_alerts = 7;
+  bool agent_disconnect_alerts = 8;
+  bool weekly_digest = 9;
+}
+
+// ServerSecurity mirrors the backend server's ServerSecurity model. ssh_root_login
+// carries the sshd PermitRootLogin value verbatim (yes / prohibit-password / no).
+message ServerSecurity {
+  bool firewall_enabled = 1;
+  bool auto_updates = 2;
+  string ssh_root_login = 3;       // sshd PermitRootLogin; CLI default "prohibit-password"
+  bool ip_allowlist_enabled = 4;   // CLI default false
+  repeated string allowed_ips = 5; // empty list = none, not unset
+  repeated int32 open_ports = 6;   // distinct listening TCP ports, sorted ascending
 }
 
 // ServerMetrics mirrors server.Metrics. Sent on every monitoring tick
