@@ -48,7 +48,7 @@ func sendHealthSetConfigWithClient(c *Client, req *pb.HealthSetConfigRequest) er
 		return rpcFailed("send health configuration", err)
 	}
 	if !resp.Success {
-		logs.Error("grpc", "[gRPC] HealthSetConfig rejected: %s", resp.GetError())
+		logs.ErrorFile("grpc", "[gRPC] HealthSetConfig rejected: %s", resp.GetError())
 	}
 	return nil
 }
@@ -69,7 +69,7 @@ func sendHealthAddEndpointWithClient(c *Client, req *pb.HealthAddEndpointRequest
 		return rpcFailed("add health endpoint", err)
 	}
 	if !resp.Success {
-		logs.Error("grpc", "[gRPC] HealthAddEndpoint rejected: %s", resp.GetError())
+		logs.ErrorFile("grpc", "[gRPC] HealthAddEndpoint rejected: %s", resp.GetError())
 	}
 	return nil
 }
@@ -90,7 +90,7 @@ func sendHealthRemoveEndpointWithClient(c *Client, req *pb.HealthRemoveEndpointR
 		return rpcFailed("remove health endpoint", err)
 	}
 	if !resp.Success {
-		logs.Error("grpc", "[gRPC] HealthRemoveEndpoint rejected: %s", resp.GetError())
+		logs.ErrorFile("grpc", "[gRPC] HealthRemoveEndpoint rejected: %s", resp.GetError())
 	}
 	return nil
 }
@@ -99,7 +99,7 @@ func sendHealthRemoveEndpointWithClient(c *Client, req *pb.HealthRemoveEndpointR
 // Tries the global client first; falls back to a temporary connection.
 func SendHealthSetConfig(appID, appName, path, interval, timeout, expectedCodes, mode string, retries int) {
 	if err := server.Initialize(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to initialize server for health set: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server for health set: %v", err)
 		return
 	}
 
@@ -116,21 +116,21 @@ func SendHealthSetConfig(appID, appName, path, interval, timeout, expectedCodes,
 
 	if c := GetClient(); c != nil && c.IsConnected() {
 		if err := sendHealthSetConfigWithClient(c, req); err != nil {
-			logs.Error("grpc", "[gRPC] HealthSetConfig failed: %v", err)
+			logs.ErrorFile("grpc", "[gRPC] HealthSetConfig failed: %v", err)
 		}
 		return
 	}
 
-	logs.Warning("grpc", "[gRPC] No global client, creating temporary connection for HealthSetConfig")
+	logs.WarningFile("grpc", "[gRPC] No global client, creating temporary connection for HealthSetConfig")
 	c := NewClient()
 	if err := c.Connect(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to create temporary connection: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to create temporary connection: %v", err)
 		return
 	}
 	defer c.Close()
 
 	if err := sendHealthSetConfigWithClient(c, req); err != nil {
-		logs.Error("grpc", "[gRPC] HealthSetConfig failed: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] HealthSetConfig failed: %v", err)
 	}
 }
 
@@ -138,7 +138,7 @@ func SendHealthSetConfig(appID, appName, path, interval, timeout, expectedCodes,
 // Tries the global client first; falls back to a temporary connection.
 func SendHealthAddEndpoint(appID, appName string, config *health.HealthCheckConfig) {
 	if err := server.Initialize(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to initialize server for health add: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server for health add: %v", err)
 		return
 	}
 
@@ -155,21 +155,21 @@ func SendHealthAddEndpoint(appID, appName string, config *health.HealthCheckConf
 
 	if c := GetClient(); c != nil && c.IsConnected() {
 		if err := sendHealthAddEndpointWithClient(c, req); err != nil {
-			logs.Error("grpc", "[gRPC] HealthAddEndpoint failed: %v", err)
+			logs.ErrorFile("grpc", "[gRPC] HealthAddEndpoint failed: %v", err)
 		}
 		return
 	}
 
-	logs.Warning("grpc", "[gRPC] No global client, creating temporary connection for HealthAddEndpoint")
+	logs.WarningFile("grpc", "[gRPC] No global client, creating temporary connection for HealthAddEndpoint")
 	c := NewClient()
 	if err := c.Connect(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to create temporary connection: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to create temporary connection: %v", err)
 		return
 	}
 	defer c.Close()
 
 	if err := sendHealthAddEndpointWithClient(c, req); err != nil {
-		logs.Error("grpc", "[gRPC] HealthAddEndpoint failed: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] HealthAddEndpoint failed: %v", err)
 	}
 }
 
@@ -177,7 +177,7 @@ func SendHealthAddEndpoint(appID, appName string, config *health.HealthCheckConf
 // Tries the global client first; falls back to a temporary connection.
 func SendHealthRemoveEndpoint(appID, appName, endpointName string) {
 	if err := server.Initialize(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to initialize server for health remove: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server for health remove: %v", err)
 		return
 	}
 
@@ -189,20 +189,20 @@ func SendHealthRemoveEndpoint(appID, appName, endpointName string) {
 
 	if c := GetClient(); c != nil && c.IsConnected() {
 		if err := sendHealthRemoveEndpointWithClient(c, req); err != nil {
-			logs.Error("grpc", "[gRPC] HealthRemoveEndpoint failed: %v", err)
+			logs.ErrorFile("grpc", "[gRPC] HealthRemoveEndpoint failed: %v", err)
 		}
 		return
 	}
 
-	logs.Warning("grpc", "[gRPC] No global client, creating temporary connection for HealthRemoveEndpoint")
+	logs.WarningFile("grpc", "[gRPC] No global client, creating temporary connection for HealthRemoveEndpoint")
 	c := NewClient()
 	if err := c.Connect(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to create temporary connection: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to create temporary connection: %v", err)
 		return
 	}
 	defer c.Close()
 
 	if err := sendHealthRemoveEndpointWithClient(c, req); err != nil {
-		logs.Error("grpc", "[gRPC] HealthRemoveEndpoint failed: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] HealthRemoveEndpoint failed: %v", err)
 	}
 }

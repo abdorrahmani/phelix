@@ -39,7 +39,7 @@ func (c *Client) startAgentStream() {
 		}
 
 		if err := c.openAgentStream(); err != nil {
-			logs.Error("grpc", "[gRPC Agent] Stream error: %v, reconnecting...", err)
+			logs.ErrorFile("grpc", "[gRPC Agent] Stream error: %v, reconnecting...", err)
 			c.reconnectIfNeeded()
 			time.Sleep(2 * time.Second)
 			continue
@@ -68,7 +68,7 @@ func (c *Client) openAgentStream() error {
 	agentStream.cancel = cancel
 	agentStream.mu.Unlock()
 
-	logs.Info("grpc", "[gRPC Agent] AgentStream connected")
+	logs.InfoFile("grpc", "[gRPC Agent] AgentStream connected")
 
 	// Send initial pong to announce presence
 	if err := stream.Send(&pb.ClientToServer{
@@ -86,7 +86,7 @@ func (c *Client) openAgentStream() error {
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
-			logs.Info("grpc", "[gRPC Agent] Stream closed by backend")
+			logs.InfoFile("grpc", "[gRPC Agent] Stream closed by backend")
 			return nil
 		}
 		if err != nil {
@@ -111,7 +111,7 @@ func (c *Client) handleServerMessage(stream pb.PhelixService_AgentStreamClient, 
 
 // handleHealthCommand processes a health command and sends the result back.
 func (c *Client) handleHealthCommand(stream pb.PhelixService_AgentStreamClient, cmd *pb.HealthCommand) {
-	logs.Info("grpc", "[gRPC Agent] Health command: request_id=%s", cmd.GetRequestId())
+	logs.InfoFile("grpc", "[gRPC Agent] Health command: request_id=%s", cmd.GetRequestId())
 
 	// Handle watch commands via streaming
 	if watchCmd := cmd.GetWatch(); watchCmd != nil {
@@ -127,7 +127,7 @@ func (c *Client) handleHealthCommand(stream pb.PhelixService_AgentStreamClient, 
 			HealthResult: result,
 		},
 	}); err != nil {
-		logs.Error("grpc", "[gRPC Agent] Failed to send health result: %v", err)
+		logs.ErrorFile("grpc", "[gRPC Agent] Failed to send health result: %v", err)
 	}
 }
 
@@ -189,7 +189,7 @@ func (c *Client) handleHealthWatch(stream pb.PhelixService_AgentStreamClient, cm
 					HealthUpdate: update,
 				},
 			}); err != nil {
-				logs.Error("grpc", "[gRPC Agent] Failed to send health update: %v", err)
+				logs.ErrorFile("grpc", "[gRPC Agent] Failed to send health update: %v", err)
 				return
 			}
 		}
@@ -202,7 +202,7 @@ func (c *Client) handleCancelRequest(cancel *pb.CancelRequest) {
 	defer agentStream.mu.Unlock()
 
 	if cancelFn, ok := agentStream.activeWatches[cancel.GetRequestId()]; ok {
-		logs.Info("grpc", "[gRPC Agent] Cancelling request: %s", cancel.GetRequestId())
+		logs.InfoFile("grpc", "[gRPC Agent] Cancelling request: %s", cancel.GetRequestId())
 		cancelFn()
 		delete(agentStream.activeWatches, cancel.GetRequestId())
 	}
@@ -218,7 +218,7 @@ func (c *Client) handlePing(stream pb.PhelixService_AgentStreamClient, ping *pb.
 			},
 		},
 	}); err != nil {
-		logs.Error("grpc", "[gRPC Agent] Failed to send pong: %v", err)
+		logs.ErrorFile("grpc", "[gRPC Agent] Failed to send pong: %v", err)
 	}
 }
 
