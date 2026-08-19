@@ -1,31 +1,12 @@
 package auth
 
-import (
-	"fmt"
-	"log"
-	"os"
-	"path/filepath"
-)
+import "github.com/abdorrahmani/phelix/internal/logs"
 
-const logFile = "phelix.log"
-
-var logFileHandle *os.File
-
-// setupLogging initializes a file-based logger under ~/.phelix/logs.
+// setupLogging installs the leveled, file-backed self logger shared by the
+// whole CLI. It is called during package init (from auth.go) so that every
+// command's log output lands in ~/.phelix/logs/phelix.log with the standard
+// "ts [LEVEL] [component] message" format — the same file the monitor daemon
+// tails and forwards to the backend.
 func setupLogging() {
-	logDir := filepath.Join(os.Getenv("HOME"), ".phelix", "logs")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		fmt.Printf("⚠ Failed to create log directory: %s\n", logDir)
-		return
-	}
-
-	logPath := filepath.Join(logDir, logFile)
-	var err error
-	logFileHandle, err = os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Printf("⚠ Failed to open log file: %v\n", err)
-		return
-	}
-
-	log.SetOutput(logFileHandle)
+	logs.InitFileLog()
 }

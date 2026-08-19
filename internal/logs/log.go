@@ -19,13 +19,20 @@ func NewGenericLogCollector(maxLines, coldLines int) *GenericLogCollector {
 
 // Collect reads new log lines from a given file key.
 // key must be unique per logical log source (appID, serverID, etc).
-func (c *GenericLogCollector) Collect(key, filepath string, mapper func(string) LogEntry) ([]LogEntry, error) {
+//
+// The collector tolerates the log file being recreated or truncated while it
+// is held open: app restarts and log trimming write to the same path but can
+// produce a new inode, so before reading we compare the open file against the
+// path and reopen if the inode (or size) changed. Without this, the collector
+// would keep reading the detached old file and silently stop seeing new app
+// output.
+func (c *GenericLogCollector) Collect(key, path string, mapper func(string) LogEntry) ([]LogEntry, error) {
 	c.mu.Lock()
 	rs := c.readers[key]
 	c.mu.Unlock()
 
 	if rs == nil {
-		f, err := os.Open(filepath)
+		f, err := os.Open(path)
 		if err != nil {
 			return nil, err
 		}
@@ -43,6 +50,10 @@ func (c *GenericLogCollector) Collect(key, filepath string, mapper func(string) 
 		c.mu.Lock()
 		c.readers[key] = rs
 		c.mu.Unlock()
+	}
+
+	if err := c.maybeReopen(rs, path); err != nil {
+		return nil, err
 	}
 
 	if _, err := rs.file.Seek(rs.lastPos, io.SeekStart); err != nil {
@@ -70,6 +81,55 @@ func (c *GenericLogCollector) Collect(key, filepath string, mapper func(string) 
 	}
 
 	return out, nil
+}
+
+// maybeReopen checks whether the file at path still refers to the same inode
+// as the collector's open handle (e.g. the log was trimmed, or the app was
+// restarted and its log file recreated). If it changed, it closes the stale
+// handle and reopens the new file, clamping the read position so we don't
+// rescan lines that no longer exist.
+func (c *GenericLogCollector) maybeReopen(rs *readerState, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		// The file is temporarily missing (e.g. mid-rotation). Leave the old
+		// handle in place; a later Collect will retry the stat.
+		return nil
+	}
+
+	fInfo, fErr := rs.file.Stat()
+	if fErr != nil {
+		// Handle is broken; force a reopen below by skipping the SameFile check.
+	}
+
+	if fErr == nil && os.SameFile(info, fInfo) {
+		// Same inode. If it shrank underneath us (e.g. a truncate), clamp the
+		// position so reads don't start past EOF.
+		if rs.lastPos > info.Size() {
+			rs.lastPos = info.Size()
+		}
+		return nil
+	}
+
+	// Inode changed — the path now points at a different file. Reopen and
+	// start fresh (cold-start lines) since the previous file is gone.
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	old := rs.file
+	rs.file = f
+	rs.reader = bufio.NewReader(f)
+
+	if off, err := findOffsetForLastNLines(f, c.ColdLines); err == nil {
+		rs.lastPos = off
+	} else {
+		rs.lastPos = 0
+	}
+
+	if old != nil {
+		_ = old.Close()
+	}
+	return nil
 }
 
 // findOffsetForLastNLines finds the byte offset in the file where the last N lines begin.
@@ -111,45 +171,64 @@ func trimTrailingNewline(s string) string {
 	return s
 }
 
-// trimLogFile reduces the size of the log file if it exceeds MaxLogSize.
+// trimLogFile reduces the size of the log file to at most MaxLogSize by
+// keeping the file's own inode: it rewrites the tail back into the same
+// file. This matters because both the app process and the log collectors
+// hold the file open across their lifetime — a rename-and-recreate approach
+// would leave them attached to the detached old inode and they would stop
+// seeing new output.
 func trimLogFile(logFile string) error {
-	file, err := os.Open(logFile)
+	info, err := os.Stat(logFile)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-
 	if info.Size() <= MaxLogSize {
 		return nil
 	}
 
-	start := info.Size() - MaxLogSize
-	if _, err := file.Seek(start, io.SeekStart); err != nil {
-		return err
-	}
-
-	tempPath := logFile + ".tmp"
-	tempFile, err := os.Create(tempPath)
+	// Read the trailing MaxLogSize bytes.
+	tail := info.Size() - MaxLogSize
+	data := make([]byte, MaxLogSize)
+	f, err := os.Open(logFile)
 	if err != nil {
 		return err
 	}
-	defer tempFile.Close()
+	if _, err := f.ReadAt(data, tail); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
 
-	_, err = io.Copy(tempFile, file)
+	// Drop a possibly-leading partial line.
+	if len(data) > 0 && data[0] != '\n' {
+		if i := strings.IndexByte(string(data), '\n'); i >= 0 {
+			data = data[i+1:]
+		}
+	}
+
+	// Rewrite in place, preserving the inode.
+	w, err := os.OpenFile(logFile, os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-
-	return os.Rename(tempPath, logFile)
+	if _, err := w.Write(data); err != nil {
+		w.Close()
+		return err
+	}
+	return w.Close()
 }
 
 var timeLayout = "2006/01/02 15:04:05"
 
+// parseLogLine interprets a single raw log line into a ParsedLog.
+//
+// Two formats are understood:
+//
+//  1. Structured (authored by phelix's capture/writer layers):
+//     "2006/01/02 15:04:05 [INFO] [stdout] message" — the level, stream
+//     (app logs) or component (self logs) and message are taken verbatim.
+//  2. Legacy (raw app output, or older phelix.log lines): the level is
+//     inferred from keywords in the message and the stream is unknown.
 func parseLogLine(line string) ParsedLog {
 	raw := strings.TrimSpace(line)
 
@@ -158,9 +237,26 @@ func parseLogLine(line string) ParsedLog {
 		Timestamp: time.Time{},
 		Level:     LevelInfo,
 		Message:   raw,
+		Stream:    StreamUnknown,
 	}
 
-	// extract timestamp
+	// Structured format first.
+	if m := structuredLine.FindStringSubmatch(raw); m != nil {
+		if t, err := time.Parse(timeLayout, m[1]); err == nil {
+			pl.Timestamp = t
+		}
+		pl.Level = normalizeLevel(LogLevel(m[2]))
+		tag := strings.ToLower(strings.TrimSpace(m[3]))
+		if tag == string(StreamStdout) || tag == string(StreamStderr) {
+			pl.Stream = LogStream(tag)
+		} else {
+			pl.Component = tag
+		}
+		pl.Message = m[4]
+		return pl
+	}
+
+	// Legacy fallback: extract timestamp if present.
 	if ts := timePrefix.FindString(raw); ts != "" {
 		if t, err := time.Parse(timeLayout, ts); err == nil {
 			pl.Timestamp = t
@@ -190,4 +286,15 @@ func parseLogLine(line string) ParsedLog {
 	}
 
 	return pl
+}
+
+// normalizeLevel maps a parsed level token to the canonical spelling used on
+// the wire. "WARN" is folded into "WARNING"; anything else is passed through.
+func normalizeLevel(l LogLevel) LogLevel {
+	switch l {
+	case LevelWarn:
+		return LevelWarning
+	default:
+		return l
+	}
 }

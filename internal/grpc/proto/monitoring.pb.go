@@ -72,6 +72,58 @@ func (LogSource) EnumDescriptor() ([]byte, []int) {
 	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{0}
 }
 
+// LogStream identifies whether an application log line originated on the
+// app's stdout or stderr. Self (daemon) logs always use
+// LOG_STREAM_UNSPECIFIED.
+type LogStream int32
+
+const (
+	LogStream_LOG_STREAM_UNSPECIFIED LogStream = 0
+	LogStream_LOG_STREAM_STDOUT      LogStream = 1
+	LogStream_LOG_STREAM_STDERR      LogStream = 2
+)
+
+// Enum value maps for LogStream.
+var (
+	LogStream_name = map[int32]string{
+		0: "LOG_STREAM_UNSPECIFIED",
+		1: "LOG_STREAM_STDOUT",
+		2: "LOG_STREAM_STDERR",
+	}
+	LogStream_value = map[string]int32{
+		"LOG_STREAM_UNSPECIFIED": 0,
+		"LOG_STREAM_STDOUT":      1,
+		"LOG_STREAM_STDERR":      2,
+	}
+)
+
+func (x LogStream) Enum() *LogStream {
+	p := new(LogStream)
+	*p = x
+	return p
+}
+
+func (x LogStream) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LogStream) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_grpc_proto_monitoring_proto_enumTypes[1].Descriptor()
+}
+
+func (LogStream) Type() protoreflect.EnumType {
+	return &file_internal_grpc_proto_monitoring_proto_enumTypes[1]
+}
+
+func (x LogStream) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LogStream.Descriptor instead.
+func (LogStream) EnumDescriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{1}
+}
+
 // ServerInfo mirrors server.Info. Sent once when the monitor stream is
 // (re)established, exactly like the old "servers" WebSocket message.
 type ServerInfo struct {
@@ -1450,14 +1502,20 @@ func (x *AppStorage) GetTempDir() string {
 // MonitorLogEntry mirrors logs.LogEntry. Sent on every monitoring tick for
 // both application and self logs.
 type MonitorLogEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	ServerId      string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
-	AppId         string                 `protobuf:"bytes,3,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	Log           string                 `protobuf:"bytes,4,opt,name=log,proto3" json:"log,omitempty"`
-	Date          int64                  `protobuf:"varint,5,opt,name=date,proto3" json:"date,omitempty"`
-	Level         string                 `protobuf:"bytes,6,opt,name=level,proto3" json:"level,omitempty"`
-	Source        LogSource              `protobuf:"varint,7,opt,name=source,proto3,enum=phelix.LogSource" json:"source,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Id       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	ServerId string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	AppId    string                 `protobuf:"bytes,3,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	Log      string                 `protobuf:"bytes,4,opt,name=log,proto3" json:"log,omitempty"`
+	Date     int64                  `protobuf:"varint,5,opt,name=date,proto3" json:"date,omitempty"`
+	Level    string                 `protobuf:"bytes,6,opt,name=level,proto3" json:"level,omitempty"`
+	Source   LogSource              `protobuf:"varint,7,opt,name=source,proto3,enum=phelix.LogSource" json:"source,omitempty"`
+	// stream is populated for application logs (stdout/stderr); self logs leave
+	// it unspecified.
+	Stream LogStream `protobuf:"varint,8,opt,name=stream,proto3,enum=phelix.LogStream" json:"stream,omitempty"`
+	// component is populated for self (daemon) logs (e.g. "monitor", "health",
+	// "grpc") and empty for application logs.
+	Component     string `protobuf:"bytes,9,opt,name=component,proto3" json:"component,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1539,6 +1597,20 @@ func (x *MonitorLogEntry) GetSource() LogSource {
 		return x.Source
 	}
 	return LogSource_LOG_SOURCE_UNSPECIFIED
+}
+
+func (x *MonitorLogEntry) GetStream() LogStream {
+	if x != nil {
+		return x.Stream
+	}
+	return LogStream_LOG_STREAM_UNSPECIFIED
+}
+
+func (x *MonitorLogEntry) GetComponent() string {
+	if x != nil {
+		return x.Component
+	}
+	return ""
 }
 
 // MonitorCommandRequest mirrors the old "command" WebSocket message payload
@@ -2128,7 +2200,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"AppStorage\x12\x18\n" +
 	"\avolumes\x18\x01 \x03(\tR\avolumes\x12\x19\n" +
 	"\bdata_dir\x18\x02 \x01(\tR\adataDir\x12\x19\n" +
-	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\xbc\x01\n" +
+	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\x85\x02\n" +
 	"\x0fMonitorLogEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x15\n" +
@@ -2136,7 +2208,9 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x03log\x18\x04 \x01(\tR\x03log\x12\x12\n" +
 	"\x04date\x18\x05 \x01(\x03R\x04date\x12\x14\n" +
 	"\x05level\x18\x06 \x01(\tR\x05level\x12)\n" +
-	"\x06source\x18\a \x01(\x0e2\x11.phelix.LogSourceR\x06source\"e\n" +
+	"\x06source\x18\a \x01(\x0e2\x11.phelix.LogSourceR\x06source\x12)\n" +
+	"\x06stream\x18\b \x01(\x0e2\x11.phelix.LogStreamR\x06stream\x12\x1c\n" +
+	"\tcomponent\x18\t \x01(\tR\tcomponent\"e\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -2171,7 +2245,11 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\tLogSource\x12\x1a\n" +
 	"\x16LOG_SOURCE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16LOG_SOURCE_APPLICATION\x10\x01\x12\x13\n" +
-	"\x0fLOG_SOURCE_SELF\x10\x02B4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
+	"\x0fLOG_SOURCE_SELF\x10\x02*U\n" +
+	"\tLogStream\x12\x1a\n" +
+	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
+	"\x11LOG_STREAM_STDERR\x10\x02B4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
 
 var (
 	file_internal_grpc_proto_monitoring_proto_rawDescOnce sync.Once
@@ -2185,52 +2263,54 @@ func file_internal_grpc_proto_monitoring_proto_rawDescGZIP() []byte {
 	return file_internal_grpc_proto_monitoring_proto_rawDescData
 }
 
-var file_internal_grpc_proto_monitoring_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_internal_grpc_proto_monitoring_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(LogSource)(0),                // 0: phelix.LogSource
-	(*ServerInfo)(nil),            // 1: phelix.ServerInfo
-	(*ServerConnection)(nil),      // 2: phelix.ServerConnection
-	(*ServerAlert)(nil),           // 3: phelix.ServerAlert
-	(*ServerSecurity)(nil),        // 4: phelix.ServerSecurity
-	(*ServerMetrics)(nil),         // 5: phelix.ServerMetrics
-	(*AppResourceMetrics)(nil),    // 6: phelix.AppResourceMetrics
-	(*ApplicationInfo)(nil),       // 7: phelix.ApplicationInfo
-	(*AppProcess)(nil),            // 8: phelix.AppProcess
-	(*AppNetworking)(nil),         // 9: phelix.AppNetworking
-	(*AppLogging)(nil),            // 10: phelix.AppLogging
-	(*AppStorage)(nil),            // 11: phelix.AppStorage
-	(*MonitorLogEntry)(nil),       // 12: phelix.MonitorLogEntry
-	(*MonitorCommandRequest)(nil), // 13: phelix.MonitorCommandRequest
-	(*MonitorCommandResult)(nil),  // 14: phelix.MonitorCommandResult
-	(*MonitorEvent)(nil),          // 15: phelix.MonitorEvent
-	(*MonitorControl)(nil),        // 16: phelix.MonitorControl
-	(*Pong)(nil),                  // 17: phelix.Pong
-	(*Ping)(nil),                  // 18: phelix.Ping
+	(LogStream)(0),                // 1: phelix.LogStream
+	(*ServerInfo)(nil),            // 2: phelix.ServerInfo
+	(*ServerConnection)(nil),      // 3: phelix.ServerConnection
+	(*ServerAlert)(nil),           // 4: phelix.ServerAlert
+	(*ServerSecurity)(nil),        // 5: phelix.ServerSecurity
+	(*ServerMetrics)(nil),         // 6: phelix.ServerMetrics
+	(*AppResourceMetrics)(nil),    // 7: phelix.AppResourceMetrics
+	(*ApplicationInfo)(nil),       // 8: phelix.ApplicationInfo
+	(*AppProcess)(nil),            // 9: phelix.AppProcess
+	(*AppNetworking)(nil),         // 10: phelix.AppNetworking
+	(*AppLogging)(nil),            // 11: phelix.AppLogging
+	(*AppStorage)(nil),            // 12: phelix.AppStorage
+	(*MonitorLogEntry)(nil),       // 13: phelix.MonitorLogEntry
+	(*MonitorCommandRequest)(nil), // 14: phelix.MonitorCommandRequest
+	(*MonitorCommandResult)(nil),  // 15: phelix.MonitorCommandResult
+	(*MonitorEvent)(nil),          // 16: phelix.MonitorEvent
+	(*MonitorControl)(nil),        // 17: phelix.MonitorControl
+	(*Pong)(nil),                  // 18: phelix.Pong
+	(*Ping)(nil),                  // 19: phelix.Ping
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
-	2,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
-	3,  // 1: phelix.ServerInfo.alert:type_name -> phelix.ServerAlert
-	4,  // 2: phelix.ServerInfo.security:type_name -> phelix.ServerSecurity
-	8,  // 3: phelix.ApplicationInfo.process:type_name -> phelix.AppProcess
-	9,  // 4: phelix.ApplicationInfo.networking:type_name -> phelix.AppNetworking
-	10, // 5: phelix.ApplicationInfo.logging:type_name -> phelix.AppLogging
-	11, // 6: phelix.ApplicationInfo.storage:type_name -> phelix.AppStorage
+	3,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
+	4,  // 1: phelix.ServerInfo.alert:type_name -> phelix.ServerAlert
+	5,  // 2: phelix.ServerInfo.security:type_name -> phelix.ServerSecurity
+	9,  // 3: phelix.ApplicationInfo.process:type_name -> phelix.AppProcess
+	10, // 4: phelix.ApplicationInfo.networking:type_name -> phelix.AppNetworking
+	11, // 5: phelix.ApplicationInfo.logging:type_name -> phelix.AppLogging
+	12, // 6: phelix.ApplicationInfo.storage:type_name -> phelix.AppStorage
 	0,  // 7: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
-	1,  // 8: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	5,  // 9: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	6,  // 10: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	7,  // 11: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	12, // 12: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	14, // 13: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	17, // 14: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	13, // 15: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	18, // 16: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	1,  // 8: phelix.MonitorLogEntry.stream:type_name -> phelix.LogStream
+	2,  // 9: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	6,  // 10: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	7,  // 11: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	8,  // 12: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	13, // 13: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	15, // 14: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	18, // 15: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	14, // 16: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	19, // 17: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -2257,7 +2337,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_monitoring_proto_rawDesc), len(file_internal_grpc_proto_monitoring_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,

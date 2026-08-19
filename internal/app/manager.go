@@ -2,13 +2,13 @@ package app
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // AppManager manages the lifecycle of applications
@@ -146,7 +146,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 		// list), but the diagnostic must not pollute stdout — a caller's
 		// processable output. Emit it on the daemon log instead; callers that
 		// need strict behavior check LoadState themselves.
-		log.Printf("[List] Failed to load state: %v", err)
+		logs.Warning("app", "failed to load state: %v", err)
 		return nil
 	}
 

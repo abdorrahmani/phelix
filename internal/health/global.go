@@ -1,11 +1,11 @@
 package health
 
 import (
-	"log"
 	"sync"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // GlobalDaemon manages a singleton health check daemon instance
@@ -67,7 +67,7 @@ func (gd *GlobalDaemon) Start() error {
 		gd.initAttempts++
 
 		if gd.daemon, err = InitDaemon(); err != nil {
-			log.Printf("[Health] Failed to initialize daemon (attempt %d/%d): %v", gd.initAttempts, gd.maxInitAttempts, err)
+			logs.Warning("health", "failed to initialize daemon (attempt %d/%d): %v", gd.initAttempts, gd.maxInitAttempts, err)
 			time.Sleep(gd.initRetryInterval)
 			continue
 		}
@@ -78,14 +78,14 @@ func (gd *GlobalDaemon) Start() error {
 		}
 
 		if err := gd.daemon.Start(); err != nil {
-			log.Printf("[Health] Failed to start daemon (attempt %d/%d): %v", gd.initAttempts, gd.maxInitAttempts, err)
+			logs.Warning("health", "failed to start daemon (attempt %d/%d): %v", gd.initAttempts, gd.maxInitAttempts, err)
 			gd.daemon = nil
 			time.Sleep(gd.initRetryInterval)
 			continue
 		}
 
 		gd.started = true
-		log.Println("[Health] Global daemon started successfully")
+		logs.Info("health", "global daemon started successfully")
 		return nil
 	}
 

@@ -2,11 +2,11 @@ package grpc
 
 import (
 	"context"
-	"log"
 	"time"
 
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
@@ -39,7 +39,7 @@ func (r *GrpcHealthReporter) SendHealthCheckResult(result *health.HealthCheckRes
 	serverID := server.GetServerID()
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
-		log.Printf("[Health gRPC] Auth failed: %v", err)
+		logs.Error("health", "auth failed: %v", err)
 		return err
 	}
 
@@ -68,11 +68,11 @@ func (r *GrpcHealthReporter) SendHealthCheckResult(result *health.HealthCheckRes
 		Error:        errMsg,
 	})
 	if err != nil {
-		log.Printf("[Health gRPC] Failed to report health result: %v", err)
+		logs.Error("health", "failed to report health result: %v", err)
 		return err
 	}
 	if !resp.Success {
-		log.Printf("[Health gRPC] Health result rejected: %s", resp.GetError())
+		logs.Error("health", "health result rejected: %s", resp.GetError())
 	}
 	return nil
 }
@@ -93,7 +93,7 @@ func (r *GrpcHealthReporter) SendAutoRestartEvent(record *health.AutoRestartReco
 	serverID := server.GetServerID()
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
-		log.Printf("[Health gRPC] Auth failed: %v", err)
+		logs.Error("health", "auth failed: %v", err)
 		return err
 	}
 
@@ -107,11 +107,11 @@ func (r *GrpcHealthReporter) SendAutoRestartEvent(record *health.AutoRestartReco
 		CrashCount_24H:     int32(record.CrashCount24h),
 	})
 	if err != nil {
-		log.Printf("[Health gRPC] Failed to report auto-restart: %v", err)
+		logs.Error("health", "failed to report auto-restart: %v", err)
 		return err
 	}
 	if !resp.Success {
-		log.Printf("[Health gRPC] Auto-restart report rejected: %s", resp.GetError())
+		logs.Error("health", "auto-restart report rejected: %s", resp.GetError())
 	}
 	return nil
 }

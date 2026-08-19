@@ -211,6 +211,15 @@ enum LogSource {
   LOG_SOURCE_SELF = 2;
 }
 
+// LogStream identifies whether an application log line originated on the
+// app's stdout or stderr. Self (daemon) logs always use
+// LOG_STREAM_UNSPECIFIED.
+enum LogStream {
+  LOG_STREAM_UNSPECIFIED = 0;
+  LOG_STREAM_STDOUT = 1;
+  LOG_STREAM_STDERR = 2;
+}
+
 // MonitorLogEntry mirrors logs.LogEntry. Sent on every monitoring tick for
 // both application and self logs.
 message MonitorLogEntry {
@@ -221,6 +230,12 @@ message MonitorLogEntry {
   int64 date = 5;
   string level = 6;
   LogSource source = 7;
+  // stream is populated for application logs (stdout/stderr); self logs leave
+  // it unspecified.
+  LogStream stream = 8;
+  // component is populated for self (daemon) logs (e.g. "monitor", "health",
+  // "grpc") and empty for application logs.
+  string component = 9;
 }
 
 // MonitorCommandRequest mirrors the old "command" WebSocket message payload

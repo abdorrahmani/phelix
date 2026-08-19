@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +15,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	grpcClient "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/spf13/cobra"
 )
 
@@ -668,7 +668,7 @@ func runHealthDaemonForeground() error {
 
 	fmt.Println("\nStopping daemon...")
 	if err := globalDaemon.Stop(); err != nil {
-		log.Printf("[Health] Error stopping daemon: %v", err)
+		logs.Warning("health", "error stopping daemon: %v", err)
 	}
 	fmt.Println("Daemon stopped")
 	return nil

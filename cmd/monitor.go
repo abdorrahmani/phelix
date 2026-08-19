@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -51,7 +50,7 @@ func runMonitor() error {
 	if _, err := app.Manager.RestoreAutoStartApps(); err != nil {
 		// Restoration is best-effort: log the failure and continue so the
 		// monitoring connection still comes up. Apps can be started manually.
-		log.Printf("[Monitor] App restore had errors: %v", err)
+		logs.Warning("monitor", "app restore had errors: %v", err)
 	}
 
 	// The server identity is required for auth metadata and ServerInfo.
@@ -75,19 +74,27 @@ func runMonitor() error {
 	// Start the health-check daemon (auto-restart + endpoint checking). A
 	// failure here is not fatal to the monitor — log and continue.
 	if err := healthDaemon.Start(); err != nil {
-		log.Printf("[Health] Failed to start global daemon: %v", err)
+		logs.Warning("monitor", "failed to start health daemon: %v", err)
 	}
 
 	done := make(chan struct{})
 
 	// Periodic log maintenance (bounds disk usage of the daemon's own log files).
+	appTargets := func() []logs.AppLogTarget {
+		var targets []logs.AppLogTarget
+		for _, a := range app.Manager.ListApplications() {
+			targets = append(targets, logs.AppLogTarget{ID: a.ID})
+		}
+		return targets
+	}
+
 	go func() {
 		for {
 			select {
 			case <-done:
 				return
 			default:
-				logs.RemovePreviousLogs()
+				logs.RemovePreviousLogs(appTargets())
 				logs.RemoveSelfLogs()
 				time.Sleep(1 * time.Minute)
 			}
@@ -102,12 +109,12 @@ func runMonitor() error {
 			case <-done:
 				return
 			case <-ticker.C:
-				logs.RemovePreviousLogs()
+				logs.RemovePreviousLogs(appTargets())
 			}
 		}
 	}()
 
-	log.Printf("[Monitor] gRPC monitor daemon running")
+	logs.Info("monitor", "gRPC monitor daemon running")
 
 	// Block until SIGINT/SIGTERM, then shut down cleanly. systemd sends SIGTERM
 	// during 'systemctl stop/restart phelix'.
@@ -115,12 +122,12 @@ func runMonitor() error {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Printf("[Monitor] Shutdown signal received, stopping...")
+	logs.Info("monitor", "shutdown signal received, stopping...")
 	close(done)
 
 	// Stop the health-check daemon (flushes/waits its goroutines).
 	if err := healthDaemon.Stop(); err != nil {
-		log.Printf("[Health] Error stopping daemon: %v", err)
+		logs.Warning("monitor", "error stopping health daemon: %v", err)
 	}
 
 	// Stop sending events and close the gRPC connection + streams. This
@@ -129,6 +136,6 @@ func runMonitor() error {
 	// exits through main returning.
 	c.Close()
 
-	log.Printf("[Monitor] Daemon stopped")
+	logs.Info("monitor", "daemon stopped")
 	return nil
 }

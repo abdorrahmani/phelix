@@ -231,17 +231,37 @@ func toProtoAppStorage(s app.AppStorageConfig) *pb.AppStorage {
 	}
 }
 
+// toProtoLogStream maps logs.LogStream (string) to the proto LogStream enum.
+// The empty string (StreamUnknown, used by self logs) maps to the proto's
+// UNSPECIFIED zero value so self-log entries are unambiguous on the wire.
+func toProtoLogStream(s logs.LogStream) pb.LogStream {
+	switch s {
+	case logs.StreamStdout:
+		return pb.LogStream_LOG_STREAM_STDOUT
+	case logs.StreamStderr:
+		return pb.LogStream_LOG_STREAM_STDERR
+	default:
+		return pb.LogStream_LOG_STREAM_UNSPECIFIED
+	}
+}
+
 // toProtoLogEntry converts logs.LogEntry to its protobuf representation.
 // Mirrors the old "app_logs"/"self_logs" WebSocket messages, distinguished
-// by the LogSource field.
+// by the LogSource field. App logs carry stream (stdout/stderr); self logs
+// carry component (which subsystem produced the line). The two are mutually
+// exclusive by construction — component is only set on self-log entries and
+// stream only on app-log entries — so the backend can key display and rules
+// off source alone.
 func toProtoLogEntry(e logs.LogEntry, source pb.LogSource) *pb.MonitorLogEntry {
 	return &pb.MonitorLogEntry{
-		Id:       e.ID,
-		ServerId: e.ServerID,
-		AppId:    e.AppID,
-		Log:      e.Log,
-		Date:     e.Date.UnixMilli(),
-		Level:    string(e.Level),
-		Source:   source,
+		Id:        e.ID,
+		ServerId:  e.ServerID,
+		AppId:     e.AppID,
+		Log:       e.Log,
+		Date:      e.Date.UnixMilli(),
+		Level:     string(e.Level),
+		Source:    source,
+		Stream:    toProtoLogStream(e.Stream),
+		Component: e.Component,
 	}
 }

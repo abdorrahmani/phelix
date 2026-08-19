@@ -8,6 +8,7 @@ import (
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
@@ -91,11 +92,11 @@ func (c *Client) StartMonitorStream() {
 // (see reconnect.go) to recover the underlying gRPC connection; here we only
 // need to re-open the logical stream once the connection is healthy again.
 func (c *Client) monitorStreamLoop() {
-	grpcLog("[gRPC Monitor] monitor stream loop started")
+	logs.Info("grpc", "[gRPC Monitor] monitor stream loop started")
 	for {
 		select {
 		case <-c.done:
-			grpcLog("[gRPC Monitor] monitor stream loop stopped")
+			logs.Info("grpc", "[gRPC Monitor] monitor stream loop stopped")
 			return
 		default:
 		}
@@ -106,7 +107,7 @@ func (c *Client) monitorStreamLoop() {
 		}
 
 		if err := c.runMonitorStream(); err != nil {
-			grpcLog("[gRPC Monitor] stream disconnected: %v", err)
+			logs.Error("grpc", "[gRPC Monitor] stream disconnected: %v", err)
 			c.reconnectIfNeeded()
 		}
 
@@ -149,12 +150,12 @@ func (c *Client) runMonitorStream() error {
 		monitorStream.mu.Unlock()
 	}()
 
-	grpcLog("[gRPC Monitor] monitor stream connected")
+	logs.Info("grpc", "[gRPC Monitor] monitor stream connected")
 
 	// Send server identity once per (re)connection, mirroring the legacy
 	// WebSocket "servers" message sent on connect/reconnect.
 	if err := c.sendMonitorServerInfo(); err != nil {
-		grpcLog("[gRPC Monitor] failed to send server info: %v", err)
+		logs.Error("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
 
 	recvErrCh := make(chan error, 1)
@@ -186,7 +187,7 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient) er
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
-			grpcLog("[gRPC Monitor] stream closed by backend")
+			logs.Info("grpc", "[gRPC Monitor] stream closed by backend")
 			return nil
 		}
 		if err != nil {
@@ -218,7 +219,7 @@ func (c *Client) handleMonitorPing(ping *pb.Ping) {
 		},
 	}
 	if err := monitorStream.send(event); err != nil {
-		grpcLog("[gRPC Monitor] failed to send pong: %v", err)
+		logs.Error("grpc", "[gRPC Monitor] failed to send pong: %v", err)
 	}
 }
 
@@ -227,7 +228,7 @@ func (c *Client) handleMonitorPing(ping *pb.Ping) {
 // handling: metrics are paused during execution, a result is sent back, then
 // metrics resume and an immediate refreshed snapshot is pushed.
 func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
-	grpcLog("[gRPC Monitor] received command: type=%s app=%s", req.GetType(), req.GetAppName())
+	logs.Info("grpc", "[gRPC Monitor] received command: type=%s app=%s", req.GetType(), req.GetAppName())
 
 	monitorStream.pause()
 
@@ -250,7 +251,7 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
 	if err := monitorStream.commandExecutor.Execute(cmd); err != nil {
 		result.Status = "error"
 		result.Error = err.Error()
-		grpcLog("[gRPC Monitor] command execution failed: %v", err)
+		logs.Error("grpc", "[gRPC Monitor] command execution failed: %v", err)
 	}
 
 	event := &pb.MonitorEvent{
@@ -261,14 +262,14 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
 		},
 	}
 	if err := monitorStream.send(event); err != nil {
-		grpcLog("[gRPC Monitor] failed to send command result: %v", err)
+		logs.Error("grpc", "[gRPC Monitor] failed to send command result: %v", err)
 	}
 
 	// Give the command a moment to fully settle before resuming metrics,
 	// mirroring the legacy WebSocket behavior.
 	time.Sleep(2 * time.Second)
 	monitorStream.resume()
-	grpcLog("[gRPC Monitor] metrics resumed after command execution")
+	logs.Info("grpc", "[gRPC Monitor] metrics resumed after command execution")
 
 	// Force an immediate refreshed snapshot after the command completes.
 	go c.sendMonitorTick()
@@ -299,7 +300,7 @@ func (c *Client) sendMonitorTick() {
 	serverID := server.GetServerID()
 
 	if metrics, err := monitorStream.metricsCollector.CollectServerMetrics(); err != nil {
-		grpcLog("[gRPC Monitor] failed to collect server metrics: %v", err)
+		logs.Error("grpc", "[gRPC Monitor] failed to collect server metrics: %v", err)
 	} else {
 		event := &pb.MonitorEvent{
 			ServerId:  serverID,
@@ -309,7 +310,7 @@ func (c *Client) sendMonitorTick() {
 			},
 		}
 		if err := monitorStream.send(event); err != nil {
-			grpcLog("[gRPC Monitor] failed to send server metrics: %v", err)
+			logs.Error("grpc", "[gRPC Monitor] failed to send server metrics: %v", err)
 			return
 		}
 	}
@@ -323,7 +324,7 @@ func (c *Client) sendMonitorTick() {
 			},
 		}
 		if err := monitorStream.send(event); err != nil {
-			grpcLog("[gRPC Monitor] failed to send app metrics: %v", err)
+			logs.Error("grpc", "[gRPC Monitor] failed to send app metrics: %v", err)
 			return
 		}
 	}
@@ -337,13 +338,13 @@ func (c *Client) sendMonitorTick() {
 			},
 		}
 		if err := monitorStream.send(event); err != nil {
-			grpcLog("[gRPC Monitor] failed to send app info: %v", err)
+			logs.Error("grpc", "[gRPC Monitor] failed to send app info: %v", err)
 			return
 		}
 	}
 
 	if entries, err := monitorStream.metricsCollector.CollectAppLogs(); err != nil {
-		grpcLog("[gRPC Monitor] failed to collect app logs: %v", err)
+		logs.Error("grpc", "[gRPC Monitor] failed to collect app logs: %v", err)
 	} else {
 		for _, e := range entries {
 			event := &pb.MonitorEvent{
@@ -354,14 +355,14 @@ func (c *Client) sendMonitorTick() {
 				},
 			}
 			if err := monitorStream.send(event); err != nil {
-				grpcLog("[gRPC Monitor] failed to send app log: %v", err)
+				logs.Error("grpc", "[gRPC Monitor] failed to send app log: %v", err)
 				return
 			}
 		}
 	}
 
 	if entries, err := monitorStream.metricsCollector.CollectSelfLogs(); err != nil {
-		grpcLog("[gRPC Monitor] failed to collect self logs: %v", err)
+		logs.Error("grpc", "[gRPC Monitor] failed to collect self logs: %v", err)
 	} else {
 		for _, e := range entries {
 			event := &pb.MonitorEvent{
@@ -372,7 +373,7 @@ func (c *Client) sendMonitorTick() {
 				},
 			}
 			if err := monitorStream.send(event); err != nil {
-				grpcLog("[gRPC Monitor] failed to send self log: %v", err)
+				logs.Error("grpc", "[gRPC Monitor] failed to send self log: %v", err)
 				return
 			}
 		}

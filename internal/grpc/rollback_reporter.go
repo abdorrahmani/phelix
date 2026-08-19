@@ -11,6 +11,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
@@ -76,7 +77,7 @@ func initRollbackSender() {
 		rollbackEventCh = make(chan *pb.RollbackLifecycleEvent, 64)
 		rollbackSenderDone = make(chan struct{})
 		go rollbackSenderLoop()
-		grpcLog("[gRPC] Rollback sender: background worker started")
+		logs.Info("grpc", "[gRPC] Rollback sender: background worker started")
 	})
 }
 
@@ -103,18 +104,18 @@ func rollbackSenderLoop() {
 		}
 		// Close stale client.
 		if cachedClient != nil {
-			grpcLog("[gRPC] Rollback sender: closing stale connection")
+			logs.Info("grpc", "[gRPC] Rollback sender: closing stale connection")
 			cachedClient.Close()
 			cachedClient = nil
 		}
 
 		c := NewClient()
 		if err := c.Connect(); err != nil {
-			grpcLog("[gRPC] Rollback sender: failed to connect: %v", err)
+			logs.Error("grpc", "[gRPC] Rollback sender: failed to connect: %v", err)
 			return nil
 		}
 		cachedClient = c
-		grpcLog("[gRPC] Rollback sender: connected to backend")
+		logs.Info("grpc", "[gRPC] Rollback sender: connected to backend")
 		return cachedClient
 	}
 
@@ -122,38 +123,38 @@ func rollbackSenderLoop() {
 	cleanup := func() {
 		cachedMu.Lock()
 		if cachedClient != nil {
-			grpcLog("[gRPC] Rollback sender: closing connection after draining")
+			logs.Info("grpc", "[gRPC] Rollback sender: closing connection after draining")
 			cachedClient.Close()
 			cachedClient = nil
 		}
 		cachedMu.Unlock()
 	}
 
-	grpcLog("[gRPC] Rollback sender: waiting for events...")
+	logs.Info("grpc", "[gRPC] Rollback sender: waiting for events...")
 
 	for event := range rollbackEventCh {
 		sanitizeEventStrings(event)
 
 		step := event.GetCurrentStep()
 		app := event.GetAppName()
-		grpcLog("[gRPC] Rollback sender: processing event step=%s app=%s", step, app)
+		logs.Info("grpc", "[gRPC] Rollback sender: processing event step=%s app=%s", step, app)
 
 		c := ensureClient()
 		if c == nil {
 			failCount++
-			grpcLog("[gRPC] Rollback sender: NO CONNECTION — dropping event step=%s app=%s (failures=%d)", step, app, failCount)
+			logs.Warning("grpc", "[gRPC] Rollback sender: NO CONNECTION — dropping event step=%s app=%s (failures=%d)", step, app, failCount)
 			continue
 		}
 
 		// Try full event first.
 		if c.SendRollbackEvent(event) {
 			sentCount++
-			grpcLog("[gRPC] Rollback sender: sent step=%s app=%s (sent=%d)", step, app, sentCount)
+			logs.Info("grpc", "[gRPC] Rollback sender: sent step=%s app=%s (sent=%d)", step, app, sentCount)
 			continue
 		}
 
 		failCount++
-		grpcLog("[gRPC] Rollback sender: SEND FAILED step=%s app=%s (failures=%d)", step, app, failCount)
+		logs.Error("grpc", "[gRPC] Rollback sender: SEND FAILED step=%s app=%s (failures=%d)", step, app, failCount)
 		cachedMu.Lock()
 		if cachedClient != nil {
 			cachedClient.Close()
@@ -163,7 +164,7 @@ func rollbackSenderLoop() {
 	}
 
 	cleanup()
-	grpcLog("[gRPC] Rollback sender: stopped (sent=%d, failed=%d)", sentCount, failCount)
+	logs.Info("grpc", "[gRPC] Rollback sender: stopped (sent=%d, failed=%d)", sentCount, failCount)
 }
 
 // StopRollbackSender drains the event channel and waits for the background
@@ -176,7 +177,7 @@ func StopRollbackSender(timeout time.Duration) {
 	rollbackSenderMu.Unlock()
 
 	if ch == nil || done == nil {
-		grpcLog("[gRPC] Rollback sender: no sender to stop")
+		logs.Info("grpc", "[gRPC] Rollback sender: no sender to stop")
 		return
 	}
 
@@ -188,13 +189,13 @@ func StopRollbackSender(timeout time.Duration) {
 	// Reset the Once so a future rollback can start a new sender.
 	rollbackEventOnce = sync.Once{}
 
-	grpcLog("[gRPC] Rollback sender: flushing (timeout=%s)...", timeout)
+	logs.Info("grpc", "[gRPC] Rollback sender: flushing (timeout=%s)...", timeout)
 
 	select {
 	case <-done:
-		grpcLog("[gRPC] Rollback sender: flush complete")
+		logs.Info("grpc", "[gRPC] Rollback sender: flush complete")
 	case <-time.After(timeout):
-		grpcLog("[gRPC] Rollback sender: flush timed out after %s", timeout)
+		logs.Warning("grpc", "[gRPC] Rollback sender: flush timed out after %s", timeout)
 	}
 }
 
@@ -209,10 +210,10 @@ func enqueueRollbackEvent(event *pb.RollbackLifecycleEvent) bool {
 
 	select {
 	case rollbackEventCh <- cp:
-		grpcLog("[gRPC] Rollback event queued: step=%s app=%s", event.GetCurrentStep(), event.GetAppName())
+		logs.Info("grpc", "[gRPC] Rollback event queued: step=%s app=%s", event.GetCurrentStep(), event.GetAppName())
 		return true
 	default:
-		grpcLog("[gRPC] Rollback event channel full, DROPPED step=%s app=%s", event.GetCurrentStep(), event.GetAppName())
+		logs.Warning("grpc", "[gRPC] Rollback event channel full, DROPPED step=%s app=%s", event.GetCurrentStep(), event.GetAppName())
 		return false
 	}
 }
@@ -456,7 +457,7 @@ func (r *RollbackReporter) writeLocalLog(step string, success bool, msg string, 
 func SendVersionListForApp(appID, appName, appDir string) {
 	vers, err := deploy.ListVersionsForDisplay(appName, deploy.DefaultRetention{Max: 5})
 	if err != nil {
-		grpcLog("[gRPC] Version sync: failed to list versions for %s: %v", appName, err)
+		logs.Error("grpc", "[gRPC] Version sync: failed to list versions for %s: %v", appName, err)
 		return
 	}
 
@@ -506,5 +507,5 @@ func SendVersionListForApp(appID, appName, appDir string) {
 	}
 
 	enqueueRollbackEvent(event)
-	grpcLog("[gRPC] Version sync: queued %d versions for %s", len(vers), appName)
+	logs.Info("grpc", "[gRPC] Version sync: queued %d versions for %s", len(vers), appName)
 }

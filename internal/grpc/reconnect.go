@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 const (
@@ -85,7 +87,7 @@ func (c *Client) startReconnectLoop() {
 
 func (c *Client) attemptReconnect() {
 	delay := c.reconnect.nextDelay()
-	grpcLog("[gRPC] Reconnecting in %v (attempt %d)...", delay, c.reconnect.getAttempts())
+	logs.Warning("grpc", "[gRPC] Reconnecting in %v (attempt %d)...", delay, c.reconnect.getAttempts())
 
 	select {
 	case <-c.done:
@@ -94,7 +96,7 @@ func (c *Client) attemptReconnect() {
 	}
 
 	if err := c.Connect(); err != nil {
-		grpcLog("[gRPC] Reconnection attempt %d failed: %v", c.reconnect.getAttempts(), err)
+		logs.Error("grpc", "[gRPC] Reconnection attempt %d failed: %v", c.reconnect.getAttempts(), err)
 		// Signal another reconnection attempt
 		select {
 		case c.reconnectCh <- struct{}{}:
@@ -104,7 +106,7 @@ func (c *Client) attemptReconnect() {
 	}
 
 	c.reconnect.reset()
-	grpcLog("[gRPC] Successfully reconnected")
+	logs.Info("grpc", "[gRPC] Successfully reconnected")
 }
 
 // scheduleReconnect signals that a reconnection is needed.

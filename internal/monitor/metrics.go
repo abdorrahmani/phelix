@@ -1,8 +1,6 @@
 package monitor
 
 import (
-	"log"
-
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/logs"
@@ -27,7 +25,7 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 	for _, appInfo := range apps {
 		status, err := app.Manager.StatusApplication(appInfo.ID)
 		if err != nil {
-			log.Printf("Error getting status for app %s: %v", appInfo.Name, err)
+			logs.Error("monitor", "error getting status for app %s: %v", appInfo.Name, err)
 			continue
 		}
 
@@ -73,9 +71,15 @@ func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 }
 
 func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
-	return logs.CollectAppLogsUnified()
+	// Resolve the app manager's registered apps into plain log targets. The
+	// logs package itself stays app-agnostic.
+	targets := make([]logs.AppLogTarget, 0)
+	for _, a := range app.Manager.ListApplications() {
+		targets = append(targets, logs.AppLogTarget{ID: a.ID})
+	}
+	return logs.CollectAppLogs(targets, server.GetServerID())
 }
 
 func (c *appMetricsCollector) CollectSelfLogs() ([]logs.LogEntry, error) {
-	return logs.CollectSelfLogsUnified()
+	return logs.CollectSelfLogs(server.GetServerID())
 }

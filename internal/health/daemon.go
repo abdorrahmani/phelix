@@ -2,13 +2,13 @@ package health
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // Daemon manages health checks for all applications
@@ -87,7 +87,7 @@ func (d *Daemon) Start() error {
 	d.isRunning = true
 	d.mu.Unlock()
 
-	log.Println("[Health] Daemon starting...")
+	logs.Info("health", "daemon starting...")
 
 	// Get all apps
 	if err := app.Manager.LoadState(); err != nil {
@@ -139,7 +139,7 @@ func (d *Daemon) Stop() error {
 	close(d.stopChan)
 	d.wg.Wait()
 
-	log.Println("[Health] Daemon stopped")
+	logs.Info("health", "daemon stopped")
 	return nil
 }
 
@@ -169,7 +169,7 @@ func (d *Daemon) checkEndpoint(appID, appName, endpointName string, config *Heal
 
 			d.updateEndpointState(appID, appName, endpointName, config, result)
 
-			log.Printf("[Health] %s.%s: %s (latency: %v ms)", appName, endpointName, result.Status, result.LatencyMs)
+			logs.Debug("health", "%s.%s: %s (latency: %v ms)", appName, endpointName, result.Status, result.LatencyMs)
 		}
 	}
 }
@@ -247,7 +247,7 @@ func (d *Daemon) triggerAutoRestart(appID, appName, endpointName string, config 
 	}
 
 	if len(state.CrashHistory) > 10 {
-		log.Printf("[Health] App %s has crashed %d times in 24h, skipping auto-restart", appName, len(state.CrashHistory))
+		logs.Warning("health", "app %s has crashed %d times in 24h, skipping auto-restart", appName, len(state.CrashHistory))
 		record.ExitCode = 1
 		d.autoRestartChan <- record
 		return
@@ -259,7 +259,7 @@ func (d *Daemon) triggerAutoRestart(appID, appName, endpointName string, config 
 
 	d.autoRestartChan <- record
 
-	log.Printf("[Health] Auto-restart triggered for %s (backoff: %ds)", appName, backoffSeconds)
+	logs.Info("health", "auto-restart triggered for %s (backoff: %ds)", appName, backoffSeconds)
 }
 
 // calculateBackoff returns the backoff duration in seconds
@@ -293,10 +293,10 @@ func (d *Daemon) startBroadcaster() {
 
 				if r != nil {
 					if err := r.SendHealthCheckResult(result, result.AppID, result.AppName); err != nil {
-						log.Printf("[Health] Report error: %v", err)
+						logs.Error("health", "report error: %v", err)
 					}
 				} else {
-					log.Printf("[Health] No reporter set, skipping backend report for %s.%s", result.AppID, result.EndpointName)
+					logs.Debug("health", "no reporter set, skipping backend report for %s.%s", result.AppID, result.EndpointName)
 				}
 			}
 		}
@@ -321,13 +321,13 @@ func (d *Daemon) startAutoRestarter() {
 				}
 
 				if err := d.configManager.SaveAutoRestartRecord(record.AppID, record); err != nil {
-					log.Printf("[Health] Failed to save restart record: %v", err)
+					logs.Error("health", "failed to save restart record: %v", err)
 				}
 
 				if record.CrashCount24h <= 10 {
-					log.Printf("[Health] Auto-restarting %s...", record.AppName)
+					logs.Info("health", "auto-restarting %s...", record.AppName)
 					if err := app.Manager.RestartApplication(record.AppID); err != nil {
-						log.Printf("[Health] Failed to restart %s: %v", record.AppName, err)
+						logs.Error("health", "failed to restart %s: %v", record.AppName, err)
 						record.ExitCode = 1
 					} else {
 						record.ExitCode = 0
@@ -370,7 +370,7 @@ func (d *Daemon) performMaintenance() {
 			if state.LastSuccessTime.After(state.LastFailTime) &&
 				now.Sub(state.LastSuccessTime) > successThreshold &&
 				state.BackoffLevel > 0 {
-				log.Printf("[Health] Resetting backoff for %s.%s", appID, endpointName)
+				logs.Debug("health", "resetting backoff for %s.%s", appID, endpointName)
 				state.BackoffLevel = 0
 				state.NextRestartTime = time.Time{}
 			}

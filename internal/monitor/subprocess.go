@@ -2,11 +2,11 @@ package monitor
 
 import (
 	"bufio"
-	"log"
 	"os"
 	"os/exec"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // newPhelixCommand builds the `phelix <type> <id>` subprocess for command types
@@ -64,14 +64,14 @@ func runPhelixCommand(execCmd *exec.Cmd) error {
 		defer close(stdoutDone)
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			log.Printf("[Command stdout] %s", scanner.Text())
+			logs.Debug("monitor", "command stdout: %s", scanner.Text())
 		}
 	}()
 	go func() {
 		defer close(stderrDone)
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			log.Printf("[Command stderr] %s", scanner.Text())
+			logs.Debug("monitor", "command stderr: %s", scanner.Text())
 		}
 	}()
 

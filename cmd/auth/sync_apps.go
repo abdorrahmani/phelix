@@ -3,13 +3,13 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/abdorrahmani/phelix/config"
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // SendAppsToServer uploads the list of running apps to the Phelix server.
@@ -28,7 +28,7 @@ func SendAppsToServer() error {
 	}
 
 	appList := app.Manager.ListApplications()
-	log.Printf("[Monitor] Preparing to send %d apps to server", len(appList))
+	logs.Info("monitor", "preparing to send %d apps to server", len(appList))
 
 	var appDetails []AppDetail
 	for _, a := range appList {
@@ -116,6 +116,6 @@ func SendAppsToServer() error {
 		)
 	}
 
-	log.Printf("[Monitor] Successfully sent apps to server")
+	logs.Info("monitor", "successfully sent apps to server")
 	return nil
 }

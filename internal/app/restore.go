@@ -1,9 +1,8 @@
 package app
 
 import (
-	"log"
-
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // RestoreAutoStartApps restarts every application flagged for auto-start that
@@ -35,10 +34,10 @@ func (m *AppManager) RestoreAutoStartApps() (int, error) {
 		// startApplicationProcess reuses the app's persisted directory, port
 		// and log file, and flags the app as auto-start again.
 		if err := m.startApplicationProcess(id, a.Name, a.Port, a.LogFile); err != nil {
-			log.Printf("[Monitor] Failed to restore app %s (ID: %s): %v", a.Name, id, err)
+			logs.Error("app", "failed to restore app %s (ID: %s): %v", a.Name, id, err)
 			continue
 		}
-		log.Printf("[Monitor] Restored app %s (ID: %s) on port %d", a.Name, id, a.Port)
+		logs.Info("app", "restored app %s (ID: %s) on port %d", a.Name, id, a.Port)
 		restored++
 	}
 

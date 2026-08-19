@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 var (
@@ -33,7 +33,7 @@ func init() {
 	// error boundary exists, so the diagnostic goes to the daemon log (stderr)
 	// rather than polluting stdout — and it cannot be returned to the caller.
 	if err := ensureDirectories(); err != nil {
-		log.Printf("Warning: Failed to create required directories: %v", err)
+		logs.Warning("app", "failed to create required directories: %v", err)
 	}
 }
 

@@ -1,10 +1,9 @@
 package monitor
 
 import (
-	"log"
-
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // appCommandExecutor executes lifecycle commands issued by the backend.
@@ -49,7 +48,7 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 		return err
 	}
 
-	log.Printf("Executing command '%s' for app '%s' (ID: %s)", cmd.Payload.Type, target.Name, target.ID)
+	logs.Info("monitor", "executing command '%s' for app '%s' (ID: %s)", cmd.Payload.Type, target.Name, target.ID)
 
 	switch cmd.Payload.Type {
 	case "start":

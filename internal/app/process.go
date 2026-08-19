@@ -10,6 +10,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/env"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -43,8 +44,12 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
 	cmd := exec.Command(binaryPath)
 	cmd.Dir = app.Directory
-	cmd.Stdout = f
-	cmd.Stderr = f
+	// Capture stdout and stderr separately so each line in the app log file
+	// carries an exact [stdout]/[stderr] marker and level (see AppLogWriter).
+	// Both writers share the same underlying file handle; the writer's own
+	// mutex keeps lines from interleaving mid-line.
+	cmd.Stdout = logs.NewAppLogWriter(f, logs.StreamStdout)
+	cmd.Stderr = logs.NewAppLogWriter(f, logs.StreamStderr)
 
 	// Inject encrypted environment variables
 	envVars := os.Environ() // Start with current environment
