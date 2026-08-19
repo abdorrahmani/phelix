@@ -54,6 +54,13 @@ func sendWithTemporaryClient(event *pb.ApplicationEvent) {
 // ReportEvent sends an event synchronously. Used by CLI commands that need
 // to ensure the event is sent before the process exits.
 func ReportEvent(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) {
+	// Without a session there is nothing to attribute the event to and the
+	// backend would reject it. Skip the upload entirely — the command itself
+	// already ran successfully.
+	if !sessionAvailable() {
+		return
+	}
+
 	// Initialize server to ensure server ID is available
 	if err := server.Initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server for event: %v", err)

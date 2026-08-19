@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,11 +45,15 @@ var BuildCmd = &cobra.Command{
 	Long:  "Compiles an application from the current directory (auto-detects language) with the given name and starts it immediately",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateSession(); err != nil {
-			return err
+		name := args[0]
+
+		// Build/run works without a session. Dashboard upload (metrics, events)
+		// is skipped until the user logs in.
+		if !auth.IsLoggedIn() {
+			fmt.Printf("  %s Not logged in — this build will run normally, but no metrics or events will be sent to the phelix.anophel.com dashboard. Run %s to enable monitoring.\n",
+				color.YellowString("Note:"), color.CyanString("'phelix auth login'"))
 		}
 
-		name := args[0]
 		if err := validateName(name); err != nil {
 			return err
 		}
@@ -129,9 +133,16 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if !noUpload {
-			fmt.Printf("%s Uploading app information to server...\n", color.BlueString("→"))
-			if err := auth.SendAppsToServer(); err != nil {
+			err := auth.SendAppsToServer()
+			switch {
+			case errors.Is(err, auth.ErrNotLoggedIn):
+				// Not logged in — the user was already told at the top of the
+				// build that dashboard sync is skipped. Stay silent here so the
+				// note isn't repeated.
+			case err != nil:
 				fmt.Printf("%s Warning: Failed to send app information to server: %v\n", color.YellowString("⚠"), err)
+			default:
+				fmt.Printf("%s App information uploaded to server\n", color.BlueString("→"))
 			}
 		} else {
 			fmt.Printf("  %s Skipping upload to server (--no-upload was set)\n", color.YellowString("Note:"))
@@ -178,34 +189,6 @@ func init() {
 	BuildCmd.Flags().IntVar(&matrixConcurrency, "matrix-concurrency", matrix.DefaultConcurrency, "Max parallel builds in matrix mode")
 	BuildCmd.Flags().BoolVar(&matrixDryRun, "matrix-dry-run", false, "Print the matrix plan without executing builds")
 	BuildCmd.Flags().BoolVar(&buildDebug, "debug", false, "Show verbose build output, commands, and Docker operations")
-}
-
-func validateSession() error {
-	sessionFile := filepath.Join(os.Getenv("HOME"), ".phelix", "session.json")
-	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
-		return phelixerr.New(phelixerr.CodeUnauthenticated, "authentication required; please run 'phelix auth login' first")
-	}
-
-	data, err := os.ReadFile(sessionFile)
-	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "error reading session file", err)
-	}
-
-	var session struct {
-		SessionID string    `json:"sessionID"`
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expiresAt"`
-	}
-
-	if err := json.Unmarshal(data, &session); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "error parsing session file", err)
-	}
-
-	if time.Now().After(session.ExpiresAt) {
-		return phelixerr.New(phelixerr.CodeSessionExpired, "session expired; please run 'phelix auth login' again")
-	}
-
-	return nil
 }
 
 func validateName(name string) error {

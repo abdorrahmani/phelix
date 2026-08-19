@@ -13,6 +13,9 @@ import (
 )
 
 // SendAppsToServer uploads the list of running apps to the Phelix server.
+// If the user is not logged in, it returns ErrNotLoggedIn so callers can skip
+// the upload quietly — building/running still works, only dashboard sync is
+// skipped until the user runs 'phelix auth login'.
 func SendAppsToServer() error {
 	cfg := config.Get()
 	if cfg == nil {
@@ -20,11 +23,7 @@ func SendAppsToServer() error {
 	}
 	session, err := GetValidSession()
 	if err != nil {
-		return phelixerr.Wrap(
-			phelixerr.CodeUnauthenticated,
-			"authentication required; please run 'phelix auth login'",
-			err,
-		)
+		return ErrNotLoggedIn
 	}
 
 	appList := app.Manager.ListApplications()

@@ -6,15 +6,15 @@ Phelix is written in Go and built with [Cobra](https://github.com/spf13/cobra). 
 
 ## Overview
 
-Phelix helps you build, run, and manage Go and Rust applications across a single machine or multiple servers, with a comprehensive set of commands for authentication, monitoring, and full application lifecycle management.
+Phelix helps you build, run, and manage Go and Rust applications across a single machine or multiple servers, with a comprehensive set of commands for authentication (optional), monitoring, and full application lifecycle management.
 
 ## Features
 
 - Multi-server application management
-- Real-time application monitoring
+- Real-time application monitoring (dashboard at `phelix.anophel.com`, opt-in via login)
 - Centralized logging
 - Cross-server status checking
-- Authentication and security
+- Optional authentication (build/run works offline; login enables dashboard sync)
 - Application lifecycle management
 - gRPC-based monitoring service (persistent, TLS-secured, auto-reconnecting)
 - **Encrypted environment variable management** (AES-256-GCM)
@@ -29,7 +29,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
-- [Authentication](#authentication)
+- [Authentication (optional)](#authentication)
 - [Core Workflow](#core-workflow)
 - [Command Reference](#command-reference)
 - [Multi-Server Monitoring](#multi-server-monitoring)
@@ -94,9 +94,21 @@ phelix version
 
 ## Authentication
 
-Most commands require an authenticated session with the Phelix service
-(`phelix.anophel.com`). Commands that don't require it: `phelix version` and
-`--help`. The session is stored locally at `~/.phelix/session.json`.
+Authentication is **optional**. Logging in links your local Phelix server to
+your account at `phelix.anophel.com` so that app data, resource metrics, and
+events are pushed to your dashboard.
+
+You can build, rebuild, start, restart, stop, and manage applications **without
+logging in** — everything works locally. When you're not logged in, Phelix notes
+during build/rebuild that no metrics or events will be sent to the dashboard
+until you authenticate.
+
+Once you log in, monitoring data starts flowing: events from commands you run
+and, if the monitor daemon is running, resource metrics and logs. Apps you
+created **before** logging in are synced to your dashboard at login time, so
+nothing you built while offline is lost.
+
+The session is stored locally at `~/.phelix/session.json`.
 
 ```bash
 # Interactive
@@ -108,6 +120,10 @@ phelix auth login --username <user> --apiKey <key>
 phelix auth status     # show current session + expiry
 phelix auth logout     # invalidate and remove the session
 ```
+
+> **Tip:** want to use the CLI entirely offline, or just don't need the
+> dashboard? Skip `auth login` — build/run commands work the same. Only the
+> dashboard upload is skipped.
 
 ## Core Workflow
 
@@ -503,7 +519,7 @@ phelix monitor      # start the long-running gRPC monitoring daemon (foreground)
 #### `phelix monitor`
 Starts the long-running gRPC monitoring daemon that:
 - Restores managed applications that were previously running (auto-start apps)
-- Opens a single, long-lived, TLS-secured gRPC stream to the Phelix backend
+- Opens a single, long-lived, TLS-secured gRPC stream to the Phelix backend (requires an authenticated session — see [Authentication](#authentication))
 - Monitors application status across all servers
 - Sends application information, resource metrics, and logs to the central server roughly every 2 seconds
 - Automatically reconnects with exponential backoff if the connection is lost
@@ -533,7 +549,7 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 ## System Requirements
 
 - Go and/or Rust toolchain (auto-installed on Linux if missing; manual install required on other OSes)
-- Internet connection for authentication and monitoring
+- Internet connection for authentication and monitoring (optional — only needed for the `phelix.anophel.com` dashboard)
 - Sufficient permissions to create and manage application files
 - Network access between servers (if monitoring multiple servers)
 - Docker (only if using `phelix dockerize`)
@@ -568,9 +584,10 @@ Retention: the last **5** versions are kept by default (configurable per plan); 
 ## Error Handling
 
 - Errors are rendered **once, on stderr**, with a short code, the message, and
-  an actionable hint (e.g. `phelix auth login` for auth failures). Successful
-  output stays on stdout and is never polluted with error text.
-- Authentication errors prompt you to run `phelix auth login`.
+  an actionable hint. Successful output stays on stdout and is never polluted
+  with error text.
+- Authentication errors (e.g. an expired session during `phelix auth status`)
+  prompt you to run `phelix auth login`. Build/run commands never require it.
 - Build errors show the failing stage and a hint (run with `--debug` for the
   underlying root cause).
 - Connection errors are logged and retried automatically.
@@ -611,11 +628,11 @@ architecture, code inventory, and developer guidelines.
 
 ## Best Practices
 
-1. Always authenticate before using the CLI.
+1. Log in (`phelix auth login`) to push metrics, logs, and events to your dashboard; build/run works fine without it.
 2. Use meaningful, unique names for your applications.
 3. Monitor application logs (`phelix log`) for debugging.
 4. Use `phelix status` to check application health regularly.
-5. Keep your session active by logging in when needed.
+5. Log in once and keep your session active — apps you create while logged out are synced to the dashboard the next time you log in.
 6. Ensure proper network connectivity between servers.
 7. Regularly check server status across your infrastructure.
 8. Monitor resource usage (RAM/CPU) across all servers.
@@ -631,12 +648,13 @@ architecture, code inventory, and developer guidelines.
 
 ## Security Considerations
 
-- All communication with the Phelix service is encrypted.
+- All communication with the Phelix service is encrypted (only when logged in — offline mode sends nothing).
 - Authentication tokens are securely stored (`~/.phelix/session.json`).
 - Server-to-server communication is authenticated.
 - Sessions are regularly validated.
 - Secure file permissions on sensitive files (`master.key` at `0600`).
 - Environment variables and registry credentials are encrypted at rest with AES-256-GCM and never logged in plaintext.
+- When not logged in, no app data, metrics, or events leave your machine.
 
 ## Support
 

@@ -82,6 +82,18 @@ func (c *Client) Connect() error {
 		return nil
 	}
 
+	// No session → the backend would reject every RPC for lack of auth. Skip
+	// connecting entirely so short-lived CLI commands (build/rebuild/start)
+	// don't block on a doomed dial. Callers that keep retrying (the monitor
+	// daemon, rollback sender) will pick up the session automatically once the
+	// user runs 'phelix auth login'.
+	if !sessionAvailable() {
+		return phelixerr.New(
+			phelixerr.CodeUnauthenticated,
+			"not logged in; skipping gRPC connection to dashboard",
+		)
+	}
+
 	// Initialize server if not already done (needed for CLI commands)
 	if err := server.Initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server: %v", err)
