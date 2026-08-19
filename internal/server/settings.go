@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/abdorrahmani/phelix/config"
 	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
@@ -18,19 +19,22 @@ import (
 // Server settings
 //
 // ServerConnection / ServerAlert / ServerSecurity mirror the backend's
-// per-server settings model. The CLI auto-detects the current host state and
-// product defaults, persists the effective settings to
-// ~/.phelix/settings.json (0600, survives restarts), and reports them inside
-// the ServerInfo snapshot on every MonitorStream (re)connection.
+// per-server settings model. The CLI auto-detects the server's REAL current
+// configuration, persists the effective settings to ~/.phelix/settings.json
+// (0600, survives restarts), and reports them inside the ServerInfo snapshot
+// on every MonitorStream (re)connection.
 //
-// These are agent-reported DEFAULTS only. The backend owns the real
-// configuration through its own API.
+// The reported values are the host's actual configuration (sshd Port and
+// PermitRootLogin, real listening TCP ports, firewall/auto-update state, the
+// operator's real SSH keypair and login user, and the agent's own alert
+// configuration), not product defaults.
 // ============================================================================
 
-// Defaults for auto-detection and alert thresholds.
+// Fallbacks for auto-detection. Each detector prefers the host's real value
+// and falls back to these only when the value cannot be determined.
 const (
 	defaultSSHPort          = 22
-	defaultSSHUser          = "phelix"
+	defaultSSHUser          = "phelix" // last resort when $USER/whoami both fail
 	defaultAuthMethod       = "key"
 	defaultCPUThreshold     = 80.0
 	defaultRAMThreshold     = 90.0
@@ -102,7 +106,7 @@ var defaultSettings = &settingsManager{
 
 // EnsureSettings loads (from disk) or detects the effective settings exactly
 // once per process, persisting freshly-detected values. It never fails: any
-// error is logged and the product defaults are returned, matching the
+// error is logged and the fallback defaults are returned, matching the
 // best-effort nature of server.Initialize itself.
 func EnsureSettings() *Settings {
 	defaultSettings.ensure()
@@ -178,7 +182,7 @@ var (
 	readFile          = os.ReadFile
 	execOutput        = runCommand
 	detectSSHPort     = detectSSHPortImpl
-	detectSSHUser     = func() string { return defaultSSHUser } // product default, not $USER
+	detectSSHUser     = detectSSHUserImpl // real login user, not a product default
 	detectAuthMethod  = detectAuthMethodImpl
 	detectSSHKeys     = detectSSHKeysImpl // (privateKey, publicKey)
 	detectFirewall    = detectFirewallImpl
@@ -193,8 +197,39 @@ func runCommand(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// detectSettings composes the individual detectors and product defaults into
-// the effective settings. Never returns nil.
+// detectSettings composes the individual detectors and configured fallbacks
+// into the effective settings. Never returns nil.
+// alertFromConfig returns the agent's real alert configuration from the
+// embedded config.yml. Zero thresholds (unset section) fall back to the
+// built-in defaults so detection never reports literal zero.
+func alertFromConfig() ServerAlert {
+	a := config.Get()
+	if a == nil {
+		return ServerAlert{
+			CPUThreshold:  defaultCPUThreshold,
+			RAMThreshold:  defaultRAMThreshold,
+			DiskThreshold: defaultDiskThreshold,
+		}
+	}
+	cpu := a.Alert.CPUThreshold
+	ram := a.Alert.RAMThreshold
+	disk := a.Alert.DiskThreshold
+	if cpu == 0 {
+		cpu = defaultCPUThreshold
+	}
+	if ram == 0 {
+		ram = defaultRAMThreshold
+	}
+	if disk == 0 {
+		disk = defaultDiskThreshold
+	}
+	return ServerAlert{
+		CPUThreshold:  cpu,
+		RAMThreshold:  ram,
+		DiskThreshold: disk,
+	}
+}
+
 func detectSettings() *Settings {
 	sshPort := detectSSHPort()
 	if sshPort == 0 {
@@ -221,11 +256,7 @@ func detectSettings() *Settings {
 			PrivateKey: privateKey,
 			PublicKey:  publicKey,
 		},
-		Alert: ServerAlert{
-			CPUThreshold:  defaultCPUThreshold,
-			RAMThreshold:  defaultRAMThreshold,
-			DiskThreshold: defaultDiskThreshold,
-		},
+		Alert: alertFromConfig(),
 		Security: ServerSecurity{
 			FirewallEnabled: detectFirewall(),
 			AutoUpdates:     detectAutoUpdates(),
@@ -302,6 +333,19 @@ func configLines(text string) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// detectSSHUserImpl reports the real login user: $USER first, then a
+// whoami fallback. Falls back to defaultSSHUser when neither yields a
+// usable username (e.g. running under a service manager with no env).
+func detectSSHUserImpl() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	if u, err := execOutput("whoami"); err == nil && u != "" {
+		return u
+	}
+	return defaultSSHUser
 }
 
 // detectSSHPortImpl reads the configured sshd Port (sshd applies the
