@@ -3,6 +3,7 @@
 *.iml
 out
 gen
+/graphify-out/
 
 # Binaries for programs and plugins
 bin
