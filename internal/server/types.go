@@ -24,9 +24,10 @@ type Info struct {
 	KernelVersion string    `json:"kernel_version"`
 	SwapTotal     int64     `json:"swap_total"`
 
-	// Server-settings groups (agent-reported auto-detected defaults),
-	// populated when settings detection has run; nil otherwise. They are sent
-	// to the backend inside ServerInfo (fields connection/alert/security).
+	// Server-settings groups (the server's real configuration, auto-detected
+	// from the host), populated when settings detection has run; nil otherwise.
+	// They are sent to the backend inside ServerInfo (fields
+	// connection/alert/security).
 	Connection *ServerConnection `json:"connection,omitempty"`
 	Alert      *ServerAlert      `json:"alert,omitempty"`
 	Security   *ServerSecurity   `json:"security,omitempty"`

@@ -36,8 +36,9 @@ func toProtoServerInfo(info *server.Info) *pb.ServerInfo {
 		SwapTotal:     info.SwapTotal,
 	}
 
-	// Server-settings groups (agent-reported defaults). Nil groups stay nil on
-	// the wire — same semantics as ApplicationInfo's config groups.
+	// Server-settings groups (the server's real configuration). Nil groups
+	// stay nil on the wire — same semantics as ApplicationInfo's config
+	// groups.
 	out.Connection = toProtoServerConnection(info.Connection)
 	out.Alert = toProtoServerAlert(info.Alert)
 	out.Security = toProtoServerSecurity(info.Security)
