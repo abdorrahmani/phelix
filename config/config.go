@@ -13,13 +13,23 @@ import (
 var embeddedConfig []byte
 
 type Config struct {
-	App AppConfig
+	App   AppConfig
+	Alert AlertConfig
 }
 
 type AppConfig struct {
 	Mode    string `yaml:"mode"`
 	API     string `yaml:"api"`
 	GRPCUrl string `yaml:"grpcUrl"`
+}
+
+// AlertConfig holds the alert thresholds the agent reports as this server's
+// real configuration. Zero means "use the built-in default" so an unset
+// config.yml section never reports literal zero thresholds.
+type AlertConfig struct {
+	CPUThreshold  float64 `yaml:"cpuThreshold"`
+	RAMThreshold  float64 `yaml:"ramThreshold"`
+	DiskThreshold float64 `yaml:"diskThreshold"`
 }
 
 var (

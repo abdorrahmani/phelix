@@ -2,3 +2,11 @@ app:
   mode: "production"
   api: "https://phelix.anophel.com/api/v1"
   grpcUrl: "phelix.anophel.com:443"
+
+# Alert thresholds (percentages) reported to the backend as the server's real
+# configuration. Tune these to match the host policy; they are sent verbatim
+# on every ServerInfo.
+alert:
+  cpuThreshold: 80
+  ramThreshold: 90
+  diskThreshold: 90
