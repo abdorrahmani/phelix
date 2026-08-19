@@ -58,7 +58,7 @@ func NewClient() *Client {
 func transportCredentials() credentials.TransportCredentials {
 	cfg := config.Get()
 	if cfg != nil && cfg.App.Mode == "dev" {
-		logs.Info("grpc", "[gRPC] dev mode: using insecure (plaintext) transport credentials")
+		logs.InfoFile("grpc", "[gRPC] dev mode: using insecure (plaintext) transport credentials")
 		return insecure.NewCredentials()
 	}
 	// #nosec G402 -- default TLS config: verifies the server certificate
@@ -78,19 +78,19 @@ func (c *Client) Connect() error {
 		return phelixerr.New(phelixerr.CodeConfiguration, "gRPC client has no configuration loaded")
 	}
 	if cfg.App.GRPCUrl == "" {
-		logs.Warning("grpc", "[gRPC] No gRPC URL configured, skipping connection")
+		logs.WarningFile("grpc", "[gRPC] No gRPC URL configured, skipping connection")
 		return nil
 	}
 
 	// Initialize server if not already done (needed for CLI commands)
 	if err := server.Initialize(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to initialize server: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server: %v", err)
 		return nil
 	}
 
 	serverID := server.GetServerID()
 	if serverID == "" {
-		logs.Warning("grpc", "[gRPC] No server ID available after initialization")
+		logs.WarningFile("grpc", "[gRPC] No server ID available after initialization")
 		return phelixerr.New(phelixerr.CodeServer, "no server ID available")
 	}
 
@@ -137,14 +137,14 @@ func (c *Client) Connect() error {
 		_ = oldConn.Close()
 	}
 
-	logs.Info("grpc", "[gRPC] Connected to %s", cfg.App.GRPCUrl)
+	logs.InfoFile("grpc", "[gRPC] Connected to %s", cfg.App.GRPCUrl)
 	return nil
 }
 
 // Start initializes the gRPC client and begins background operations.
 func (c *Client) Start() {
 	if err := c.Connect(); err != nil {
-		logs.Error("grpc", "[gRPC] Initial connection failed: %v, will retry", err)
+		logs.ErrorFile("grpc", "[gRPC] Initial connection failed: %v, will retry", err)
 		c.scheduleReconnect()
 	}
 
@@ -189,12 +189,12 @@ func (c *Client) Close() {
 
 	if c.conn != nil {
 		if err := c.conn.Close(); err != nil {
-			logs.Error("grpc", "[gRPC] Error closing connection: %v", err)
+			logs.ErrorFile("grpc", "[gRPC] Error closing connection: %v", err)
 		}
 	}
 
 	c.connected = false
-	logs.Info("grpc", "[gRPC] Client closed")
+	logs.InfoFile("grpc", "[gRPC] Client closed")
 }
 
 // IsConnected returns whether the gRPC client has an active connection.
@@ -251,7 +251,7 @@ func (c *Client) reconnectIfNeeded() {
 	c.mu.Unlock()
 
 	if state == connectivity.Shutdown {
-		logs.Debug("grpc", "[gRPC] Connection state: %v, scheduling reconnect", state)
+		logs.DebugFile("grpc", "[gRPC] Connection state: %v, scheduling reconnect", state)
 		c.scheduleReconnect()
 		return
 	}
@@ -260,13 +260,13 @@ func (c *Client) reconnectIfNeeded() {
 	// gRPC's own background reconnection may be paused (e.g. an idle
 	// ClientConn only resumes connecting when Connect() or an RPC is
 	// invoked). Nudge it directly rather than waiting indefinitely.
-	logs.Warning("grpc", "[gRPC] Connection state: %v (unready for %s), nudging", state, stuckFor.Round(time.Second))
+	logs.WarningFile("grpc", "[gRPC] Connection state: %v (unready for %s), nudging", state, stuckFor.Round(time.Second))
 	conn.Connect()
 
 	// If nudging repeatedly hasn't helped within the threshold, the
 	// ClientConn itself may be wedged. Escalate to a full redial.
 	if stuckFor >= staleConnectionThreshold {
-		logs.Warning("grpc", "[gRPC] Connection stuck in %v for %s, forcing full reconnect", state, stuckFor.Round(time.Second))
+		logs.WarningFile("grpc", "[gRPC] Connection stuck in %v for %s, forcing full reconnect", state, stuckFor.Round(time.Second))
 		c.mu.Lock()
 		c.unreadySince = time.Time{}
 		c.mu.Unlock()
@@ -316,11 +316,11 @@ func (c *Client) sendMetadataOnce() {
 
 	md := collectMetadata()
 	if md == nil {
-		logs.Warning("grpc", "[gRPC] collectMetadata returned nil (server_id empty?)")
+		logs.WarningFile("grpc", "[gRPC] collectMetadata returned nil (server_id empty?)")
 		return
 	}
 
-	logs.Info("grpc", "[gRPC] Syncing metadata: server_id=%s apps=%d running=%d", md.GetServerId(), md.GetTotalManagedApps(), md.GetRunningApps())
+	logs.InfoFile("grpc", "[gRPC] Syncing metadata: server_id=%s apps=%d running=%d", md.GetServerId(), md.GetTotalManagedApps(), md.GetRunningApps())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -328,19 +328,19 @@ func (c *Client) sendMetadataOnce() {
 	serverID := server.GetServerID()
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
-		logs.Error("grpc", "[gRPC] Failed to attach auth metadata: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to attach auth metadata: %v", err)
 		return
 	}
 
 	resp, err := c.serviceClient.SyncMetadata(authCtx, md)
 	if err != nil {
-		logs.Error("grpc", "[gRPC] Metadata sync failed: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Metadata sync failed: %v", err)
 		c.reconnectIfNeeded()
 		return
 	}
 
 	if !resp.Accepted {
-		logs.Error("grpc", "[gRPC] Metadata rejected: %s", resp.Message)
+		logs.ErrorFile("grpc", "[gRPC] Metadata rejected: %s", resp.Message)
 	}
 }
 

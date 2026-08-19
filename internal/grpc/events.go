@@ -12,11 +12,11 @@ import (
 // SendEvent sends an application event to the backend via gRPC.
 func (c *Client) SendEvent(event *pb.ApplicationEvent) {
 	if !c.IsConnected() {
-		logs.Error("grpc", "[gRPC] Cannot send event '%s' for app '%s': not connected", event.GetAction(), event.GetAppName())
+		logs.ErrorFile("grpc", "[gRPC] Cannot send event '%s' for app '%s': not connected", event.GetAction(), event.GetAppName())
 		return
 	}
 
-	logs.Info("grpc", "[gRPC] Sending event: action=%s app=%s success=%v", event.GetAction(), event.GetAppName(), event.GetSuccess())
+	logs.InfoFile("grpc", "[gRPC] Sending event: action=%s app=%s success=%v", event.GetAction(), event.GetAppName(), event.GetSuccess())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -24,21 +24,21 @@ func (c *Client) SendEvent(event *pb.ApplicationEvent) {
 	serverID := server.GetServerID()
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
-		logs.Error("grpc", "[gRPC] Failed to attach auth metadata: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to attach auth metadata: %v", err)
 		return
 	}
 
 	resp, err := c.serviceClient.ReportEvent(authCtx, event)
 	if err != nil {
-		logs.Error("grpc", "[gRPC] Failed to send event: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to send event: %v", err)
 		c.reconnectIfNeeded()
 		return
 	}
 
 	if !resp.Accepted {
-		logs.Error("grpc", "[gRPC] Event rejected: %s", resp.Message)
+		logs.ErrorFile("grpc", "[gRPC] Event rejected: %s", resp.Message)
 	} else {
-		logs.Info("grpc", "[gRPC] Event sent successfully: action=%s", event.GetAction())
+		logs.InfoFile("grpc", "[gRPC] Event sent successfully: action=%s", event.GetAction())
 	}
 }
 
@@ -68,11 +68,11 @@ func (c *Client) SendAppEvent(appID, appName, action string, success bool, errMs
 // Returns true if the event was sent and accepted, false otherwise.
 func (c *Client) SendRollbackEvent(event *pb.RollbackLifecycleEvent) bool {
 	if !c.IsConnected() {
-		logs.Error("grpc", "[gRPC] Cannot send rollback event for app '%s': not connected", event.GetAppName())
+		logs.ErrorFile("grpc", "[gRPC] Cannot send rollback event for app '%s': not connected", event.GetAppName())
 		return false
 	}
 
-	logs.Info("grpc", "[gRPC] Sending rollback event: step=%s app=%s success=%v server_id=%s cli_app_id=%s mode=%s strategy=%s current_ver=%s target_ver=%s target_tag=%s pid=%d versions=%d metadata=%d",
+	logs.InfoFile("grpc", "[gRPC] Sending rollback event: step=%s app=%s success=%v server_id=%s cli_app_id=%s mode=%s strategy=%s current_ver=%s target_ver=%s target_tag=%s pid=%d versions=%d metadata=%d",
 		event.GetCurrentStep(), event.GetAppName(), event.GetSuccess(),
 		event.GetServerId(), event.GetCliAppId(),
 		event.GetDeploymentMode(), event.GetRollbackStrategy(),
@@ -87,22 +87,22 @@ func (c *Client) SendRollbackEvent(event *pb.RollbackLifecycleEvent) bool {
 	serverID := server.GetServerID()
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
-		logs.Error("grpc", "[gRPC] Failed to attach auth metadata for rollback event: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to attach auth metadata for rollback event: %v", err)
 		return false
 	}
 
 	resp, err := c.serviceClient.ReportRollbackEvent(authCtx, event)
 	if err != nil {
-		logs.Error("grpc", "[gRPC] Failed to send rollback event: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to send rollback event: %v", err)
 		c.reconnectIfNeeded()
 		return false
 	}
 
 	if !resp.Accepted {
-		logs.Error("grpc", "[gRPC] Rollback event rejected: %s", resp.Message)
+		logs.ErrorFile("grpc", "[gRPC] Rollback event rejected: %s", resp.Message)
 		return false
 	}
 
-	logs.Info("grpc", "[gRPC] Rollback event sent: step=%s", event.GetCurrentStep())
+	logs.InfoFile("grpc", "[gRPC] Rollback event sent: step=%s", event.GetCurrentStep())
 	return true
 }

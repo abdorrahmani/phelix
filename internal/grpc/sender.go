@@ -40,10 +40,10 @@ func SetClient(c *Client) {
 // sendWithTemporaryClient creates a short-lived connection, sends the event, and closes.
 // Used by CLI commands when the monitor is not running.
 func sendWithTemporaryClient(event *pb.ApplicationEvent) {
-	logs.Info("grpc", "[gRPC] Creating temporary connection to send event: action=%s", event.GetAction())
+	logs.InfoFile("grpc", "[gRPC] Creating temporary connection to send event: action=%s", event.GetAction())
 	c := NewClient()
 	if err := c.Connect(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to create temporary connection: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to create temporary connection: %v", err)
 		return
 	}
 	defer c.Close()
@@ -56,7 +56,7 @@ func sendWithTemporaryClient(event *pb.ApplicationEvent) {
 func ReportEvent(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) {
 	// Initialize server to ensure server ID is available
 	if err := server.Initialize(); err != nil {
-		logs.Error("grpc", "[gRPC] Failed to initialize server for event: %v", err)
+		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server for event: %v", err)
 		return
 	}
 
@@ -78,7 +78,7 @@ func ReportEventAsync(appID, appName, action string, success bool, errMsg string
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				logs.Error("grpc", "[gRPC] Panic in async event send: %v", r)
+				logs.ErrorFile("grpc", "[gRPC] Panic in async event send: %v", r)
 			}
 		}()
 		ReportEvent(appID, appName, action, success, errMsg, pid, mode, version)

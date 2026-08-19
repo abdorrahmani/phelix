@@ -87,7 +87,7 @@ func (c *Client) startReconnectLoop() {
 
 func (c *Client) attemptReconnect() {
 	delay := c.reconnect.nextDelay()
-	logs.Warning("grpc", "[gRPC] Reconnecting in %v (attempt %d)...", delay, c.reconnect.getAttempts())
+	logs.WarningFile("grpc", "[gRPC] Reconnecting in %v (attempt %d)...", delay, c.reconnect.getAttempts())
 
 	select {
 	case <-c.done:
@@ -96,7 +96,7 @@ func (c *Client) attemptReconnect() {
 	}
 
 	if err := c.Connect(); err != nil {
-		logs.Error("grpc", "[gRPC] Reconnection attempt %d failed: %v", c.reconnect.getAttempts(), err)
+		logs.ErrorFile("grpc", "[gRPC] Reconnection attempt %d failed: %v", c.reconnect.getAttempts(), err)
 		// Signal another reconnection attempt
 		select {
 		case c.reconnectCh <- struct{}{}:
@@ -106,7 +106,7 @@ func (c *Client) attemptReconnect() {
 	}
 
 	c.reconnect.reset()
-	logs.Info("grpc", "[gRPC] Successfully reconnected")
+	logs.InfoFile("grpc", "[gRPC] Successfully reconnected")
 }
 
 // scheduleReconnect signals that a reconnection is needed.
