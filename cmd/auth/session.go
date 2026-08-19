@@ -11,6 +11,14 @@ import (
 
 const sessionFileName = "session.json"
 
+// ErrNotLoggedIn is returned by operations that would upload data to the
+// Phelix dashboard when no valid session exists. It is informational — the
+// caller should skip the upload, not fail the whole command.
+var ErrNotLoggedIn = phelixerr.New(
+	phelixerr.CodeUnauthenticated,
+	"not logged in; skipping dashboard upload. Run 'phelix auth login' to enable monitoring",
+)
+
 // getSessionFilePath returns the full path of the session file.
 func getSessionFilePath() string {
 	return filepath.Join(os.Getenv("HOME"), ".phelix", sessionFileName)
@@ -90,4 +98,13 @@ func GetValidSession() (*Session, error) {
 		)
 	}
 	return session, nil
+}
+
+// IsLoggedIn reports whether a valid, non-expired session exists on disk. It
+// never fails — a missing or expired session simply means the CLI should run
+// in offline mode (build/run works, but metrics are not sent to the
+// dashboard until the user runs 'phelix auth login').
+func IsLoggedIn() bool {
+	_, err := GetValidSession()
+	return err == nil
 }

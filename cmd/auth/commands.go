@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -36,6 +37,25 @@ var LoginCmd = &cobra.Command{
 		}
 
 		printWelcome(username)
+
+		// Now that a session exists, upload all locally-managed apps so apps
+		// created while logged out start appearing on the dashboard immediately.
+		if err := app.Manager.LoadState(); err != nil {
+			fmt.Printf("  %s Could not load local app state: %v\n", color.YellowString("⚠"), err)
+		} else {
+			count := len(app.Manager.ListApplications())
+			if count == 0 {
+				fmt.Printf("  %s No local apps to sync — they'll be uploaded as you build them\n", color.BlueString("→"))
+			} else {
+				fmt.Printf("  %s Syncing %d existing app(s) to the dashboard...\n", color.BlueString("→"), count)
+				if err := SendAppsToServer(); err != nil {
+					fmt.Printf("  %s Could not sync apps to dashboard: %v\n", color.YellowString("⚠"), err)
+				} else {
+					fmt.Printf("  %s Synced %d app(s) to the dashboard\n", color.GreenString("✓"), count)
+				}
+			}
+		}
+
 		return nil
 	},
 }

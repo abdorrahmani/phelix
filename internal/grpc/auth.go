@@ -48,6 +48,15 @@ func loadSession() (*sessionData, error) {
 	return &session, nil
 }
 
+// sessionAvailable reports whether a valid, non-expired session exists. When
+// it returns false, the CLI runs in offline mode: commands still work, but
+// nothing is uploaded to the dashboard until the user runs 'phelix auth login'.
+// This check is intentionally quiet — no error is logged.
+func sessionAvailable() bool {
+	_, err := loadSession()
+	return err == nil
+}
+
 // attachAuthMetadata creates a new context with authentication metadata.
 // Sends multiple header formats to ensure the backend can find the session
 // and token regardless of which header names it checks.

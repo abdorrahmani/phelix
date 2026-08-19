@@ -455,6 +455,12 @@ func (r *RollbackReporter) writeLocalLog(step string, success bool, msg string, 
 // after successful deploys and periodically by the monitor — the user never
 // needs to run `phelix rollback --list` manually.
 func SendVersionListForApp(appID, appName, appDir string) {
+	// Not logged in → skip the sync; the version history is still on disk and
+	// will be uploaded once the user authenticates.
+	if !sessionAvailable() {
+		return
+	}
+
 	vers, err := deploy.ListVersionsForDisplay(appName, deploy.DefaultRetention{Max: 5})
 	if err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Version sync: failed to list versions for %s: %v", appName, err)
