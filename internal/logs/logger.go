@@ -58,7 +58,7 @@ func initFileLogLocked() {
 		return
 	}
 
-	logDir := filepath.Join(os.Getenv("HOME"), ".phelix", "logs")
+	logDir := filepath.Join(dataDir(), "logs")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		// Fall back to stderr only — the daemon still needs its diagnostics
 		// somewhere, and self-log delivery degrades to the terminal.

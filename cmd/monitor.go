@@ -53,10 +53,13 @@ func runMonitor() error {
 		logs.Warning("monitor", "app restore had errors: %v", err)
 	}
 
-	// The server identity is required for auth metadata and ServerInfo.
+	// The server identity is required for auth metadata and ServerInfo. The
+	// agent_id in the startup log ties every daemon log line to one runtime and
+	// makes the identity visible across hosts sharing a machine-id.
 	if err := server.Initialize(); err != nil {
 		return err
 	}
+	logs.Info("monitor", "loaded agent identity agent_id=%s", server.GetAgentID())
 
 	healthDaemon := health.InitGlobalDaemon()
 	phelixgrpc.InitGlobalClient()

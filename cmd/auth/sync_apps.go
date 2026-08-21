@@ -10,6 +10,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // SendAppsToServer uploads the list of running apps to the Phelix server.
@@ -29,6 +30,12 @@ func SendAppsToServer() error {
 	appList := app.Manager.ListApplications()
 	logs.Info("monitor", "preparing to send %d apps to server", len(appList))
 
+	// Same server identity the gRPC monitor stream reports (agent id); the
+	// backend keys app rows by (server_id, cli_id), so the REST app upload
+	// must tag its entries with it to adopt existing rows instead of
+	// duplicating them.
+	serverID := server.GetServerID()
+
 	var appDetails []AppDetail
 	for _, a := range appList {
 		id, _ := strconv.ParseUint(a.ID, 10, 32)
@@ -36,6 +43,7 @@ func SendAppsToServer() error {
 			ID:          uint(id),
 			Name:        a.Name,
 			Status:      a.Status,
+			ServerID:    serverID,
 			PID:         a.PID,
 			Uptime:      a.Uptime,
 			BuildStatus: a.BuildStatus,

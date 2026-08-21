@@ -150,7 +150,7 @@ func (c *Client) runMonitorStream() error {
 		monitorStream.mu.Unlock()
 	}()
 
-	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream connected")
+	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream connected (agent_id=%s)", server.GetAgentID())
 
 	// Send server identity once per (re)connection, mirroring the legacy
 	// WebSocket "servers" message sent on connect/reconnect.

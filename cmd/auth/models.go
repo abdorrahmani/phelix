@@ -83,6 +83,7 @@ type AppDetail struct {
 	ID          uint      `json:"id"`
 	Name        string    `json:"name"`
 	Status      string    `json:"status"`
+	ServerID    string    `json:"server_id"`
 	PID         int       `json:"pid"`
 	Uptime      string    `json:"uptime"`
 	BuildStatus string    `json:"buildStatus"`

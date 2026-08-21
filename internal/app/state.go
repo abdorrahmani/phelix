@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
@@ -22,12 +21,9 @@ var (
 // init initializes the package by setting up state file and log directory paths
 // and ensuring required directories exist.
 func init() {
-	homeDir := os.Getenv("HOME")
-	if homeDir == "" {
-		homeDir = os.Getenv("USERPROFILE") // For Windows
-	}
-	stateFile = filepath.Join(homeDir, ".phelix", "apps.json")
-	logDir = filepath.Join(homeDir, ".phelix", "logs")
+	dataDir := runtimeDataDir()
+	stateFile = filepath.Join(dataDir, "apps.json")
+	logDir = filepath.Join(dataDir, "logs")
 
 	// Ensure directories exist. This runs at package-init time, before any
 	// error boundary exists, so the diagnostic goes to the daemon log (stderr)
@@ -35,6 +31,23 @@ func init() {
 	if err := ensureDirectories(); err != nil {
 		logs.Warning("app", "failed to create required directories: %v", err)
 	}
+}
+
+// runtimeDataDir matches the agent identity directory without importing the
+// server package (which would create an import cycle). Docker uses the mounted
+// /var/lib/phelix volume; local installations retain ~/.phelix by default.
+func runtimeDataDir() string {
+	if dir := os.Getenv("PHELIX_DATA_DIR"); dir != "" {
+		return dir
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "/var/lib/phelix"
+	}
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		homeDir = os.Getenv("USERPROFILE")
+	}
+	return filepath.Join(homeDir, ".phelix")
 }
 
 // ensureDirectories creates the necessary directories and initializes the state file if it doesn't exist.
@@ -173,17 +186,6 @@ func (m *AppManager) LoadState() error {
 		// Continue with empty state instead of failing
 		savedApps = make(map[string]SavedApp)
 	}
-
-	// Find the highest ID to set NextID
-	maxID := uint(0)
-	for id := range savedApps {
-		if idNum, err := strconv.ParseUint(id, 10, 64); err == nil {
-			if uint(idNum) > maxID {
-				maxID = uint(idNum)
-			}
-		}
-	}
-	m.NextID = maxID + 1
 
 	// Clear existing apps and load from saved state
 	m.Apps = make(map[string]*AppInfo)

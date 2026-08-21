@@ -5,6 +5,7 @@ import "time"
 // Info represents the server's basic information
 type Info struct {
 	ID            string    `json:"id"`
+	AgentID       string    `json:"agent_id"`
 	Hostname      string    `json:"hostname"`
 	IPv4          string    `json:"ip_v4"`
 	IPv6          string    `json:"ip_v6"`

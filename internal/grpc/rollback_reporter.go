@@ -13,6 +13,7 @@ import (
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"google.golang.org/protobuf/proto"
 )
 
 // RollbackReporter emits lifecycle events for every significant step of a
@@ -220,24 +221,11 @@ func enqueueRollbackEvent(event *pb.RollbackLifecycleEvent) bool {
 
 // cloneRollbackEvent performs a deep copy of the proto so the background
 // sender can safely read it after the caller mutates the original.
+// proto.Clone is the correct way to copy a generated message: struct
+// assignment would shallow-copy the embedded protoimpl.MessageState (which
+// contains a noCopy mutex), and the map/slice fields would alias the source.
 func cloneRollbackEvent(e *pb.RollbackLifecycleEvent) *pb.RollbackLifecycleEvent {
-	cp := *e
-	// Deep-copy the metadata map so the caller can keep mutating it.
-	if e.Metadata != nil {
-		cp.Metadata = make(map[string]string, len(e.Metadata))
-		for k, v := range e.Metadata {
-			cp.Metadata[k] = v
-		}
-	}
-	// Deep-copy the versions slice.
-	if e.Versions != nil {
-		cp.Versions = make([]*pb.RollbackVersionEntry, len(e.Versions))
-		for i, v := range e.Versions {
-			cv := *v
-			cp.Versions[i] = &cv
-		}
-	}
-	return &cp
+	return proto.Clone(e).(*pb.RollbackLifecycleEvent)
 }
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ func (c *Client) SendEvent(event *pb.ApplicationEvent) {
 		return
 	}
 
-	logs.InfoFile("grpc", "[gRPC] Sending event: action=%s app=%s success=%v", event.GetAction(), event.GetAppName(), event.GetSuccess())
+	logs.InfoFile("grpc", "[gRPC] Sending event: action=%s app=%s app_id=%s success=%v agent_id=%s", event.GetAction(), event.GetAppName(), event.GetAppId(), event.GetSuccess(), server.GetAgentID())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

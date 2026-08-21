@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 type AppManager struct {
 	Apps   map[string]*AppInfo
 	Lock   sync.Mutex
-	NextID uint
+	NextID uint // Deprecated: retained for compatibility with existing state tests.
 }
 
 // Manager is the global instance of AppManager that implements AppManagerInterface
@@ -24,14 +25,23 @@ var Manager AppManagerInterface = &AppManager{
 	NextID: 1,
 }
 
-// GenerateAppID generates a sequential numeric ID for an application
+// GenerateAppID generates an independent RFC 4122 version 4 application ID.
+// The ID is persisted in apps.json and is never derived from an agent/server
+// identity or the app name.
 func (m *AppManager) GenerateAppID() string {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	id := fmt.Sprintf("%d", m.NextID)
-	m.NextID++
-	return id
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failures are exceptional. Keep a unique, time-based
+		// fallback so this API remains non-erroring for existing callers.
+		return fmt.Sprintf("app-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // StartApplication starts an application with the given parameters

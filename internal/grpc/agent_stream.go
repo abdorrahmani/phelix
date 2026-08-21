@@ -68,7 +68,7 @@ func (c *Client) openAgentStream() error {
 	agentStream.cancel = cancel
 	agentStream.mu.Unlock()
 
-	logs.InfoFile("grpc", "[gRPC Agent] AgentStream connected")
+	logs.InfoFile("grpc", "[gRPC Agent] AgentStream connected (agent_id=%s)", server.GetAgentID())
 
 	// Send initial pong to announce presence
 	if err := stream.Send(&pb.ClientToServer{

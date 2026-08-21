@@ -4,9 +4,22 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// openLog opens a log file for reading, creating it (and its parent logs
+// directory) if it does not yet exist. A registered application may have no
+// output yet, or its log file may have been deleted — in that case the failure
+// mode should be a freshly created empty file, not a "no such file" error
+// repeated on every collection tick.
+func openLog(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0o644)
+}
 
 // NewGenericLogCollector creates a reusable log collector.
 func NewGenericLogCollector(maxLines, coldLines int) *GenericLogCollector {
@@ -32,7 +45,7 @@ func (c *GenericLogCollector) Collect(key, path string, mapper func(string) LogE
 	c.mu.Unlock()
 
 	if rs == nil {
-		f, err := os.Open(path)
+		f, err := openLog(path)
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +125,7 @@ func (c *GenericLogCollector) maybeReopen(rs *readerState, path string) error {
 
 	// Inode changed — the path now points at a different file. Reopen and
 	// start fresh (cold-start lines) since the previous file is gone.
-	f, err := os.Open(path)
+	f, err := openLog(path)
 	if err != nil {
 		return err
 	}

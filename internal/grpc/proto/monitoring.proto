@@ -16,7 +16,8 @@ import "internal/grpc/proto/ping.proto";
 // ============================================================================
 
 // ServerInfo mirrors server.Info. Sent once when the monitor stream is
-// (re)established, exactly like the old "servers" WebSocket message.
+// (re)established, exactly like the old "servers" WebSocket message. id is
+// the persistent Phelix agent_id; it is not a host machine ID.
 message ServerInfo {
   string id = 1;
   string hostname = 2;
@@ -47,6 +48,7 @@ message ServerInfo {
   ServerConnection connection = 20;
   ServerAlert alert = 21;
   ServerSecurity security = 22;
+
 }
 
 // ServerConnection mirrors the backend server's ServerConnection model: how

@@ -32,6 +32,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - [Authentication (optional)](#authentication)
 - [Core Workflow](#core-workflow)
 - [Command Reference](#command-reference)
+- [Run Phelix in Docker](#run-phelix-in-docker)
 - [Multi-Server Monitoring](#multi-server-monitoring)
 - [System Requirements](#system-requirements)
 - [Where Phelix Stores Data](#where-phelix-stores-data)
@@ -449,6 +450,103 @@ phelix dockerize myapp --tag v1.0.0 --with-compose --depends-on redis,postgres
 Produces a ready-to-use `docker-compose.yml` with the app's service plus requested sidecars (e.g. Redis on port 6379 using `redis:7-alpine`; PostgreSQL on port 5432 using `postgres:16-alpine`). Supported sidecars: `redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`.
 
 > **Important:** Phelix only *generates* the compose file. It does **not** manage the lifecycle (start/stop/health) of compose-defined services — use `docker compose up -d` directly.
+
+## Run Phelix in Docker
+
+When Phelix itself runs in Docker, each Phelix container is an independent
+**agent**. Its identity belongs to the Phelix runtime, not to the physical or
+VM host and not to the application it manages. This lets several Phelix
+containers on one host report to the same backend without colliding.
+
+The identity rule is:
+
+```text
+machine_id ≠ agent_id ≠ app_id ≠ instance_id
+```
+
+- `machine_id` identifies a physical or virtual host. Phelix does not use it
+  as its agent identity.
+- `agent_id` identifies one persistent Phelix installation/runtime.
+- `app_id` identifies an application independently of its agent.
+- `instance_id` identifies a particular deployed or running instance.
+
+### Persistent agent data
+
+Phelix creates `/var/lib/phelix/agent-id` on first start and reuses the UUID on
+every later start. Its application registry (`apps.json`) is stored in the same
+directory, so application IDs are persistent too. Mount a **different
+persistent volume for every Phelix container**. Do not mount
+`/etc/machine-id` into the containers, and never share one `/var/lib/phelix`
+volume between them.
+
+```yaml
+services:
+  billing:
+    image: <your-phelix-image>
+    command: ["phelix", "monitor"]
+    hostname: billing-agent
+    volumes:
+      - phelix-billing-data:/var/lib/phelix
+
+  auth:
+    image: <your-phelix-image>
+    command: ["phelix", "monitor"]
+    hostname: auth-agent
+    volumes:
+      - phelix-auth-data:/var/lib/phelix
+
+  user:
+    image: <your-phelix-image>
+    command: ["phelix", "monitor"]
+    hostname: user-agent
+    volumes:
+      - phelix-user-data:/var/lib/phelix
+
+  admin:
+    image: <your-phelix-image>
+    command: ["phelix", "monitor"]
+    hostname: admin-agent
+    volumes:
+      - phelix-admin-data:/var/lib/phelix
+
+volumes:
+  phelix-billing-data:
+  phelix-auth-data:
+  phelix-user-data:
+  phelix-admin-data:
+```
+
+Start the services normally:
+
+```bash
+docker compose up -d
+docker compose logs -f billing
+```
+
+The volume determines recreation behavior:
+
+| Operation | Result |
+|---|---|
+| `docker restart billing` | Same `agent_id`, therefore the same backend server/agent record. |
+| Remove and recreate with `phelix-billing-data` | Same `agent_id`, therefore the same backend server/agent record. |
+| Recreate without the Phelix data volume | A new `agent_id` and a new backend server/agent record. |
+
+The backend registers an agent idempotently: an existing `agent_id` updates its
+record and last-seen data; a new `agent_id` creates one. A reconnect must never
+create another server merely because the container restarted.
+
+### Application identity
+
+`phelix build billing` (and equivalent application-creation flows) generates
+an `app_id` once and persists it in `/var/lib/phelix/apps.json`. The
+application may be related to an agent/server, but its ID must not be derived
+from `server_id`, `agent_id`, or its name. The backend may enforce unique names
+within an agent using `UNIQUE(server_id, name)`; names are not globally unique.
+
+See [the backend identity migration guide](docs/backend-agent-identity-migration.md) for
+the registration contract, schema, and rollout requirements. Local installs
+(no Docker) store the same files under `~/.phelix`; the root may be overridden
+with `PHELIX_DATA_DIR`.
 
 ### Matrix builds
 

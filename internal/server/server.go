@@ -1,16 +1,15 @@
 package server
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/rand"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -25,17 +24,37 @@ import (
 )
 
 var (
-	serverID     string
-	serverInfo   *Info
-	serverIDFile string
+	agentID     string
+	serverInfo  *Info
+	agentIDFile string
+
+	// agentIDMu serializes agent-ID file reads and writes. Without it, two
+	// goroutines racing to initialize the runtime could both observe a
+	// missing file, generate two different IDs, and only the last write
+	// would survive.
+	agentIDMu sync.Mutex
 )
 
 func init() {
+	agentIDFile = filepath.Join(agentDataDir(), "agent-id")
+}
+
+// agentDataDir is the persistent state directory for the Phelix runtime.
+// Docker deployments use /var/lib/phelix so mounting that path preserves the
+// runtime identity across container recreation. Local installations retain
+// their existing per-user state unless PHELIX_DATA_DIR overrides it.
+func agentDataDir() string {
+	if dir := os.Getenv("PHELIX_DATA_DIR"); dir != "" {
+		return dir
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "/var/lib/phelix"
+	}
 	homeDir := os.Getenv("HOME")
 	if homeDir == "" {
-		homeDir = os.Getenv("USERPROFILE") // For Windows
+		homeDir = os.Getenv("USERPROFILE")
 	}
-	serverIDFile = filepath.Join(homeDir, ".phelix", "server_id")
+	return filepath.Join(homeDir, ".phelix")
 }
 
 // getNetworkStats returns total network bytes in and out across all interfaces
@@ -75,9 +94,10 @@ func getProcessCount() (uint32, error) {
 
 // Initialize initializes the server information
 func Initialize() error {
-	// Load or generate server ID
-	if err := loadOrGenerateServerID(); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeServer, "failed to load/generate server ID", err)
+	// The Phelix runtime owns this ID. It is deliberately independent from the
+	// host machine ID so multiple containers on one host are distinct agents.
+	if _, err := loadOrGenerateAgentID(); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeServer, "failed to load/generate agent ID", err)
 	}
 
 	// Get hostname
@@ -169,7 +189,8 @@ func Initialize() error {
 	}
 
 	serverInfo = &Info{
-		ID:            serverID,
+		ID:            agentID,
+		AgentID:       agentID,
 		Hostname:      hostname,
 		IPv4:          ipv4,
 		IPv6:          ipv6,
@@ -202,101 +223,103 @@ func Initialize() error {
 	return nil
 }
 
-type idReader func() (string, error)
-
-// generateServerID generates a new server ID base on host name and mac address
-func generateServerID() (string, error) {
-	readers := []idReader{
-		readMachineID,
-		readSMBISOUUID,
-		readCPUId,
-		fallbackHash,
-	}
-
-	for _, r := range readers {
-		if id, err := r(); err == nil && id != "" {
-			return id, nil
-		}
-	}
-
-	return "", fmt.Errorf("no suitable hardware ID found for server ID generation")
-}
-
-func readMachineID() (string, error) {
-	data, err := os.ReadFile("/etc/machine-id")
-	if err != nil || len(data) < 5 {
-		return "", fmt.Errorf("machine-id not found")
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
-func readSMBISOUUID() (string, error) {
-	data, err := os.ReadFile("/sys/class/dmi/id/product_uuid")
-	if err != nil || len(data) < 5 {
-		return "", fmt.Errorf("smb-iso-uuid not found")
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
-func readCPUId() (string, error) {
-	out, err := exec.Command("dmidecode", "-t", "processor").Output()
-	if err != nil {
+// generateAgentID returns an RFC 4122 version 4 UUID. It is random rather
+// than derived from host data, so every Phelix runtime has its own identity.
+func generateAgentID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-
-	re := regexp.MustCompile(`ID:\s*([0-9A-Fa-f]+)`)
-	match := re.FindStringSubmatch(string(out))
-	if len(match) < 2 {
-		return "", fmt.Errorf("cpu id not found")
-	}
-	return match[1], nil
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return formatUUID(b), nil
 }
 
-func fallbackHash() (string, error) {
-	hostname, _ := os.Hostname()
+var agentIDFormat = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
-	ifaces, _ := net.Interfaces()
-	var mac string
-	for _, iface := range ifaces {
-		if len(iface.HardwareAddr) > 0 {
-			mac = iface.HardwareAddr.String()
-			break
-		}
-	}
-
-	combined := hostname + mac
-	h := sha256.Sum256([]byte(combined))
-	return hex.EncodeToString(h[:]), nil
+// validAgentIDFormat reports whether id is a well-formed version 4 UUID, the
+// only format loadOrGenerateAgentID ever writes.
+func validAgentIDFormat(id string) bool {
+	return agentIDFormat.MatchString(id)
 }
 
-// loadOrGenerateServerID loads the server ID from file or generates a new one
-func loadOrGenerateServerID() error {
-	// Create .phelix directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(serverIDFile), 0755); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to create .phelix directory", err)
+// formatUUID renders 16 random bytes as an RFC 4122 UUID string.
+func formatUUID(b []byte) string {
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// loadOrGenerateAgentID loads the persistent agent ID or creates it once and
+// returns it. The read-check-write path is serialized so concurrent
+// initializations cannot mint two different IDs for one data directory; the
+// write is crash-safe (write a temp file, fsync, then atomically rename over
+// the final path) so a crash mid-write never leaves a truncated agent-id.
+//
+// Returning the ID (rather than the caller reading the package global after
+// the call) is what makes concurrent callers race-free: each goroutine keeps
+// its own copy instead of reading a global that another goroutine may still
+// be mutating.
+func loadOrGenerateAgentID() (string, error) {
+	agentIDMu.Lock()
+	defer agentIDMu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(agentIDFile), 0755); err != nil {
+		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to create Phelix data directory", err)
 	}
 
-	// Try to read existing server ID
-	data, err := os.ReadFile(serverIDFile)
+	data, err := os.ReadFile(agentIDFile)
 	if err == nil {
-		serverID = string(data)
-		return nil
+		agentID = strings.TrimSpace(string(data))
+		if agentID == "" {
+			return "", phelixerr.New(phelixerr.CodeConfiguration, "agent ID file is empty")
+		}
+		if !validAgentIDFormat(agentID) {
+			// A non-UUID value means the persisted runtime identity is
+			// corrupted (truncated write, external edit). Loading it would
+			// silently change the agent's identity — the safest behavior is
+			// to fail loudly rather than mint a new ID for an existing runtime.
+			return "", phelixerr.New(phelixerr.CodeConfiguration, "agent ID file contains an invalid ID")
+		}
+		return agentID, nil
 	}
 
-	// If file doesn't exist or can't be read, generate new ID
-	if os.IsNotExist(err) {
-		serverID, err = generateServerID()
-		if err != nil {
-			return phelixerr.Wrap(phelixerr.CodeServer, "failed to generate server ID", err)
-		}
-
-		if err := os.WriteFile(serverIDFile, []byte(serverID), 0600); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save server ID", err)
-		}
-		return nil
+	if !os.IsNotExist(err) {
+		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read agent ID file", err)
 	}
 
-	return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read server ID file", err)
+	id, err := generateAgentID()
+	if err != nil {
+		return "", phelixerr.Wrap(phelixerr.CodeServer, "failed to generate agent ID", err)
+	}
+
+	tmpFile := agentIDFile + ".tmp"
+	f, err := os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to create agent ID temp file", err)
+	}
+	if _, err := f.WriteString(id + "\n"); err != nil {
+		f.Close()
+		_ = os.Remove(tmpFile)
+		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to write agent ID temp file", err)
+	}
+	// Flush metadata + data to disk before publishing the ID under its final
+	// name, so a crash cannot leave an empty/partial agent-id at the real path.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		_ = os.Remove(tmpFile)
+		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to fsync agent ID temp file", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpFile)
+		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to close agent ID temp file", err)
+	}
+	if err := os.Rename(tmpFile, agentIDFile); err != nil {
+		_ = os.Remove(tmpFile)
+		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to replace agent ID file", err)
+	}
+
+	agentID = id
+	return agentID, nil
 }
 
 // GetServerInfo returns the server information
@@ -304,9 +327,16 @@ func GetServerInfo() *Info {
 	return serverInfo
 }
 
-// GetServerID returns the server ID
+// GetAgentID returns the persistent identity of this Phelix runtime.
+func GetAgentID() string {
+	return agentID
+}
+
+// GetServerID is retained for existing message fields. Its value is the
+// agent ID, not a host-derived machine ID. Backends must resolve it by
+// agent_id to their internal servers.id.
 func GetServerID() string {
-	return serverID
+	return agentID
 }
 
 // CollectMetrics collects current server metrics
@@ -372,7 +402,7 @@ func CollectMetrics() (*Metrics, error) {
 	}
 
 	return &Metrics{
-		ServerID:         serverID,
+		ServerID:         agentID,
 		UsedMemory:       memInfo.Used,
 		FreeMemory:       memInfo.Free,
 		MemoryPercent:    memInfo.UsedPercent,

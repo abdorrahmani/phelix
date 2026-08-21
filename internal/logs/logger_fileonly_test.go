@@ -23,6 +23,10 @@ func TestInfoFile_WritesFileNotStderr(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Pin the data dir into the temp HOME so path resolution is independent of
+	// whether the test host is a Docker container (dataDir() would otherwise
+	// pick /var/lib/phelix).
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
 
 	// Swap the process's real stderr so we can assert nothing leaks to it.
 	r, w, err := os.Pipe()
@@ -69,6 +73,7 @@ func TestInfo_WritesFileAndStderr(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
 
 	r, w, err := os.Pipe()
 	if err != nil {

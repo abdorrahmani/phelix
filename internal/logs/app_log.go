@@ -6,6 +6,27 @@ import (
 	"time"
 )
 
+// dataDir is the persistent state directory for the Phelix runtime. It must
+// match the resolution used by the app manager and server packages, because
+// app logs are written under it (see internal/app/state.go's runtimeDataDir)
+// and this package reads them back from the same location. Docker deployments
+// use /var/lib/phelix so mounting that path preserves state across container
+// recreation; local installations retain ~/.phelix unless PHELIX_DATA_DIR
+// overrides it.
+func dataDir() string {
+	if dir := os.Getenv("PHELIX_DATA_DIR"); dir != "" {
+		return dir
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return "/var/lib/phelix"
+	}
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		homeDir = os.Getenv("USERPROFILE")
+	}
+	return filepath.Join(homeDir, ".phelix")
+}
+
 // builtinCollectors are the transport-agnostic collectors used by the monitor
 // daemon. They are package-level singletons because the monitor's metrics
 // collector is itself a process-wide singleton and must keep reading from
@@ -25,12 +46,12 @@ type AppLogTarget struct {
 // AppLogPath returns the on-disk path for an application's combined
 // (stdout+stderr) log file.
 func AppLogPath(id string) string {
-	return filepath.Join(os.Getenv("HOME"), ".phelix", "logs", id+".log")
+	return filepath.Join(dataDir(), "logs", id+".log")
 }
 
 // SelfLogPath returns the on-disk path for the daemon's own log file.
 func SelfLogPath() string {
-	return filepath.Join(os.Getenv("HOME"), ".phelix", "logs", "phelix.log")
+	return filepath.Join(dataDir(), "logs", "phelix.log")
 }
 
 // CollectAppLogs collects new log lines from every target application's log
@@ -79,6 +100,9 @@ func RemovePreviousLogs(targets []AppLogTarget) {
 
 		info, err := os.Stat(logFile)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			Error("logs", "failed to stat log file %s: %v", logFile, err)
 			continue
 		}

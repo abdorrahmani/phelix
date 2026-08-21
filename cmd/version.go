@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/abdorrahmani/phelix/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -49,6 +50,16 @@ func printVersion(verbose bool) {
 
 	fmt.Printf("%-12s%s\n", "Compiler", version.Compiler())
 	fmt.Printf("%-12s%s\n", "CGO", value(version.CGOEnabled))
+
+	// The persistent Phelix runtime identity. Initializing it creates the
+	// agent-id file on first run; the value is generated once and reused for
+	// the life of the runtime's data volume. Verifying it is independent of
+	// the host machine ID is the identity migration's core guarantee.
+	if err := server.Initialize(); err != nil {
+		fmt.Printf("%-12s%s\n", "Agent ID", fmt.Sprintf("<error: %v>", err))
+	} else if agentID := server.GetAgentID(); agentID != "" {
+		fmt.Printf("%-12s%s\n", "Agent ID", agentID)
+	}
 }
 
 func value(v string) string {
