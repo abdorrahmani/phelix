@@ -291,14 +291,29 @@ install_binary() {
 
     local target="${INSTALL_DIR}/${SERVICE_NAME}"
     local SUDO=""
+
     if [ "$(id -u)" -ne 0 ]; then
-        warn "installing to ${INSTALL_DIR} needs root; continuing with sudo"
-        SUDO="sudo"
+            warn "installing to ${INSTALL_DIR} needs root; continuing with sudo"
+
+            SUDO="sudo"
+
+            # Authenticate BEFORE starting a background process.
+            # This makes sudo ask for the password normally in the user's terminal.
+            ${SUDO} -v || fail "sudo authentication failed"
     fi
 
+     # Prepare the target directory.
+    if [ -n "${SUDO}" ]; then
+            ${SUDO} mkdir -p "${INSTALL_DIR}"
+        else
+            mkdir -p "${INSTALL_DIR}"
+    fi
+
+    # Install the binary.
     with_progress "Installing binary to ${target}" \
         bash -c "${SUDO} mkdir -p \"\$1\" && ${SUDO} install -m 0755 \"\$2\" \"\$3\"" \
         _ "${INSTALL_DIR}" "${TMPDIR_WORK}/${binary_name}" "${target}"
+
     success "Installed binary to ${C_CYAN}${target}${C_RESET}"
 }
 
