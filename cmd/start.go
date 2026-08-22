@@ -19,13 +19,27 @@ var (
 )
 
 var StartCmd = &cobra.Command{
-	Use:   "start <ID|AppName> --port <PORT>",
-	Short: "Starts an application by ID or AppName. If no argument is provided, starts all applications.",
+	Use:   "start [ID|AppName] --port <PORT>",
+	Short: "Starts an application by ID or AppName. With no argument it prompts which app (or all) to start.",
 	Long:  "Starts an existing application. With --ensure, it becomes idempotent: build the app if it does not exist, start it if stopped, and rebuild/start if startup fails.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
+		}
+
+		// Interactive: when no app is named but stdin is a TTY, let the user
+		// pick one app or "All applications". Non-TTY keeps the original
+		// start-all behavior so scripts are unaffected.
+		if len(args) == 0 && IsInteractive() {
+			chosen, err := PromptApp(true, "Select application to start")
+			if err != nil {
+				return err
+			}
+			// PromptApp returns "" when "All applications" is selected.
+			if chosen != "" {
+				args = []string{chosen}
+			}
 		}
 
 		// If no ID or AppName provided, start all apps

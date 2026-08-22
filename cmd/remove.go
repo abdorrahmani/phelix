@@ -10,10 +10,21 @@ import (
 )
 
 var RemoveCmd = &cobra.Command{
-	Use:   "remove <ID|AppName>",
+	Use:   "remove [ID|AppName]",
 	Short: "Remove an application by its ID or AppName.",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix remove <ID|AppName>")
+			}
+			identifier, err := PromptApp(false, "Select application to remove")
+			if err != nil {
+				return err
+			}
+			args = []string{identifier}
+		}
+
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {

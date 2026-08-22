@@ -40,10 +40,21 @@ var HealthCmd = &cobra.Command{
 
 // health set <AppID|AppName> --path /health --interval 10s --retries 3
 var healthSetCmd = &cobra.Command{
-	Use:   "set <ID|AppName>",
+	Use:   "set [ID|AppName]",
 	Short: "Initialize health checks for an application",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix health %s <ID|AppName>", cmd.Name())
+			}
+			chosen, err := PromptApp(false, "Select application")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
@@ -104,6 +115,13 @@ var healthSetCmd = &cobra.Command{
 			expectedCodes = healthExpectedCodes
 		}
 
+		// Interactive: ask for the health path if it wasn't passed as a flag.
+		if IsInteractive() && healthPath == "" {
+			if p, err := PromptString("Health check path (e.g. /health)", "/health"); err == nil {
+				healthPath = p
+			}
+		}
+
 		// Create default endpoint if path is provided
 		if healthPath != "" {
 			endpointName := "default"
@@ -160,10 +178,21 @@ var healthSetCmd = &cobra.Command{
 
 // health add <AppID|AppName> --name "API health" --url https://api.example.com/health
 var healthAddCmd = &cobra.Command{
-	Use:   "add <ID|AppName>",
+	Use:   "add [ID|AppName]",
 	Short: "Add a health check endpoint",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix health %s <ID|AppName>", cmd.Name())
+			}
+			chosen, err := PromptApp(false, "Select application")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
@@ -176,6 +205,19 @@ var healthAddCmd = &cobra.Command{
 		appInfo := findApp(appID)
 		if appInfo == nil {
 			return phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", args[0])
+		}
+
+		if IsInteractive() {
+			if healthName == "" {
+				if n, err := PromptString("Endpoint name", ""); err == nil {
+					healthName = n
+				}
+			}
+			if healthURL == "" {
+				if u, err := PromptString("Endpoint URL", ""); err == nil {
+					healthURL = u
+				}
+			}
 		}
 
 		if healthName == "" {
@@ -263,10 +305,21 @@ var healthAddCmd = &cobra.Command{
 
 // health remove <AppID|AppName> --name "endpoint-name"
 var healthRemoveCmd = &cobra.Command{
-	Use:   "remove <ID|AppName>",
+	Use:   "remove [ID|AppName]",
 	Short: "Remove a health check endpoint",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix health %s <ID|AppName>", cmd.Name())
+			}
+			chosen, err := PromptApp(false, "Select application")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
@@ -315,10 +368,21 @@ var healthRemoveCmd = &cobra.Command{
 
 // health list <AppID|AppName>
 var healthListCmd = &cobra.Command{
-	Use:   "list <ID|AppName>",
+	Use:   "list [ID|AppName]",
 	Short: "List health check endpoints for an app",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix health %s <ID|AppName>", cmd.Name())
+			}
+			chosen, err := PromptApp(false, "Select application")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
@@ -369,10 +433,21 @@ var healthListCmd = &cobra.Command{
 
 // health status <AppID|AppName>
 var healthStatusCmd = &cobra.Command{
-	Use:   "status <ID|AppName>",
+	Use:   "status [ID|AppName]",
 	Short: "Show current health status for an app",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix health %s <ID|AppName>", cmd.Name())
+			}
+			chosen, err := PromptApp(false, "Select application")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
@@ -425,10 +500,21 @@ var healthStatusCmd = &cobra.Command{
 // health watch <AppID|AppName> - live terminal display
 // Deprecated: Use 'phelix health status <ID|AppName> --watch' instead
 var healthWatchCmd = &cobra.Command{
-	Use:   "watch <ID|AppName>",
+	Use:   "watch [ID|AppName]",
 	Short: "Watch health checks in real-time (deprecated, use 'status --watch')",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix health %s <ID|AppName>", cmd.Name())
+			}
+			chosen, err := PromptApp(false, "Select application")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}

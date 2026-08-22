@@ -14,10 +14,21 @@ import (
 )
 
 var StatusCmd = &cobra.Command{
-	Use:   "status <ID|AppName>",
+	Use:   "status [ID|AppName]",
 	Short: "Displays the status of a specific application by its ID or AppName",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix status <ID|AppName>")
+			}
+			identifier, err := PromptApp(false, "Select application to inspect")
+			if err != nil {
+				return err
+			}
+			args = []string{identifier}
+		}
+
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {

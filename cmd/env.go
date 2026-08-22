@@ -11,7 +11,7 @@ import (
 )
 
 var EnvCmd = &cobra.Command{
-	Use:   "env <set|get|list|unset|check> <AppName> [KEY[=VALUE]]",
+	Use:   "env [set|get|list|unset|check] [AppName] [KEY[=VALUE]]",
 	Short: "Manage encrypted environment variables for applications",
 	Long: `Manage encrypted environment variables for applications.
 	
@@ -21,10 +21,46 @@ Examples:
   phelix env list MyApp
   phelix env unset MyApp DATABASE_URL
   phelix env check MyApp DATABASE_URL`,
-	Args: cobra.MinimumNArgs(2),
+	Args: cobra.MinimumNArgs(0),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		subcommand := args[0]
-		appIdentifier := args[1]
+		subcommand := ""
+		appIdentifier := ""
+		if len(args) >= 1 {
+			subcommand = args[0]
+		}
+		if len(args) >= 2 {
+			appIdentifier = args[1]
+		}
+
+		// Interactive wizard: fill in the subcommand, app, and key/value when
+		// they are missing on the command line. Skipped entirely when stdin is
+		// not a TTY so the command remains scriptable.
+		if IsInteractive() {
+			if subcommand == "" {
+				action, err := PromptEnvAction()
+				if err != nil {
+					return err
+				}
+				subcommand = action
+			}
+			if appIdentifier == "" {
+				chosen, err := PromptApp(false, "Select application")
+				if err != nil {
+					return err
+				}
+				appIdentifier = chosen
+				// appIdentifier was empty, so the original args had fewer than
+				// two elements — no trailing KEY/VALUE to preserve.
+				args = []string{subcommand, chosen}
+			}
+		}
+
+		if subcommand == "" || appIdentifier == "" {
+			return phelixerr.Newf(
+				phelixerr.CodeInvalidArgument,
+				"usage: phelix env <set|get|list|unset|check> <AppName> [KEY[=VALUE]]",
+			)
+		}
 
 		// Get app info to validate it exists
 		appInfo, err := GetAppInfo(appIdentifier)
@@ -41,10 +77,23 @@ Examples:
 		switch subcommand {
 		case "set":
 			if len(args) < 3 {
-				return phelixerr.Newf(
-					phelixerr.CodeInvalidArgument,
-					"usage: phelix env set <AppName> <KEY=VALUE> [KEY=VALUE ...]",
-				)
+				if !IsInteractive() {
+					return phelixerr.Newf(
+						phelixerr.CodeInvalidArgument,
+						"usage: phelix env set <AppName> <KEY=VALUE> [KEY=VALUE ...]",
+					)
+				}
+				kv, err := PromptString("KEY=VALUE", "")
+				if err != nil {
+					return err
+				}
+				if kv == "" {
+					return phelixerr.Newf(
+						phelixerr.CodeInvalidArgument,
+						"usage: phelix env set <AppName> <KEY=VALUE> [KEY=VALUE ...]",
+					)
+				}
+				args = append(args, kv)
 			}
 
 			// Process all KEY=VALUE pairs
@@ -77,10 +126,17 @@ Examples:
 
 		case "get":
 			if len(args) < 3 {
-				return phelixerr.Newf(
-					phelixerr.CodeInvalidArgument,
-					"usage: phelix env get <AppName> <KEY>",
-				)
+				if !IsInteractive() {
+					return phelixerr.Newf(
+						phelixerr.CodeInvalidArgument,
+						"usage: phelix env get <AppName> <KEY>",
+					)
+				}
+				key, err := PromptString("Variable KEY to get", "")
+				if err != nil || key == "" {
+					return phelixerr.Newf(phelixerr.CodeInvalidArgument, "usage: phelix env get <AppName> <KEY>")
+				}
+				args = append(args, key)
 			}
 
 			key := args[2]
@@ -116,10 +172,17 @@ Examples:
 
 		case "unset":
 			if len(args) < 3 {
-				return phelixerr.Newf(
-					phelixerr.CodeInvalidArgument,
-					"usage: phelix env unset <AppName> <KEY>",
-				)
+				if !IsInteractive() {
+					return phelixerr.Newf(
+						phelixerr.CodeInvalidArgument,
+						"usage: phelix env unset <AppName> <KEY>",
+					)
+				}
+				key, err := PromptString("Variable KEY to remove", "")
+				if err != nil || key == "" {
+					return phelixerr.Newf(phelixerr.CodeInvalidArgument, "usage: phelix env unset <AppName> <KEY>")
+				}
+				args = append(args, key)
 			}
 
 			key := args[2]
@@ -137,10 +200,17 @@ Examples:
 
 		case "check":
 			if len(args) < 3 {
-				return phelixerr.Newf(
-					phelixerr.CodeInvalidArgument,
-					"usage: phelix env check <AppName> <KEY>",
-				)
+				if !IsInteractive() {
+					return phelixerr.Newf(
+						phelixerr.CodeInvalidArgument,
+						"usage: phelix env check <AppName> <KEY>",
+					)
+				}
+				key, err := PromptString("Variable KEY to check", "")
+				if err != nil || key == "" {
+					return phelixerr.Newf(phelixerr.CodeInvalidArgument, "usage: phelix env check <AppName> <KEY>")
+				}
+				args = append(args, key)
 			}
 
 			key := args[2]

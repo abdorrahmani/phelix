@@ -2,12 +2,16 @@ package auth
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/AlecAivazis/survey/v2"
+	"golang.org/x/term"
 )
 
 var (
@@ -21,10 +25,19 @@ var LoginCmd = &cobra.Command{
 	Short: "Authenticate user with Phelix",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if username == "" && apiKey == "" {
-			fmt.Print("Enter username: ")
-			fmt.Scanln(&username)
-			fmt.Print("Enter API Key: ")
-			fmt.Scanln(&apiKey)
+			if term.IsTerminal(int(os.Stdin.Fd())) {
+				if err := survey.AskOne(&survey.Input{Message: "Enter username"}, &username); err != nil {
+					return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "input cancelled", err)
+				}
+				if err := survey.AskOne(&survey.Password{Message: "Enter API Key"}, &apiKey); err != nil {
+					return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "input cancelled", err)
+				}
+			} else {
+				fmt.Print("Enter username: ")
+				fmt.Scanln(&username)
+				fmt.Print("Enter API Key: ")
+				fmt.Scanln(&apiKey)
+			}
 		}
 
 		if err := authenticate(username, apiKey); err != nil {

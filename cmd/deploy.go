@@ -15,10 +15,21 @@ var DeployCmd = &cobra.Command{
 }
 
 var deployUnlockCmd = &cobra.Command{
-	Use:   "unlock <AppName>",
+	Use:   "unlock [AppName]",
 	Short: "Clear a stale deploy lock for an application",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <AppName>; usage: phelix deploy unlock <AppName>")
+			}
+			chosen, err := PromptApp(false, "Select application to unlock")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		appName := args[0]
 
 		state, err := deploy.Load(appName)

@@ -52,11 +52,40 @@ of compose-defined services — use 'docker compose up -d' directly.
 
 Registry credentials can be stored securely using the same AES-256-GCM
 encryption mechanism as environment variables (via the internal/env package).`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <AppName>; usage: phelix dockerize <AppName> [--tag v1.2.3] [--push] [--registry REGISTRY]")
+			}
+			chosen, err := PromptApp(false, "Select application to dockerize")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		name := args[0]
 		if err := validateName(name); err != nil {
 			return err
+		}
+
+		if IsInteractive() {
+			if !cmd.Flags().Changed("tag") {
+				if tag, err := PromptString("Image tag (leave blank for none)", ""); err == nil {
+					dockerizeTag = tag
+				}
+			}
+			if !cmd.Flags().Changed("push") {
+				if push, err := PromptConfirm("Push the image to a registry after building?", dockerizePush); err == nil {
+					dockerizePush = push
+				}
+			}
+			if dockerizePush && dockerizeRegistry == "" {
+				if reg, err := PromptString("Registry prefix (e.g. ghcr.io/user)", ""); err == nil {
+					dockerizeRegistry = reg
+				}
+			}
 		}
 
 		// Load state

@@ -40,12 +40,36 @@ var (
 )
 
 var BuildCmd = &cobra.Command{
-	Use:   "build <NAME> --port <PORT>",
+	Use:   "build [NAME] --port <PORT>",
 	Short: "Builds and runs an application (Go/Rust) with a specified name",
 	Long:  "Compiles an application from the current directory (auto-detects language) with the given name and starts it immediately",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <NAME>; usage: phelix build <NAME> --port <PORT>")
+			}
+			entered, err := PromptString("Application name", "")
+			if err != nil {
+				return err
+			}
+			if err := validateName(entered); err != nil {
+				return err
+			}
+			args = []string{entered}
+		}
+
 		name := args[0]
+
+		// When the port flag was not passed on the command line, offer to
+		// choose it interactively (defaults to the configured port).
+		if IsInteractive() && !cmd.Flags().Changed("port") {
+			chosen, err := PromptInt("Port to run the application on", buildPort)
+			if err != nil {
+				return err
+			}
+			buildPort = chosen
+		}
 
 		// Build/run works without a session. Dashboard upload (metrics, events)
 		// is skipped until the user logs in.

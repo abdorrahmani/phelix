@@ -10,10 +10,21 @@ import (
 )
 
 var RestartCmd = &cobra.Command{
-	Use:   "restart <ID|AppName>",
+	Use:   "restart [ID|AppName]",
 	Short: "Restart the application by its ID or AppName.",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix restart <ID|AppName>")
+			}
+			identifier, err := PromptApp(false, "Select application to restart")
+			if err != nil {
+				return err
+			}
+			args = []string{identifier}
+		}
+
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {

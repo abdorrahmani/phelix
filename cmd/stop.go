@@ -10,10 +10,21 @@ import (
 )
 
 var StopCmd = &cobra.Command{
-	Use:   "stop <ID|AppName>",
+	Use:   "stop [ID|AppName]",
 	Short: "Stop a running application by its ID or AppName.",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix stop <ID|AppName>")
+			}
+			identifier, err := PromptApp(false, "Select application to stop")
+			if err != nil {
+				return err
+			}
+			args = []string{identifier}
+		}
+
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {

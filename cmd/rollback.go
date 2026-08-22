@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -22,9 +23,9 @@ var rollbackTo string
 var rollbackList bool
 
 var RollbackCmd = &cobra.Command{
-	Use:           "rollback <AppName>",
+	Use:           "rollback [AppName]",
 	Short:         "Roll back to a previous versioned build",
-	Args:          cobra.ExactArgs(1),
+	Args:          cobra.MaximumNArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -33,7 +34,24 @@ var RollbackCmd = &cobra.Command{
 		// single gRPC round-trip; if it times out we log and move on.
 		defer phelixgrpc.StopRollbackSender(5 * time.Second)
 
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <AppName>; usage: phelix rollback <AppName> [--to VERSION] [--list]")
+			}
+			chosen, err := PromptApp(false, "Select application to roll back")
+			if err != nil {
+				return err
+			}
+			args = []string{chosen}
+		}
+
 		name := args[0]
+
+		if IsInteractive() && rollbackTo == "" && !rollbackList {
+			if v, err := promptRollbackVersion(name); err == nil && v != "" {
+				rollbackTo = v
+			}
+		}
 
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
@@ -79,6 +97,40 @@ var RollbackCmd = &cobra.Command{
 func init() {
 	RollbackCmd.Flags().StringVar(&rollbackTo, "to", "", "Roll back to a specific version (e.g. v3, 3, or a tag name)")
 	RollbackCmd.Flags().BoolVar(&rollbackList, "list", false, "List retained versions with metadata")
+}
+
+// promptRollbackVersion offers an interactive choice of which retained version
+// to roll back to. Returns "" (and no error) when the user declines or no
+// versions are available, so callers fall back to the previous-version default.
+func promptRollbackVersion(appName string) (string, error) {
+	policy := deploy.DefaultRetention{Max: 5}
+	vers, err := deploy.ListVersionsForDisplay(appName, policy)
+	if err != nil || len(vers) == 0 {
+		return "", err
+	}
+
+	opts := make([]string, 0, len(vers))
+	for _, v := range vers {
+		label := fmt.Sprintf("v%d", v.Version)
+		if v.Tag != "" {
+			label = fmt.Sprintf("%s (%s)", label, v.Tag)
+		}
+		if v.IsCurrent {
+			label += " — current"
+		}
+		opts = append(opts, label)
+	}
+
+	chosen, err := PromptSelect("Roll back to which version?", opts)
+	if err != nil {
+		return "", err
+	}
+	// Map "v3 (hotfix-auth)" / "v3 — current" back to the bare version string.
+	idx := strings.Index(chosen, " ")
+	if idx > 0 {
+		chosen = chosen[:idx]
+	}
+	return strings.TrimPrefix(chosen, "v"), nil
 }
 
 // rollbackZeroDowntime handles rollback through the blue-green or rolling

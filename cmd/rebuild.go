@@ -25,15 +25,26 @@ var rebuildReplicas int
 var rebuildTag string
 
 var RebuildCmd = &cobra.Command{
-	Use:   "rebuild <ID|AppName> --port <PORT>",
+	Use:   "rebuild [ID|AppName] --port <PORT>",
 	Short: "Rebuilds and runs a Go Application by its ID or AppName.",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	// Deploy failures are already printed with context (✗ lines); cobra's
 	// default usage dump and "Error:" prefix after a long blue-green/rolling
 	// run are noise.
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if !IsInteractive() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix rebuild <ID|AppName> --port <PORT>")
+			}
+			identifier, err := PromptApp(false, "Select application to rebuild")
+			if err != nil {
+				return err
+			}
+			args = []string{identifier}
+		}
+
 		identifier := args[0]
 
 		if err := app.Manager.LoadState(); err != nil {
