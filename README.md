@@ -29,6 +29,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+- [Uninstalling](#uninstalling)
 - [Authentication (optional)](#authentication)
 - [Interactive Wizard](#interactive-wizard)
 - [Core Workflow](#core-workflow)
@@ -80,6 +81,36 @@ backend, reconnecting with exponential backoff.
 phelix version              # verify the install
 sudo systemctl status phelix   # Linux: monitor service running?
 ```
+
+### Uninstalling
+
+```bash
+curl -fsSL https://phelix.anophel.com/install.sh | bash -s -- --uninstall
+```
+
+The uninstaller (same one-line script, with `--uninstall`) reverses the
+install step by step:
+
+- **Stops and disables** the `phelix.service` systemd unit on Linux (the
+  service is stopped, disabled, the unit file at
+  `/etc/systemd/system/phelix.service` is removed, and `systemctl
+  daemon-reload` is run). No-op where there is no systemd (e.g. macOS).
+- **Removes the binary** from `/usr/local/bin/phelix` (or your `--install-dir`).
+- **Removes the legacy** `phelix-startup.sh` wrapper left behind by older
+  installs, if present.
+
+```bash
+sudo systemctl status phelix   # should be gone (Linux)
+command -v phelix              # should print nothing
+```
+
+> **Note:** managed apps and all state under `~/.phelix/` are intentionally
+> left in place, so you can reinstall later without losing your apps. Remove
+> the data directory manually if you want a clean slate:
+>
+> ```bash
+> rm -rf ~/.phelix
+> ```
 
 ### Runtime dependencies
 
