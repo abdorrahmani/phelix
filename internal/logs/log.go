@@ -146,6 +146,13 @@ func (c *GenericLogCollector) maybeReopen(rs *readerState, path string) error {
 }
 
 // findOffsetForLastNLines finds the byte offset in the file where the last N lines begin.
+// It scans backwards in chunks so a large (up to MaxLogSize) log file does not
+// require one syscall per byte on a cold start.
+//
+// Line boundaries are newline positions; a file that does not end with a
+// newline gets a virtual boundary at EOF (its last line is still complete).
+// The wanted offset follows the boundary that has exactly N boundaries after
+// it, or 0 when the file holds fewer than N+1 lines.
 func findOffsetForLastNLines(f *os.File, n int) (int64, error) {
 	info, err := f.Stat()
 	if err != nil {
@@ -155,20 +162,40 @@ func findOffsetForLastNLines(f *os.File, n int) (int64, error) {
 		return 0, nil
 	}
 
-	var count int
-	var pos = info.Size() - 1
-	buf := make([]byte, 1)
-	for pos >= 0 {
-		if _, err := f.ReadAt(buf, pos); err != nil {
+	const chunkSize = 8 * 1024
+	size := info.Size()
+
+	last := make([]byte, 1)
+	eofBoundary := false
+	if _, err := f.ReadAt(last, size-1); err == nil {
+		eofBoundary = last[0] != '\n'
+	}
+
+	count := 0
+	pos := size
+	buf := make([]byte, chunkSize)
+	for pos > 0 {
+		start := pos - chunkSize
+		if start < 0 {
+			start = 0
+		}
+		length := int(pos - start)
+		if _, err := f.ReadAt(buf[:length], start); err != nil {
 			return 0, err
 		}
-		if buf[0] == '\n' {
-			count++
-			if count >= n+1 { // position to start of last N lines
-				return pos + 1, nil
+		for i := length - 1; i >= 0; i-- {
+			isBoundary := buf[i] == '\n'
+			if !isBoundary && pos == size && i == length-1 && eofBoundary {
+				isBoundary = true // virtual boundary at unterminated EOF
+			}
+			if isBoundary {
+				count++
+				if count >= n+1 {
+					return start + int64(i) + 1, nil
+				}
 			}
 		}
-		pos--
+		pos = start
 	}
 	return 0, nil
 }

@@ -6,11 +6,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/spf13/cobra"
 )
 
@@ -43,7 +43,10 @@ var LogCmd = &cobra.Command{
 }
 
 func displaySelfLogs() error {
-	path := filepath.Join(os.Getenv("HOME"), ".phelix", "logs", "phelix.log")
+	// Resolve through the logs package so this matches where the daemon
+	// actually writes (PHELIX_DATA_DIR / docker / $HOME), not a hardcoded
+	// $HOME path.
+	path := logs.SelfLogPath()
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -55,13 +58,20 @@ func displaySelfLogs() error {
 }
 
 func displayLogs(appInfo *app.AppInfo) error {
-	f, err := os.Open(appInfo.LogFile)
+	// State saved by older versions may carry an empty log_file; fall back to
+	// the canonical per-app path instead of failing to open "".
+	logPath := appInfo.LogFile
+	if logPath == "" {
+		logPath = logs.AppLogPath(appInfo.ID)
+	}
+
+	f, err := os.Open(logPath)
 	if err != nil {
 		return phelixerr.Wrapf(
 			phelixerr.CodeFilesystem,
 			err,
 			"failed to open log file %s",
-			appInfo.LogFile,
+			logPath,
 		)
 	}
 	defer f.Close()
@@ -116,13 +126,20 @@ func streamNewLogs(f *os.File, sigChan chan os.Signal) error {
 				return
 			default:
 				line, err := reader.ReadString('\n')
-				if err == nil {
+				if len(line) > 0 {
+					// Print whatever was read, including a final partial line
+					// that has not been terminated yet.
 					fmt.Print(line)
-				} else if err != io.EOF {
+				}
+				if err != nil && err != io.EOF {
 					fmt.Printf("⚠ Error reading log: %v\n", err)
 					return
 				}
-				time.Sleep(50 * time.Millisecond)
+				if err == io.EOF {
+					// No new data — poll again after a short interval instead
+					// of busy-looping on EOF.
+					time.Sleep(250 * time.Millisecond)
+				}
 			}
 		}
 	}()
