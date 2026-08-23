@@ -1,6 +1,6 @@
 module github.com/abdorrahmani/phelix
 
-go 1.26.5
+go 1.27
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
@@ -10,7 +10,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	golang.org/x/term v0.45.0
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -27,7 +27,7 @@ require (
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.28 // indirect
-	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
+	github.com/mgutz/ansi v0.0.0-20200706080929-d51e80ef957d // indirect
 	github.com/olekukonko/cat v0.0.0-20250911104152-50322a0618f6 // indirect
 	github.com/olekukonko/errors v1.3.0 // indirect
 	github.com/olekukonko/ll v0.1.8 // indirect
@@ -44,5 +44,5 @@ require (
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
 )
