@@ -63,7 +63,7 @@ var BuildCmd = &cobra.Command{
 
 		// When the port flag was not passed on the command line, offer to
 		// choose it interactively (defaults to the configured port).
-		if IsInteractive() && !cmd.Flags().Changed("port") {
+		if IsInteractive() && !cmd.Flags().Changed("port") && !matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms) {
 			chosen, err := PromptInt("Port to run the application on", buildPort)
 			if err != nil {
 				return err
@@ -267,7 +267,7 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 	return phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
 }
 
-func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager) error {
+func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager) (err error) {
 	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
 	appInfo := app.Manager.(*app.AppManager).Apps[id]
 	if appInfo == nil {
@@ -285,7 +285,14 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		lang = buildMgr.DetectLanguage(projectRoot)
 	}
 
-	fmt.Printf("  %s Preparing build environment...\n", color.BlueString("→"))
+	progress := matrix.NewProgressBar(fmt.Sprintf("Build %s", id), os.Stdout)
+	progress.Update("preparing", 0, 0)
+	progress.Start()
+	defer func() {
+		if err != nil {
+			progress.Finish("failed")
+		}
+	}()
 
 	// Prepare build context
 	buildCtx, err := buildMgr.PrepareBuild(
@@ -308,10 +315,9 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", err)
 	}
 
-	fmt.Printf("  %s Building with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
-
+	progress.Update(fmt.Sprintf("compiling %s", buildMgr.FormatLanguage(lang)), 0, 0)
 	// Execute build
-	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
+	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if appInfo, exists := appManager.Apps[id]; exists {
 				appInfo.BuildStatus = "failed"
@@ -322,8 +328,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)
 	}
 
-	duration := buildMgr.GetBuildDuration(buildCtx)
-	fmt.Printf("  %s Build completed in %s\n", color.GreenString("✓"), color.YellowString(duration.String()))
+	progress.Finish("done")
 
 	// Update build status
 	if appManager, ok := app.Manager.(*app.AppManager); ok {

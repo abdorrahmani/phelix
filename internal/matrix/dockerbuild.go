@@ -105,8 +105,11 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 
 	cmd := exec.CommandContext(ctx, "docker", args...)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	output := &bytes.Buffer{}
+	commandOutput := &progressOutputWriter{ctx: ctx, key: c.ID(), debug: d.Debug, log: output}
+	ReportBuildProgress(ctx, c.ID(), "docker build", 0, 0)
+	cmd.Stdout = commandOutput
+	cmd.Stderr = commandOutput
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
 		// Keep the *exec.ExitError reachable; low-level docker output goes only
@@ -114,7 +117,7 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 		// redacted above, so the command line in the log is safe.
 		result.Error = phelixerr.Wrapf(phelixerr.CodeDocker, err, "docker build failed for %s", c.Platform)
 		logLine("error: %v", err)
-		if s := stderr.String(); s != "" {
+		if s := output.String(); s != "" {
 			logLine("stderr: %s", phelixerr.Redact(s))
 		}
 		return result
