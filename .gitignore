@@ -36,3 +36,5 @@ go.work.sum
 # Claude Code local settings
 /.claude/settings.local.json
 
+/.mimosa/
+/builds/
