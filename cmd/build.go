@@ -14,6 +14,8 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/matrix"
+	phelixport "github.com/abdorrahmani/phelix/internal/port"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -61,14 +63,31 @@ var BuildCmd = &cobra.Command{
 
 		name := args[0]
 
-		// When the port flag was not passed on the command line, offer to
-		// choose it interactively (defaults to the configured port).
-		if IsInteractive() && !cmd.Flags().Changed("port") && !matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms) {
-			chosen, err := PromptInt("Port to run the application on", buildPort)
-			if err != nil {
-				return err
+		// Precedence: CLI flag > phelix.yaml > default. When --port was not
+		// passed, a phelix.yaml in the current directory supplies the port.
+		if !cmd.Flags().Changed("port") && !matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms) {
+			if project.Exists(currentDirOrError()) {
+				if cfg, err := project.Load(currentDirOrError()); err == nil && cfg.Port != 0 {
+					buildPort = cfg.Port
+				}
 			}
-			buildPort = chosen
+
+			// When the port flag was not passed on the command line, offer to
+			// choose it interactively (defaults to the configured port).
+			if IsInteractive() {
+				chosen, err := PromptInt("Port to run the application on", buildPort)
+				if err != nil {
+					return err
+				}
+				buildPort = chosen
+			}
+		}
+
+		if err := phelixport.Validate(buildPort); err != nil {
+			return err
+		}
+		if err := phelixport.EnsureAvailable(buildPort); err != nil {
+			return err
 		}
 
 		// Build/run works without a session. Dashboard upload (metrics, events)

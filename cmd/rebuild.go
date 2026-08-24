@@ -11,6 +11,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	phelixport "github.com/abdorrahmani/phelix/internal/port"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
@@ -57,6 +59,22 @@ var RebuildCmd = &cobra.Command{
 		}
 
 		name, portToUse := DetermineAppParameters(appInfo, cmd, rebuildPort)
+
+		// Precedence: CLI flag > persisted app port > phelix.yaml. The yaml is
+		// consulted only when neither the flag nor the app's recorded port
+		// applies, so existing managed apps keep their behavior.
+		if !cmd.Flags().Changed("port") && (appInfo.Port == 0) {
+			dir := currentDirOrError()
+			if dir != "" && project.Exists(dir) {
+				if cfg, err := project.Load(dir); err == nil && cfg.Port != 0 {
+					portToUse = cfg.Port
+				}
+			}
+		}
+
+		if err := phelixport.Validate(portToUse); err != nil {
+			return err
+		}
 
 		// Detect and validate language
 		buildMgr := builder.NewBuildManager()

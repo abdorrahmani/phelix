@@ -46,11 +46,17 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 ## Quick Start
 
 ```bash
+# Initialize project config (creates phelix.yaml)
+phelix init
+
 # Build and run an app from the current directory (auto-detects Go or Rust)
 phelix build myapp --port 8080
 
 # Rebuild after a code change — zero downtime via blue-green
 phelix rebuild myapp --blue-green
+
+# Diagnose project compatibility (PORT usage, config, toolchain)
+phelix doctor
 
 # List all managed apps
 phelix list
@@ -215,6 +221,48 @@ build    →  (rebuild --blue-green)  →  rollback    →  stop / remove
 5. Monitor with `status`, `list`, `log`, and `health`.
 6. Ship containers with `dockerize`.
 
+## The PORT Contract
+
+Phelix sets the `PORT` environment variable. Applications managed by Phelix should listen on the port provided by `PORT` rather than hardcoding a port.
+
+```bash
+phelix build api --port 4000
+```
+
+starts your application with `PORT=4000`, so it should listen on `:4000`. If the process runs but nothing listens on the requested port, Phelix reports a port-validation failure and suggests `phelix doctor`.
+
+Go example:
+
+```go
+port := os.Getenv("PORT")
+if port == "" {
+    port = "3000"
+}
+
+log.Fatal(http.ListenAndServe(":"+port, router))
+```
+
+Three distinct port concepts:
+
+| Concept | Example | Who owns it |
+|---------|---------|-------------|
+| Public proxy port | `:8080` | The Phelix proxy (clients connect here) |
+| Internal application port | `:49152` / `:49153` | Phelix assigns per instance (blue/green get different ports) |
+| `PORT` environment variable | `PORT=49152` | How Phelix tells each instance which internal port to use |
+
+With blue-green deployment, each instance receives its own `PORT`; the proxy owns the single public port. A failed new deployment never touches the currently active instance.
+
+### Project configuration (`phelix.yaml`)
+
+Run `phelix init` in a project directory to create:
+
+```yaml
+name: api
+port: 3000
+```
+
+Precedence: **CLI flag → phelix.yaml → default**. `phelix build api --port 4000` overrides `port: 3000`; without the flag, the config value is used. Projects without `phelix.yaml` keep working exactly as before (opt-in).
+
 ## Command Reference
 
 Every command below also supports [interactive auto-prompting](#interactive-wizard):
@@ -244,6 +292,40 @@ it on the given port, and records a **new versioned build**.
 ```bash
 phelix build myapp -p 8080 --tag "v1.2.3"
 ```
+
+#### `phelix init`
+
+Detects the project type (Go/Rust) and creates `phelix.yaml` with the application name and port. Prompts interactively in a TTY; fully scriptable with flags:
+
+```bash
+phelix init --name api --port 3000 --yes
+```
+
+Never modifies application source code. If a hardcoded listen port is detected, prints a warning and points to `phelix doctor`.
+
+#### `phelix doctor`
+
+Diagnoses whether the current project is Phelix-compatible: project detection, toolchain, build tools, `phelix.yaml`, and — most importantly — whether the application listens on `PORT` instead of a hardcoded port.
+
+```text
+$ phelix doctor
+
+Phelix Doctor
+
+✓ Project detected        go (/home/me/api)
+✓ go toolchain            go1.22 linux/amd64
+✓ Build tools             ready
+✓ phelix.yaml             found
+✓ Application name        api
+✓ Configured port         4000
+✗ PORT configuration      hardcoded :3000
+
+Summary:
+  6 passed
+  1 failed
+```
+
+Exits non-zero when a critical check fails. Inconclusive detection (no listener found, no `PORT` usage) is reported as ⚠ warning, not a false failure. Diagnostic only — never rewrites source code.
 
 #### `phelix rebuild <ID|AppName> [flags]`
 Rebuilds an existing app from its source directory. Supports zero-downtime

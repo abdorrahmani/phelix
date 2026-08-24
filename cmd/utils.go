@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/fatih/color"
@@ -38,6 +40,16 @@ func DetermineAppParameters(appInfo *app.AppInfo, cmd *cobra.Command, defaultPor
 	}
 
 	return name, usePort
+}
+
+// currentDirOrError returns the working directory, or "" on failure. Callers
+// treat "" as "no project config".
+func currentDirOrError() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return dir
 }
 
 // FormatStatus formats the application status with color
