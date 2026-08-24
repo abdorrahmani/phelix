@@ -1,6 +1,7 @@
 package app
 
 import (
+	"os"
 	"os/exec"
 	"time"
 )
@@ -33,6 +34,10 @@ type AppInfo struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	Directory   string // Directory where the application is located
+	// logFileHandle is the open handle backing the app's stdout/stderr. It is
+	// held for the lifetime of the running child (see startApplicationProcess)
+	// and never persisted.
+	logFileHandle *os.File
 	// Language represents the programming language of the project (go, rust, ...)
 	Language string
 	// NoUpload indicates whether this app should be uploaded/shared with the server
