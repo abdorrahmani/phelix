@@ -11,8 +11,14 @@ import (
 	"github.com/abdorrahmani/phelix/internal/env"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/port"
 	"github.com/shirou/gopsutil/process"
 )
+
+// startupListenTimeout bounds the wait for an application to bind its port
+// after the process is spawned. Compiles are done by then; only process start
+// + app init live inside this window.
+const startupListenTimeout = 10 * time.Second
 
 // verifyProcessStatus checks if a process is running. It does NOT modify app
 // state — callers that need to persist a status change must do so explicitly.
@@ -25,7 +31,7 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 }
 
 // startApplicationProcess starts the application process and updates the app info
-func (m *AppManager) startApplicationProcess(id string, name string, port int, logFile string) error {
+func (m *AppManager) startApplicationProcess(id string, name string, portNum int, logFile string) error {
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to open log file %s", logFile)
@@ -60,6 +66,9 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 			envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
 		}
 	}
+	// Port contract: Phelix owns the runtime port. Override any inherited or
+	// app-stored PORT so the managed application listens on the requested one.
+	envVars = append(envVars, fmt.Sprintf("PORT=%d", portNum))
 	cmd.Env = envVars
 
 	if err := cmd.Start(); err != nil {
@@ -75,7 +84,7 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	app.PID = cmd.Process.Pid
 	app.Status = "running"
 	app.Start = time.Now()
-	app.Port = port
+	app.Port = portNum
 	app.LogFile = logFile
 	app.BuildStatus = "built"
 	app.UpdatedAt = time.Now()
@@ -83,7 +92,72 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	// the monitor daemon launches (e.g. after a machine reboot).
 	app.AutoStart = true
 
+	// Runtime port verification: the process existing is not success. Poll
+	// until the application accepts connections on its port OR dies. A process
+	// that stays alive but never binds usually means a hardcoded port.
+	addr := fmt.Sprintf("127.0.0.1:%d", portNum)
+	deadline := time.Now().Add(startupListenTimeout)
+	listening := false
+	for time.Now().Before(deadline) {
+		if port.IsListening(addr) {
+			listening = true
+			break
+		}
+		if !m.isProcessRunning(app.PID) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !listening {
+		if !m.isProcessRunning(app.PID) {
+			app.Status = "failed"
+			app.PID = 0
+			return phelixerr.Newf(
+				phelixerr.CodeProcessFailed,
+				"application %q (ID: %s) exited immediately after start; see log %s",
+				name, id, logFile,
+			)
+		}
+
+		// Kill only the instance Phelix just started — never a pre-existing
+		// one — so a failed validation cannot leak a stray process.
+		m.stopNewlyStarted(app)
+
+		return phelixerr.Newf(
+			phelixerr.CodePortUnavailable,
+			"application failed port validation\n\n"+
+				"Phelix started the application with:\n\n    PORT=%d\n\n"+
+				"but nothing is listening on:\n\n    :%d\n\n"+
+				"The application may be using a hardcoded port.\n\n"+
+				"Phelix expects applications to read the PORT environment variable.\n\n"+
+				"Run:\n\n    phelix doctor\n\nto diagnose the project.",
+			portNum, portNum,
+		)
+	}
+
 	return nil
+}
+
+// stopNewlyStarted terminates the process this method just spawned after a
+// failed startup validation. It touches only app.Cmd — the handle created by
+// the surrounding startApplicationProcess call — never an instance from a
+// previous invocation.
+func (m *AppManager) stopNewlyStarted(app *AppInfo) {
+	if app.Cmd == nil || app.Cmd.Process == nil {
+		return
+	}
+	_ = app.Cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { _ = app.Cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		_ = app.Cmd.Process.Kill()
+		<-done
+	}
+	app.Status = "failed"
+	app.PID = 0
 }
 
 // stopApplicationProcess stops the application process gracefully, falling back to force kill if necessary
