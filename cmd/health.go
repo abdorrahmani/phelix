@@ -30,6 +30,8 @@ var (
 	watchFlag           bool
 	healthMode          string
 	daemonForeground    bool
+	httpMetricsDomain   string
+	caddyAdminURL       string
 )
 
 var HealthCmd = &cobra.Command{
@@ -159,6 +161,20 @@ var healthSetCmd = &cobra.Command{
 			Interval: interval,
 			Retries:  retries,
 			Timeout:  timeout,
+		}
+
+		if httpMetricsDomain != "" || caddyAdminURL != "" {
+			if httpMetricsDomain == "" {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--domain is required when --caddy-admin is set")
+			}
+			metricsConfig := &health.HTTPMetricsConfig{
+				Domain:     httpMetricsDomain,
+				CaddyAdmin: caddyAdminURL,
+			}
+			if err := metricsConfig.Validate(); err != nil {
+				return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid HTTP metrics config", err)
+			}
+			config.HTTPMetrics = metricsConfig
 		}
 
 		// Save config
@@ -878,6 +894,8 @@ func init() {
 	healthSetCmd.Flags().StringVar(&healthExpectedCodes, "codes", "200-299", "Expected HTTP status codes (e.g., 200-299)")
 	healthSetCmd.Flags().StringVar(&healthTimeout, "timeout", "10s", "Request timeout")
 	healthSetCmd.Flags().StringVar(&healthMode, "mode", "auto", "Deploy health tier: auto, http, tcp-only, none")
+	healthSetCmd.Flags().StringVar(&httpMetricsDomain, "domain", "", "Public Host label used for optional HTTP metrics")
+	healthSetCmd.Flags().StringVar(&caddyAdminURL, "caddy-admin", "", "Caddy admin API base URL (default http://localhost:2019)")
 
 	// health add flags
 	healthAddCmd.Flags().StringVar(&healthName, "name", "", "Endpoint name (required)")

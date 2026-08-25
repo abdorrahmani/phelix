@@ -37,8 +37,13 @@ type CLIMetadata struct {
 	TotalManagedApps int32                  `protobuf:"varint,11,opt,name=total_managed_apps,json=totalManagedApps,proto3" json:"total_managed_apps,omitempty"`
 	RunningApps      int32                  `protobuf:"varint,12,opt,name=running_apps,json=runningApps,proto3" json:"running_apps,omitempty"`
 	Timestamp        int64                  `protobuf:"varint,13,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// ConnectionState is the agent's backend connection/auth state
+	// (connected / disconnected / auth_expired), separate from the local
+	// runtime status (current_state/monitor_status). Absent in older agents —
+	// the backend must treat an empty value as "unknown" and keep working.
+	ConnectionState string `protobuf:"bytes,14,opt,name=connection_state,json=connectionState,proto3" json:"connection_state,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CLIMetadata) Reset() {
@@ -162,6 +167,13 @@ func (x *CLIMetadata) GetTimestamp() int64 {
 	return 0
 }
 
+func (x *CLIMetadata) GetConnectionState() string {
+	if x != nil {
+		return x.ConnectionState
+	}
+	return ""
+}
+
 // MetadataResponse is the backend's response to metadata sync.
 type MetadataResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -219,7 +231,7 @@ var File_internal_grpc_proto_metadata_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_metadata_proto_rawDesc = "" +
 	"\n" +
-	"\"internal/grpc/proto/metadata.proto\x12\x06phelix\"\xce\x03\n" +
+	"\"internal/grpc/proto/metadata.proto\x12\x06phelix\"\xf9\x03\n" +
 	"\vCLIMetadata\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12#\n" +
@@ -237,7 +249,8 @@ const file_internal_grpc_proto_metadata_proto_rawDesc = "" +
 	" \x01(\tR\rmonitorStatus\x12,\n" +
 	"\x12total_managed_apps\x18\v \x01(\x05R\x10totalManagedApps\x12!\n" +
 	"\frunning_apps\x18\f \x01(\x05R\vrunningApps\x12\x1c\n" +
-	"\ttimestamp\x18\r \x01(\x03R\ttimestamp\"H\n" +
+	"\ttimestamp\x18\r \x01(\x03R\ttimestamp\x12)\n" +
+	"\x10connection_state\x18\x0e \x01(\tR\x0fconnectionState\"H\n" +
 	"\x10MetadataResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessageB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"

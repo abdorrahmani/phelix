@@ -49,7 +49,6 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 		return phelixerr.Newf(phelixerr.CodeNotFound, "application directory not found for ID %s", id)
 	}
 
-
 	binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
 	cmd := exec.Command(binaryPath)
 	cmd.Dir = app.Directory
@@ -170,6 +169,8 @@ func (m *AppManager) stopNewlyStarted(app *AppInfo) {
 	}
 	app.Status = "failed"
 	app.PID = 0
+}
+
 // waitAndCloseLog reaps an exited child process and releases its log file
 // handle. It exists so the monitor daemon does not leak one fd per app while
 // apps keep their stdout/stderr attached to the log file for their whole

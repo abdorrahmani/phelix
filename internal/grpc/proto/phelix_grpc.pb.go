@@ -30,6 +30,7 @@ const (
 	PhelixService_ReportAutoRestart_FullMethodName    = "/phelix.PhelixService/ReportAutoRestart"
 	PhelixService_ReportRollbackEvent_FullMethodName  = "/phelix.PhelixService/ReportRollbackEvent"
 	PhelixService_MonitorStream_FullMethodName        = "/phelix.PhelixService/MonitorStream"
+	PhelixService_AgentLogout_FullMethodName          = "/phelix.PhelixService/AgentLogout"
 )
 
 // PhelixServiceClient is the client API for PhelixService service.
@@ -72,6 +73,12 @@ type PhelixServiceClient interface {
 	// commands, keepalive pings). The CLI never opens a new connection per
 	// metric update — only a new stream after a disconnect/reconnect.
 	MonitorStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MonitorEvent, MonitorControl], error)
+	// AgentLogout explicitly marks the agent as disconnected on the backend
+	// before the local session is deleted. It does NOT delete the agent/server
+	// record — the backend upserts connection_state = "disconnected" keyed by
+	// the persistent agent_id and preserves last_seen_at. Idempotent: repeated
+	// calls return OK.
+	AgentLogout(ctx context.Context, in *AgentLogoutRequest, opts ...grpc.CallOption) (*MetadataResponse, error)
 }
 
 type phelixServiceClient struct {
@@ -201,6 +208,16 @@ func (c *phelixServiceClient) MonitorStream(ctx context.Context, opts ...grpc.Ca
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PhelixService_MonitorStreamClient = grpc.BidiStreamingClient[MonitorEvent, MonitorControl]
 
+func (c *phelixServiceClient) AgentLogout(ctx context.Context, in *AgentLogoutRequest, opts ...grpc.CallOption) (*MetadataResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MetadataResponse)
+	err := c.cc.Invoke(ctx, PhelixService_AgentLogout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PhelixServiceServer is the server API for PhelixService service.
 // All implementations must embed UnimplementedPhelixServiceServer
 // for forward compatibility.
@@ -241,6 +258,12 @@ type PhelixServiceServer interface {
 	// commands, keepalive pings). The CLI never opens a new connection per
 	// metric update — only a new stream after a disconnect/reconnect.
 	MonitorStream(grpc.BidiStreamingServer[MonitorEvent, MonitorControl]) error
+	// AgentLogout explicitly marks the agent as disconnected on the backend
+	// before the local session is deleted. It does NOT delete the agent/server
+	// record — the backend upserts connection_state = "disconnected" keyed by
+	// the persistent agent_id and preserves last_seen_at. Idempotent: repeated
+	// calls return OK.
+	AgentLogout(context.Context, *AgentLogoutRequest) (*MetadataResponse, error)
 	mustEmbedUnimplementedPhelixServiceServer()
 }
 
@@ -283,6 +306,9 @@ func (UnimplementedPhelixServiceServer) ReportRollbackEvent(context.Context, *Ro
 }
 func (UnimplementedPhelixServiceServer) MonitorStream(grpc.BidiStreamingServer[MonitorEvent, MonitorControl]) error {
 	return status.Error(codes.Unimplemented, "method MonitorStream not implemented")
+}
+func (UnimplementedPhelixServiceServer) AgentLogout(context.Context, *AgentLogoutRequest) (*MetadataResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AgentLogout not implemented")
 }
 func (UnimplementedPhelixServiceServer) mustEmbedUnimplementedPhelixServiceServer() {}
 func (UnimplementedPhelixServiceServer) testEmbeddedByValue()                       {}
@@ -470,6 +496,24 @@ func _PhelixService_MonitorStream_Handler(srv interface{}, stream grpc.ServerStr
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PhelixService_MonitorStreamServer = grpc.BidiStreamingServer[MonitorEvent, MonitorControl]
 
+func _PhelixService_AgentLogout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AgentLogoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).AgentLogout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_AgentLogout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).AgentLogout(ctx, req.(*AgentLogoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PhelixService_ServiceDesc is the grpc.ServiceDesc for PhelixService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -508,6 +552,10 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportRollbackEvent",
 			Handler:    _PhelixService_ReportRollbackEvent_Handler,
+		},
+		{
+			MethodName: "AgentLogout",
+			Handler:    _PhelixService_AgentLogout_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

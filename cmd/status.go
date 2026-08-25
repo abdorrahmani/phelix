@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
@@ -44,9 +48,75 @@ var StatusCmd = &cobra.Command{
 		}
 
 		displayStatus(status)
+		displayHTTPMetrics(status.ID)
 		displayDeployAndProxy(status.Name)
 		return nil
 	},
+}
+
+// displayHTTPMetrics samples an optionally configured Caddy endpoint. Two
+// samples establish one refresh interval without retrying failures.
+func displayHTTPMetrics(appID string) {
+	configMgr, err := health.InitConfigManager()
+	if err != nil {
+		logs.WarningFile("status", "failed initialize HTTP metrics config: %v", err)
+		return
+	}
+
+	config := configMgr.GetConfig(appID)
+	if config == nil || config.HTTPMetrics == nil || !config.HTTPMetrics.Configured() {
+		return
+	}
+
+	var source health.HTTPMetricsSource = health.NewCaddyMetricsSource()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*health.CaddyMetricsInterval)
+	defer cancel()
+
+	snapshot, err := source.Scrape(ctx, *config.HTTPMetrics)
+	if err != nil {
+		logs.WarningFile("status", "failed collect HTTP metrics: %v", err)
+		return
+	}
+	if !snapshot.HasRequestDelta {
+		select {
+		case <-ctx.Done():
+		case <-time.After(health.CaddyMetricsInterval):
+		}
+		snapshot, err = source.Scrape(ctx, *config.HTTPMetrics)
+		if err != nil {
+			logs.WarningFile("status", "failed refresh HTTP metrics: %v", err)
+		}
+	}
+	if snapshot == nil {
+		return
+	}
+
+	requestRate := "-"
+	if snapshot.HasRequestDelta {
+		requestRate = fmt.Sprintf("%.1f", snapshot.RequestsPerSecond)
+	}
+	clientRate := "-"
+	serverRate := "-"
+	if snapshot.HasRequestDelta {
+		clientRate = fmt.Sprintf("%.1f", snapshot.ClientErrorsPerSec)
+		serverRate = fmt.Sprintf("%.1f", snapshot.ServerErrorsPerSec)
+	}
+
+	fmt.Println()
+	fmt.Printf("%s HTTP (via Caddy)\n", color.BlueString("→"))
+	fmt.Printf("  Requests/sec:     %s\n", requestRate)
+	fmt.Printf("  Latency (est.):   p50 %s p95 %s p99 %s\n",
+		formatMetricDuration(snapshot.LatencyP50),
+		formatMetricDuration(snapshot.LatencyP95),
+		formatMetricDuration(snapshot.LatencyP99))
+	fmt.Printf("  Errors:           4xx: %s/s 5xx: %s/s\n", clientRate, serverRate)
+}
+
+func formatMetricDuration(duration time.Duration) string {
+	if duration <= 0 {
+		return "-"
+	}
+	return duration.String()
 }
 
 func displayStatus(status app.AppStatus) {

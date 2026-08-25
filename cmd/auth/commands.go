@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/connstate"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
@@ -50,6 +52,10 @@ var LoginCmd = &cobra.Command{
 		}
 
 		printWelcome(username)
+		// A successful login restores authenticated sync (possibly after an
+		// auth_expired pause) — record it so 'phelix auth status' and the next
+		// metadata sync report the recovered state.
+		connstate.MarkConnected()
 
 		// Now that a session exists, upload all locally-managed apps so apps
 		// created while logged out start appearing on the dashboard immediately.
@@ -98,19 +104,55 @@ var StatusCmd = &cobra.Command{
 		}
 
 		printSession(session, status)
+		printConnectionState()
 		return nil
 	},
 }
 
+// printConnectionState renders the backend connection/auth state, separate
+// from the session validity above and from the local runtime status.
+func printConnectionState() {
+	state := connstate.Get()
+	if state == "" {
+		state = connstate.Connected
+	}
+	switch state {
+	case connstate.Connected:
+		fmt.Printf("• Dashboard connection: %s\n", color.GreenString(connstate.Connected))
+	case connstate.AuthExpired:
+		fmt.Printf("• Dashboard connection: %s (run 'phelix auth login' to restore)\n",
+			color.YellowString(connstate.AuthExpired))
+	case connstate.Disconnected:
+		fmt.Printf("• Dashboard connection: %s\n", color.HiBlackString(connstate.Disconnected))
+	default:
+		fmt.Printf("• Dashboard connection: %s\n", state)
+	}
+}
+
 // LogoutCmd logs out the current session.
+//
+// Logout only severs the dashboard connection: it notifies the backend (so
+// the agent is marked disconnected immediately, not after a heartbeat
+// timeout), closes the gRPC client, and deletes the local session file. It
+// does NOT stop the monitor daemon, managed apps, or delete the persistent
+// agent_id — local lifecycle commands keep working, and 'phelix auth login'
+// later reattaches the same agent record on the dashboard.
 var LogoutCmd = &cobra.Command{
 	Use:   "logout",
-	Short: "Logout from Phelix",
+	Short: "Logout from Phelix (dashboard sync stops; local apps and monitor keep running)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, err := GetValidSession()
 		if err != nil {
 			fmt.Println("No active session found.")
 			return nil
+		}
+
+		// Tell the backend BEFORE deleting the local session — the notification
+		// needs the session credentials to authenticate. Best-effort: a network
+		// failure here must not leave the user logged in locally; the backend
+		// falls back to heartbeat-timeout detection instead.
+		if err := phelixgrpc.NotifyLogout(connstate.Disconnected); err != nil {
+			fmt.Printf("  %s Could not notify backend of logout: %v\n", color.YellowString("⚠"), err)
 		}
 
 		if err := performLogout(session); err != nil {
@@ -119,7 +161,9 @@ var LogoutCmd = &cobra.Command{
 		if err := removeSession(); err != nil {
 			return err
 		}
+		connstate.MarkDisconnected()
 		fmt.Println("✓ Successfully logged out.")
+		fmt.Println("  Local apps and the monitor daemon are still running; dashboard sync is paused.")
 		return nil
 	},
 }

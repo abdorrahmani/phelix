@@ -38,6 +38,10 @@ type AppHealthConfig struct {
 	// deploys (blue-green / rolling). It is read by internal/deploy via
 	// internal/health/tiered.go. nil means "auto-detect at deploy time".
 	DeployTier *DeployTierConfig `json:"deploy_tier,omitempty"`
+
+	// HTTPMetrics opts into read-only reverse-proxy metrics. nil means the
+	// feature is disabled for this application.
+	HTTPMetrics *HTTPMetricsConfig `json:"http_metrics,omitempty"`
 }
 
 // DeployTierMode selects which health-check tier the deploy flow uses.
