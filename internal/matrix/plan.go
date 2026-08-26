@@ -48,12 +48,12 @@ type MatrixPlan struct {
 
 // Well-known Go versions. Used for validation when no explicit list is given.
 var knownGoVersions = map[string]bool{
-	"1.20": true, "1.21": true, "1.22": true, "1.23": true, "1.24": true, "1.25": true, "1.26": true,
+	"1.20": true, "1.21": true, "1.22": true, "1.23": true, "1.24": true, "1.25": true, "1.26": true, "1.27": true,
 }
 
 // Well-known Rust versions.
 var knownRustVersions = map[string]bool{
-	"1.75": true, "1.76": true, "1.77": true, "1.78": true, "1.79": true, "1.80": true, "1.90": true, "1.97": true,
+	"1.75": true, "1.76": true, "1.77": true, "1.78": true, "1.79": true, "1.80": true, "1.90": true, "1.97": true, "1.98": true,
 }
 
 // Well-known platforms. Kept intentionally small — users can extend as needed.

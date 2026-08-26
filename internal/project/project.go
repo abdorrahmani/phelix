@@ -1,0 +1,158 @@
+// Package project handles project-level Phelix configuration (phelix.yaml)
+// and the static hardcoded-port diagnosis used by `phelix init` and
+// `phelix doctor`. It never rewrites application source code.
+package project
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/port"
+	"go.yaml.in/yaml/v3"
+)
+
+// FileName is the project-level Phelix configuration file.
+const FileName = "phelix.yaml"
+
+// Config is the schema of phelix.yaml. Deliberately minimal; extend only when
+// a command actually consumes a new key.
+type Config struct {
+	Name string `yaml:"name"`
+	Port int    `yaml:"port"`
+}
+
+// Load reads and validates phelix.yaml from dir. A missing file is reported as
+// CodeNotFound so callers can distinguish "not initialized" from broken.
+func Load(dir string) (*Config, error) {
+	path := filepath.Join(dir, FileName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, phelixerr.Newf(phelixerr.CodeNotFound, "%s not found in %s — run 'phelix init' to create it", FileName, dir)
+		}
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "%s is malformed", path)
+	}
+	if strings.TrimSpace(cfg.Name) == "" {
+		return nil, phelixerr.Newf(phelixerr.CodeConfiguration, "%s is missing required field: name", path)
+	}
+	if cfg.Port != 0 {
+		if err := port.Validate(cfg.Port); err != nil {
+			return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "%s has an invalid port", path)
+		}
+	}
+	return &cfg, nil
+}
+
+// Exists reports whether phelix.yaml is present in dir.
+func Exists(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, FileName))
+	return err == nil
+}
+
+// Save writes cfg to dir/phelix.yaml.
+func Save(dir string, cfg *Config) error {
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", err)
+	}
+	header := fmt.Sprintf("# Phelix project configuration.\n# CLI flags override these values (e.g. --port).\n")
+	path := filepath.Join(dir, FileName)
+	if err := os.WriteFile(path, append([]byte(header), raw...), 0o644); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write %s", path)
+	}
+	return nil
+}
+
+// HardcodedPort is one detected hardcoded listen pattern.
+type HardcodedPort struct {
+	File    string
+	Line    int
+	Snippet string
+	Port    int
+}
+
+// Patterns match common Go/Rust hardcoded listeners. Each requires a literal
+// ":<digits>" address so a match is reasonably confident evidence.
+var hardcodedPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`ListenAndServe\(\s*":(\d+)"`),
+	regexp.MustCompile(`net\.Listen\(\s*"tcp"\s*,\s*":(\d+)"`),
+	regexp.MustCompile(`\.bind\(\s*"(?:127\.0\.0\.1|0\.0\.0\.0)::?(\d+)"`), // Rust actix/axum style
+	regexp.MustCompile(`TcpListener::bind\(\s*"(?:127\.0\.0\.1|0\.0\.0\.0)::?(\d+)"`),
+}
+
+// portEnvPattern detects the PORT-env idiom so doctor can report ✓ instead of
+// an inconclusive warning.
+var portEnvPattern = regexp.MustCompile(`Getenv\(\s*"PORT"`)
+
+const scanMaxFileSize = 1 << 20 // skip files > 1 MiB
+
+// ScanHardcodedPort walks dir looking for hardcoded listen ports in Go and
+// Rust sources. It also reports whether any file reads the PORT env var.
+// Diagnostic only — files are never modified.
+func ScanHardcodedPort(dir string) (hits []HardcodedPort, readsPORT bool) {
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			switch name {
+			case ".git", "vendor", "node_modules", "target", "builds":
+				return filepath.SkipAll
+			}
+			return nil
+		}
+		ext := filepath.Ext(name)
+		if ext != ".go" && ext != ".rs" {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.Size() > scanMaxFileSize {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		if !readsPORT && portEnvPattern.Match(raw) {
+			readsPORT = true
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, re := range hardcodedPatterns {
+				m := re.FindStringSubmatch(line)
+				if m == nil {
+					continue
+				}
+				p, err := strconv.Atoi(m[1])
+				if err != nil || p <= 0 || p > 65535 {
+					continue
+				}
+				hits = append(hits, HardcodedPort{
+					File:    relOrBase(dir, path),
+					Line:    i + 1,
+					Snippet: strings.TrimSpace(line),
+					Port:    p,
+				})
+			}
+		}
+		return nil
+	})
+	return hits, readsPORT
+}
+
+func relOrBase(dir, path string) string {
+	if rel, err := filepath.Rel(dir, path); err == nil {
+		return rel
+	}
+	return filepath.Base(path)
+}

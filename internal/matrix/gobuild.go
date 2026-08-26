@@ -167,15 +167,18 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		"CGO_ENABLED=0",
 	)
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	output := &bytes.Buffer{}
+	commandOutput := &progressOutputWriter{ctx: ctx, key: c.ID(), debug: g.Debug, log: output}
+	ReportBuildProgress(ctx, c.ID(), "compiling", 0, 0)
+	cmd.Stdout = commandOutput
+	cmd.Stderr = commandOutput
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
 		// The underlying *exec.ExitError (with exit code) stays reachable via
 		// errors.As; the full compiler output is captured only in the debug log.
 		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "go build failed for %s (%s/%s)", g.AppName, c.OS, c.Arch)
 		logLine("error: %v", err)
-		if s := stderr.String(); s != "" {
+		if s := output.String(); s != "" {
 			logLine("stderr: %s", s)
 		}
 		return result

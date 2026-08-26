@@ -11,8 +11,14 @@ import (
 	"github.com/abdorrahmani/phelix/internal/env"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/port"
 	"github.com/shirou/gopsutil/process"
 )
+
+// startupListenTimeout bounds the wait for an application to bind its port
+// after the process is spawned. Compiles are done by then; only process start
+// + app init live inside this window.
+const startupListenTimeout = 10 * time.Second
 
 // verifyProcessStatus checks if a process is running. It does NOT modify app
 // state — callers that need to persist a status change must do so explicitly.
@@ -25,19 +31,21 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 }
 
 // startApplicationProcess starts the application process and updates the app info
-func (m *AppManager) startApplicationProcess(id string, name string, port int, logFile string) error {
+func (m *AppManager) startApplicationProcess(id string, name string, portNum int, logFile string) error {
+
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to open log file %s", logFile)
 	}
-	defer f.Close()
 
 	app, exists := m.Apps[id]
 	if !exists {
+		f.Close()
 		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found", id)
 	}
 
 	if app.Directory == "" {
+		f.Close()
 		return phelixerr.Newf(phelixerr.CodeNotFound, "application directory not found for ID %s", id)
 	}
 
@@ -46,10 +54,17 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	cmd.Dir = app.Directory
 	// Capture stdout and stderr separately so each line in the app log file
 	// carries an exact [stdout]/[stderr] marker and level (see AppLogWriter).
-	// Both writers share the same underlying file handle; the writer's own
-	// mutex keeps lines from interleaving mid-line.
-	cmd.Stdout = logs.NewAppLogWriter(f, logs.StreamStdout)
-	cmd.Stderr = logs.NewAppLogWriter(f, logs.StreamStderr)
+	stdoutW := logs.NewAppLogWriter(f, logs.StreamStdout)
+	stderrW := logs.NewAppLogWriter(f, logs.StreamStderr)
+	// Hand the child the raw file descriptor rather than an OS pipe: a pipe's
+	// read end dies with this short-lived CLI process, so the app's next write
+	// would get SIGPIPE and be killed — losing every later log line. Writing
+	// straight into the shared log file needs no parent-side reader at all.
+	cmd.Stdout = stdoutW.File()
+	cmd.Stderr = stderrW.File()
+	// Detach into its own session so the app survives this CLI invocation
+	// exiting, plus terminal hangup / Ctrl+C on `phelix start`.
+	cmd.SysProcAttr = detachedSysProcAttr()
 
 	// Inject encrypted environment variables
 	envVars := os.Environ() // Start with current environment
@@ -60,9 +75,13 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 			envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
 		}
 	}
+	// Port contract: Phelix owns the runtime port. Override any inherited or
+	// app-stored PORT so the managed application listens on the requested one.
+	envVars = append(envVars, fmt.Sprintf("PORT=%d", portNum))
 	cmd.Env = envVars
 
 	if err := cmd.Start(); err != nil {
+		f.Close()
 		return phelixerr.Wrapf(
 			phelixerr.CodeProcessFailed,
 			err,
@@ -75,15 +94,95 @@ func (m *AppManager) startApplicationProcess(id string, name string, port int, l
 	app.PID = cmd.Process.Pid
 	app.Status = "running"
 	app.Start = time.Now()
-	app.Port = port
+	app.Port = portNum
 	app.LogFile = logFile
 	app.BuildStatus = "built"
 	app.UpdatedAt = time.Now()
 	// The app was intentionally started; it should be restored the next time
 	// the monitor daemon launches (e.g. after a machine reboot).
 	app.AutoStart = true
+	app.logFileHandle = f
+
+	// Runtime port verification: the process existing is not success. Poll
+	// until the application accepts connections on its port OR dies. A process
+	// that stays alive but never binds usually means a hardcoded port.
+	addr := fmt.Sprintf("127.0.0.1:%d", portNum)
+	deadline := time.Now().Add(startupListenTimeout)
+	listening := false
+	for time.Now().Before(deadline) {
+		if port.IsListening(addr) {
+			listening = true
+			break
+		}
+		if !m.isProcessRunning(app.PID) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !listening {
+		if !m.isProcessRunning(app.PID) {
+			app.Status = "failed"
+			app.PID = 0
+			return phelixerr.Newf(
+				phelixerr.CodeProcessFailed,
+				"application %q (ID: %s) exited immediately after start; see log %s",
+				name, id, logFile,
+			)
+		}
+
+		// Kill only the instance Phelix just started — never a pre-existing
+		// one — so a failed validation cannot leak a stray process.
+		m.stopNewlyStarted(app)
+
+		return phelixerr.Newf(
+			phelixerr.CodePortUnavailable,
+			"application failed port validation\n\n"+
+				"Phelix started the application with:\n\n    PORT=%d\n\n"+
+				"but nothing is listening on:\n\n    :%d\n\n"+
+				"The application may be using a hardcoded port.\n\n"+
+				"Phelix expects applications to read the PORT environment variable.\n\n"+
+				"Run:\n\n    phelix doctor\n\nto diagnose the project.",
+			portNum, portNum,
+		)
+	}
 
 	return nil
+}
+
+// stopNewlyStarted terminates the process this method just spawned after a
+// failed startup validation. It touches only app.Cmd — the handle created by
+// the surrounding startApplicationProcess call — never an instance from a
+// previous invocation.
+func (m *AppManager) stopNewlyStarted(app *AppInfo) {
+	if app.Cmd == nil || app.Cmd.Process == nil {
+		return
+	}
+	_ = app.Cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { _ = app.Cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		_ = app.Cmd.Process.Kill()
+		<-done
+	}
+	app.Status = "failed"
+	app.PID = 0
+}
+
+// waitAndCloseLog reaps an exited child process and releases its log file
+// handle. It exists so the monitor daemon does not leak one fd per app while
+// apps keep their stdout/stderr attached to the log file for their whole
+// lifetime.
+func (m *AppManager) waitAndCloseLog(app *AppInfo) {
+	if app.Cmd != nil && app.Cmd.Process != nil {
+		_ = app.Cmd.Wait()
+	}
+	if app.logFileHandle != nil {
+		app.logFileHandle.Close()
+		app.logFileHandle = nil
+	}
 }
 
 // stopApplicationProcess stops the application process gracefully, falling back to force kill if necessary
@@ -107,12 +206,14 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 		}
 
 		if err := app.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			return phelixerr.Wrapf(
+			fErr := phelixerr.Wrapf(
 				phelixerr.CodeProcessFailed,
 				err,
 				"failed to send SIGTERM to application '%s' (ID: %s)",
 				app.Name, app.ID,
 			)
+			m.waitAndCloseLog(app)
+			return fErr
 		}
 
 		done := make(chan error, 1)
@@ -169,6 +270,11 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 			app.Name, app.ID,
 		)
 	}
+
+	// Reap the child (if we own it) and release the log file handle that was
+	// kept open for the child's stdout/stderr.
+	m.waitAndCloseLog(app)
+	app.Cmd = nil
 
 	return nil
 }

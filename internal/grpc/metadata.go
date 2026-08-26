@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/connstate"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/abdorrahmani/phelix/internal/version"
@@ -40,5 +41,9 @@ func collectMetadata() *pb.CLIMetadata {
 		TotalManagedApps: int32(totalApps),
 		RunningApps:      int32(runningApps),
 		Timestamp:        time.Now().UnixMilli(),
+		// Backend connection/auth state, separate from the local runtime
+		// status above. Older agents leave this empty; the backend must
+		// tolerate that.
+		ConnectionState: connstate.Get(),
 	}
 }

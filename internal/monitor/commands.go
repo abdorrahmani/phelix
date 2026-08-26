@@ -59,6 +59,8 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 		return app.Manager.StopApplication(target.ID)
 	case "restart":
 		return app.Manager.RestartApplication(target.ID)
+	case "remove":
+		return app.Manager.RemoveApplication(target.ID)
 	}
 
 	return e.execFallback(cmd, target.ID)

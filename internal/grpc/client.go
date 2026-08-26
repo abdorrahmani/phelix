@@ -8,6 +8,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/config"
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/connstate"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
@@ -88,6 +89,9 @@ func (c *Client) Connect() error {
 	// daemon, rollback sender) will pick up the session automatically once the
 	// user runs 'phelix auth login'.
 	if !sessionAvailable() {
+		// Logged out (or never logged in) while this runtime is up: record why
+		// dashboard sync is off, separately from the local runtime status.
+		connstate.MarkDisconnected()
 		return phelixerr.New(
 			phelixerr.CodeUnauthenticated,
 			"not logged in; skipping gRPC connection to dashboard",
@@ -150,6 +154,7 @@ func (c *Client) Connect() error {
 	}
 
 	logs.InfoFile("grpc", "[gRPC] Connected to %s", cfg.App.GRPCUrl)
+	connstate.MarkConnected()
 	return nil
 }
 
@@ -347,6 +352,16 @@ func (c *Client) sendMetadataOnce() {
 	resp, err := c.serviceClient.SyncMetadata(authCtx, md)
 	if err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Metadata sync failed: %v", err)
+		// A credentials rejection is not a network failure: retrying forever
+		// with the same revoked key would hammer the backend. Stop
+		// authenticated sync (streams keep failing fast) and record why, but
+		// leave the local runtime and managed apps untouched. 'phelix auth
+		// login' restores normal operation with the same agent_id.
+		code := phelixerr.CodeOf(phelixerr.FromGRPC(err))
+		if code == phelixerr.CodeUnauthenticated || code == phelixerr.CodeSessionExpired {
+			c.handleAuthRejected()
+			return
+		}
 		c.reconnectIfNeeded()
 		return
 	}

@@ -14,6 +14,8 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/matrix"
+	phelixport "github.com/abdorrahmani/phelix/internal/port"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -61,14 +63,31 @@ var BuildCmd = &cobra.Command{
 
 		name := args[0]
 
-		// When the port flag was not passed on the command line, offer to
-		// choose it interactively (defaults to the configured port).
-		if IsInteractive() && !cmd.Flags().Changed("port") {
-			chosen, err := PromptInt("Port to run the application on", buildPort)
-			if err != nil {
-				return err
+		// Precedence: CLI flag > phelix.yaml > default. When --port was not
+		// passed, a phelix.yaml in the current directory supplies the port.
+		if !cmd.Flags().Changed("port") && !matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms) {
+			if project.Exists(currentDirOrError()) {
+				if cfg, err := project.Load(currentDirOrError()); err == nil && cfg.Port != 0 {
+					buildPort = cfg.Port
+				}
 			}
-			buildPort = chosen
+
+			// When the port flag was not passed on the command line, offer to
+			// choose it interactively (defaults to the configured port).
+			if IsInteractive() {
+				chosen, err := PromptInt("Port to run the application on", buildPort)
+				if err != nil {
+					return err
+				}
+				buildPort = chosen
+			}
+		}
+
+		if err := phelixport.Validate(buildPort); err != nil {
+			return err
+		}
+		if err := phelixport.EnsureAvailable(buildPort); err != nil {
+			return err
 		}
 
 		// Build/run works without a session. Dashboard upload (metrics, events)
@@ -267,7 +286,7 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 	return phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
 }
 
-func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager) error {
+func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager) (err error) {
 	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
 	appInfo := app.Manager.(*app.AppManager).Apps[id]
 	if appInfo == nil {
@@ -285,7 +304,14 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		lang = buildMgr.DetectLanguage(projectRoot)
 	}
 
-	fmt.Printf("  %s Preparing build environment...\n", color.BlueString("→"))
+	progress := matrix.NewProgressBar(fmt.Sprintf("Build %s", id), os.Stdout)
+	progress.Update("preparing", 0, 0)
+	progress.Start()
+	defer func() {
+		if err != nil {
+			progress.Finish("failed")
+		}
+	}()
 
 	// Prepare build context
 	buildCtx, err := buildMgr.PrepareBuild(
@@ -308,10 +334,9 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", err)
 	}
 
-	fmt.Printf("  %s Building with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
-
+	progress.Update(fmt.Sprintf("compiling %s", buildMgr.FormatLanguage(lang)), 0, 0)
 	// Execute build
-	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
+	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if appInfo, exists := appManager.Apps[id]; exists {
 				appInfo.BuildStatus = "failed"
@@ -322,8 +347,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)
 	}
 
-	duration := buildMgr.GetBuildDuration(buildCtx)
-	fmt.Printf("  %s Build completed in %s\n", color.GreenString("✓"), color.YellowString(duration.String()))
+	progress.Finish("done")
 
 	// Update build status
 	if appManager, ok := app.Manager.(*app.AppManager); ok {

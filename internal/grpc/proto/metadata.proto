@@ -19,6 +19,11 @@ message CLIMetadata {
   int32 total_managed_apps = 11;
   int32 running_apps = 12;
   int64 timestamp = 13;
+  // ConnectionState is the agent's backend connection/auth state
+  // (connected / disconnected / auth_expired), separate from the local
+  // runtime status (current_state/monitor_status). Absent in older agents —
+  // the backend must treat an empty value as "unknown" and keep working.
+  string connection_state = 14;
 }
 
 // MetadataResponse is the backend's response to metadata sync.

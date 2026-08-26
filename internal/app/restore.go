@@ -32,8 +32,13 @@ func (m *AppManager) RestoreAutoStartApps() (int, error) {
 		}
 
 		// startApplicationProcess reuses the app's persisted directory, port
-		// and log file, and flags the app as auto-start again.
-		if err := m.startApplicationProcess(id, a.Name, a.Port, a.LogFile); err != nil {
+		// and log file, and flags the app as auto-start again. Legacy state
+		// files may carry an empty log_file; fall back to the canonical path.
+		logFile := a.LogFile
+		if logFile == "" {
+			logFile = logs.AppLogPath(id)
+		}
+		if err := m.startApplicationProcess(id, a.Name, a.Port, logFile); err != nil {
 			logs.Error("app", "failed to restore app %s (ID: %s): %v", a.Name, id, err)
 			continue
 		}

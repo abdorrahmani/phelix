@@ -57,4 +57,19 @@ service PhelixService {
   // commands, keepalive pings). The CLI never opens a new connection per
   // metric update — only a new stream after a disconnect/reconnect.
   rpc MonitorStream(stream MonitorEvent) returns (stream MonitorControl);
+
+  // AgentLogout explicitly marks the agent as disconnected on the backend
+  // before the local session is deleted. It does NOT delete the agent/server
+  // record — the backend upserts connection_state = "disconnected" keyed by
+  // the persistent agent_id and preserves last_seen_at. Idempotent: repeated
+  // calls return OK.
+  rpc AgentLogout(AgentLogoutRequest) returns (MetadataResponse);
+}
+
+// AgentLogoutRequest identifies the agent logging out. agent_id is the
+// persistent Phelix runtime identity, so the backend updates the existing
+// record instead of creating a new one.
+message AgentLogoutRequest {
+  string agent_id = 1;
+  string reason = 2; // "logout" or "auth_expired"
 }

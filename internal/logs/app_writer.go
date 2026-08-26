@@ -2,6 +2,7 @@ package logs
 
 import (
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,18 @@ func NewAppLogWriter(dst io.Writer, stream LogStream) *AppLogWriter {
 		stream: stream,
 		level:  def,
 	}
+}
+
+// File exposes the underlying *os.File when dst is one. Process starters use
+// it to attach the child's stdout/stderr directly to the log file descriptor:
+// an *os.File passes through exec.Cmd without an intermediate OS pipe, so the
+// child keeps a valid sink even after the parent process exits (a pipe would
+// SIGPIPE-kill the app on its first write after the parent dies).
+func (w *AppLogWriter) File() *os.File {
+	if f, ok := w.dst.(*os.File); ok {
+		return f
+	}
+	return nil
 }
 
 // Write buffers the incoming bytes and emits complete lines. Partial lines

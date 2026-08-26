@@ -132,14 +132,17 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	)
 	cmd.Dir = r.ProjectRoot
 
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	output := &bytes.Buffer{}
+	commandOutput := &progressOutputWriter{ctx: ctx, key: c.ID(), debug: r.Debug, log: output}
+	ReportBuildProgress(ctx, c.ID(), "preparing", 0, 0)
+	cmd.Stdout = commandOutput
+	cmd.Stderr = commandOutput
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
 		// Keep the *exec.ExitError reachable; compiler output goes to the debug log.
 		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "cross build failed for %s (target %s)", r.AppName, triple)
 		logLine("error: %v", err)
-		if s := stderr.String(); s != "" {
+		if s := output.String(); s != "" {
 			logLine("stderr: %s", s)
 		}
 		return result
