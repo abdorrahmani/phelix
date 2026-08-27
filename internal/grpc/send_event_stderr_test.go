@@ -13,6 +13,7 @@ import (
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -104,6 +105,19 @@ func dialBufconn(t *testing.T, backend pb.PhelixServiceServer) (*Client, *grpc.S
 	)
 	if err != nil {
 		t.Fatalf("failed to dial bufconn: %v", err)
+	}
+
+	// grpc.ClientConn dials lazily: it sits in Idle until the first RPC or an
+	// explicit Connect(). IsConnected() demands connectivity.Ready, so force
+	// the transport up here — otherwise every test built on this helper would
+	// skip its send path and pass vacuously.
+	conn.Connect()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for state := conn.GetState(); state != connectivity.Ready; state = conn.GetState() {
+		if !conn.WaitForStateChange(ctx, state) {
+			t.Fatalf("bufconn transport never reached Ready (last state %v)", state)
+		}
 	}
 
 	c := &Client{
