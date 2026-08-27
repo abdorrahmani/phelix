@@ -444,16 +444,17 @@ phelix proxy stop         # shut the daemon down (drains up to 30s)
 phelix proxy --foreground   # run attached (for process supervisors / systemd)
 ```
 `phelix rebuild --blue-green` / `--replicas` will also auto-start the daemon if it is not already running.
+Enrolled apps and their active targets are **persisted** (`~/.phelix/proxy-state.json`) and restored automatically when the daemon restarts, so backend instances keep serving through daemon crashes or reboots without any redeploy.
 
 #### Blue-green deploy
-Builds a new binary, starts it on the inactive slot (blue ↔ green), waits until healthy, then atomically switches the proxy. The previous instance is drained and stopped.
+Builds a new binary, starts it on the inactive slot (blue ↔ green), waits until healthy, then atomically switches the proxy. The previous instance is drained and stopped. A deploy that loses the proxy mid-flight shuts down its unproven new instance instead of leaking it, and slots left behind by crashed deploys are reclaimed on the next run.
 ```bash
 phelix rebuild myapp --blue-green
 phelix rebuild myapp --blue-green --port 8080
 ```
 
 #### Rolling deploy
-Restarts N replicas one at a time (never more than one down). Useful when you want capacity during the cut-over.
+Replaces N replicas one at a time. Each replacement starts on a fresh internal port **alongside** the instance it replaces and joins the proxy only after passing its health check; the old instance is then drained from rotation and stopped, so no request is ever routed to a dead port during the roll. Shrinking (`--replicas N` smaller than before) drains the surplus replicas at the end of the rollout.
 ```bash
 phelix rebuild myapp --replicas 3
 ```

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -65,6 +66,33 @@ type AppStatus struct {
 	InFlight   int64    `json:"in_flight"`
 }
 
+// persistedApp is one entry of the proxy daemon's crash/restart state file.
+type persistedApp struct {
+	AppName    string   `json:"app_name"`
+	PublicPort int      `json:"public_port"`
+	Primary    Target   `json:"primary"`
+	Backends   []Target `json:"backends,omitempty"`
+}
+
+// proxyPersistFile is the on-disk shape of ~/.phelix/proxy-state.json. The
+// daemon writes it atomically after every enrollment/membership change and
+// replays it on startup so a proxy restart (crash, reboot, manual restart)
+// restores the public ports and active targets of every app without waiting
+// for the next deploy. Without this, killing the daemon silently dropped all
+// routing and left every enrolled app unreachable until redeployed.
+type proxyPersistFile struct {
+	Apps []persistedApp `json:"apps"`
+}
+
+// DefaultStatePath returns the path of the proxy daemon's persistence file.
+func DefaultStatePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".phelix", "proxy-state.json"), nil
+}
+
 // Daemon hosts one Proxy per enrolled app plus the control socket.
 type Daemon struct {
 	socketPath string
@@ -91,7 +119,14 @@ func NewDaemon(socketPath string) *Daemon {
 // called or the socket is closed. Each enrolled app's Proxy runs in its own
 // goroutine; a failed Serve (e.g. listener closed) logs and the app proxy is
 // left for Shutdown to clean up.
+//
+// Before accepting control traffic the daemon restores any previously enrolled
+// apps from ~/.phelix/proxy-state.json: their public ports are rebound and
+// their last-known targets reinstated, so backend instances (which kept
+// running while the daemon was down) are reachable again immediately.
 func (d *Daemon) Run() error {
+	d.restoreState()
+
 	_ = os.Remove(d.socketPath) // best-effort: clear any stale socket
 	if err := os.MkdirAll(filepath.Dir(d.socketPath), 0o755); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "proxy: create socket dir")
@@ -152,14 +187,56 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 	return firstErr
 }
 
+// startAppProxy binds the app's public port SYNCHRONOUSLY and starts serving
+// in the background. Callers can rely on the port accepting connections as
+// soon as this returns — no readiness polling anywhere.
+func (d *Daemon) startAppProxy(p *Proxy) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", p.PublicPort))
+	if err != nil {
+		return phelixerr.Wrapf(phelixerr.CodePortUnavailable, err,
+			"proxy: bind public port %d", p.PublicPort)
+	}
+	go func() {
+		// The Director resolves targets per request; serve errors here are
+		// only listener teardown, logged for observability.
+		if serr := p.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "[proxy] app %s stopped serving: %v\n", p.AppName, serr)
+			d.mu.Lock()
+			if cur, ok := d.proxies[p.AppName]; ok && cur == p {
+				delete(d.proxies, p.AppName)
+			}
+			d.mu.Unlock()
+		}
+	}()
+	return nil
+}
+
 // EnrollApp adds an app to the daemon and starts proxying on its public port.
-// If an app with the same name exists it is replaced (the old listener closed).
+//
+// Re-enrolling an app that already exists on the SAME public port atomically
+// updates its target set and keeps the bound listener untouched — there is no
+// close/reopen gap during which clients could get connection refused. Only a
+// genuine public-port change takes down and rebinds the old listener.
 func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backends []Target) error {
 	if appName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "proxy: appName is required")
 	}
+	if publicPort <= 0 {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "proxy: valid public port required")
+	}
 	if primary.Host == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "proxy: primary target host is required")
+	}
+
+	d.mu.Lock()
+	existing := d.proxies[appName]
+	d.mu.Unlock()
+
+	if existing != nil && existing.PublicPort == publicPort {
+		// Same public port: swap membership under the live listener.
+		existing.SetTarget(primary, backends...)
+		d.persistState()
+		return nil
 	}
 
 	p := New(appName, publicPort, primary)
@@ -167,39 +244,22 @@ func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backe
 		p.SetTarget(primary, backends...)
 	}
 
-	d.mu.Lock()
-	if old, ok := d.proxies[appName]; ok {
-		d.mu.Unlock()
-		_ = old.Shutdown(context.Background())
-		d.mu.Lock()
+	// Bind BEFORE publishing so a failed bind leaves the daemon's map (and
+	// persisted state) untouched.
+	if err := d.startAppProxy(p); err != nil {
+		return err
 	}
+
+	d.mu.Lock()
+	old := d.proxies[appName]
 	d.proxies[appName] = p
 	d.mu.Unlock()
 
-	// Serve in the background; the request Director resolves the target per
-	// request, so it keeps routing correctly even as SetTarget is called.
-	go func() {
-		if err := p.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			// The public listener failed. Remove the app so a later EnrollApp
-			// can retry; surface via stderr since the daemon is long-running.
-			fmt.Fprintf(os.Stderr, "[proxy] app %s stopped serving: %v\n", appName, err)
-			d.mu.Lock()
-			if cur, ok := d.proxies[appName]; ok && cur == p {
-				delete(d.proxies, appName)
-			}
-			d.mu.Unlock()
-		}
-	}()
-
-	// Give the listener a beat to actually bind so a client that immediately
-	// sends traffic right after enrol works in practice.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if isPortOpen(publicPort) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	if old != nil {
+		// Public port changed: retire the previous listener.
+		_ = old.Shutdown(context.Background())
 	}
+	d.persistState()
 	return nil
 }
 
@@ -216,6 +276,7 @@ func (d *Daemon) SwitchApp(appName string, primary Target, backends []Target) er
 	} else {
 		p.SetTarget(primary)
 	}
+	d.persistState()
 	return nil
 }
 
@@ -230,7 +291,111 @@ func (d *Daemon) RemoveApp(appName string) error {
 	if !ok {
 		return nil
 	}
-	return p.Shutdown(context.Background())
+	err := p.Shutdown(context.Background())
+	// Only forget the enrollment from disk once the listener actually closed;
+	// on shutdown failure the app keeps serving through the old proxy, so the
+	// persisted state must keep describing it.
+	if err == nil {
+		d.persistState()
+	}
+	return err
+}
+
+// snapshotPersist builds the current routing state under the daemon lock.
+func (d *Daemon) snapshotPersist() proxyPersistFile {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	out := proxyPersistFile{Apps: make([]persistedApp, 0, len(d.proxies))}
+	for name, p := range d.proxies {
+		st := p.loadState()
+		out.Apps = append(out.Apps, persistedApp{
+			AppName:    name,
+			PublicPort: p.PublicPort,
+			Primary:    st.primary,
+			Backends:   append([]Target(nil), st.targets...),
+		})
+	}
+	sort.Slice(out.Apps, func(i, j int) bool { return out.Apps[i].AppName < out.Apps[j].AppName })
+	return out
+}
+
+// persistState atomically writes the current routing state so a daemon
+// restart can restore every enrollment. Failures are logged, never fatal:
+// losing persistence degrades to the old "state lost after restart" behavior
+// instead of breaking live traffic handling.
+func (d *Daemon) persistState() {
+	path, err := DefaultStatePath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[proxy] state path unavailable: %v\n", err)
+		return
+	}
+	data, err := json.MarshalIndent(d.snapshotPersist(), "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[proxy] encode state: %v\n", err)
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "[proxy] state dir: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "[proxy] write state: %v\n", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		fmt.Fprintf(os.Stderr, "[proxy] commit state: %v\n", err)
+	}
+}
+
+// restoreState replays ~/.phelix/proxy-state.json: each recorded app's public
+// port is rebound and its last-known targets reinstated. Apps whose ports no
+// longer bind are skipped (logged) — one conflicting port must never take down
+// recovery of the others — and the file is rewritten to describe reality.
+func (d *Daemon) restoreState() {
+	path, err := DefaultStatePath()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // first run or unreadable file: start empty
+	}
+	var pf proxyPersistFile
+	if err := json.Unmarshal(data, &pf); err != nil {
+		fmt.Fprintf(os.Stderr, "[proxy] ignoring corrupt %s: %v\n", path, err)
+		return
+	}
+
+	recovered := 0
+	var lost []string
+	for _, app := range pf.Apps {
+		if app.AppName == "" || app.PublicPort <= 0 || app.Primary.Host == "" {
+			continue
+		}
+		p := New(app.AppName, app.PublicPort, app.Primary)
+		if len(app.Backends) > 0 {
+			p.SetTarget(app.Primary, app.Backends...)
+		}
+		if err := d.startAppProxy(p); err != nil {
+			fmt.Fprintf(os.Stderr, "[proxy] restore %s: %v (skipped)\n", app.AppName, err)
+			lost = append(lost, app.AppName)
+			continue
+		}
+		d.mu.Lock()
+		d.proxies[app.AppName] = p
+		d.mu.Unlock()
+		recovered++
+	}
+	if recovered > 0 {
+		fmt.Fprintf(os.Stderr, "[proxy] restored %d enrolled app(s) from previous run\n", recovered)
+	}
+	if len(lost) > 0 {
+		// Rewrite the state without the apps we could not rebind so the file
+		// matches what is actually serving.
+		d.persistState()
+	}
 }
 
 // Status reports the current routing state for one app (or all if name is "").
