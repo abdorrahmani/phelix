@@ -63,9 +63,82 @@ type Proxy struct {
 	// shutdown report "how many requests were still active at shutdown time".
 	inFlight int64
 
+	// rr is the round-robin cursor used when multiple backends are enrolled.
+	rr atomic.Uint64
+
+	// liveness caches passive TCP probe results keyed by "host:port" so the
+	// Director does not dial more than once per TTL window per backend.
+	liveMu      sync.Mutex
+	liveResults map[string]livenessResult
+
 	// started guards against double Start.
 	started atomic.Bool
 	mu      sync.Mutex // serialises Start / SetTarget / Shutdown externally
+}
+
+// livenessResult records the outcome of the most recent reachability probe.
+type livenessResult struct {
+	ok bool
+	at time.Time
+}
+
+const (
+	livePassTTL = 500 * time.Millisecond // trust "reachable" briefly
+	liveFailTTL = 200 * time.Millisecond // retry "unreachable" quickly
+	liveDialTO  = 150 * time.Millisecond
+)
+
+// pickHealthyHost chooses which backend serves the next request when several
+// are enrolled: round-robin over targets whose most recent TCP probe passed;
+// backends without a fresh verdict are probed once and remembered. When every
+// target currently looks unreachable we degrade gracefully to the primary so
+// behaviour matches the pre-failover contract instead of blackholing.
+func (p *Proxy) pickHealthyHost(st *proxyState) string {
+	n := len(st.targets)
+	if n == 0 {
+		return st.primary.Host
+	}
+	start := int((p.rr.Add(1) - 1) % uint64(n))
+	for i := 0; i < n; i++ {
+		t := st.targets[(start+i)%n]
+		if p.hostLive(t.Host) {
+			return t.Host
+		}
+	}
+	return st.primary.Host
+}
+
+// hostLive consults (then refreshes) the probe cache for one backend.
+func (p *Proxy) hostLive(host string) bool {
+	now := time.Now()
+
+	p.liveMu.Lock()
+	if p.liveResults == nil {
+		p.liveResults = make(map[string]livenessResult)
+	}
+	res, seen := p.liveResults[host]
+	ttl := livePassTTL
+	if !res.ok {
+		ttl = liveFailTTL
+	}
+	if seen && now.Sub(res.at) < ttl {
+		live := res.ok
+		p.liveMu.Unlock()
+		return live
+	}
+	p.liveMu.Unlock()
+
+	// Probe outside the lock: dialing can block up to liveDialTO.
+	conn, err := net.DialTimeout("tcp", host, liveDialTO)
+	if err == nil {
+		_ = conn.Close()
+	}
+	outcome := livenessResult{ok: err == nil, at: now}
+
+	p.liveMu.Lock()
+	p.liveResults[host] = outcome
+	p.liveMu.Unlock()
+	return outcome.ok
 }
 
 // New creates a Proxy bound to the given public port with an initial target.
@@ -85,9 +158,19 @@ func New(appName string, publicPort int, initial Target) *Proxy {
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			st := p.loadState()
-			// Resolve the backend URL from the current target. We only rewrite
+			// Pick the backend for this request. With a single target this is
+			// exactly the previous behavior (pure primary routing, zero extra
+			// work). With multiple rolling replicas it distributes new
+			// requests round-robin across healthy targets and passively skips
+			// targets that recently refused connections instead of handing
+			// them a doomed request.
+			host := st.primary.Host
+			if len(st.targets) > 1 {
+				host = p.pickHealthyHost(st)
+			}
+			// Resolve the backend URL from the chosen target. We only rewrite
 			// scheme/host/path; headers and body are preserved verbatim.
-			u, err := url.Parse("http://" + st.primary.Host)
+			u, err := url.Parse("http://" + host)
 			if err == nil {
 				req.URL.Scheme = u.Scheme
 				req.URL.Host = u.Host
@@ -175,14 +258,24 @@ func (p *Proxy) Start() error {
 		p.mu.Unlock()
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "proxy: already started")
 	}
+	p.mu.Unlock()
+
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", p.PublicPort))
 	if err != nil {
 		p.started.Store(false)
-		p.mu.Unlock()
 		// Preserve the underlying bind error (address in use, permission, ...)
 		// so errors.Is / errors.As still reach the OS cause.
 		return phelixerr.Wrapf(phelixerr.CodePortUnavailable, err, "proxy: listen on :%d", p.PublicPort)
 	}
+	return p.Serve(ln)
+}
+
+// Serve runs the proxy on an already-bound listener. The HTTP server is built
+// synchronously so that by the time Serve is launched in the background the
+// port is guaranteed to be accepting connections — callers therefore do not
+// need to poll or sleep to confirm readiness.
+func (p *Proxy) Serve(ln net.Listener) error {
+	p.mu.Lock()
 	p.server = &http.Server{
 		Handler:           p.rp,
 		ReadHeaderTimeout: 10 * time.Second,

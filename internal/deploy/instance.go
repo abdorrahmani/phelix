@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,35 +31,50 @@ type Process interface {
 	Wait() error
 }
 
-// osProcess adapts *os.Process (or *exec.Cmd) to the Process interface.
+// osProcess adapts *exec.Cmd to the Process interface.
+//
+// Concurrency contract: DefaultLauncher starts exactly one goroutine that runs
+// cmd.Wait(); it publishes the exit status through doneCh/waitErr under mu and
+// closes doneCh. Because reads of a closed channel never block and waitErr is
+// immutable afterwards, any number of concurrent or sequential Wait callers
+// observe the same final status safely (the previous implementation's
+// receive-and-repost channel trick could deadlock concurrent waiters).
 type osProcess struct {
-	cmd *exec.Cmd
-	pid int
-	// errCh receives the result of cmd.Wait() exactly once.
-	errCh chan error
+	cmd     *exec.Cmd
+	pid     int
+	doneCh  chan struct{}
+	mu      sync.Mutex
+	waitErr error
 }
 
 func (p *osProcess) PID() int { return p.pid }
+
 func (p *osProcess) Signal(s os.Signal) error {
 	if p.cmd != nil && p.cmd.Process != nil {
 		return p.cmd.Process.Signal(s)
 	}
 	return os.ErrProcessDone
 }
+
 func (p *osProcess) Kill() error {
 	if p.cmd != nil && p.cmd.Process != nil {
 		return p.cmd.Process.Kill()
 	}
 	return os.ErrProcessDone
 }
+
+func (p *osProcess) reap(waitErr error) {
+	p.mu.Lock()
+	p.waitErr = waitErr
+	close(p.doneCh)
+	p.mu.Unlock()
+}
+
 func (p *osProcess) Wait() error {
-	// First caller wins; subsequent callers get the cached result.
-	if p.errCh != nil {
-		err := <-p.errCh
-		p.errCh <- err // re-cache for any later caller
-		return err
-	}
-	return os.ErrProcessDone
+	<-p.doneCh
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.waitErr
 }
 
 // freePort returns a TCP port that is free at call time by asking the kernel
@@ -120,14 +137,14 @@ func DefaultLauncher(_ context.Context, binaryPath string, env []string) (Proces
 		return nil, 0, phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "deploy: start instance")
 	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan struct{})
+	proc := &osProcess{cmd: cmd, pid: cmd.Process.Pid, doneCh: errCh}
 	go func() {
 		waitErr := cmd.Wait()
 		_ = logFile.Close()
-		errCh <- waitErr
+		proc.reap(waitErr)
 	}()
 
-	proc := &osProcess{cmd: cmd, pid: cmd.Process.Pid, errCh: errCh}
 	return proc, port, nil
 }
 
@@ -268,14 +285,60 @@ func (p *pidProcess) Wait() error {
 	return phelixerr.New(phelixerr.CodeProcessFailed, "deploy: timed out waiting for pid to exit")
 }
 
-// findProcess locates a running process by PID. Returns a nil Process (not an
-// error) when the PID is gone, so callers can treat "already stopped" as a
-// successful no-op.
-func findProcess(pid int) Process {
-	if pid <= 0 {
+// sameExecutable reports whether a running process's resolved executable path
+// refers to the same binary as want. It tolerates symlink resolution
+// differences and Linux's " (deleted)" marker for replaced binaries.
+func sameExecutable(exe, want string) bool {
+	if exe == "" || want == "" {
+		return false
+	}
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	want = strings.TrimSuffix(want, " (deleted)")
+	if strings.EqualFold(filepath.Clean(exe), filepath.Clean(want)) {
+		return true
+	}
+	// Resolve symlinks on both sides (best-effort) before comparing again.
+	resolve := func(p string) string {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			return real
+		}
+		return p
+	}
+	return strings.EqualFold(filepath.Clean(resolve(exe)), filepath.Clean(resolve(want)))
+}
+
+// processExecutable returns the resolved executable path of pid, or "" when it
+// cannot be determined (process gone, permissions, ...).
+func processExecutable(pid int) string {
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return ""
+	}
+	exe, err := p.Exe()
+	if err != nil {
+		return ""
+	}
+	return exe
+}
+
+// findVerifiedProcess locates a running process by PID and verifies its
+// identity against the expected binary path before handing out a handle that
+// can be signalled. This closes the classic stale-PID-recycling hazard: after
+// a machine restart or heavy PID churn, deploy.json may still name a PID that
+// now belongs to an unrelated process; without this check Phelix could
+// SIGTERM/SIGKILL an innocent victim.
+//
+// Behaviour:
+//   - pid <= 0 or dead pid  -> nil Process ("already stopped").
+//   - expectBinary given    -> process must resolve to that exact binary;
+//     otherwise nil Process ("stale record, refusing to touch").
+//   - expectBinary empty    -> legacy records carry no path, so only liveness
+//     is verifiable; the handle is returned unchecked.
+func findVerifiedProcess(pid int, expectBinary string) Process {
+	if pid <= 0 || !pidAlive(pid) {
 		return nil
 	}
-	if !pidAlive(pid) {
+	if expectBinary != "" && !sameExecutable(processExecutable(pid), expectBinary) {
 		return nil
 	}
 	proc, err := os.FindProcess(pid)
@@ -285,11 +348,12 @@ func findProcess(pid int) Process {
 	return &pidProcess{pid: pid, proc: proc}
 }
 
-// stopByPID is the counterpart to GracefulStop for instances whose Process
-// handle we don't have (started by a previous CLI invocation). It finds the
-// process by PID and gracefully stops it.
-func stopByPID(ctx context.Context, pid int, grace time.Duration, inFlight int64) ShutdownReport {
-	proc := findProcess(pid)
+// stopByPID gracefully stops an instance started by a previous CLI invocation,
+// verifying first that PID still names the expected binary (see
+// findVerifiedProcess). Returns Exited=true when nothing needed stopping —
+// including when the record was stale so an unrelated process was protected.
+func stopByPID(ctx context.Context, pid int, grace time.Duration, inFlight int64, expectBinary string) ShutdownReport {
+	proc := findVerifiedProcess(pid, expectBinary)
 	if proc == nil {
 		return ShutdownReport{Exited: true, InFlight: inFlight}
 	}

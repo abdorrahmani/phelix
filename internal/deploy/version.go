@@ -391,8 +391,23 @@ func updateCurrentSymlink(appName string, ver int) error {
 	}
 	target := filepath.Join("builds", fmt.Sprintf("v%d", ver))
 	link := filepath.Join(dir, "current")
-	_ = os.Remove(link)
-	return os.Symlink(target, link)
+
+	// Atomic swap: build the replacement symlink under a temp name in the
+	// same directory, then rename over the old link. rename(2) replaces the
+	// existing symlink atomically, so there is never an instant where
+	// "current" is missing or half-created (the previous Remove+Symlink pair
+	// left exactly such a window and destroyed the link entirely if the
+	// create failed after the remove).
+	tmp := filepath.Join(dir, fmt.Sprintf(".current.tmp.%d", os.Getpid()))
+	_ = os.Remove(tmp)
+	if err := os.Symlink(target, tmp); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: stage current -> %s", target)
+	}
+	if err := os.Rename(tmp, link); err != nil {
+		_ = os.Remove(tmp) // keep the tree clean if replace fails
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: activate current -> %s", target)
+	}
+	return nil
 }
 
 // PruneVersions removes oldest versions beyond the retention limit. The

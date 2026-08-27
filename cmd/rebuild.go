@@ -116,17 +116,19 @@ var RebuildCmd = &cobra.Command{
 			return runZeroDowntimeDeploy(appInfo, name, portToUse)
 		}
 
-		if err := stopExistingApp(appInfo); err != nil {
-			return err
-		}
-
-		// Acquire deploy lock to prevent concurrent rebuilds on the same app
-		// from corrupting versions.json or double-assigning version numbers.
+		// Acquire deploy lock FIRST so two concurrent rebuilds cannot race on
+		// versions.json or double-assign version numbers; previously the old
+		// process was stopped before locking, letting a concurrent rebuild
+		// interleave between the stop and the lock.
 		release, lockErr := deploy.AcquireDeployLock(name, "rebuild")
 		if lockErr != nil {
 			return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lockErr)
 		}
 		defer release()
+
+		if err := stopExistingApp(appInfo); err != nil {
+			return err
+		}
 
 		if err := rebuildApp(appInfo.ID, rebuildArgs, buildMgr); err != nil {
 			return err
