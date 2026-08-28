@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -49,6 +50,27 @@ type BuildConfig struct {
 	UpdatedAt      time.Time // Last update time
 	BuildStartTime time.Time // When build started (set during build)
 	BuildEndTime   time.Time // When build ended (set after build)
+
+	// Observe, when non-nil, receives facts observed during the build
+	// (compiler-cache status, detected toolchain version). PrepareBuild wires
+	// it automatically; direct BuilderInterface users may leave it nil —
+	// builders must tolerate a nil pointer (additive, optional).
+	Observe *BuildObservation
+}
+
+// BuildObservation collects non-fatal telemetry emitted by one build run.
+// Builders populate it best-effort: an undeterminable value simply stays
+// unknown and never influences build success.
+type BuildObservation struct {
+	// CacheStatus records whether the compile came from cache
+	// (buildreport.CacheHit), did real compilation work (buildreport.CacheCold)
+	// or could not be determined (buildreport.CacheUnknown).
+	CacheStatus buildreport.CacheStatus
+	// CacheSource names the cache mechanism when known.
+	CacheSource string
+	// CompilerVersion holds the normalized toolchain version (major.minor,
+	// e.g. "1.27"), probed by the build manager after execution.
+	CompilerVersion string
 }
 
 // BuildResult contains the result of a build operation

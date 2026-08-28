@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -49,7 +50,7 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 	cmd := exec.Command("cargo", args...)
 	cmd.Dir = config.ProjectRoot
 
-	_, err := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Compiler/command output is intentionally not dumped into the error
 		// (it can be large); the underlying *exec.ExitError stays reachable
@@ -62,6 +63,10 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 			config.Language,
 		)
 	}
+
+	// Cargo prints "Compiling <crate>" lines whenever real compilation work
+	// happens; a fully fresh build only prints the "Finished" summary.
+	observeCache(config, RustCacheStatusFromOutput(string(output)), buildreport.CacheSourceCargo)
 
 	// In the actual process, after cargo build completes, we'll copy the binary
 	// to the output path. This is handled in the app manager that uses this builder.

@@ -37,6 +37,10 @@ type ComboReport struct {
 	Duration    string `json:"duration"`
 	Artifact    string `json:"artifact,omitempty"` // binary path or image tag
 	Error       string `json:"error,omitempty"`
+	// CacheStatus is this combination's compiler-cache classification
+	// ("cold"/"hit", empty when unknown). Part of the build-report
+	// integration so every combination retains independent metrics.
+	CacheStatus string `json:"cache_status,omitempty"`
 }
 
 // GenerateReport builds a Report from the execution results.
@@ -59,6 +63,7 @@ func GenerateReport(appName string, results []Result, startTime time.Time) *Repo
 			Status:      res.Status,
 			Duration:    res.Duration.Round(time.Millisecond).String(),
 			Artifact:    res.Artifact,
+			CacheStatus: res.CacheStatus,
 		}
 		if res.Error != nil {
 			cr.Error = res.Error.Error()
