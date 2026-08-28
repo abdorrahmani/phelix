@@ -72,6 +72,7 @@ func main() {
 
 	rootCmd.AddCommand(cmd.VersionCmd)
 	rootCmd.AddCommand(cmd.WizardCmd)
+	rootCmd.AddCommand(cmd.BuildReportCmd)
 	rootCmd.SetVersionTemplate("Phelix CLI {{.Version}}\n")
 
 	// Global flags: --debug is the single debug switch shared by all

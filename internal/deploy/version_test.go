@@ -820,8 +820,8 @@ func TestRecordFreshBuild_IsCurrentFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate: build succeeds, record version.
-	rec, err := RecordFreshBuild(app, "1", tmpBin, "abc123", "pre-release", policy, log)
+	// Simulate: build succeeds, record version (with build-report metadata).
+	rec, err := RecordFreshBuild(app, "1", tmpBin, "abc123", "pre-release", nil, policy, log)
 	if err != nil {
 		t.Fatalf("RecordFreshBuild: %v", err)
 	}

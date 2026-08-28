@@ -20,6 +20,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - **Encrypted environment variable management** (AES-256-GCM)
 - **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
 - **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
+- **Build Reports + Regression Alerts** (every successful build automatically records metrics — compiler, duration, cache status, binary size — and compares them against previous comparable builds to detect meaningful regressions, fully offline)
 - **Docker image building** (auto-generated multi-stage Dockerfiles for Go/Rust with optimized layer caching)
 - **Matrix builds** (build multiple compiler-version × platform combinations in one command)
 
@@ -217,9 +218,10 @@ build    →  (rebuild --blue-green)  →  rollback    →  stop / remove
 1. **Build** a project into a named, managed app and start it.
 2. **Rebuild** after changes; optionally zero-downtime via blue-green or rolling.
 3. Every build is **versioned** (`v1`, `v2`, …) and can be tagged.
-4. **Roll back** to any retained version if something breaks.
-5. Monitor with `status`, `list`, `log`, and `health`.
-6. Ship containers with `dockerize`.
+4. Every successful build automatically records a **Build Report** (compiler, toolchain version, duration, cache status, binary size, commit) and compares it against previous comparable builds, surfacing binary-size and build-time regressions.
+5. **Roll back** to any retained version if something breaks.
+6. Monitor with `status`, `list`, `log`, and `health`.
+7. Ship containers with `dockerize`.
 
 ## The PORT Contract
 
@@ -273,7 +275,9 @@ terminal).
 
 #### `phelix build <NAME> [flags]`
 Compiles the project in the current directory (auto-detects Go or Rust), starts
-it on the given port, and records a **new versioned build**.
+it on the given port, and records a **new versioned build**. A **Build Report**
+with regression analysis is printed automatically after every successful build
+(see [Automatic Build Reports](#automatic-build-reports)).
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -344,6 +348,73 @@ deploy.
 phelix rebuild myapp --blue-green
 phelix rebuild myapp --replicas 3
 ```
+
+#### Automatic Build Reports
+
+Every successful native Go/Rust build (`build`, `rebuild`, zero-downtime deploys) automatically prints a **Build Report** and records it with the version metadata — no flags, no configuration, no network:
+
+```text
+→ Build Report
+  Application   api
+  Version       v12
+  Compiler      Go 1.27
+  Duration      31.2s
+  Cache         COLD (go-build-cache)
+  Binary        14.8 MB (linux/amd64)
+  Commit        8f31c2a
+  ────────────────────────────────────────────────
+
+  Regression Analysis
+  Compared against 1 previous comparable build.
+
+  Binary size
+    Previous      14.1 MB
+    Current       14.8 MB
+    Change        +0.7 MB (+4.9%)
+
+  Build duration
+    Comparison skipped:
+    cache mode differs from the previous comparable build (COLD → HIT)
+```
+
+The report captures: application, version, language, compiler/toolchain version (`go version` / `rustc --version`), build start/end time, duration, binary size and target platform, cache status (`COLD` = real compilation happened, `HIT` = served from the compiler's build cache), git commit when available (`unavailable` outside a git repository), and the build arguments you passed via `--build-arg`.
+
+**The critical cache rule:**
+
+> Build duration comparisons are only made between comparable cache modes. A cold build is never directly compared against a cache-hit build for duration regression — the report explicitly says `Comparison skipped` instead of inventing a misleading percentage.
+
+> Binary size remains a valid regression signal across cache states when the artifact, toolchain, platform, and matrix context are comparable.
+
+**Regression analysis** compares the current build against the previous **5 comparable builds** (same application, language, toolchain, target platform, artifact type — cache state ignored for size, matched for duration). Alerts fire on:
+
+- **Binary size**: growth ≥ 1 MB **or** ≥ 5% versus the previous comparable build, plus a `N-build average` baseline when enough history exists.
+- **Build duration**: slowdown ≥ 25% **and** ≥ 2s versus a previous build in the *same* cache mode (thresholds avoid noisy micro-changes).
+
+Regression analysis is pure observability: missing history never fails a build, and a reporting problem only prints a warning.
+
+#### `phelix build-report <AppName> [flags]`
+
+Read-only inspection of stored build reports — never triggers a build, works fully offline:
+
+```bash
+phelix build-report myapp            # 5 most recent reports
+phelix build-report myapp --limit 10
+```
+
+```text
+→ Build reports for 'myapp' (2 most recent)
+→ v2  2026-08-26T03:25:00Z
+    Compiler   Go 1.27
+    Duration   5.2s
+    Cache      HIT (go-build-cache)
+    Binary     14.9 MB (linux/amd64)
+    Commit     8f31c2a
+    Args       -trimpath
+→ v1  2026-08-26T03:20:00Z
+    ...
+```
+
+Versions recorded before build reporting existed show `no build report metadata`.
 
 ### Versioning & rollback
 
@@ -469,6 +540,32 @@ If the new instance fails its health check, the deploy **aborts**, the new insta
 ### Versioned builds and rollback
 
 Every successful build — whether via `phelix build`, `phelix rebuild`, or zero-downtime deploy — creates a numbered version (`v1`, `v2`, `v3`, ...) rather than overwriting. Versions store both the binary and its paired encrypted env snapshot, so rollback always restores a known-good binary + env pair — never binary-only.
+
+#### Build Report metadata
+
+Each version row in `versions.json` also carries an additive `build_report` object with the metrics captured during that build — language, compiler/toolchain version, build start/end timestamps, duration, cache status and cache source, plus per-artifact details (type, size, target platform):
+
+```json
+{
+  "version": 12,
+  "built_at": "2026-08-26T03:20:00Z",
+  "size_bytes": 15518924,
+  "git_commit": "8f31c2a...",
+  "is_current": false,
+  "build_report": {
+    "language": "go",
+    "compiler": "go",
+    "compiler_version": "1.27",
+    "started_at": "2026-08-26T03:19:29Z",
+    "ended_at": "2026-08-26T03:20:00Z",
+    "duration_ms": 31200,
+    "cache": { "status": "cold", "source": "go-build-cache" },
+    "artifact": { "type": "binary", "size_bytes": 15518924, "platform": "linux/amd64" }
+  }
+}
+```
+
+The field is optional and additive: versions recorded by older Phelix releases (and Docker-image versions) simply lack it. Missing report metadata only makes that version unavailable for regression comparisons — rollback, rollback listing, status, version loading, retention/pruning and the `current` symlink logic all keep working unchanged. A malformed optional `build_report` payload degrades gracefully to "no report" instead of breaking the version index.
 
 #### Build-and-deploy ordering guarantee
 
@@ -762,7 +859,9 @@ Known platforms: `linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `w
 - **Build phase**: fail-open — one failure doesn't stop the rest; full summary at the end.
 - **Push phase**: fail-closed by default — if any combination failed, nothing is pushed. Use `--push-partial` to push only successful images.
 
-**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`) listing each combination's status, duration, artifact path, and error (if failed).
+**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`) listing each combination's status, duration, artifact path, cache status, and error (if failed).
+
+**Independent build reports per combination:** every combination retains its own build metrics — toolchain version, target platform, duration, cache status and binary size — recorded alongside the matrix version's artifacts in `versions.json` and mirrored in `builds/matrix/report.json` (`cache_status` per combination). Regression analysis is combination-aware: `Go 1.27 / linux-amd64` is only ever compared against previous `Go 1.27 / linux-amd64` builds, never against `Go 1.26 / linux-arm64` or a Rust build. After recording, each combination prints a compact summary of its own comparisons.
 
 ### Other commands
 
@@ -828,7 +927,7 @@ All state lives under `~/.phelix/`:
 │   └── deploy_*.log         # deploy instance logs
 ├── registry/<slug>.enc      # encrypted registry credentials
 └── apps/<AppName>/          # per-app data
-    ├── versions.json        # version metadata index
+    ├── versions.json        # version metadata index (incl. per-version build reports + per-combo matrix reports)
     ├── deploy.json           # blue-green / rolling state
     ├── rollback.log          # rollback audit trail
     ├── current → builds/vN   # symlink to the active build
@@ -836,7 +935,7 @@ All state lives under `~/.phelix/`:
     └── env/vN.enc              # per-version encrypted env snapshot
 ```
 
-Retention: the last **5** versions are kept by default (configurable per plan); the active version is never pruned.
+Retention: the last **5** versions are kept by default (configurable per plan); the active version is never pruned. Build-report metadata lives inside `versions.json` (the `build_report` field per version) — there is no separate build database, and everything works offline.
 
 ## Error Handling
 
@@ -902,6 +1001,10 @@ architecture, code inventory, and developer guidelines.
 15. **Use `--tag`** to label important builds (e.g. `--tag "v2.1-release"`) for easier rollback identification.
 16. **Check `phelix status <app>`** for version history before deciding to roll back.
 17. **Use `phelix dockerize`** to containerize apps with optimized, cached Dockerfiles.
+18. **Watch the automatic Build Report after every build** — it is the fastest way to detect unexpected binary growth, compilation regressions, or toolchain changes (the compiler version in the report makes accidental toolchain bumps visible).
+19. **Treat repeated duration regressions in the same cache mode as a signal**: if cold builds keep getting slower across versions, the codebase — not the cache — is the problem.
+20. **Use `phelix build-report <AppName>`** to review stored build history before investigating a performance or size issue; it is read-only and works offline.
+21. **After a matrix build, check each combination's summary** — a size regression in one platform/toolchain combination won't show up in the others.
 
 ## Security Considerations
 

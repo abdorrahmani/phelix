@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -100,6 +101,12 @@ type FreshBuildSource struct {
 	Retention RetentionPolicy
 	Logger    Logger
 
+	// ReportFn, when set, is consulted by Build right before recording the
+	// version so zero-downtime deploys persist the same build-report
+	// telemetry as plain build/rebuild. Optional and additive: nil simply
+	// records a version without report metadata.
+	ReportFn func() *buildreport.Report
+
 	lastVersion int
 }
 
@@ -111,7 +118,11 @@ func (f *FreshBuildSource) Build(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	rec, err := RecordFreshBuild(f.AppName, f.AppID, built, f.GitCommit, f.Tag, f.Retention, f.Logger)
+	var report *buildreport.Report
+	if f.ReportFn != nil {
+		report = f.ReportFn()
+	}
+	rec, err := RecordFreshBuild(f.AppName, f.AppID, built, f.GitCommit, f.Tag, report, f.Retention, f.Logger)
 	if err != nil {
 		return "", "", err
 	}

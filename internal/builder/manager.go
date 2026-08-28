@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -119,6 +120,10 @@ func (bm *BuildManager) PrepareBuild(
 		NoUpload:    noUpload,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
+
+		// Build-report telemetry sink. Builders populate it best-effort
+		// during ExecuteBuild; consumers read it after the run.
+		Observe: &BuildObservation{CacheStatus: buildreport.CacheUnknown},
 	}
 
 	return &BuildContext{
@@ -128,24 +133,41 @@ func (bm *BuildManager) PrepareBuild(
 	}, nil
 }
 
-// ExecuteBuild runs the build process
+// ExecuteBuild runs the build process.
+//
+// Timing semantics: BuildStartTime/BuildEndTime always bracket the attempt —
+// including failures — so a failed build still reports how long it ran before
+// dying (useful post-mortem data). The end timestamp used to be skipped on
+// failure; always recording it is additive and only enriches reporting.
 func (bm *BuildManager) ExecuteBuild(ctx *BuildContext) error {
 	ctx.Config.BuildStartTime = time.Now()
 
+	err := bm.runBuilders(ctx)
+
+	ctx.Config.BuildEndTime = time.Now()
+
+	// Probe the actual toolchain version once per build for the build report.
+	// Never fatal: an undetectable version simply stays empty in the report
+	// (requirement: metadata collection must not fail builds).
+	if ctx.Config.Observe != nil && ctx.Config.Observe.CompilerVersion == "" {
+		if v := DetectCompilerVersion(ctx.Lang); v != "" {
+			ctx.Config.Observe.CompilerVersion = v
+		}
+	}
+
+	return err
+}
+
+func (bm *BuildManager) runBuilders(ctx *BuildContext) error {
 	// For Rust, we need special handling to copy the binary
 	if ctx.Lang == Rust {
 		if err := BuildAndCopyRust(*ctx.Config); err != nil {
 			return err
 		}
-	} else {
-		// For other languages (Go, etc.), use the standard builder
-		if err := ctx.Builder.Build(*ctx.Config); err != nil {
-			return err
-		}
+		return nil
 	}
-
-	ctx.Config.BuildEndTime = time.Now()
-	return nil
+	// For other languages (Go, etc.), use the standard builder
+	return ctx.Builder.Build(*ctx.Config)
 }
 
 // GetBuildDuration returns the duration of the build

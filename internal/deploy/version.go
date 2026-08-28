@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -40,6 +41,12 @@ type VersionMeta struct {
 	// dockerize produced a multi-arch manifest (via docker buildx). Distinct
 	// from the per-combination tags in MatrixArtifacts.
 	MultiArchImage string `json:"multi_arch_image,omitempty"`
+	// BuildReport holds the structured build metrics (compiler, duration,
+	// cache status, artifact size/platform) captured for this build. The
+	// field is additive: versions recorded before build reports existed (and
+	// Docker builds without native artifacts) simply leave it nil. A nil
+	// report only makes that version unavailable for regression comparisons.
+	BuildReport *buildreport.Report `json:"build_report,omitempty"`
 }
 
 // MatrixArtifact describes one artifact from a matrix build, corresponding
@@ -52,6 +59,35 @@ type MatrixArtifact struct {
 	Status    string `json:"status"`              // "success", "failed"
 	Error     string `json:"error,omitempty"`     // error message if failed
 	SizeBytes int64  `json:"size_bytes,omitempty"`
+
+	// Report carries this combination's own build metrics so each matrix
+	// combination retains independent telemetry for regression analysis.
+	// Additive: absent on older artifacts. nil = no comparable metadata.
+	Report *buildreport.Report `json:"report,omitempty"`
+}
+
+// UnmarshalJSON decodes one version row while tolerating a malformed optional
+// build_report payload: only that field degrades to nil instead of failing
+// the whole versions.json load (which would break rollback/status/pruning).
+// Malformed *core* fields still surface their normal decoding error.
+func (m *VersionMeta) UnmarshalJSON(data []byte) error {
+	type alias VersionMeta // strips methods, keeps field types
+	aux := struct {
+		*alias
+		RawReport json.RawMessage `json:"build_report,omitempty"`
+	}{alias: (*alias)(m)}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(aux.RawReport) > 0 && string(aux.RawReport) != "null" {
+		var rep buildreport.Report
+		if err := json.Unmarshal(aux.RawReport, &rep); err == nil {
+			m.BuildReport = &rep
+		}
+		// else: leave nil — malformed optional metadata must not break loading.
+	}
+	return nil
 }
 
 // VersionsFile is the on-disk metadata index for an app's build history.
@@ -268,12 +304,16 @@ func formatAvailableVersions(vf *VersionsFile) string {
 // storage and appends metadata. Pruning runs immediately; the current version
 // is never removed even when over retention.
 //
+// record is optional build-report telemetry captured by the caller for this
+// exact build; when non-nil it is persisted alongside the version row so
+// later builds can run regression analysis against it.
+//
 // RecordFreshBuild always creates the version with is_current=false. The caller
 // must call PromoteVersion only after the deploy's health check passes. This
 // two-phase approach ensures that a build which succeeds but whose deploy
 // (start / health check) fails leaves the version on disk for inspection but
 // never becomes the active version.
-func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, policy RetentionPolicy, log Logger) (*RecordResult, error) {
+func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, report *buildreport.Report, policy RetentionPolicy, log Logger) (*RecordResult, error) {
 	if policy == nil {
 		policy = DefaultRetention{}
 	}
@@ -304,13 +344,18 @@ func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, po
 	if err != nil {
 		return nil, err
 	}
+	// Keep the stored report consistent with what actually landed on disk.
+	if report != nil && report.Artifact.Type == buildreport.ArtifactBinary {
+		report.Artifact.SizeBytes = info.Size()
+	}
 	vf.Versions = append(vf.Versions, VersionMeta{
-		Version:   ver,
-		Tag:       tag,
-		GitCommit: gitCommit,
-		BuiltAt:   time.Now(),
-		SizeBytes: info.Size(),
-		IsCurrent: false,
+		Version:     ver,
+		Tag:         tag,
+		GitCommit:   gitCommit,
+		BuiltAt:     time.Now(),
+		SizeBytes:   info.Size(),
+		IsCurrent:   false,
+		BuildReport: report,
 	})
 	if err := saveVersions(appName, vf); err != nil {
 		return nil, err
@@ -615,6 +660,64 @@ func RecentVersions(appName string, n int) ([]VersionMeta, error) {
 		out = out[:n]
 	}
 	return out, nil
+}
+
+// BuildReportHistory returns previous builds' report metadata for appName,
+// newest first, excluding excludeVersion (the just-recorded current build).
+//
+// Matrix versions contribute one entry per successful artifact, each carrying
+// its own per-combination report, so combinations only ever compare against
+// matching toolchain/platform contexts. Versions whose metadata predates
+// build reports — or Docker-only builds — yield entries with a nil Report;
+// those are unavailable for regression comparison but never break it.
+func BuildReportHistory(appName string, excludeVersion int) ([]buildreport.HistoryEntry, error) {
+	vf, err := LoadVersions(appName)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]VersionMeta(nil), vf.Versions...)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Version > out[j].Version
+	})
+
+	history := make([]buildreport.HistoryEntry, 0, len(out))
+	for _, v := range out {
+		if v.Version == excludeVersion {
+			continue
+		}
+		switch {
+		case v.BuildReport != nil:
+			history = append(history, buildreport.HistoryEntry{
+				Version: v.Version,
+				Tag:     v.Tag,
+				BuiltAt: v.BuiltAt,
+				Report:  v.BuildReport,
+			})
+		case len(v.MatrixArtifacts) > 0:
+			for _, art := range v.MatrixArtifacts {
+				if art.Status != "success" || art.Report == nil {
+					continue
+				}
+				entry := buildreport.HistoryEntry{
+					Version: v.Version,
+					Tag:     v.Tag,
+					BuiltAt: v.BuiltAt,
+					Report:  art.Report,
+				}
+				history = append(history, entry)
+			}
+		default:
+			// Keep a metadata-less placeholder so analysis can report how
+			// many history rows lack comparable data.
+			history = append(history, buildreport.HistoryEntry{
+				Version: v.Version,
+				Tag:     v.Tag,
+				BuiltAt: v.BuiltAt,
+				Report:  nil,
+			})
+		}
+	}
+	return history, nil
 }
 
 // RecordMatrixBuild records a matrix build as a new version entry containing

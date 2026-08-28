@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/abdorrahmani/phelix/cmd/auth"
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
@@ -149,7 +151,9 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 
-		if err := buildApplication(id, buildArgs, buildMgr); err != nil {
+		binPath := filepath.Join(currentDir, fmt.Sprintf("app_%s", id))
+		report, err := buildApplication(id, buildArgs, buildMgr, binPath)
+		if err != nil {
 			return err
 		}
 
@@ -163,8 +167,9 @@ var BuildCmd = &cobra.Command{
 		logger := &colorLogger{}
 		rec, verErr := deploy.RecordFreshBuild(
 			name, id,
-			filepath.Join(currentDir, fmt.Sprintf("app_%s", id)),
+			binPath,
 			gitCommit, buildTag,
+			report,
 			deploy.DefaultRetention{Max: 5}, logger,
 		)
 		if verErr != nil {
@@ -174,6 +179,10 @@ var BuildCmd = &cobra.Command{
 		} else {
 			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
 		}
+
+		// --- Build Report + regression analysis ---------------------------------
+		// Pure observability: printed after recording; never affects success.
+		emitBuildReport(name, report, gitCommit, rec, verErr)
 
 		if !noUpload {
 			err := auth.SendAppsToServer()
@@ -286,11 +295,13 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 	return phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
 }
 
-func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager) (err error) {
-	outputPath := filepath.Join(".", fmt.Sprintf("app_%s", id))
+// buildApplication runs the compile step and returns the captured build
+// report for the successful build. On failure it prints a concise post-mortem
+// summary (never persists anything) and returns the error unchanged.
+func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager, outputPath string) (report *buildreport.Report, err error) {
 	appInfo := app.Manager.(*app.AppManager).Apps[id]
 	if appInfo == nil {
-		return phelixerr.Newf(
+		return nil, phelixerr.Newf(
 			phelixerr.CodeNotFound,
 			"application %s not found in state (it may have been removed by a concurrent operation); please retry",
 			id,
@@ -314,7 +325,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 	}()
 
 	// Prepare build context
-	buildCtx, err := buildMgr.PrepareBuild(
+	buildCtx, prepErr := buildMgr.PrepareBuild(
 		id,
 		appInfo.Name,
 		projectRoot,
@@ -323,7 +334,9 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		extraArgs,
 		appInfo.NoUpload,
 	)
-	if err != nil {
+	if prepErr != nil {
+		printFailedBuildSummary(lang, nil)
+		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", prepErr)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if app, exists := appManager.Apps[id]; exists {
 				app.BuildStatus = "failed"
@@ -331,12 +344,14 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 				_ = appManager.SaveState()
 			}
 		}
-		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", err)
+		return nil, err
 	}
 
 	progress.Update(fmt.Sprintf("compiling %s", buildMgr.FormatLanguage(lang)), 0, 0)
 	// Execute build
 	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
+		// Failed builds are never recorded as versions; print post-mortem.
+		printFailedBuildSummary(lang, buildCtx.Config)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if appInfo, exists := appManager.Apps[id]; exists {
 				appInfo.BuildStatus = "failed"
@@ -344,8 +359,11 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 				_ = appManager.SaveState()
 			}
 		}
-		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)
+		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)
+		return nil, err
 	}
+
+	report = newNativeBuildReport(lang, buildCtx.Config, outputPath)
 
 	progress.Finish("done")
 
@@ -359,7 +377,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		}
 	}
 
-	return nil
+	return report, nil
 }
 
 func startApplication(id, name string) error {
@@ -460,23 +478,26 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 
 	// Record successful artifacts in the versioning system.
 	if report.Succeeded > 0 {
+		var successful []matrix.Result
 		artifacts := make([]deploy.MatrixArtifact, 0, report.Succeeded)
 		for _, r := range results {
 			if r.Status != "success" {
 				continue
 			}
+			successful = append(successful, r)
 			artifacts = append(artifacts, deploy.MatrixArtifact{
 				Platform:  r.Combination.Platform,
 				Version:   r.Combination.Version,
 				Binary:    r.Artifact,
 				Status:    r.Status,
 				SizeBytes: fileSize(r.Artifact),
+				Report:    newMatrixComboReport(r),
 			})
 		}
 
 		gitCommit := deploy.DetectGitCommit(projectRoot)
 		logger := &colorLogger{}
-		_, verErr := deploy.RecordMatrixBuild(
+		rec, verErr := deploy.RecordMatrixBuild(
 			name, tag, gitCommit, artifacts, "",
 			deploy.DefaultRetention{Max: 5}, logger,
 		)
@@ -484,6 +505,25 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
 		} else {
 			fmt.Printf("  %s Matrix build recorded in version history\n", color.GreenString("✓"))
+
+			// --- Per-combination Build Reports + regression analysis ---------
+			// Every combination keeps independent metrics; comparisons only
+			// ever match identical toolchain × platform contexts.
+			history, herr := deploy.BuildReportHistory(name, rec.Version)
+			summaries := make([]buildreport.CompactSummary, 0, len(successful))
+			for _, r := range successful {
+				s := buildreport.CompactSummary{Combination: r.Combination.ID()}
+				if herr == nil {
+					s.Report = newMatrixComboReport(r)
+					s.Analysis = buildreport.Analyze(s.Report, history, buildreport.DefaultConfig())
+				}
+				summaries = append(summaries, s)
+			}
+			buildreport.PrintCompactSummaries(os.Stdout, summaries)
+			if herr != nil {
+				fmt.Printf("  %s Build report warning:\n", color.YellowString("⚠"))
+				fmt.Printf("  Unable to compare with previous builds: %v\n", herr)
+			}
 		}
 	}
 
@@ -506,4 +546,29 @@ func fileSize(path string) int64 {
 		return 0
 	}
 	return info.Size()
+}
+
+// newMatrixComboReport assembles the per-combination build report recorded
+// for a successful matrix artifact from data already captured during the run.
+func newMatrixComboReport(r matrix.Result) *buildreport.Report {
+	compiler := string(r.Combination.Lang)
+	if r.Combination.Lang == builder.Rust {
+		compiler = "rust/cargo"
+	}
+	cacheStatus := buildreport.CacheStatus(strings.TrimSpace(r.CacheStatus))
+	if cacheStatus != buildreport.CacheCold && cacheStatus != buildreport.CacheHit {
+		cacheStatus = buildreport.CacheUnknown
+	}
+	return &buildreport.Report{
+		Language:        string(r.Combination.Lang),
+		Compiler:        compiler,
+		CompilerVersion: r.Combination.Version,
+		DurationMS:      r.Duration.Milliseconds(),
+		Cache:           buildreport.CacheInfo{Status: cacheStatus},
+		Artifact: buildreport.ArtifactInfo{
+			Type:      buildreport.ArtifactBinary,
+			SizeBytes: fileSize(r.Artifact),
+			Platform:  r.Combination.Platform,
+		},
+	}
 }
