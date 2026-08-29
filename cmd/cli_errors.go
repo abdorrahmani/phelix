@@ -97,6 +97,8 @@ func ExitCodeFor(err error) int {
 		return ExitDeploy
 	case phelixerr.CodeRollbackFailed:
 		return ExitRollback
+	case phelixerr.CodeUpdateFailed:
+		return ExitFailure
 	case phelixerr.CodeNetwork, phelixerr.CodeConnection, phelixerr.CodeGRPC:
 		return ExitNetwork
 	case phelixerr.CodeConfiguration:
@@ -129,6 +131,8 @@ func hintFor(err error) string {
 		return "If this lock is stale, clear it with:\n  phelix deploy unlock <app>"
 	case phelixerr.CodeToolchainNotFound:
 		return "Install the required toolchain, or allow Phelix to install it automatically."
+	case phelixerr.CodeUpdateFailed:
+		return "Re-run:\n  phelix update\nOr reinstall with the one-line installer:\n  curl -fsSL https://phelix.anophel.com/install.sh | bash"
 	case phelixerr.CodeDocker, phelixerr.CodeDockerDaemonUnavailable:
 		return "Make sure Docker is installed and running, then try again."
 	default:

@@ -54,6 +54,9 @@ const (
 	CodeConnection Code = "CONNECTION_ERROR"
 	CodeTimeout    Code = "TIMEOUT"
 
+	// Self-update (phelix update).
+	CodeUpdateFailed Code = "UPDATE_FAILED"
+
 	// Proxy.
 	CodeProxy           Code = "PROXY_ERROR"
 	CodePortUnavailable Code = "PORT_UNAVAILABLE"
