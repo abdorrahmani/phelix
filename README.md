@@ -30,6 +30,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+- [Updating](#updating)
 - [Uninstalling](#uninstalling)
 - [Authentication (optional)](#authentication)
 - [Interactive Wizard](#interactive-wizard)
@@ -88,6 +89,51 @@ backend, reconnecting with exponential backoff.
 phelix version              # verify the install
 sudo systemctl status phelix   # Linux: monitor service running?
 ```
+
+### Updating
+
+```bash
+phelix update            # download and install the latest release
+phelix update --check    # only report whether an update is available
+```
+
+`phelix update` upgrades the Phelix CLI/agent binary itself to the latest
+stable release, using the **same release server and layout as the one-line
+installer** (`https://phelix.anophel.com/releases/<version>/phelix-<os>-<arch>`),
+so no Go/Rust toolchain is needed. It:
+
+- Resolves the latest stable version and compares it against the running one
+  with proper semantic-version ordering (`v1.2.3` and `1.2.3` are the same
+  version; a locally newer build is never downgraded).
+- Downloads the matching prebuilt binary for the current platform into a
+  temporary directory.
+- Verifies the release's **SHA-256 checksum** when one is published — a
+  mismatch aborts the update. When no checksum is published, it warns and
+  continues (same policy as the installer).
+- Validates the download is a genuine Phelix binary for this platform before
+  touching anything, then **atomically replaces** the currently installed
+  executable (the old binary is preserved until the new one is proven in
+  place, and restored automatically if a later step fails).
+- On Linux, if the `phelix.service` systemd unit is running, it **restarts
+  the monitor service** afterwards and waits for it to become active again.
+  `KillMode=process` means the restart stops only the monitor — managed
+  applications keep running. A service that is installed but stopped is left
+  stopped, and hosts without systemd (or macOS) simply get the binary
+  replacement.
+- Replacing a binary under `/usr/local/bin` needs root: `phelix update`
+  detects this, authenticates `sudo` interactively when a terminal is
+  attached, and fails with an actionable error otherwise. It never asks for
+  root when the binary lives somewhere you can already write.
+
+If Phelix is already up to date:
+
+```text
+✓ Phelix is already up to date (v1.2.3).
+```
+
+Application state under `~/.phelix/` (sessions, builds, environment
+variables, version history) is **never modified** — the command only replaces
+the binary itself and never rebuilds your applications.
 
 ### Uninstalling
 
@@ -867,6 +913,7 @@ Known platforms: `linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `w
 
 ```bash
 phelix version [--short | --verbose]
+phelix update [--check]   # update the Phelix binary to the latest release
 phelix monitor      # start the long-running gRPC monitoring daemon (foreground)
 ```
 

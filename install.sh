@@ -32,6 +32,9 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+# This is the authoritative release contract. The in-binary `phelix update`
+# command (internal/update) resolves and downloads releases from the same
+# layout below; keep the two in sync when changing it.
 BASE_URL="https://phelix.anophel.com"
 VERSION="${PHELIX_VERSION:-latest}"
 INSTALL_DIR="/usr/local/bin"

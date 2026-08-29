@@ -71,6 +71,7 @@ func main() {
 	rootCmd.AddCommand(cmd.MonitorCmd)
 
 	rootCmd.AddCommand(cmd.VersionCmd)
+	rootCmd.AddCommand(cmd.UpdateCmd)
 	rootCmd.AddCommand(cmd.WizardCmd)
 	rootCmd.AddCommand(cmd.BuildReportCmd)
 	rootCmd.SetVersionTemplate("Phelix CLI {{.Version}}\n")
