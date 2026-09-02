@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/builder"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -147,7 +148,6 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		}
 		return result
 	}
-
 	// Locate the built binary.
 	binPath := filepath.Join(targetDir, triple, "release", binName)
 	if _, err := os.Stat(binPath); err != nil {
@@ -171,6 +171,7 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result.Duration = time.Since(start)
 	result.Status = "success"
 	result.Artifact = outBin
+	result.CacheStatus = string(builder.RustCacheStatusFromOutput(output.String()))
 	return result
 }
 

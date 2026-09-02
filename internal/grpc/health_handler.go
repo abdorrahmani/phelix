@@ -126,12 +126,13 @@ func processHealthSet(cmd *pb.HealthCommand, c *pb.HealthSetCommand, start time.
 			return newHealthResult(cmd, false, start, fmt.Sprintf("invalid mode %q: must be one of auto, http, tcp-only, none", c.GetMode()))
 		}
 	}
+	// Only Mode/Path are persisted for deploy: the interval/retries/timeout
+	// fields here describe the monitoring daemon, not the deploy probe (see
+	// cmd/health.go) — copying them made Tier 1 deploys mathematically
+	// time out. Deploy defaults (1s/5/30s) apply instead.
 	config.DeployTier = &health.DeployTierConfig{
-		Mode:     mode,
-		Path:     c.GetPath(),
-		Interval: interval,
-		Retries:  retries,
-		Timeout:  timeout,
+		Mode: mode,
+		Path: c.GetPath(),
 	}
 
 	if err := configMgr.SaveConfig(appID, config); err != nil {

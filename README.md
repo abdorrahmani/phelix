@@ -20,6 +20,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - **Encrypted environment variable management** (AES-256-GCM)
 - **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
 - **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
+- **Build Reports + Regression Alerts** (every successful build automatically records metrics — compiler, duration, cache status, binary size — and compares them against previous comparable builds to detect meaningful regressions, fully offline)
 - **Docker image building** (auto-generated multi-stage Dockerfiles for Go/Rust with optimized layer caching)
 - **Matrix builds** (build multiple compiler-version × platform combinations in one command)
 
@@ -29,10 +30,12 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+- [Updating](#updating)
 - [Uninstalling](#uninstalling)
 - [Authentication (optional)](#authentication)
 - [Interactive Wizard](#interactive-wizard)
 - [Core Workflow](#core-workflow)
+- [Project Configuration (phelix.yaml)](#project-configuration-phelixyaml)
 - [Command Reference](#command-reference)
 - [Run Phelix in Docker](#run-phelix-in-docker)
 - [Multi-Server Monitoring](#multi-server-monitoring)
@@ -87,6 +90,51 @@ backend, reconnecting with exponential backoff.
 phelix version              # verify the install
 sudo systemctl status phelix   # Linux: monitor service running?
 ```
+
+### Updating
+
+```bash
+phelix update            # download and install the latest release
+phelix update --check    # only report whether an update is available
+```
+
+`phelix update` upgrades the Phelix CLI/agent binary itself to the latest
+stable release, using the **same release server and layout as the one-line
+installer** (`https://phelix.anophel.com/releases/<version>/phelix-<os>-<arch>`),
+so no Go/Rust toolchain is needed. It:
+
+- Resolves the latest stable version and compares it against the running one
+  with proper semantic-version ordering (`v1.2.3` and `1.2.3` are the same
+  version; a locally newer build is never downgraded).
+- Downloads the matching prebuilt binary for the current platform into a
+  temporary directory.
+- Verifies the release's **SHA-256 checksum** when one is published — a
+  mismatch aborts the update. When no checksum is published, it warns and
+  continues (same policy as the installer).
+- Validates the download is a genuine Phelix binary for this platform before
+  touching anything, then **atomically replaces** the currently installed
+  executable (the old binary is preserved until the new one is proven in
+  place, and restored automatically if a later step fails).
+- On Linux, if the `phelix.service` systemd unit is running, it **restarts
+  the monitor service** afterwards and waits for it to become active again.
+  `KillMode=process` means the restart stops only the monitor — managed
+  applications keep running. A service that is installed but stopped is left
+  stopped, and hosts without systemd (or macOS) simply get the binary
+  replacement.
+- Replacing a binary under `/usr/local/bin` needs root: `phelix update`
+  detects this, authenticates `sudo` interactively when a terminal is
+  attached, and fails with an actionable error otherwise. It never asks for
+  root when the binary lives somewhere you can already write.
+
+If Phelix is already up to date:
+
+```text
+✓ Phelix is already up to date (v1.2.3).
+```
+
+Application state under `~/.phelix/` (sessions, builds, environment
+variables, version history) is **never modified** — the command only replaces
+the binary itself and never rebuilds your applications.
 
 ### Uninstalling
 
@@ -217,9 +265,10 @@ build    →  (rebuild --blue-green)  →  rollback    →  stop / remove
 1. **Build** a project into a named, managed app and start it.
 2. **Rebuild** after changes; optionally zero-downtime via blue-green or rolling.
 3. Every build is **versioned** (`v1`, `v2`, …) and can be tagged.
-4. **Roll back** to any retained version if something breaks.
-5. Monitor with `status`, `list`, `log`, and `health`.
-6. Ship containers with `dockerize`.
+4. Every successful build automatically records a **Build Report** (compiler, toolchain version, duration, cache status, binary size, commit) and compares it against previous comparable builds, surfacing binary-size and build-time regressions.
+5. **Roll back** to any retained version if something breaks.
+6. Monitor with `status`, `list`, `log`, and `health`.
+7. Ship containers with `dockerize`.
 
 ## The PORT Contract
 
@@ -252,16 +301,169 @@ Three distinct port concepts:
 
 With blue-green deployment, each instance receives its own `PORT`; the proxy owns the single public port. A failed new deployment never touches the currently active instance.
 
-### Project configuration (`phelix.yaml`)
+### Project Configuration (`phelix.yaml`)
 
-Run `phelix init` in a project directory to create:
+`phelix.yaml` is the project-level Phelix configuration file, stored in the
+current project directory. It removes the need to repeat the application name,
+port, health checks, and deployment strategy on every command.
+
+#### Creating the configuration
+
+```bash
+phelix init
+```
+
+detects the project type (Go/Rust) and generates:
+
+```yaml
+# Phelix project configuration.
+# CLI flags override these values (e.g. --port).
+name: my-app
+port: 8080
+health:
+    endpoints:
+        - name: default
+          path: /health
+          interval: 10s
+          retries: 3
+          mode: auto
+deploy:
+    strategy: classic
+```
+
+#### Full example
 
 ```yaml
 name: api
 port: 3000
+
+health:
+  endpoints:
+    - name: readiness
+      path: /ready
+      interval: 5s
+      retries: 3
+      mode: http
+
+    - name: liveness
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto
+
+deploy:
+  strategy: blue-green
 ```
 
-Precedence: **CLI flag → phelix.yaml → default**. `phelix build api --port 4000` overrides `port: 3000`; without the flag, the config value is used. Projects without `phelix.yaml` keep working exactly as before (opt-in).
+#### Field reference
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | no* | Application name used by `build`, `rebuild`, `health`, `rollback`, etc. *Optional: when missing, `build` prompts for it (TTY) or fails with a clear error (scripts). |
+| `port` | no | Public application port. Default `8080` when missing. |
+| `health.endpoints[].name` | yes (per endpoint) | Endpoint name, e.g. `default`, `readiness`. Must be unique. |
+| `health.endpoints[].path` | yes (per endpoint) | HTTP path on localhost, e.g. `/health`. Must start with `/`. |
+| `health.endpoints[].interval` | no | Monitoring check interval (e.g. `10s`, `1m`). Default `10s`. |
+| `health.endpoints[].retries` | no | Consecutive failures before marking DOWN. Default `3`. |
+| `health.endpoints[].mode` | no | Deploy health tier: `auto` (default), `http`, `tcp-only`, `none`. |
+| `deploy.strategy` | no | `classic` (default), `blue-green`, or `rolling`. |
+| `deploy.replicas` | no | Replica count for `rolling` (requires `deploy.strategy: rolling`). |
+
+The configuration file is fully optional. Projects without `phelix.yaml`
+keep working exactly as before — every existing flag and prompt is unchanged.
+
+#### Resolution order
+
+`phelix build` (and the other project-aware commands) resolve values in this
+order:
+
+```text
+CLI argument/flag  →  phelix.yaml  →  Phelix default  →  interactive prompt
+```
+
+With the full example above, running:
+
+```bash
+phelix build
+```
+
+resolves automatically — no prompts:
+
+```text
+Application: concurrency-lab-api
+Port:        3000
+```
+
+Partial configurations work: a file with only `name:` prompts for the port
+(in a TTY) or uses the default `8080`; a file with only `port:` prompts for
+the name. No file at all means today's behavior (prompt or explicit args).
+
+Explicit flags always win:
+
+```bash
+phelix build --port 8080        # uses port 8080 even though the config says 3000
+phelix build my-custom-name     # uses my-custom-name even though the config has a name
+```
+
+#### Health endpoints
+
+Endpoints declared in `phelix.yaml` are applied to the app's persisted health
+configuration on every `phelix build` / `phelix rebuild`, so:
+
+- `phelix health list <app>` and `phelix health status <app>` show them.
+- Zero-downtime deploys use the first endpoint's `path`/`mode` as the deploy
+  health tier (same as `phelix health set`).
+- The `phelix health set/add/remove` commands keep working; a `health:` block
+  in the config replaces the persisted endpoints at the next build/rebuild,
+  while apps without a `health:` block keep whatever was set via the commands.
+
+#### Deployment strategies
+
+`deploy.strategy` selects which existing deployment path `phelix rebuild`
+uses — it does not introduce a new deployment system.
+
+```yaml
+deploy:
+  strategy: classic          # normal stop → rebuild → start (the default)
+```
+
+```yaml
+deploy:
+  strategy: blue-green       # zero-downtime blue-green (same as --blue-green)
+```
+
+```yaml
+deploy:
+  strategy: rolling          # zero-downtime rolling (same as --replicas N)
+  replicas: 3
+```
+
+Explicit flags still override the config (`--blue-green`, `--replicas`,
+`--port`). `phelix rollback` needs no configuration: it inspects the
+recorded deploy state and automatically uses classic or zero-downtime
+rollback to match how the app was actually deployed. `phelix proxy` is
+required for blue-green/rolling, exactly as with the flags.
+
+#### Validation
+
+The configuration is validated before it can affect a build or deploy — an
+invalid file fails the command with a `CONFIGURATION_ERROR` instead of being
+ignored:
+
+```text
+Configuration error: invalid deploy.strategy "foobar"
+Hint: expected one of: classic, blue-green, rolling
+```
+
+Validated: YAML syntax, port range, strategy name, `replicas` (≥ 1, rolling
+only), endpoint names (required, unique), paths (must start with `/`),
+durations (`10s`, `1m`, …), modes (`auto`, `http`, `tcp-only`, `none`).
+
+#### Related commands
+
+- `phelix init` — generate the file (scriptable: `--name`, `--port`, `--yes`).
+- `phelix doctor` — reports whether `phelix.yaml` is found and valid.
+- `phelix build` / `phelix rebuild` — read name, port, health, and strategy.
 
 ## Command Reference
 
@@ -273,7 +475,14 @@ terminal).
 
 #### `phelix build <NAME> [flags]`
 Compiles the project in the current directory (auto-detects Go or Rust), starts
-it on the given port, and records a **new versioned build**.
+it on the given port, and records a **new versioned build**. A **Build Report**
+with regression analysis is printed automatically after every successful build
+(see [Automatic Build Reports](#automatic-build-reports)).
+
+`NAME` and `--port` are resolved in this order: CLI argument/flag →
+[`phelix.yaml`](#project-configuration-phelixyaml) → default `8080` →
+interactive prompt. When the config file supplies both, the command runs
+without asking anything.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -295,7 +504,10 @@ phelix build myapp -p 8080 --tag "v1.2.3"
 
 #### `phelix init`
 
-Detects the project type (Go/Rust) and creates `phelix.yaml` with the application name and port. Prompts interactively in a TTY; fully scriptable with flags:
+Detects the project type (Go/Rust) and creates `phelix.yaml` with the
+application name, port, a default health endpoint, and the classic deploy
+strategy (see [Project Configuration](#project-configuration-phelixyaml)).
+Prompts interactively in a TTY; fully scriptable with flags:
 
 ```bash
 phelix init --name api --port 3000 --yes
@@ -329,7 +541,11 @@ Exits non-zero when a critical check fails. Inconclusive detection (no listener 
 
 #### `phelix rebuild <ID|AppName> [flags]`
 Rebuilds an existing app from its source directory. Supports zero-downtime
-deploy.
+deploy. Without an argument, the app is taken from `phelix.yaml` (`name:`)
+when it exists in the current directory, otherwise an interactive picker is
+shown. `--blue-green` / `--replicas` default to the config's
+[`deploy.strategy`](#project-configuration-phelixyaml) when the flags are not
+passed.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -344,6 +560,73 @@ deploy.
 phelix rebuild myapp --blue-green
 phelix rebuild myapp --replicas 3
 ```
+
+#### Automatic Build Reports
+
+Every successful native Go/Rust build (`build`, `rebuild`, zero-downtime deploys) automatically prints a **Build Report** and records it with the version metadata — no flags, no configuration, no network:
+
+```text
+→ Build Report
+  Application   api
+  Version       v12
+  Compiler      Go 1.27
+  Duration      31.2s
+  Cache         COLD (go-build-cache)
+  Binary        14.8 MB (linux/amd64)
+  Commit        8f31c2a
+  ────────────────────────────────────────────────
+
+  Regression Analysis
+  Compared against 1 previous comparable build.
+
+  Binary size
+    Previous      14.1 MB
+    Current       14.8 MB
+    Change        +0.7 MB (+4.9%)
+
+  Build duration
+    Comparison skipped:
+    cache mode differs from the previous comparable build (COLD → HIT)
+```
+
+The report captures: application, version, language, compiler/toolchain version (`go version` / `rustc --version`), build start/end time, duration, binary size and target platform, cache status (`COLD` = real compilation happened, `HIT` = served from the compiler's build cache), git commit when available (`unavailable` outside a git repository), and the build arguments you passed via `--build-arg`.
+
+**The critical cache rule:**
+
+> Build duration comparisons are only made between comparable cache modes. A cold build is never directly compared against a cache-hit build for duration regression — the report explicitly says `Comparison skipped` instead of inventing a misleading percentage.
+
+> Binary size remains a valid regression signal across cache states when the artifact, toolchain, platform, and matrix context are comparable.
+
+**Regression analysis** compares the current build against the previous **5 comparable builds** (same application, language, toolchain, target platform, artifact type — cache state ignored for size, matched for duration). Alerts fire on:
+
+- **Binary size**: growth ≥ 1 MB **or** ≥ 5% versus the previous comparable build, plus a `N-build average` baseline when enough history exists.
+- **Build duration**: slowdown ≥ 25% **and** ≥ 2s versus a previous build in the *same* cache mode (thresholds avoid noisy micro-changes).
+
+Regression analysis is pure observability: missing history never fails a build, and a reporting problem only prints a warning.
+
+#### `phelix build-report <AppName> [flags]`
+
+Read-only inspection of stored build reports — never triggers a build, works fully offline:
+
+```bash
+phelix build-report myapp            # 5 most recent reports
+phelix build-report myapp --limit 10
+```
+
+```text
+→ Build reports for 'myapp' (2 most recent)
+→ v2  2026-08-26T03:25:00Z
+    Compiler   Go 1.27
+    Duration   5.2s
+    Cache      HIT (go-build-cache)
+    Binary     14.9 MB (linux/amd64)
+    Commit     8f31c2a
+    Args       -trimpath
+→ v1  2026-08-26T03:20:00Z
+    ...
+```
+
+Versions recorded before build reporting existed show `no build report metadata`.
 
 ### Versioning & rollback
 
@@ -436,6 +719,7 @@ Client → :8080 [phelix proxy]  ──atomic target──→ blue  :9001
    phelix health set myapp --path /health
    ```
    Without one, Phelix falls back to Tier 2 (any HTTP response) or Tier 3 (TCP only) and prints a warning.
+3. One-time migration: an app currently running outside the proxy (started via a classic build/rebuild) binds the public port itself, so the first `--blue-green` / `--replicas` deploy cannot enrol it. Stop the app once (`phelix stop <app>`) and deploy — the proxy takes over the public port, and every deploy after that switches targets with zero downtime.
 
 ```bash
 phelix proxy              # start in background (detaches and returns)
@@ -444,16 +728,17 @@ phelix proxy stop         # shut the daemon down (drains up to 30s)
 phelix proxy --foreground   # run attached (for process supervisors / systemd)
 ```
 `phelix rebuild --blue-green` / `--replicas` will also auto-start the daemon if it is not already running.
+Enrolled apps and their active targets are **persisted** (`~/.phelix/proxy-state.json`) and restored automatically when the daemon restarts, so backend instances keep serving through daemon crashes or reboots without any redeploy.
 
 #### Blue-green deploy
-Builds a new binary, starts it on the inactive slot (blue ↔ green), waits until healthy, then atomically switches the proxy. The previous instance is drained and stopped.
+Builds a new binary, starts it on the inactive slot (blue ↔ green), waits until healthy, then atomically switches the proxy. The previous instance is drained and stopped. A deploy that loses the proxy mid-flight shuts down its unproven new instance instead of leaking it, and slots left behind by crashed deploys are reclaimed on the next run.
 ```bash
 phelix rebuild myapp --blue-green
 phelix rebuild myapp --blue-green --port 8080
 ```
 
 #### Rolling deploy
-Restarts N replicas one at a time (never more than one down). Useful when you want capacity during the cut-over.
+Replaces N replicas one at a time. Each replacement starts on a fresh internal port **alongside** the instance it replaces and joins the proxy only after passing its health check; the old instance is then drained from rotation and stopped, so no request is ever routed to a dead port during the roll. Shrinking (`--replicas N` smaller than before) drains the surplus replicas at the end of the rollout.
 ```bash
 phelix rebuild myapp --replicas 3
 ```
@@ -468,6 +753,32 @@ If the new instance fails its health check, the deploy **aborts**, the new insta
 ### Versioned builds and rollback
 
 Every successful build — whether via `phelix build`, `phelix rebuild`, or zero-downtime deploy — creates a numbered version (`v1`, `v2`, `v3`, ...) rather than overwriting. Versions store both the binary and its paired encrypted env snapshot, so rollback always restores a known-good binary + env pair — never binary-only.
+
+#### Build Report metadata
+
+Each version row in `versions.json` also carries an additive `build_report` object with the metrics captured during that build — language, compiler/toolchain version, build start/end timestamps, duration, cache status and cache source, plus per-artifact details (type, size, target platform):
+
+```json
+{
+  "version": 12,
+  "built_at": "2026-08-26T03:20:00Z",
+  "size_bytes": 15518924,
+  "git_commit": "8f31c2a...",
+  "is_current": false,
+  "build_report": {
+    "language": "go",
+    "compiler": "go",
+    "compiler_version": "1.27",
+    "started_at": "2026-08-26T03:19:29Z",
+    "ended_at": "2026-08-26T03:20:00Z",
+    "duration_ms": 31200,
+    "cache": { "status": "cold", "source": "go-build-cache" },
+    "artifact": { "type": "binary", "size_bytes": 15518924, "platform": "linux/amd64" }
+  }
+}
+```
+
+The field is optional and additive: versions recorded by older Phelix releases (and Docker-image versions) simply lack it. Missing report metadata only makes that version unavailable for regression comparisons — rollback, rollback listing, status, version loading, retention/pruning and the `current` symlink logic all keep working unchanged. A malformed optional `build_report` payload degrades gracefully to "no report" instead of breaking the version index.
 
 #### Build-and-deploy ordering guarantee
 
@@ -761,12 +1072,15 @@ Known platforms: `linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `w
 - **Build phase**: fail-open — one failure doesn't stop the rest; full summary at the end.
 - **Push phase**: fail-closed by default — if any combination failed, nothing is pushed. Use `--push-partial` to push only successful images.
 
-**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`) listing each combination's status, duration, artifact path, and error (if failed).
+**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`) listing each combination's status, duration, artifact path, cache status, and error (if failed).
+
+**Independent build reports per combination:** every combination retains its own build metrics — toolchain version, target platform, duration, cache status and binary size — recorded alongside the matrix version's artifacts in `versions.json` and mirrored in `builds/matrix/report.json` (`cache_status` per combination). Regression analysis is combination-aware: `Go 1.27 / linux-amd64` is only ever compared against previous `Go 1.27 / linux-amd64` builds, never against `Go 1.26 / linux-arm64` or a Rust build. After recording, each combination prints a compact summary of its own comparisons.
 
 ### Other commands
 
 ```bash
 phelix version [--short | --verbose]
+phelix update [--check]   # update the Phelix binary to the latest release
 phelix monitor      # start the long-running gRPC monitoring daemon (foreground)
 ```
 
@@ -827,7 +1141,7 @@ All state lives under `~/.phelix/`:
 │   └── deploy_*.log         # deploy instance logs
 ├── registry/<slug>.enc      # encrypted registry credentials
 └── apps/<AppName>/          # per-app data
-    ├── versions.json        # version metadata index
+    ├── versions.json        # version metadata index (incl. per-version build reports + per-combo matrix reports)
     ├── deploy.json           # blue-green / rolling state
     ├── rollback.log          # rollback audit trail
     ├── current → builds/vN   # symlink to the active build
@@ -835,7 +1149,7 @@ All state lives under `~/.phelix/`:
     └── env/vN.enc              # per-version encrypted env snapshot
 ```
 
-Retention: the last **5** versions are kept by default (configurable per plan); the active version is never pruned.
+Retention: the last **5** versions are kept by default (configurable per plan); the active version is never pruned. Build-report metadata lives inside `versions.json` (the `build_report` field per version) — there is no separate build database, and everything works offline.
 
 ## Error Handling
 
@@ -844,16 +1158,68 @@ Retention: the last **5** versions are kept by default (configurable per plan); 
   with error text.
 - Authentication errors (e.g. an expired session during `phelix auth status`)
   prompt you to run `phelix auth login`. Build/run commands never require it.
-- Build errors show the failing stage and a hint (run with `--debug` for the
-  underlying root cause).
+- Build errors show the failing stage and a hint, and the wrapped root-cause
+  chain (e.g. the failing cargo/go command with its exit status and the useful
+  tail of its diagnostics) is rendered on stderr — no `--debug` required.
 - Connection errors are logged and retried automatically.
 - Server communication errors are handled gracefully, without crashing the CLI.
 - **Root causes are preserved.** Wrapped errors keep the underlying cause
   reachable via `errors.Is` / `errors.As`, so `os.IsNotExist`, `exec.ExitError`,
   and gRPC `status.Code` still work on the cause.
-- **`--debug`**: passes the flag to any command to render the full error chain
-  (root cause included) on stderr. It never discloses secrets — every rendered
+- **`--debug`**: passes the flag to any command to render the complete error
+  chain on stderr (normal mode bounds the chain to the first few wrapped
+  layers; `--debug` lifts that cap). It never discloses secrets — every rendered
   string is run through `phelixerr.Redact` in both normal and debug mode.
+
+### Error Reporter (known errors)
+
+For a small registry of **known, recognizable problems**, Phelix adds an
+explanation, a concrete suggested fix, a real command you can run yourself,
+and a documentation link on top of the usual error line. The error code, exit
+code, and root-cause chain are unchanged — the reporter only adds context.
+
+Currently recognized:
+
+| Problem | Example guidance |
+|---|---|
+| Missing **Go** toolchain (`TOOLCHAIN_NOT_FOUND`) | platform-appropriate install command (via Phelix's package-manager detection: `sudo apt-get …` / `sudo dnf …` / `brew install go` / `winget …`), docs at go.dev/doc/install |
+| Missing **Rust** toolchain (`TOOLCHAIN_NOT_FOUND`) | rustup install command, docs at rust-lang.org/tools/install |
+| **Port already in use** (`PORT_UNAVAILABLE`) | names the listening process and PID when the OS can tell (read-only `lsof` lookup), a read-only inspection command, and the `--port` alternative. Phelix **never** stops the process for you |
+| **go.mod problems** (`BUILD_FAILED`) | `go mod init` for a missing go.mod, `go mod tidy` for go.sum drift or undeclared dependencies, manual-fix guidance for malformed go.mod, cache-clear guidance for checksum mismatches — each only for the specific condition it matches |
+
+Example (`go.mod` with an unknown directive):
+
+```text
+Error: build failed
+  Code: BUILD_FAILED
+
+  Invalid go.mod
+
+  go.mod could not be parsed — it likely contains a syntax error or an
+  unsupported directive at the line named in the go tool output below.
+
+  Suggested fix:
+  Fix the reported line in go.mod, then build again. Once the file parses,
+  go mod edit -fmt reformats it.
+  Documentation:
+    https://go.dev/ref/mod
+
+  Tool output (most recent lines):
+    go: errors parsing go.mod:
+    go.mod:5: unknown directive: toolchainx
+```
+
+**Unknown errors stay unknown.** Most compiler and system failures have no
+smart suggestion — and none is invented for them. An unrecognized error keeps
+its code, shows the raw captured tool output (if any) and the root cause via
+`--debug`, exactly as before. Only deterministic, evidence-based signals
+(structured error codes, `errors.Is`/`errors.As`, tool identity, and narrowly
+matched, tested tool-output conditions) trigger a suggestion; generic words
+like "error" or "failed" never do.
+
+Suggested commands are **informational only** — Phelix never executes them for
+you, and every rendered string (including captured compiler output) passes
+through the same secret redactor as the rest of the error path.
 
 ### Exit codes
 
@@ -880,7 +1246,8 @@ exit code**, so automation can rely on them:
 Examples: `phelix status no-such-app` exits **12** (`NOT_FOUND`);
 `phelix status` (missing required argument) exits **2**. See
 [`docs/error-architecture.md`](docs/error-architecture.md) for the full error
-architecture, code inventory, and developer guidelines.
+architecture, code inventory, the error-reporter registry, and developer
+guidelines.
 
 ## Best Practices
 
@@ -901,6 +1268,10 @@ architecture, code inventory, and developer guidelines.
 15. **Use `--tag`** to label important builds (e.g. `--tag "v2.1-release"`) for easier rollback identification.
 16. **Check `phelix status <app>`** for version history before deciding to roll back.
 17. **Use `phelix dockerize`** to containerize apps with optimized, cached Dockerfiles.
+18. **Watch the automatic Build Report after every build** — it is the fastest way to detect unexpected binary growth, compilation regressions, or toolchain changes (the compiler version in the report makes accidental toolchain bumps visible).
+19. **Treat repeated duration regressions in the same cache mode as a signal**: if cold builds keep getting slower across versions, the codebase — not the cache — is the problem.
+20. **Use `phelix build-report <AppName>`** to review stored build history before investigating a performance or size issue; it is read-only and works offline.
+21. **After a matrix build, check each combination's summary** — a size regression in one platform/toolchain combination won't show up in the others.
 
 ## Security Considerations
 

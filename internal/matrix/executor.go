@@ -22,6 +22,10 @@ type Result struct {
 	Artifact    string
 	Error       error
 	Log         string
+	// CacheStatus is the compiler-cache classification for this combination
+	// ("cold" / "hit"), derived from toolchain output by the builders. Empty
+	// means unknown. Consumed by the build-report integration.
+	CacheStatus string
 }
 
 // ExecutorConfig controls worker pool and output verbosity.

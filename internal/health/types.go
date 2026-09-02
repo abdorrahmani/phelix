@@ -1,6 +1,10 @@
 package health
 
-import "time"
+import (
+	"net/url"
+	"sort"
+	"time"
+)
 
 // HealthCheckConfig represents the configuration for a single health check endpoint
 type HealthCheckConfig struct {
@@ -42,6 +46,68 @@ type AppHealthConfig struct {
 	// HTTPMetrics opts into read-only reverse-proxy metrics. nil means the
 	// feature is disabled for this application.
 	HTTPMetrics *HTTPMetricsConfig `json:"http_metrics,omitempty"`
+}
+
+// EffectiveDeployTier returns the deploy-tier health config for this app.
+//
+// It is the single resolution point shared by blue-green and rolling deploys:
+// an explicitly persisted DeployTier wins; otherwise one is derived from the
+// persisted endpoints — the same data `phelix health list/status` display — so
+// an app with a configured localhost endpoint is never treated as
+// "no health endpoint configured" just because the deploy_tier block is
+// missing (older configs, or endpoints added via `health add`). Only
+// loopback endpoints can be bridged: the deploy probe targets the new
+// instance's own port, so a remote URL says nothing about that instance.
+// Returns nil when nothing usable is configured (genuine Tier 2/3 fallback).
+func (c *AppHealthConfig) EffectiveDeployTier() *DeployTierConfig {
+	if c == nil {
+		return nil
+	}
+	if c.DeployTier != nil {
+		return c.DeployTier
+	}
+
+	derive := func(ep *HealthCheckConfig) *DeployTierConfig {
+		u, err := url.Parse(ep.URL)
+		if err != nil || u.Path == "" || u.Path == "/" {
+			return nil
+		}
+		host := u.Hostname()
+		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+			return nil
+		}
+		// Only Mode/Path: endpoint Interval/Retries/Timeout describe the
+		// monitoring daemon's cadence (10s checks), which would make the
+		// deploy deadline impossible (see cmd/health.go). Deploy defaults
+		// (1s interval, 5 successes, 30s deadline) apply instead.
+		return &DeployTierConfig{
+			Mode: TierModeAuto,
+			Path: u.Path,
+		}
+	}
+
+	if ep, ok := c.Endpoints["default"]; ok {
+		if cfg := derive(ep); cfg != nil {
+			return cfg
+		}
+	}
+	for _, name := range sortedEndpointNames(c.Endpoints) {
+		if cfg := derive(c.Endpoints[name]); cfg != nil {
+			return cfg
+		}
+	}
+	return nil
+}
+
+// sortedEndpointNames gives deterministic iteration order for the endpoint
+// map, so bridged configs are stable across runs.
+func sortedEndpointNames(m map[string]*HealthCheckConfig) []string {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // DeployTierMode selects which health-check tier the deploy flow uses.

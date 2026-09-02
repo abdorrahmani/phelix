@@ -4,16 +4,33 @@ import (
 	"context"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // SendEvent sends an application event to the backend via gRPC.
+//
+// Fire-and-forget variant kept for long-running callers (monitor daemon):
+// failures only land in phelix.log. Interactive commands should use
+// SendEventChecked (via ReportEventResult) so they can tell the user the
+// dashboard is now stale.
 func (c *Client) SendEvent(event *pb.ApplicationEvent) {
+	_ = c.SendEventChecked(event)
+}
+
+// SendEventChecked sends an application event to the backend via gRPC and
+// reports whether it was delivered. A nil return means the backend accepted
+// the event; non-nil explains why it did not land (not connected, auth
+// rejected, RPC error, or an EventResponse with accepted=false).
+func (c *Client) SendEventChecked(event *pb.ApplicationEvent) error {
 	if !c.IsConnected() {
 		logs.ErrorFile("grpc", "[gRPC] Cannot send event '%s' for app '%s': not connected", event.GetAction(), event.GetAppName())
-		return
+		return phelixerr.New(
+			phelixerr.CodeConnection,
+			"dashboard backend not connected",
+		)
 	}
 
 	logs.InfoFile("grpc", "[gRPC] Sending event: action=%s app=%s app_id=%s success=%v agent_id=%s", event.GetAction(), event.GetAppName(), event.GetAppId(), event.GetSuccess(), server.GetAgentID())
@@ -25,21 +42,35 @@ func (c *Client) SendEvent(event *pb.ApplicationEvent) {
 	authCtx, err := attachAuthMetadata(ctx, serverID)
 	if err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Failed to attach auth metadata: %v", err)
-		return
+		return phelixerr.Wrap(phelixerr.CodeUnauthenticated, "no valid session for the dashboard backend", err)
 	}
 
 	resp, err := c.serviceClient.ReportEvent(authCtx, event)
 	if err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Failed to send event: %v", err)
 		c.reconnectIfNeeded()
-		return
+		rpcErr := phelixerr.FromGRPC(err)
+		if code := phelixerr.CodeOf(rpcErr); code == phelixerr.CodeUnauthenticated || code == phelixerr.CodeSessionExpired {
+			return phelixerr.Wrap(
+				code,
+				"the dashboard rejected this session; run 'phelix auth login' and retry",
+				err,
+			)
+		}
+		return phelixerr.Wrap(phelixerr.CodeGRPC, "failed to report event to the dashboard backend", err)
 	}
 
 	if !resp.Accepted {
 		logs.ErrorFile("grpc", "[gRPC] Event rejected: %s", resp.Message)
-	} else {
-		logs.InfoFile("grpc", "[gRPC] Event sent successfully: action=%s", event.GetAction())
+		return phelixerr.Newf(
+			phelixerr.CodeServer,
+			"dashboard refused the event: %s",
+			resp.Message,
+		)
 	}
+
+	logs.InfoFile("grpc", "[gRPC] Event sent successfully: action=%s", event.GetAction())
+	return nil
 }
 
 // NewApplicationEvent creates a new ApplicationEvent with the given parameters.

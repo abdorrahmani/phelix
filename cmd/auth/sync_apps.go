@@ -45,6 +45,8 @@ func SendAppsToServer() error {
 			Status:      a.Status,
 			ServerID:    serverID,
 			PID:         a.PID,
+			Type:        a.Language,
+			Language:    a.Language,
 			Uptime:      a.Uptime,
 			BuildStatus: a.BuildStatus,
 			CreatedAt:   a.CreatedAt,

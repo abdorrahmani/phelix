@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -58,6 +59,20 @@ func (gb *GoBuilder) Validate(projectRoot string) error {
 	return phelixerr.New(phelixerr.CodeUnsupportedProject, "no valid Go project found: missing go.mod or main.go")
 }
 
+// observeCache records cache telemetry into config.Observe when present.
+// Best-effort by design: a nil observation or unknown status simply leaves
+// the report's cache section unknown.
+func observeCache(config BuildConfig, status buildreport.CacheStatus, source string) {
+	if config.Observe == nil {
+		return
+	}
+	if status != buildreport.CacheCold && status != buildreport.CacheHit {
+		status = buildreport.CacheUnknown
+	}
+	config.Observe.CacheStatus = status
+	config.Observe.CacheSource = source
+}
+
 // Build performs a Go build
 func (gb *GoBuilder) Build(config BuildConfig) error {
 	mainFile, err := gb.findMainFile(config.ProjectRoot)
@@ -67,8 +82,12 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 
 	relPath, _ := filepath.Rel(config.ProjectRoot, mainFile)
 
-	// Build command arguments
-	args := []string{"build"}
+	// Build command arguments.
+	//
+	// `-v` makes `go build` print every package being compiled, which is how
+	// the build report distinguishes a cache COLD build from a cache HIT (all
+	// packages up to date). It does not change what is compiled or linked.
+	args := []string{"build", "-v"}
 
 	// Add extra arguments from user (e.g., -ldflags, -tags, etc.)
 	if len(config.ExtraArgs) > 0 {
@@ -81,20 +100,23 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 	cmd := exec.Command("go", args...)
 	cmd.Dir = config.ProjectRoot
 
-	_, err = cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// The full compiler/command output is intentionally NOT embedded in the
-		// error: it can be large and may contain file paths; the underlying
-		// *exec.ExitError (and its exit code) is preserved through the wrap so
+		// The compiler output is not embedded in the message. It is kept as a
+		// bounded tail on the ToolError so the CLI error reporter can classify
+		// known go.mod failures and show raw diagnostics; the underlying
+		// *exec.ExitError (and its exit code) is preserved through the wraps so
 		// errors.As / errors.Is still reach it.
 		return phelixerr.Wrapf(
 			phelixerr.CodeBuildFailed,
-			err,
+			&ToolError{Tool: "go", Output: tailOutput(output), Err: err},
 			"go build failed for %s (%s)",
 			config.Name,
 			config.Language,
 		)
 	}
+
+	observeCache(config, GoCacheStatusFromOutput(string(output)), buildreport.CacheSourceGoBuild)
 
 	return nil
 }

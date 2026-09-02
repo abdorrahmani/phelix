@@ -6,6 +6,8 @@ import (
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // GlobalClient is the singleton gRPC client used throughout the CLI.
@@ -39,44 +41,63 @@ func SetClient(c *Client) {
 
 // sendWithTemporaryClient creates a short-lived connection, sends the event, and closes.
 // Used by CLI commands when the monitor is not running.
-func sendWithTemporaryClient(event *pb.ApplicationEvent) {
+//
+// The returned error describes why delivery failed (dial failure, rejection,
+// RPC error); callers that want to tell the user their dashboard is stale use
+// it directly.
+func sendWithTemporaryClient(event *pb.ApplicationEvent) error {
 	logs.InfoFile("grpc", "[gRPC] Creating temporary connection to send event: action=%s", event.GetAction())
 	c := NewClient()
 	if err := c.Connect(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Failed to create temporary connection: %v", err)
-		return
+		return phelixerr.Wrap(phelixerr.CodeConnection, "failed to connect to the dashboard backend", err)
 	}
 	defer c.Close()
 
-	c.SendEvent(event)
+	return c.SendEventChecked(event)
 }
 
 // ReportEvent sends an event synchronously. Used by CLI commands that need
 // to ensure the event is sent before the process exits.
+//
+// This variant keeps the historical fire-and-forget semantics: nothing is
+// echoed to the terminal and failures only land in phelix.log. Interactive
+// commands should prefer ReportEventResult, which reports why the backend
+// was not updated.
 func ReportEvent(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) {
+	_ = ReportEventResult(appID, appName, action, success, errMsg, pid, mode, version)
+}
+
+// ReportEventResult sends an application event synchronously like ReportEvent,
+// but tells the caller whether the backend actually received it. A nil return
+// means the backend accepted the event (e.g. the app really was deleted from
+// its database); non-nil explains why the dashboard is now out of date.
+func ReportEventResult(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) error {
 	// Without a session there is nothing to attribute the event to and the
 	// backend would reject it. Skip the upload entirely — the command itself
 	// already ran successfully.
 	if !sessionAvailable() {
-		return
+		return phelixerr.New(
+			phelixerr.CodeUnauthenticated,
+			"not logged in; run 'phelix auth login' to sync with the dashboard",
+		)
 	}
 
 	// Initialize server to ensure server ID is available
 	if err := server.Initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server for event: %v", err)
-		return
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize server identity", err)
 	}
 
 	event := NewApplicationEvent(appID, appName, action, success, errMsg, pid, mode, version)
 
 	c := GetClient()
 	if c != nil && c.IsConnected() {
-		c.SendEvent(event)
-		return
+		return c.SendEventChecked(event)
 	}
 
 	// No global client available, use temporary connection
-	sendWithTemporaryClient(event)
+	return sendWithTemporaryClient(event)
 }
 
 // ReportEventAsync sends an event asynchronously. Only use this from long-running

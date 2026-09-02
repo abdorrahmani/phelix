@@ -6,6 +6,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +39,9 @@ var RemoveCmd = &cobra.Command{
 
 		fmt.Printf("• Removing application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
 		if err := app.Manager.RemoveApplication(appInfo.ID); err != nil {
-			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "remove", false, err.Error(), 0, "", "")
+			if rerr := phelixgrpc.ReportEventResult(appInfo.ID, appInfo.Name, "remove", false, err.Error(), 0, "", ""); rerr != nil {
+				fmt.Printf("%s Dashboard was not updated about the failed removal: %v\n", color.YellowString("⚠"), rerr)
+			}
 			return phelixerr.Wrap(
 				phelixerr.CodeProcessFailed,
 				fmt.Sprintf("failed to remove application %q (ID: %s)", appInfo.Name, appInfo.ID),
@@ -47,7 +50,13 @@ var RemoveCmd = &cobra.Command{
 		}
 
 		fmt.Printf("✓ Application '%s' (ID: %s) removed successfully\n", appInfo.Name, appInfo.ID)
-		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "remove", true, "", 0, "", "")
+		// Tell the backend to delete its copy of this app (action="remove" is
+		// what triggers the database deletion there). Surface delivery
+		// failures instead of failing silently — a silent drop leaves the app
+		// stuck on the dashboard forever.
+		if rerr := phelixgrpc.ReportEventResult(appInfo.ID, appInfo.Name, "remove", true, "", 0, "", ""); rerr != nil {
+			fmt.Printf("%s Removed locally, but the dashboard was NOT updated — the app may still appear there: %v\n", color.YellowString("⚠"), rerr)
+		}
 		return nil
 	},
 }

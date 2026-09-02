@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -29,20 +28,33 @@ type Rolling struct {
 	Notifier       Notifier
 	InFlight       InFlightProvider
 	GracePeriod    time.Duration
+
+	// enrolled tracks whether the app has been registered with the proxy
+	// daemon during this deploy so the first healthy replica can Add instead
+	// of Switch-ing against an unknown app (which silently routes nothing).
+	enrolled bool
 }
 
-// Deploy restarts replicas one at a time. For each replica index 0..N-1 it:
+// Deploy restarts replicas one at a time while keeping the replica currently
+// being replaced in rotation until its replacement has passed the health
+// check:
 //
-//  1. Stops the current instance (if any) — taking it out of rotation.
-//  2. Builds the new binary.
-//  3. Starts a replacement instance.
-//  4. Runs the tiered health check on it.
-//  5. Re-adds it to the proxy's backend set.
+//  1. Start the replacement for replica i on a fresh internal port ALONGSIDE
+//     the current instance i (which keeps serving).
+//  2. Run the tiered health check against the replacement.
+//  3. Atomically update the proxy's backend set: new instance in, old one
+//     out. (The first healthy replica enrolls the app instead.)
+//  4. Drain and gracefully stop old instance i.
 //
-// It never takes more than one replica down at a time. A health-check failure
-// on a replacement aborts the whole rolling deploy with a non-nil error: the
-// failing replacement is killed and the remaining replicas are left as-is, so
-// at least N-1 replicas stay serving.
+// This ordering makes it impossible for the proxy to route to a dead or not-
+// yet-started process, which the previous stop-then-replace implementation
+// did on every single replica. A health-check or proxy failure aborts the
+// deploy: the failing replacement is killed, replica i keeps serving, and
+// remaining replicas are untouched.
+//
+// Shrinking (--replicas fewer than before): surplus replicas stay serving
+// until the first successful membership update excludes them, then they are
+// drained and stopped at the end of the rollout.
 func (r *Rolling) Deploy(ctx context.Context) error {
 	log := r.logger()
 	grace := r.GracePeriod
@@ -66,7 +78,12 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
+
+	// Shrink handling: snapshot instances beyond the desired replica count so
+	// they can be drained once the proxy membership no longer includes them.
+	surplus := applyReplicaSet(state.Replicas, r.Replicas)
 	state.Replicas = ensureReplicaMap(state.Replicas, r.Replicas)
+	r.enrolled = r.checkEnrolled()
 
 	log.Stepf("rolling deploy for %s: %d replicas", r.AppName, r.Replicas)
 
@@ -84,25 +101,24 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	targetVer := targetVersionFromSource(src)
 
 	tierCfg := r.healthCfg()
-	tier := health.SelectTier(tierCfg, firstPortAddr(state), nil)
-	log.Infof("health tier selected: %s", tier)
-	if tier != health.Tier1HTTPPath {
-		msg := fmt.Sprintf("⚠ No health endpoint configured for %s — using %s.\n"+
-			"  Add one with: phelix health set %s --path /your-health-path",
-			r.AppName, tier, r.AppName)
-		log.Warnf("%s", msg)
-		if r.Notifier != nil {
-			_ = r.Notifier.Notify(ctx, msg)
-		}
-	}
+	// Shared tier resolution/warning with blue-green (internal/deploy/health.go).
+	tier := selectDeployHealth(ctx, tierCfg, r.AppName, firstPortAddr(state), log, r.Notifier)
 
 	// Iterate over replica indices in order.
 	indices := replicaIndices(state.Replicas)
 	for _, key := range indices {
+		if err := ctx.Err(); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "rolling deploy cancelled before replica %s", key)
+		}
 		if err := r.rollOne(ctx, state, binaryPath, envOverlay, targetVer, key, tier, tierCfg, grace); err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "rolling deploy failed at replica %s", key)
 		}
 	}
+
+	// Every replica now runs the new binary. Surplus replicas were excluded
+	// from the backend set by the first membership update; retire them here so
+	// a --replicas shrink never leaves orphaned old processes behind.
+	r.stopSurplusReplicas(ctx, surplus, grace)
 
 	if state.Health == nil {
 		state.Health = &HealthSummary{}
@@ -116,62 +132,111 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 			log.Warnf("failed to promote version v%d: %v", ver, err)
 		}
 	}
-	_ = Store(state)
+	if err := Store(state); err != nil {
+		log.Warnf("failed to persist rolling deploy state: %v (traffic already routed)", err)
+	}
 
 	log.Successf("rolling deploy of %s complete: %d replicas updated", r.AppName, len(indices))
 	return nil
 }
 
-// rollOne performs the stop→build→start→health→re-add cycle for one replica.
+// rollOne replaces exactly one replica while it keeps serving. Ordering rules
+// (see Rolling.Deploy): start alongside → health-check replacement → swap
+// membership → drain old instance.
 func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath string, envOverlay []string, targetVer int, key string, tier health.Tier, tierCfg *health.DeployTierConfig, grace time.Duration) error {
 	log := r.logger()
 
-	// 1. Stop current instance for this slot (remove from rotation first).
-	cur := state.Replicas[key]
-	if cur != nil && cur.PID > 0 {
-		log.Stepf("replica %s: stopping current instance (pid %d)", key, cur.PID)
-		stopByPID(ctx, cur.PID, grace, r.inFlight(r.AppName))
-		cur.PID = 0
-		cur.Status = "stopped"
+	// Snapshot whatever serves this replica today.
+	oldPID, oldBinary := 0, ""
+	if cur := state.Replicas[key]; cur != nil {
+		oldPID, oldBinary = cur.PID, cur.BinaryPath
+	} else {
+		state.Replicas[key] = &Instance{Slot: key, Status: "stopped"}
 	}
 
-	// 2. Start replacement (artifact prepared once for the whole roll).
-	log.Stepf("replica %s: starting from %s", key, binaryPath)
+	// 1. Start the replacement ALONGSIDE the current instance.
+	if oldPID > 0 {
+		log.Stepf("replica %s: starting replacement alongside pid %d", key, oldPID)
+	} else {
+		log.Stepf("replica %s: starting first instance from %s", key, binaryPath)
+	}
 	proc, port, err := r.Launcher(ctx, binaryPath, envOverlay)
 	if err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "start replica %s", key)
+		return phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "start replica %s replacement", key)
 	}
-	inst := &Instance{
-		Slot:       key,
-		PID:        proc.PID(),
-		Port:       port,
-		BinaryPath: binaryPath,
-		StartedAt:  time.Now(),
-		Status:     "running",
-		Version:    targetVer,
-	}
-	state.Replicas[key] = inst
-	_ = Store(state)
-
-	// 4. Health check.
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), nil); err != nil {
-		// Kill the unhealthy replacement; leave other replicas serving.
-		stopByPID(ctx, proc.PID(), grace, 0)
-		inst.Status = "failed"
-		inst.PID = 0
+	newPID := proc.PID()
+	inst := state.Replicas[key]
+	if oldPID > 0 {
+		// The old instance is STILL serving; mark only that a replacement is
+		// in flight without pretending the replica died.
+		inst.Status = "replacing"
 		_ = Store(state)
-		return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed, err, "replica %s failed health check; other replicas left serving", key)
 	}
 
-	// 5. Re-add to the proxy backend set: primary = the lowest-index healthy
-	//    replica, backends = all healthy replicas.
-	primary, backends := healthyTargets(state.Replicas)
-	if r.ProxyClient != nil {
-		if err := r.ProxyClient.Switch(ctx, r.AppName, primary, backends...); err != nil {
-			// Non-fatal: the replica is healthy and running; the proxy just
-			// hasn't been told. Surface as a warning.
-			log.Warnf("replica %s: proxy update failed: %v (instance still running)", key, err)
+	// 2. Health-check ONLY the replacement's port.
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), newPID, nil); err != nil {
+		stopHeldProcess(ctx, proc, grace)
+		inst.Status = "failed"
+		inst.PID = oldPID // revert to what actually still serves this replica
+		if err := Store(state); err != nil {
+			log.Warnf("replica %s: persist failure after unhealthy replacement: %v", key, err)
 		}
+		return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed,
+			candidateHealthFailure(binaryPath, port, err),
+			"replica %s replacement failed health check; previous instance still serving", key)
+	}
+
+	// 3. Membership swap FIRST: new instance in, old instance out.
+	primary, backends := membershipAfterReplace(state.Replicas, key, port)
+	if r.ProxyClient == nil {
+		stopHeldProcess(ctx, proc, grace)
+		inst.Status = "failed"
+		inst.PID = oldPID
+		_ = Store(state)
+		return phelixerr.Newf(phelixerr.CodeProxy, "replica %s: no proxy client configured", key)
+	}
+	var proxyErr error
+	if !r.enrolled {
+		proxyErr = r.ProxyClient.Add(ctx, r.AppName, r.PublicPort, primary, backends...)
+		if proxyErr == nil {
+			r.enrolled = true
+			log.Successf("enrolled %s with proxy on public port %d", r.AppName, r.PublicPort)
+		}
+	} else {
+		proxyErr = r.ProxyClient.Switch(ctx, r.AppName, primary, backends...)
+	}
+	if proxyErr != nil {
+		// Replica i never left rotation — no customer impact. Kill just the
+		// replacement we started.
+		stopHeldProcess(ctx, proc, grace)
+		inst.Status = "failed"
+		inst.PID = oldPID
+		if err := Store(state); err != nil {
+			log.Warnf("replica %s: persist failure after proxy error: %v", key, err)
+		}
+		return phelixerr.Wrapf(phelixerr.CodeProxy, proxyErr,
+			"replica %s: proxy membership update failed; previous instance still serving", key)
+	}
+
+	// 4. Old instance is out of rotation: drain and stop it. Identity of the
+	// PID is verified against its recorded executable path first.
+	if oldPID > 0 {
+		report := stopByPID(ctx, oldPID, grace, r.inFlight(r.AppName), oldBinary)
+		if report.ForceKilled {
+			log.Warnf("replica %s: old instance (pid %d) ignored SIGTERM; SIGKILL applied", key, oldPID)
+		} else if report.Exited {
+			log.Stepf("replica %s: old instance drained and stopped", key)
+		}
+	}
+
+	inst.PID = newPID
+	inst.Port = port
+	inst.BinaryPath = binaryPath
+	inst.StartedAt = time.Now()
+	inst.Version = targetVer
+	inst.Status = "running"
+	if err := Store(state); err != nil {
+		log.Warnf("replica %s: failed to persist deploy state: %v", key, err)
 	}
 	log.Successf("replica %s: healthy and in rotation (pid %d, port %d)", key, inst.PID, inst.Port)
 	return nil
@@ -226,6 +291,81 @@ func replicaIndices(m map[string]*Instance) []string {
 		return ai < aj
 	})
 	return out
+}
+
+// applyReplicaSet removes replica entries beyond the desired count and
+// returns their Instance records so they can be drained after leaving the
+// proxy's rotation. Existing instances for indices < n are preserved.
+func applyReplicaSet(existing map[string]*Instance, n int) []*Instance {
+	var surplus []*Instance
+	for k, inst := range existing {
+		idx, err := strconv.Atoi(k)
+		if err != nil || idx >= n {
+			if inst != nil && inst.PID > 0 {
+				surplus = append(surplus, inst)
+			}
+			delete(existing, k)
+		}
+	}
+	sort.Slice(surplus, func(i, j int) bool { return surplus[i].Slot < surplus[j].Slot })
+	return surplus
+}
+
+// stopSurplusReplicas drains instances removed by a --replicas shrink. By the
+// time this runs, a successful membership update has already excluded them.
+func (r *Rolling) stopSurplusReplicas(ctx context.Context, surplus []*Instance, grace time.Duration) {
+	if len(surplus) == 0 {
+		return
+	}
+	log := r.logger()
+	for _, inst := range surplus {
+		if inst == nil || inst.PID <= 0 {
+			continue
+		}
+		log.Stepf("stopping surplus replica %s (pid %d) removed by shrink", inst.Slot, inst.PID)
+		report := stopByPID(ctx, inst.PID, grace, 0, inst.BinaryPath)
+		if report.ForceKilled {
+			log.Warnf("surplus replica %s ignored SIGTERM; SIGKILL applied", inst.Slot)
+		}
+		inst.PID = 0
+		inst.Status = "stopped"
+	}
+}
+
+// checkEnrolled asks the daemon whether this app is already registered so the
+// rollout knows to Add before its first Switch. Unknown/unreachable daemon
+// states conservatively report "not enrolled" — the first Add will then fail
+// with a clear error instead of switches silently routing nothing.
+func (r *Rolling) checkEnrolled() bool {
+	if r.ProxyClient == nil {
+		return false
+	}
+	st, err := r.ProxyClient.Status(context.Background(), r.AppName)
+	return err == nil && len(st) > 0
+}
+
+// membershipAfterReplace computes the proxy primary+backends given that
+// replica key now listens on newPort: every other healthy replica stays in
+// the set, nothing points at the replaced port any more.
+func membershipAfterReplace(replicas map[string]*Instance, key string, newPort int) (proxy.Target, []proxy.Target) {
+	virtual := make(map[string]*Instance, len(replicas))
+	for k, v := range replicas {
+		if k == key {
+			virtual[k] = &Instance{Slot: key, Status: "running", Port: newPort}
+			continue
+		}
+		virtual[k] = v
+	}
+	return healthyTargets(virtual)
+}
+
+// stopHeldProcess gracefully stops an instance whose Process handle we still
+// hold (used to kill unproven replacements without touching the serving one).
+func stopHeldProcess(ctx context.Context, proc Process, grace time.Duration) {
+	if proc == nil {
+		return
+	}
+	_, _ = GracefulStop(ctx, proc, grace, 0)
 }
 
 // healthyTargets returns (primary, backends) over all healthy replicas. The

@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -117,8 +116,24 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	log.Stepf("blue-green deploy for %s: active=%q, deploying slot=%q", bg.AppName, active, inactive)
 
+	// 1b. Recover leftovers from a previously interrupted deploy before we
+	// touch anything else: stale non-active instances would otherwise be
+	// orphaned when this deploy overwrites their slot records.
+	bg.recoverStaleSlots(ctx, state, grace)
+	if state.Slots[inactive] == nil {
+		state.Slots[inactive] = &Instance{Slot: inactive, Status: "stopped"}
+	}
+	bg.storeState(state)
+
 	// 2. Proxy daemon must be reachable; enrol if this is the first deploy.
 	proxyOK := bg.ProxyClient != nil && bg.pingProxy(ctx) == nil
+	// The proxy daemon — not the persisted slot record — is the source of
+	// truth for who currently serves traffic. A classic build/rebuild stops
+	// the proxy-managed instance and starts one that binds the public port
+	// itself, leaving deploy.json's active slot stale; a daemon reset can do
+	// the same. Switching against an unenrolled app can only fail, so an
+	// unenrolled app always takes the enrol (Add) path.
+	proxyEnrolled := bg.proxyEnrolled(ctx)
 
 	// 3. Prepare binary + paired env snapshot (fresh compile or rollback target).
 	log.Stepf("%s for slot %s", src.Describe(), inactive)
@@ -151,34 +166,27 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	if state.Slots == nil {
 		state.Slots = map[string]*Instance{SlotBlue: {Slot: SlotBlue}, SlotGreen: {Slot: SlotGreen}}
 	}
+	// The instance is NOT "running" yet — it has merely been spawned. Keeping
+	// the persisted status truthful ("starting") matters for recovery paths
+	// that distinguish failed spawns from live-but-unproven instances.
+	newInst.Status = "starting"
 	state.Slots[inactive] = newInst
-	newInst.Status = "running"
-	_ = Store(state) // persist intermediate state so a crash here is observable
+	bg.storeState(state) // persist intermediate state so a crash here is observable
 
-	// 5. Select the health tier for the new instance.
+	// 5. Select the health tier for the new instance (shared with rolling).
 	tierCfg := bg.healthCfg()
-	tier := health.SelectTier(tierCfg, hostPort(port), nil)
-	log.Infof("health tier selected: %s", tier)
-
-	if tier != health.Tier1HTTPPath {
-		msg := fmt.Sprintf("⚠ No health endpoint configured for %s — using %s.\n"+
-			"  Add one with: phelix health set %s --path /your-health-path",
-			bg.AppName, tier, bg.AppName)
-		log.Warnf("%s", msg)
-		if bg.Notifier != nil {
-			_ = bg.Notifier.Notify(ctx, msg)
-		}
-	}
+	tier := selectDeployHealth(ctx, tierCfg, bg.AppName, hostPort(port), log, bg.Notifier)
 
 	// 6. Wait for healthy. On failure, abort and leave the active instance
 	//    untouched.
 	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), nil); err != nil {
+		err = candidateHealthFailure(binaryPath, port, err)
 		log.Errorf("new instance on slot %s failed health check: %v", inactive, err)
 		// Kill the failed instance; do NOT touch the active one.
 		_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 		newInst.Status = "failed"
 		newInst.PID = 0
-		_ = Store(state)
+		bg.storeState(state)
 		return bg.failf(phelixerr.Wrapf(
 			phelixerr.CodeHealthCheckFailed,
 			err,
@@ -195,30 +203,49 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 7. Atomically switch the proxy to the new instance.
 	primary := proxy.Target{Host: hostPort(port), Label: inactive}
-	if active == "" {
+	if active == "" || !proxyEnrolled {
 		// First deploy: enrol the app. If the proxy wasn't reachable earlier,
 		// this is a hard error — we cannot offer zero-downtime without it.
 		if bg.ProxyClient == nil {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
-			_ = Store(state)
+			newInst.PID = 0
+			bg.storeState(state)
 			return bg.failf(phelixerr.New(phelixerr.CodeProxy, "deploy aborted: no proxy client (is 'phelix proxy' running?)"))
 		}
 		if !proxyOK {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
-			_ = Store(state)
+			newInst.PID = 0
+			bg.storeState(state)
 			return bg.failf(phelixerr.New(phelixerr.CodeConnection, "deploy aborted: proxy daemon unreachable (is 'phelix proxy' running?)"))
 		}
 		if err := bg.ProxyClient.Add(ctx, bg.AppName, bg.PublicPort, primary); err != nil {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
-			_ = Store(state)
-			return bg.failf(phelixerr.Wrapf(phelixerr.CodeProxy, err, "enrol app with proxy failed"))
+			bg.storeState(state)
+			// First deploy of an app that was started via the classic
+			// stop→build→start flow: the old instance still binds the public
+			// port itself, so the proxy cannot take it over yet. One
+			// deliberate stop migrates the app under the proxy; every deploy
+			// after that is zero-downtime (Switch, not Add).
+			return bg.failf(phelixerr.Wrapf(phelixerr.CodeProxy, err,
+				"enrol app with proxy failed (if %q is currently running outside the proxy, stop it once with 'phelix stop %s' — later deploys switch with zero downtime)",
+				bg.AppName, bg.AppName))
 		}
 		log.Successf("enrolled %s with proxy on public port %d -> slot %s", bg.AppName, bg.PublicPort, inactive)
+		// The stale slot record no longer describes reality (the app it
+		// pointed at is not what the proxy serves); normalize it.
+		active = ""
 	} else {
 		if bg.ProxyClient == nil {
+			// We must not leak the healthy instance we just started. Traffic
+			// never switched, so stopping it keeps the active slot untouched.
+			log.Errorf("proxy switch aborted: no proxy client")
+			_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
+			newInst.Status = "failed"
+			newInst.PID = 0
+			bg.storeState(state)
 			return bg.failf(phelixerr.New(phelixerr.CodeProxy, "deploy aborted: no proxy client for switch"))
 		}
 		if err := bg.ProxyClient.Switch(ctx, bg.AppName, primary); err != nil {
@@ -227,7 +254,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			log.Errorf("proxy switch failed: %v", err)
 			_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 			newInst.Status = "failed"
-			_ = Store(state)
+			bg.storeState(state)
 			return bg.failf(phelixerr.Wrapf(
 				phelixerr.CodeProxy,
 				err,
@@ -256,8 +283,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		if old := state.Slots[oldActive]; old != nil && old.PID > 0 {
 			log.Stepf("gracefully stopping old slot %s (pid %d, grace %s)", oldActive, old.PID, grace)
 			// We no longer hold the *os.Process for the previous instance (it
-			// was started by a prior invocation), so stop it by PID.
-			report := stopByPID(ctx, old.PID, grace, bg.inFlight(bg.AppName))
+			// was started by a prior invocation), so stop it by PID. The
+			// expected executable path guards against PID recycling.
+			report := stopByPID(ctx, old.PID, grace, bg.inFlight(bg.AppName), old.BinaryPath)
 			if report.ForceKilled {
 				log.Warnf("old slot %s did not exit within grace; SIGKILL applied (in-flight: %d)", oldActive, report.InFlight)
 			} else {
@@ -268,7 +296,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		}
 	}
 
-	_ = Store(state)
+	bg.storeState(state)
 	log.Successf("blue-green deploy of %s complete: active slot %s (pid %d, port %d)",
 		bg.AppName, inactive, newInst.PID, newInst.Port)
 	return nil
@@ -297,11 +325,61 @@ func (bg *BlueGreen) pingProxy(ctx context.Context) error {
 	return bg.ProxyClient.Ping(ctx)
 }
 
+// proxyEnrolled asks the daemon whether the app is currently registered.
+// Unreachable/unknown daemon states conservatively report "not enrolled":
+// the subsequent Add then fails with a clear error instead of a Switch
+// silently routing nothing.
+func (bg *BlueGreen) proxyEnrolled(ctx context.Context) bool {
+	if bg.ProxyClient == nil {
+		return false
+	}
+	st, err := bg.ProxyClient.Status(ctx, bg.AppName)
+	return err == nil && len(st) > 0
+}
+
 func (bg *BlueGreen) inFlight(appName string) int64 {
 	if bg.InFlight == nil {
 		return 0
 	}
 	return bg.InFlight(appName)
+}
+
+// storeState persists deploy state, surfacing persistence failures through the
+// Logger instead of discarding them silently: an unpersisted slot/pid update
+// is exactly how stale-instance records appear after a crash.
+func (bg *BlueGreen) storeState(state *DeployState) {
+	if err := Store(state); err != nil {
+		bg.logger().Warnf("failed to persist deploy state for %s: %v", bg.AppName, err)
+	}
+}
+
+// recoverStaleSlots reclaims resources left behind by a previously crashed or
+// interrupted deploy: any non-active slot whose recorded process is still
+// alive cannot be receiving traffic (the active slot owns it), so it is a
+// leftover that would otherwise run forever while its record gets overwritten
+// by the next deploy. Processes are verified by executable path before being
+// signalled so PID recycling can never make Phelix kill an unrelated victim.
+func (bg *BlueGreen) recoverStaleSlots(ctx context.Context, state *DeployState, grace time.Duration) {
+	for name, inst := range state.Slots {
+		if name == state.ActiveSlot || inst == nil || inst.PID <= 0 {
+			continue
+		}
+		proc := findVerifiedProcess(inst.PID, inst.BinaryPath)
+		if proc == nil {
+			if inst.Status == "running" || inst.Status == "starting" {
+				inst.Status = "stopped"
+				inst.PID = 0
+			}
+			continue // genuinely gone — nothing to reclaim
+		}
+		bg.logger().Stepf("recovering stale %s instance from previous deploy (slot %s, pid %d)", bg.AppName, name, inst.PID)
+		report := stopByPID(ctx, inst.PID, grace, bg.inFlight(bg.AppName), inst.BinaryPath)
+		if report.ForceKilled {
+			bg.logger().Warnf("stale slot %s ignored SIGTERM; SIGKILL applied", name)
+		}
+		inst.Status = "stopped"
+		inst.PID = 0
+	}
 }
 
 // failf logs err and returns it unchanged so Deploy's callers see a single
@@ -324,19 +402,20 @@ func (nopLogger) Errorf(string, ...any)   {}
 
 // DefaultHealthProvider returns a HealthConfigProvider that reads the deploy
 // tier config from the health package's ConfigManager by app ID.
+//
+// The manager must be initialized here: the CLI deploy path (`rebuild
+// --blue-green` / `--replicas`) never touches the health commands, so the
+// provider itself performs the (idempotent) initialization. The previous
+// version called GetConfigManager unguarded-then-recovered, which silently
+// swallowed the "not initialized" panic and returned nil — deploys then
+// claimed "No health endpoint configured" for apps that had one, while
+// `phelix health list/status` (which do initialize the manager) saw it fine.
 func DefaultHealthProvider() HealthConfigProvider {
 	return func(appID string) *health.DeployTierConfig {
-		// GetConfigManager panics if not initialised; guard for the CLI path
-		// where health may not have been set up yet.
-		defer func() { _ = recover() }()
-		cm := health.GetConfigManager()
-		if cm == nil {
+		cm, err := health.InitConfigManager()
+		if err != nil {
 			return nil
 		}
-		cfg := cm.GetConfig(appID)
-		if cfg == nil {
-			return nil
-		}
-		return cfg.DeployTier
+		return cm.GetConfig(appID).EffectiveDeployTier()
 	}
 }

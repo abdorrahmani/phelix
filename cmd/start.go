@@ -3,10 +3,13 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/buildreport"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/fatih/color"
@@ -124,8 +127,8 @@ var StartCmd = &cobra.Command{
 				return err
 			}
 
-			if err := rebuildApp(appInfo.ID, []string{}, buildMgr); err != nil {
-				return err
+			if _, rerr := rebuildApp(appInfo.ID, []string{}, buildMgr); rerr != nil {
+				return rerr
 			}
 
 			if err := app.Manager.StartApplication(appInfo.ID, usePort, name); err != nil {
@@ -191,12 +194,24 @@ func ensureNewApplication(name string, port int) error {
 		return err
 	}
 
-	if err := buildApplication(id, []string{}, buildMgr); err != nil {
-		return err
+	binPath := filepath.Join(cwd, fmt.Sprintf("app_%s", id))
+	report, berr := buildApplication(id, []string{}, buildMgr, binPath)
+	if berr != nil {
+		return berr
 	}
 
 	if err := startApplicationOnPort(id, name, port); err != nil {
 		return err
+	}
+
+	// Build report only: this legacy ensure-path does not go through version
+	// recording, so no regression analysis is possible (and none is required).
+	if report != nil {
+		buildreport.PrintReport(os.Stdout, buildreport.ReportView{
+			AppName: name,
+			Commit:  deploy.DetectGitCommit(cwd),
+			Report:  report,
+		})
 	}
 
 	fmt.Printf("%s Application %s (ID: %s) built and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(id), port)

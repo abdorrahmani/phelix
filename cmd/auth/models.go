@@ -85,6 +85,8 @@ type AppDetail struct {
 	Status      string    `json:"status"`
 	ServerID    string    `json:"server_id"`
 	PID         int       `json:"pid"`
+	Type        string    `json:"type"`
+	Language    string    `json:"language"`
 	Uptime      string    `json:"uptime"`
 	BuildStatus string    `json:"buildStatus"`
 	CreatedAt   time.Time `json:"createdAt"`

@@ -8,6 +8,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
@@ -36,6 +37,24 @@ var RebuildCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Project configuration (phelix.yaml) supplies name/port/strategy
+		// defaults. Missing file is fine; an invalid file fails fast.
+		projCfg, err := loadProjectConfig()
+		if err != nil {
+			return err
+		}
+
+		if err := app.Manager.LoadState(); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
+		}
+
+		if len(args) == 0 && projCfg != nil && projCfg.Name != "" {
+			// phelix.yaml names the app; use it when that app exists so
+			// rebuild inside the project directory needs no argument.
+			if _, err := GetAppInfo(projCfg.Name); err == nil {
+				args = []string{projCfg.Name}
+			}
+		}
 		if len(args) == 0 {
 			if !IsInteractive() {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix rebuild <ID|AppName> --port <PORT>")
@@ -49,10 +68,6 @@ var RebuildCmd = &cobra.Command{
 
 		identifier := args[0]
 
-		if err := app.Manager.LoadState(); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
-		}
-
 		appInfo, err := GetAppInfo(identifier)
 		if err != nil {
 			return err
@@ -63,14 +78,14 @@ var RebuildCmd = &cobra.Command{
 		// Precedence: CLI flag > persisted app port > phelix.yaml. The yaml is
 		// consulted only when neither the flag nor the app's recorded port
 		// applies, so existing managed apps keep their behavior.
-		if !cmd.Flags().Changed("port") && (appInfo.Port == 0) {
-			dir := currentDirOrError()
-			if dir != "" && project.Exists(dir) {
-				if cfg, err := project.Load(dir); err == nil && cfg.Port != 0 {
-					portToUse = cfg.Port
-				}
-			}
+		if !cmd.Flags().Changed("port") && (appInfo.Port == 0) && projCfg != nil && projCfg.Port != 0 {
+			portToUse = projCfg.Port
 		}
+
+		// Deployment strategy from phelix.yaml. Explicit CLI flags always win;
+		// absent flags, a configured blue-green/rolling strategy selects the
+		// existing zero-downtime deploy path (classic stays the default).
+		applyConfigDeployStrategy(cmd, projCfg)
 
 		if err := phelixport.Validate(portToUse); err != nil {
 			return err
@@ -106,6 +121,13 @@ var RebuildCmd = &cobra.Command{
 			_ = app.Manager.SaveState()
 		}
 
+		// Apply health endpoints declared in phelix.yaml (desired state) so
+		// both the classic start and the zero-downtime deploy tiers see them.
+		if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil {
+			fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
+				color.YellowString("⚠"), project.FileName, serr)
+		}
+
 		// Zero-downtime deploy paths. When --blue-green or --replicas is set we
 		// hand off to the deploy package instead of the stop->build->start flow
 		// below. The deploy package builds via the same builder, starts the new
@@ -116,20 +138,23 @@ var RebuildCmd = &cobra.Command{
 			return runZeroDowntimeDeploy(appInfo, name, portToUse)
 		}
 
-		if err := stopExistingApp(appInfo); err != nil {
-			return err
-		}
-
-		// Acquire deploy lock to prevent concurrent rebuilds on the same app
-		// from corrupting versions.json or double-assigning version numbers.
+		// Acquire deploy lock FIRST so two concurrent rebuilds cannot race on
+		// versions.json or double-assign version numbers; previously the old
+		// process was stopped before locking, letting a concurrent rebuild
+		// interleave between the stop and the lock.
 		release, lockErr := deploy.AcquireDeployLock(name, "rebuild")
 		if lockErr != nil {
 			return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lockErr)
 		}
 		defer release()
 
-		if err := rebuildApp(appInfo.ID, rebuildArgs, buildMgr); err != nil {
+		if err := stopExistingApp(appInfo); err != nil {
 			return err
+		}
+
+		rebuildReport, rerr := rebuildApp(appInfo.ID, rebuildArgs, buildMgr)
+		if rerr != nil {
+			return rerr
 		}
 
 		// --- Version recording ------------------------------------------------
@@ -141,6 +166,7 @@ var RebuildCmd = &cobra.Command{
 			name, appInfo.ID,
 			filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID)),
 			gitCommit, rebuildTag,
+			rebuildReport,
 			deploy.DefaultRetention{Max: 5}, logger,
 		)
 		if verErr != nil {
@@ -148,6 +174,9 @@ var RebuildCmd = &cobra.Command{
 		} else {
 			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
 		}
+
+		// --- Build Report + regression analysis ---------------------------------
+		emitBuildReport(name, rebuildReport, gitCommit, rec, verErr)
 
 		fmt.Printf("  %s Starting application on port %d...\n", color.BlueString("→"), portToUse)
 		if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
@@ -174,6 +203,32 @@ var RebuildCmd = &cobra.Command{
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		return nil
 	},
+}
+
+// applyConfigDeployStrategy maps deploy.strategy from phelix.yaml onto the
+// existing --blue-green / --replicas rebuild flags. Explicit CLI flags always
+// win; classic (or no deploy block) changes nothing, keeping the classic path
+// the default.
+func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config) {
+	if cfg == nil || cfg.Deploy == nil || cfg.Deploy.Strategy == "" ||
+		cfg.Deploy.Strategy == project.StrategyClassic {
+		return
+	}
+	if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
+		return
+	}
+	switch cfg.Deploy.Strategy {
+	case project.StrategyBlueGreen:
+		rebuildBlueGreen = true
+	case project.StrategyRolling:
+		if rebuildReplicas == 0 {
+			if cfg.Deploy.Replicas > 0 {
+				rebuildReplicas = cfg.Deploy.Replicas
+			} else {
+				rebuildReplicas = 1
+			}
+		}
+	}
 }
 
 func init() {
@@ -221,9 +276,12 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	healthProvider := deploy.DefaultHealthProvider()
 
 	// deploy.Builder closure: delegates to the existing rebuild path, which
-	// handles language detection, toolchain checks and env injection.
+	// handles language detection, toolchain checks and env injection. The
+	// captured build report is handed to FreshBuildSource via ReportFn so the
+	// recorded version carries the same telemetry as classic builds.
 	buildMgr := builder.NewBuildManager()
 	gitCommit := deploy.DetectGitCommit(appInfo.Directory)
+	var lastReport *buildreport.Report
 	freshSource := &deploy.FreshBuildSource{
 		AppName:   name,
 		AppID:     appInfo.ID,
@@ -232,9 +290,12 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		Tag:       rebuildTag,
 		Retention: deploy.DefaultRetention{Max: 5},
 		Logger:    logger,
+		ReportFn:  func() *buildreport.Report { return lastReport },
 		BuildFn: func(ctx context.Context, appID string, extraArgs []string) (string, error) {
-			if err := rebuildApp(appID, extraArgs, buildMgr); err != nil {
-				return "", err
+			report, berr := rebuildApp(appID, extraArgs, buildMgr)
+			lastReport = report
+			if berr != nil {
+				return "", berr
 			}
 			if am, ok := app.Manager.(*app.AppManager); ok {
 				if info, exists := am.Apps[appID]; exists {
@@ -267,6 +328,10 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 			return err
 		}
 		fmt.Printf("%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
+		// Build Report + regression analysis (observability only; the deploy
+		// outcome above is already committed).
+		emitBuildReport(name, lastReport, gitCommit,
+			&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		return nil
 	}
@@ -289,6 +354,9 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	}
 	fmt.Printf("%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
 		color.GreenString("✓"), color.CyanString("'%s'", name), rebuildReplicas)
+	// Build Report + regression analysis (observability only).
+	emitBuildReport(name, lastReport, gitCommit,
+		&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
 	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	return nil
 }
@@ -328,14 +396,16 @@ func stopExistingApp(appInfo *app.AppInfo) error {
 	return nil
 }
 
-func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) error {
+// rebuildApp compiles the app and returns its captured build report so all
+// rebuild paths (classic and zero-downtime) persist identical telemetry.
+func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) (*buildreport.Report, error) {
 	appInfo, err := GetAppInfo(id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if appInfo.Directory == "" {
-		return phelixerr.Newf(phelixerr.CodeNotFound, "application directory not found for ID %s", id)
+		return nil, phelixerr.Newf(phelixerr.CodeNotFound, "application directory not found for ID %s", id)
 	}
 
 	projectRoot := appInfo.Directory
@@ -347,7 +417,7 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 	}
 
 	if !lang.IsSupported() {
-		return phelixerr.Newf(
+		return nil, phelixerr.Newf(
 			phelixerr.CodeUnsupportedProject,
 			"unsupported or unknown project language: %s",
 			lang,
@@ -369,6 +439,7 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 		appInfo.NoUpload,
 	)
 	if err != nil {
+		printFailedBuildSummary(lang, nil)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if info, exists := appManager.Apps[id]; exists {
 				info.BuildStatus = "failed"
@@ -376,13 +447,15 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 				_ = appManager.SaveState()
 			}
 		}
-		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild preparation failed", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild preparation failed", err)
 	}
 
 	fmt.Printf("  %s Rebuilding with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
 
 	// Execute build
 	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
+		// Failed builds are never recorded as versions; print post-mortem.
+		printFailedBuildSummary(lang, buildCtx.Config)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if info, exists := appManager.Apps[id]; exists {
 				info.BuildStatus = "failed"
@@ -390,11 +463,13 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 				_ = appManager.SaveState()
 			}
 		}
-		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild failed", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild failed", err)
 	}
 
 	duration := buildMgr.GetBuildDuration(buildCtx)
 	fmt.Printf("  %s Rebuild completed in %s\n", color.GreenString("✓"), color.YellowString(duration.String()))
+
+	report := newNativeBuildReport(lang, buildCtx.Config, outputPath)
 
 	// Update build status
 	if appManager, ok := app.Manager.(*app.AppManager); ok {
@@ -405,5 +480,5 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) e
 			_ = appManager.SaveState()
 		}
 	}
-	return nil
+	return report, nil
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/builder"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -155,11 +156,13 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	}
 	outPath := filepath.Join(outDir, c.BinaryName(g.AppName))
 
-	logLine("command: GOOS=%s GOARCH=%s CGO_ENABLED=0 go build -o %s %s", c.OS, c.Arch, outPath, mainPkg)
+	logLine("command: GOOS=%s GOARCH=%s CGO_ENABLED=0 go build -v -o %s %s", c.OS, c.Arch, outPath, mainPkg)
 	logLine("output:  %s", outPath)
-	logLine("cache:   (native cross-compile, no Docker cache)")
+	logLine("cache:   (native cross-compile, host go build cache)")
 
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, mainPkg)
+	// `-v` makes go print every compiled package, letting us distinguish a
+	// cache COLD run from a cache HIT for the per-combination build report.
+	cmd := exec.CommandContext(ctx, "go", "build", "-v", "-o", outPath, mainPkg)
 	cmd.Dir = g.ProjectRoot
 	cmd.Env = append(os.Environ(),
 		"GOOS="+c.OS,
@@ -187,6 +190,7 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result.Duration = time.Since(start)
 	result.Status = "success"
 	result.Artifact = outPath
+	result.CacheStatus = string(builder.GoCacheStatusFromOutput(output.String()))
 	logLine("success in %s", result.Duration.Round(time.Millisecond))
 	return result
 }
@@ -257,8 +261,10 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	//   - output dir → /out (writable)
 	//   - cache dir → /root/.cache/go-build (writable, persists across runs)
 	binName := c.BinaryName(g.AppName)
+	// `-v` prints compiled package names, enabling cache COLD/HIT detection
+	// for the per-combination build report from the captured stderr.
 	buildCmd := fmt.Sprintf(
-		"GOOS=%s GOARCH=%s CGO_ENABLED=0 go build -o /out/%s %s",
+		"GOOS=%s GOARCH=%s CGO_ENABLED=0 go build -v -o /out/%s %s",
 		c.OS, c.Arch, binName, mainPkg)
 
 	logLine("command:  docker run --rm --platform linux/%s -v %s:/src:ro -v %s:/out -v %s:/root/.cache/go-build -w /src %s sh -c '%s'",
@@ -292,6 +298,9 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	result.Duration = time.Since(start)
 	result.Status = "success"
 	result.Artifact = outPath
+	// The persistent cache dir is mounted at /root/.cache/go-build; compiled
+	// package names on stderr mean real compilation happened (COLD).
+	result.CacheStatus = string(builder.GoCacheStatusFromOutput(stderr.String()))
 	logLine("success in %s", result.Duration.Round(time.Millisecond))
 	return result
 }
