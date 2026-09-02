@@ -50,7 +50,8 @@ func (l *fakeLogger) record(prefix, line string) {
 	l.mu.Unlock()
 }
 
-// fakeProxyClient records calls to Add/Switch/Remove.
+// fakeProxyClient records calls to Add/Switch/Remove. Add flips `enrolled`,
+// mirroring the real daemon: a successfully enrolled app is visible via Status.
 type fakeProxyClient struct {
 	mu       sync.Mutex
 	pinged   bool
@@ -59,6 +60,7 @@ type fakeProxyClient struct {
 	removes  []string
 	addPort  int
 	alive    bool
+	enrolled bool
 }
 
 func (f *fakeProxyClient) Ping(context.Context) error {
@@ -75,6 +77,7 @@ func (f *fakeProxyClient) Add(_ context.Context, name string, port int, _ proxy.
 	defer f.mu.Unlock()
 	f.adds = append(f.adds, name)
 	f.addPort = port
+	f.enrolled = true
 	return nil
 }
 func (f *fakeProxyClient) Switch(_ context.Context, _ string, prim proxy.Target, _ ...proxy.Target) error {
@@ -89,8 +92,13 @@ func (f *fakeProxyClient) Remove(_ context.Context, name string) error {
 	f.removes = append(f.removes, name)
 	return nil
 }
-func (f *fakeProxyClient) Status(context.Context, string) ([]proxy.AppStatus, error) {
-	return nil, nil
+func (f *fakeProxyClient) Status(_ context.Context, name string) ([]proxy.AppStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.enrolled {
+		return nil, nil
+	}
+	return []proxy.AppStatus{{AppName: name}}, nil
 }
 
 // httpLauncher starts an httptest server as a stand-in for a healthy instance

@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -102,17 +101,8 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	targetVer := targetVersionFromSource(src)
 
 	tierCfg := r.healthCfg()
-	tier := health.SelectTier(tierCfg, firstPortAddr(state), nil)
-	log.Infof("health tier selected: %s", tier)
-	if tier != health.Tier1HTTPPath {
-		msg := fmt.Sprintf("⚠ No health endpoint configured for %s — using %s.\n"+
-			"  Add one with: phelix health set %s --path /your-health-path",
-			r.AppName, tier, r.AppName)
-		log.Warnf("%s", msg)
-		if r.Notifier != nil {
-			_ = r.Notifier.Notify(ctx, msg)
-		}
-	}
+	// Shared tier resolution/warning with blue-green (internal/deploy/health.go).
+	tier := selectDeployHealth(ctx, tierCfg, r.AppName, firstPortAddr(state), log, r.Notifier)
 
 	// Iterate over replica indices in order.
 	indices := replicaIndices(state.Replicas)
@@ -192,7 +182,8 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 			log.Warnf("replica %s: persist failure after unhealthy replacement: %v", key, err)
 		}
 		return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed,
-			err, "replica %s replacement failed health check; previous instance still serving", key)
+			candidateHealthFailure(binaryPath, port, err),
+			"replica %s replacement failed health check; previous instance still serving", key)
 	}
 
 	// 3. Membership swap FIRST: new instance in, old instance out.

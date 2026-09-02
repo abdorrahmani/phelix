@@ -719,6 +719,7 @@ Client → :8080 [phelix proxy]  ──atomic target──→ blue  :9001
    phelix health set myapp --path /health
    ```
    Without one, Phelix falls back to Tier 2 (any HTTP response) or Tier 3 (TCP only) and prints a warning.
+3. One-time migration: an app currently running outside the proxy (started via a classic build/rebuild) binds the public port itself, so the first `--blue-green` / `--replicas` deploy cannot enrol it. Stop the app once (`phelix stop <app>`) and deploy — the proxy takes over the public port, and every deploy after that switches targets with zero downtime.
 
 ```bash
 phelix proxy              # start in background (detaches and returns)
@@ -1157,15 +1158,17 @@ Retention: the last **5** versions are kept by default (configurable per plan); 
   with error text.
 - Authentication errors (e.g. an expired session during `phelix auth status`)
   prompt you to run `phelix auth login`. Build/run commands never require it.
-- Build errors show the failing stage and a hint (run with `--debug` for the
-  underlying root cause).
+- Build errors show the failing stage and a hint, and the wrapped root-cause
+  chain (e.g. the failing cargo/go command with its exit status and the useful
+  tail of its diagnostics) is rendered on stderr — no `--debug` required.
 - Connection errors are logged and retried automatically.
 - Server communication errors are handled gracefully, without crashing the CLI.
 - **Root causes are preserved.** Wrapped errors keep the underlying cause
   reachable via `errors.Is` / `errors.As`, so `os.IsNotExist`, `exec.ExitError`,
   and gRPC `status.Code` still work on the cause.
-- **`--debug`**: passes the flag to any command to render the full error chain
-  (root cause included) on stderr. It never discloses secrets — every rendered
+- **`--debug`**: passes the flag to any command to render the complete error
+  chain on stderr (normal mode bounds the chain to the first few wrapped
+  layers; `--debug` lifts that cap). It never discloses secrets — every rendered
   string is run through `phelixerr.Redact` in both normal and debug mode.
 
 ### Error Reporter (known errors)

@@ -146,6 +146,14 @@ var healthSetCmd = &cobra.Command{
 		// Persist the deploy-tier health config (used by blue-green/rolling
 		// deploys). Validate the mode up front so typos are caught here rather
 		// than silently falling back to auto at deploy time.
+		//
+		// Only Mode and Path are persisted: interval/retries/timeout on this
+		// command describe the monitoring DAEMON's cadence (10s checks), while
+		// DeployTier.Timeout is the overall deploy deadline. Copying the daemon
+		// values across produced impossible configs (3 probes × 10s interval
+		// > 10s deadline → every Tier 1 deploy timed out), so the deploy probe
+		// keeps its own documented defaults (1s interval, 5 successes, 30s
+		// deadline) unless DeployTier fields are set explicitly.
 		mode := health.TierModeAuto
 		if healthMode != "" {
 			switch health.DeployTierMode(healthMode) {
@@ -156,11 +164,8 @@ var healthSetCmd = &cobra.Command{
 			}
 		}
 		config.DeployTier = &health.DeployTierConfig{
-			Mode:     mode,
-			Path:     healthPath,
-			Interval: interval,
-			Retries:  retries,
-			Timeout:  timeout,
+			Mode: mode,
+			Path: healthPath,
 		}
 
 		if httpMetricsDomain != "" || caddyAdminURL != "" {

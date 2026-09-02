@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -205,17 +206,6 @@ func renderCLIError(err error, debug bool) int {
 		}
 	}
 
-	// Root cause, only in debug mode. Both message and cause pass through the
-	// credential redactor so a value embedded by a lower layer never leaks,
-	// even in --debug output.
-	if debug {
-		fmt.Fprintf(errOut, "\n%s\n", color.HiBlackString("Cause:"))
-		if cause := phelixerr.Cause(err); cause != nil {
-			fmt.Fprintf(errOut, "  %s\n", phelixerr.Redact(cause.Error()))
-		} else {
-			fmt.Fprintf(errOut, "  (none)\n")
-		}
-	}
 	fmt.Fprintln(errOut)
 
 	return exitCode

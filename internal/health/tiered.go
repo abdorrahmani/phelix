@@ -2,10 +2,12 @@ package health
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -98,9 +100,10 @@ func defaultPidAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	// Signal 0 is the standard "existence" check on POSIX. os.Signal(nil)
-	// delivers no actual signal but still validates the PID.
-	return p.Signal(os.Signal(nil)) == nil
+	// Signal 0 is the standard POSIX "existence" check. (os.Signal(nil) here
+	// was always rejected as an unsupported signal type, which made every
+	// liveness check report the process as dead.)
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // tierResolver bundles the pluggable probes so tests can inject fakes. A nil
@@ -260,12 +263,22 @@ func Check(ctx context.Context, tier Tier, cfg *DeployTierConfig, host string, p
 	return false
 }
 
+// ErrCandidateExited is returned (wrapped) by WaitForHealthy when the probe
+// target's process dies before becoming healthy. Deploy layers enrich it with
+// the instance log tail; catching it here turns "candidate crashed at boot"
+// (e.g. bind failure because the app ignores $PORT) from a silent 30s timeout
+// into an immediate, actionable failure.
+var ErrCandidateExited = errors.New("candidate process exited before becoming healthy")
+
 // WaitForHealthy polls Check until it reports `retries` consecutive successes
 // or the overall `timeout` elapses. Returns nil if healthy, an error describing
 // why (timeout / process died) otherwise. The interval, retries and timeout
 // come from cfg (falling back to defaults). resolver may be nil.
 func WaitForHealthy(ctx context.Context, tier Tier, cfg *DeployTierConfig, host string, pid int, resolver *tierResolver) error {
 	interval, retries, timeout := resolvedConfig(cfg)
+	if resolver == nil {
+		resolver = &tierResolver{}
+	}
 
 	// The overall deadline is the smaller of ctx's deadline and our timeout.
 	deadline := time.Now().Add(timeout)
@@ -294,6 +307,15 @@ func WaitForHealthy(ctx context.Context, tier Tier, cfg *DeployTierConfig, host 
 		if time.Now().After(deadline) {
 			return phelixerr.Newf(phelixerr.CodeHealthCheckFailed, "health check timed out after %s (tier %s, %d/%d consecutive successes)",
 				timeout, tier, consecutive, retries)
+		}
+
+		// A probe against a dead process can never succeed; fail fast with the
+		// real reason instead of burning the whole timeout window. Tier3None's
+		// Check is itself the liveness probe, so this only short-circuits the
+		// equivalent outcome there.
+		if pid > 0 && !resolver.alive()(pid) {
+			return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed, ErrCandidateExited,
+				"candidate process (pid %d) exited before becoming healthy", pid)
 		}
 
 		if Check(ctx, tier, cfg, host, pid, resolver) {

@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -128,6 +127,13 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 2. Proxy daemon must be reachable; enrol if this is the first deploy.
 	proxyOK := bg.ProxyClient != nil && bg.pingProxy(ctx) == nil
+	// The proxy daemon — not the persisted slot record — is the source of
+	// truth for who currently serves traffic. A classic build/rebuild stops
+	// the proxy-managed instance and starts one that binds the public port
+	// itself, leaving deploy.json's active slot stale; a daemon reset can do
+	// the same. Switching against an unenrolled app can only fail, so an
+	// unenrolled app always takes the enrol (Add) path.
+	proxyEnrolled := bg.proxyEnrolled(ctx)
 
 	// 3. Prepare binary + paired env snapshot (fresh compile or rollback target).
 	log.Stepf("%s for slot %s", src.Describe(), inactive)
@@ -167,24 +173,14 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	state.Slots[inactive] = newInst
 	bg.storeState(state) // persist intermediate state so a crash here is observable
 
-	// 5. Select the health tier for the new instance.
+	// 5. Select the health tier for the new instance (shared with rolling).
 	tierCfg := bg.healthCfg()
-	tier := health.SelectTier(tierCfg, hostPort(port), nil)
-	log.Infof("health tier selected: %s", tier)
-
-	if tier != health.Tier1HTTPPath {
-		msg := fmt.Sprintf("⚠ No health endpoint configured for %s — using %s.\n"+
-			"  Add one with: phelix health set %s --path /your-health-path",
-			bg.AppName, tier, bg.AppName)
-		log.Warnf("%s", msg)
-		if bg.Notifier != nil {
-			_ = bg.Notifier.Notify(ctx, msg)
-		}
-	}
+	tier := selectDeployHealth(ctx, tierCfg, bg.AppName, hostPort(port), log, bg.Notifier)
 
 	// 6. Wait for healthy. On failure, abort and leave the active instance
 	//    untouched.
 	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), nil); err != nil {
+		err = candidateHealthFailure(binaryPath, port, err)
 		log.Errorf("new instance on slot %s failed health check: %v", inactive, err)
 		// Kill the failed instance; do NOT touch the active one.
 		_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
@@ -207,18 +203,20 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 7. Atomically switch the proxy to the new instance.
 	primary := proxy.Target{Host: hostPort(port), Label: inactive}
-	if active == "" {
+	if active == "" || !proxyEnrolled {
 		// First deploy: enrol the app. If the proxy wasn't reachable earlier,
 		// this is a hard error — we cannot offer zero-downtime without it.
 		if bg.ProxyClient == nil {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
+			newInst.PID = 0
 			bg.storeState(state)
 			return bg.failf(phelixerr.New(phelixerr.CodeProxy, "deploy aborted: no proxy client (is 'phelix proxy' running?)"))
 		}
 		if !proxyOK {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
+			newInst.PID = 0
 			bg.storeState(state)
 			return bg.failf(phelixerr.New(phelixerr.CodeConnection, "deploy aborted: proxy daemon unreachable (is 'phelix proxy' running?)"))
 		}
@@ -226,9 +224,19 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
 			bg.storeState(state)
-			return bg.failf(phelixerr.Wrapf(phelixerr.CodeProxy, err, "enrol app with proxy failed"))
+			// First deploy of an app that was started via the classic
+			// stop→build→start flow: the old instance still binds the public
+			// port itself, so the proxy cannot take it over yet. One
+			// deliberate stop migrates the app under the proxy; every deploy
+			// after that is zero-downtime (Switch, not Add).
+			return bg.failf(phelixerr.Wrapf(phelixerr.CodeProxy, err,
+				"enrol app with proxy failed (if %q is currently running outside the proxy, stop it once with 'phelix stop %s' — later deploys switch with zero downtime)",
+				bg.AppName, bg.AppName))
 		}
 		log.Successf("enrolled %s with proxy on public port %d -> slot %s", bg.AppName, bg.PublicPort, inactive)
+		// The stale slot record no longer describes reality (the app it
+		// pointed at is not what the proxy serves); normalize it.
+		active = ""
 	} else {
 		if bg.ProxyClient == nil {
 			// We must not leak the healthy instance we just started. Traffic
@@ -317,6 +325,18 @@ func (bg *BlueGreen) pingProxy(ctx context.Context) error {
 	return bg.ProxyClient.Ping(ctx)
 }
 
+// proxyEnrolled asks the daemon whether the app is currently registered.
+// Unreachable/unknown daemon states conservatively report "not enrolled":
+// the subsequent Add then fails with a clear error instead of a Switch
+// silently routing nothing.
+func (bg *BlueGreen) proxyEnrolled(ctx context.Context) bool {
+	if bg.ProxyClient == nil {
+		return false
+	}
+	st, err := bg.ProxyClient.Status(ctx, bg.AppName)
+	return err == nil && len(st) > 0
+}
+
 func (bg *BlueGreen) inFlight(appName string) int64 {
 	if bg.InFlight == nil {
 		return 0
@@ -382,19 +402,20 @@ func (nopLogger) Errorf(string, ...any)   {}
 
 // DefaultHealthProvider returns a HealthConfigProvider that reads the deploy
 // tier config from the health package's ConfigManager by app ID.
+//
+// The manager must be initialized here: the CLI deploy path (`rebuild
+// --blue-green` / `--replicas`) never touches the health commands, so the
+// provider itself performs the (idempotent) initialization. The previous
+// version called GetConfigManager unguarded-then-recovered, which silently
+// swallowed the "not initialized" panic and returned nil — deploys then
+// claimed "No health endpoint configured" for apps that had one, while
+// `phelix health list/status` (which do initialize the manager) saw it fine.
 func DefaultHealthProvider() HealthConfigProvider {
 	return func(appID string) *health.DeployTierConfig {
-		// GetConfigManager panics if not initialised; guard for the CLI path
-		// where health may not have been set up yet.
-		defer func() { _ = recover() }()
-		cm := health.GetConfigManager()
-		if cm == nil {
+		cm, err := health.InitConfigManager()
+		if err != nil {
 			return nil
 		}
-		cfg := cm.GetConfig(appID)
-		if cfg == nil {
-			return nil
-		}
-		return cfg.DeployTier
+		return cm.GetConfig(appID).EffectiveDeployTier()
 	}
 }

@@ -126,9 +126,12 @@ func DefaultLauncher(_ context.Context, binaryPath string, env []string) (Proces
 	cmd := exec.Command(binaryPath)
 	// Apps are expected to bind the port given via PORT. We start from the
 	// parent environment (matching the existing app/process.go behaviour) and
-	// overlay the caller-provided env plus our PORT.
-	cmd.Env = append(os.Environ(), "PORT="+fmt.Sprintf("%d", port))
-	cmd.Env = append(cmd.Env, env...)
+	// overlay the caller-provided env, then set PORT LAST: an app whose env
+	// store happens to contain PORT must still be started on the internal
+	// port this launcher allocated, or the candidate would fight the active
+	// instance for the public port and die with AddrInUse.
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(cmd.Env, "PORT="+fmt.Sprintf("%d", port))
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
@@ -159,8 +162,40 @@ func openInstanceLog(binaryPath string, port int) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	}
+	return os.OpenFile(instanceLogPath(home, binaryPath, port), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+}
+
+// instanceLogPath is the on-disk location of one deploy instance's stdout/stderr.
+func instanceLogPath(home, binaryPath string, port int) string {
 	name := fmt.Sprintf("deploy_%s_%d.log", filepath.Base(binaryPath), port)
-	return os.OpenFile(filepath.Join(dir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	return filepath.Join(home, ".phelix", "logs", name)
+}
+
+// instanceLogTail returns the last maxBytes bytes of the instance's captured
+// output, redacted. Deploy health failures include it so a candidate that
+// dies at boot (bind conflict, panic, missing env) reports the actual panic
+// line instead of an opaque timeout. Best-effort: missing/unreadable logs
+// return "".
+func instanceLogTail(binaryPath string, port int, maxBytes int64) string {
+	if port <= 0 {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(instanceLogPath(home, binaryPath, port))
+	if err != nil {
+		return ""
+	}
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		data = data[len(data)-int(maxBytes):]
+	}
+	tail := strings.TrimSpace(string(data))
+	if tail == "" {
+		return ""
+	}
+	return phelixerr.Redact(tail)
 }
 
 // pidAlive reports whether the given PID is currently running, using the same
