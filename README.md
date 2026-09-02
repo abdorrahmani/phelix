@@ -334,7 +334,7 @@ deploy:
 #### Full example
 
 ```yaml
-name: concurrency-lab-api
+name: api
 port: 3000
 
 health:

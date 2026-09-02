@@ -1,7 +1,6 @@
 package builder
 
 import (
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -95,14 +94,8 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 		args = append(args, config.ExtraArgs...)
 	}
 
-	// Output path. Build to a sibling temp file and rename over the target:
-	// the output path (<source-dir>/app_<id>) may be the executable a running
-	// instance was started from, and `go build -o` writing to it directly
-	// fails with ETXTBSY ("text file busy"). Rename swaps the directory entry
-	// atomically — the running process keeps its inode, no downtime.
-	tmpOutput := config.OutputPath + fmt.Sprintf(".phelix-tmp-%d", os.Getpid())
-	defer func() { _ = os.Remove(tmpOutput) }()
-	args = append(args, "-o", tmpOutput, relPath)
+	// Output path
+	args = append(args, "-o", config.OutputPath, relPath)
 
 	cmd := exec.Command("go", args...)
 	cmd.Dir = config.ProjectRoot
@@ -121,10 +114,6 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 			config.Name,
 			config.Language,
 		)
-	}
-
-	if err := os.Rename(tmpOutput, config.OutputPath); err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to replace output binary")
 	}
 
 	observeCache(config, GoCacheStatusFromOutput(string(output)), buildreport.CacheSourceGoBuild)

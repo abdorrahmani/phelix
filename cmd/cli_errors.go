@@ -206,9 +206,51 @@ func renderCLIError(err error, debug bool) int {
 		}
 	}
 
+	// Structured cause chain (everything below the headline), redacted and
+	// bounded — the canonical rendering of wrapped causes in both modes.
+	renderCauseChain(err, debug)
+
+	// Point at --debug when the chain was capped in normal mode. Known errors
+	// already carry docs and a fix, so only unknown errors get the pointer.
+	if !known && !debug {
+		if c := phelixerr.Cause(err); c != nil && c != err {
+			fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Run with --debug for the full error chain."))
+		}
+	}
 	fmt.Fprintln(errOut)
 
 	return exitCode
+}
+
+// renderReport prints a known-error report block to stderr. Every dynamic
+// field passes through phelixerr.Redact before rendering; suggested commands
+// are informational only and are never executed by Phelix.
+func renderReport(rep errreport.Report) {
+	if rep.Title != "" {
+		fmt.Fprintln(errOut)
+		fmt.Fprintf(errOut, "  %s\n", color.HiWhiteString(phelixerr.Redact(rep.Title)))
+	}
+	if rep.Explanation != "" {
+		fmt.Fprintln(errOut)
+		for _, line := range splitLines(phelixerr.Redact(rep.Explanation)) {
+			fmt.Fprintf(errOut, "  %s\n", line)
+		}
+	}
+	if rep.Suggestion != "" {
+		fmt.Fprintln(errOut)
+		fmt.Fprintf(errOut, "  %s\n", color.CyanString("Suggested fix:"))
+		for _, line := range splitLines(phelixerr.Redact(rep.Suggestion)) {
+			fmt.Fprintf(errOut, "  %s\n", line)
+		}
+	}
+	if rep.Command != "" {
+		fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Run:"))
+		fmt.Fprintf(errOut, "    %s\n", color.CyanString(phelixerr.Redact(rep.Command)))
+	}
+	if rep.DocsURL != "" {
+		fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Documentation:"))
+		fmt.Fprintf(errOut, "    %s\n", phelixerr.Redact(rep.DocsURL))
+	}
 }
 
 // renderReport prints a known-error report block to stderr. Every dynamic
