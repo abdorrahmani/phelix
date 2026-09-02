@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/errreport"
 	"github.com/fatih/color"
 )
 
@@ -99,7 +100,8 @@ func ExitCodeFor(err error) int {
 		return ExitRollback
 	case phelixerr.CodeUpdateFailed:
 		return ExitFailure
-	case phelixerr.CodeNetwork, phelixerr.CodeConnection, phelixerr.CodeGRPC:
+	case phelixerr.CodeNetwork, phelixerr.CodeConnection, phelixerr.CodeGRPC,
+		phelixerr.CodePortUnavailable:
 		return ExitNetwork
 	case phelixerr.CodeConfiguration:
 		return ExitConfig
@@ -143,9 +145,12 @@ func hintFor(err error) string {
 // renderCLIError prints a single, consistent error block to stderr and
 // returns the process exit code derived from the error's category.
 //
-// Normal mode shows the message, the stable code, and (when available) an
-// actionable hint. Debug mode additionally reveals the root cause chain.
-// Secrets are never printed, in either mode.
+// Normal mode shows the message, the stable code, and — for known errors —
+// the error reporter's explanation, suggested fix, command, and docs link.
+// Unknown errors keep the pre-existing presentation: generic hint and, when
+// the error carries captured build-tool output, a redacted raw-output
+// section. Debug mode additionally reveals the root cause chain. Secrets are
+// never printed, in either mode.
 func renderCLIError(err error, debug bool) int {
 	exitCode := ExitCodeFor(err)
 	code := phelixerr.CodeOf(err)
@@ -164,11 +169,39 @@ func renderCLIError(err error, debug bool) int {
 	fmt.Fprintf(errOut, "%s %s\n", color.RedString("Error:"), msg)
 	fmt.Fprintf(errOut, "  %s %s\n", color.HiBlackString("Code:"), code)
 
-	// Actionable hint, when we have one.
-	if h := hintFor(err); h != "" {
-		// Hint text may be multi-line (e.g. "Run:\n  phelix auth login").
-		for _, line := range splitLines(h) {
-			fmt.Fprintf(errOut, "  %s\n", color.CyanString(line))
+	// Known-error report: enrich the existing presentation with an
+	// explanation, a concrete fix, a real command, and documentation. The
+	// report replaces the generic hint (which it subsumes) and never changes
+	// the code, message, exit code, or cause handling.
+	report, known := errreport.For(err)
+	if known {
+		renderReport(report)
+	} else {
+		// Actionable hint, when we have one.
+		if h := hintFor(err); h != "" {
+			// Hint text may be multi-line (e.g. "Run:\n  phelix auth login").
+			for _, line := range splitLines(h) {
+				fmt.Fprintf(errOut, "  %s\n", color.CyanString(line))
+			}
+		}
+	}
+
+	// Raw build-tool diagnostics, for known and unknown tool failures alike:
+	// the explanation may reference specific lines, and unknown failures rely
+	// on it entirely. The captured output passes through the same redactor as
+	// everything else.
+	if out, ok := errreport.ToolOutput(err); ok {
+		fmt.Fprintf(errOut, "\n  %s\n", color.HiBlackString("Tool output (most recent lines):"))
+		for _, line := range splitLines(strings.TrimRight(out, "\n")) {
+			fmt.Fprintf(errOut, "    %s\n", phelixerr.Redact(line))
+		}
+	}
+
+	// Point at --debug when a deeper cause exists but was not shown. Known
+	// errors already carry docs and a fix, so only unknown errors get pointer.
+	if !known && !debug {
+		if c := phelixerr.Cause(err); c != nil && c != err {
+			fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Run with --debug for the full error chain."))
 		}
 	}
 
@@ -186,6 +219,37 @@ func renderCLIError(err error, debug bool) int {
 	fmt.Fprintln(errOut)
 
 	return exitCode
+}
+
+// renderReport prints a known-error report block to stderr. Every dynamic
+// field passes through phelixerr.Redact before rendering; suggested commands
+// are informational only and are never executed by Phelix.
+func renderReport(rep errreport.Report) {
+	if rep.Title != "" {
+		fmt.Fprintln(errOut)
+		fmt.Fprintf(errOut, "  %s\n", color.HiWhiteString(phelixerr.Redact(rep.Title)))
+	}
+	if rep.Explanation != "" {
+		fmt.Fprintln(errOut)
+		for _, line := range splitLines(phelixerr.Redact(rep.Explanation)) {
+			fmt.Fprintf(errOut, "  %s\n", line)
+		}
+	}
+	if rep.Suggestion != "" {
+		fmt.Fprintln(errOut)
+		fmt.Fprintf(errOut, "  %s\n", color.CyanString("Suggested fix:"))
+		for _, line := range splitLines(phelixerr.Redact(rep.Suggestion)) {
+			fmt.Fprintf(errOut, "  %s\n", line)
+		}
+	}
+	if rep.Command != "" {
+		fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Run:"))
+		fmt.Fprintf(errOut, "    %s\n", color.CyanString(phelixerr.Redact(rep.Command)))
+	}
+	if rep.DocsURL != "" {
+		fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Documentation:"))
+		fmt.Fprintf(errOut, "    %s\n", phelixerr.Redact(rep.DocsURL))
+	}
 }
 
 // splitLines splits a multi-line hint into individual display lines.

@@ -102,13 +102,14 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// The full compiler/command output is intentionally NOT embedded in the
-		// error: it can be large and may contain file paths; the underlying
-		// *exec.ExitError (and its exit code) is preserved through the wrap so
+		// The compiler output is not embedded in the message. It is kept as a
+		// bounded tail on the ToolError so the CLI error reporter can classify
+		// known go.mod failures and show raw diagnostics; the underlying
+		// *exec.ExitError (and its exit code) is preserved through the wraps so
 		// errors.As / errors.Is still reach it.
 		return phelixerr.Wrapf(
 			phelixerr.CodeBuildFailed,
-			err,
+			&ToolError{Tool: "go", Output: tailOutput(output), Err: err},
 			"go build failed for %s (%s)",
 			config.Name,
 			config.Language,
