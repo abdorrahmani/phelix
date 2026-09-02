@@ -47,11 +47,15 @@ func TestLoadInvalidPort(t *testing.T) {
 	}
 }
 
-func TestLoadMissingName(t *testing.T) {
+func TestLoadPartialConfigNameOptional(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, FileName), []byte("port: 3000"), 0o644)
-	if _, err := Load(dir); err == nil {
-		t.Error("missing name accepted, want error")
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("port-only config rejected: %v", err)
+	}
+	if cfg.Name != "" || cfg.Port != 3000 {
+		t.Errorf("got %+v, want name empty and port 3000", cfg)
 	}
 }
 

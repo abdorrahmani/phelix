@@ -128,8 +128,16 @@ func runDoctorChecks(dir string) []checkResult {
 	switch {
 	case cfgErr == nil:
 		results = append(results, checkResult{name: "phelix.yaml", pass: true, detail: "found"})
-		results = append(results, checkResult{name: "Application name", pass: true, detail: cfg.Name})
-		results = append(results, checkResult{name: "Configured port", pass: true, detail: fmt.Sprintf("%d", cfg.Port)})
+		nameDetail := cfg.Name
+		if nameDetail == "" {
+			nameDetail = "(not set — prompted at build time)"
+		}
+		results = append(results, checkResult{name: "Application name", pass: true, detail: nameDetail})
+		portDetail := fmt.Sprintf("%d", cfg.Port)
+		if cfg.Port == 0 {
+			portDetail = "(not set — --port or default 8080)"
+		}
+		results = append(results, checkResult{name: "Configured port", pass: true, detail: portDetail})
 	case phelixerr.AsError(cfgErr) != nil && phelixerr.AsError(cfgErr).Code == phelixerr.CodeNotFound:
 		results = append(results, checkResult{
 			name:   "phelix.yaml",

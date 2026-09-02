@@ -35,6 +35,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - [Authentication (optional)](#authentication)
 - [Interactive Wizard](#interactive-wizard)
 - [Core Workflow](#core-workflow)
+- [Project Configuration (phelix.yaml)](#project-configuration-phelixyaml)
 - [Command Reference](#command-reference)
 - [Run Phelix in Docker](#run-phelix-in-docker)
 - [Multi-Server Monitoring](#multi-server-monitoring)
@@ -300,16 +301,169 @@ Three distinct port concepts:
 
 With blue-green deployment, each instance receives its own `PORT`; the proxy owns the single public port. A failed new deployment never touches the currently active instance.
 
-### Project configuration (`phelix.yaml`)
+### Project Configuration (`phelix.yaml`)
 
-Run `phelix init` in a project directory to create:
+`phelix.yaml` is the project-level Phelix configuration file, stored in the
+current project directory. It removes the need to repeat the application name,
+port, health checks, and deployment strategy on every command.
 
-```yaml
-name: api
-port: 3000
+#### Creating the configuration
+
+```bash
+phelix init
 ```
 
-Precedence: **CLI flag → phelix.yaml → default**. `phelix build api --port 4000` overrides `port: 3000`; without the flag, the config value is used. Projects without `phelix.yaml` keep working exactly as before (opt-in).
+detects the project type (Go/Rust) and generates:
+
+```yaml
+# Phelix project configuration.
+# CLI flags override these values (e.g. --port).
+name: my-app
+port: 8080
+health:
+    endpoints:
+        - name: default
+          path: /health
+          interval: 10s
+          retries: 3
+          mode: auto
+deploy:
+    strategy: classic
+```
+
+#### Full example
+
+```yaml
+name: concurrency-lab-api
+port: 3000
+
+health:
+  endpoints:
+    - name: readiness
+      path: /ready
+      interval: 5s
+      retries: 3
+      mode: http
+
+    - name: liveness
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto
+
+deploy:
+  strategy: blue-green
+```
+
+#### Field reference
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | no* | Application name used by `build`, `rebuild`, `health`, `rollback`, etc. *Optional: when missing, `build` prompts for it (TTY) or fails with a clear error (scripts). |
+| `port` | no | Public application port. Default `8080` when missing. |
+| `health.endpoints[].name` | yes (per endpoint) | Endpoint name, e.g. `default`, `readiness`. Must be unique. |
+| `health.endpoints[].path` | yes (per endpoint) | HTTP path on localhost, e.g. `/health`. Must start with `/`. |
+| `health.endpoints[].interval` | no | Monitoring check interval (e.g. `10s`, `1m`). Default `10s`. |
+| `health.endpoints[].retries` | no | Consecutive failures before marking DOWN. Default `3`. |
+| `health.endpoints[].mode` | no | Deploy health tier: `auto` (default), `http`, `tcp-only`, `none`. |
+| `deploy.strategy` | no | `classic` (default), `blue-green`, or `rolling`. |
+| `deploy.replicas` | no | Replica count for `rolling` (requires `deploy.strategy: rolling`). |
+
+The configuration file is fully optional. Projects without `phelix.yaml`
+keep working exactly as before — every existing flag and prompt is unchanged.
+
+#### Resolution order
+
+`phelix build` (and the other project-aware commands) resolve values in this
+order:
+
+```text
+CLI argument/flag  →  phelix.yaml  →  Phelix default  →  interactive prompt
+```
+
+With the full example above, running:
+
+```bash
+phelix build
+```
+
+resolves automatically — no prompts:
+
+```text
+Application: concurrency-lab-api
+Port:        3000
+```
+
+Partial configurations work: a file with only `name:` prompts for the port
+(in a TTY) or uses the default `8080`; a file with only `port:` prompts for
+the name. No file at all means today's behavior (prompt or explicit args).
+
+Explicit flags always win:
+
+```bash
+phelix build --port 8080        # uses port 8080 even though the config says 3000
+phelix build my-custom-name     # uses my-custom-name even though the config has a name
+```
+
+#### Health endpoints
+
+Endpoints declared in `phelix.yaml` are applied to the app's persisted health
+configuration on every `phelix build` / `phelix rebuild`, so:
+
+- `phelix health list <app>` and `phelix health status <app>` show them.
+- Zero-downtime deploys use the first endpoint's `path`/`mode` as the deploy
+  health tier (same as `phelix health set`).
+- The `phelix health set/add/remove` commands keep working; a `health:` block
+  in the config replaces the persisted endpoints at the next build/rebuild,
+  while apps without a `health:` block keep whatever was set via the commands.
+
+#### Deployment strategies
+
+`deploy.strategy` selects which existing deployment path `phelix rebuild`
+uses — it does not introduce a new deployment system.
+
+```yaml
+deploy:
+  strategy: classic          # normal stop → rebuild → start (the default)
+```
+
+```yaml
+deploy:
+  strategy: blue-green       # zero-downtime blue-green (same as --blue-green)
+```
+
+```yaml
+deploy:
+  strategy: rolling          # zero-downtime rolling (same as --replicas N)
+  replicas: 3
+```
+
+Explicit flags still override the config (`--blue-green`, `--replicas`,
+`--port`). `phelix rollback` needs no configuration: it inspects the
+recorded deploy state and automatically uses classic or zero-downtime
+rollback to match how the app was actually deployed. `phelix proxy` is
+required for blue-green/rolling, exactly as with the flags.
+
+#### Validation
+
+The configuration is validated before it can affect a build or deploy — an
+invalid file fails the command with a `CONFIGURATION_ERROR` instead of being
+ignored:
+
+```text
+Configuration error: invalid deploy.strategy "foobar"
+Hint: expected one of: classic, blue-green, rolling
+```
+
+Validated: YAML syntax, port range, strategy name, `replicas` (≥ 1, rolling
+only), endpoint names (required, unique), paths (must start with `/`),
+durations (`10s`, `1m`, …), modes (`auto`, `http`, `tcp-only`, `none`).
+
+#### Related commands
+
+- `phelix init` — generate the file (scriptable: `--name`, `--port`, `--yes`).
+- `phelix doctor` — reports whether `phelix.yaml` is found and valid.
+- `phelix build` / `phelix rebuild` — read name, port, health, and strategy.
 
 ## Command Reference
 
@@ -324,6 +478,11 @@ Compiles the project in the current directory (auto-detects Go or Rust), starts
 it on the given port, and records a **new versioned build**. A **Build Report**
 with regression analysis is printed automatically after every successful build
 (see [Automatic Build Reports](#automatic-build-reports)).
+
+`NAME` and `--port` are resolved in this order: CLI argument/flag →
+[`phelix.yaml`](#project-configuration-phelixyaml) → default `8080` →
+interactive prompt. When the config file supplies both, the command runs
+without asking anything.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -345,7 +504,10 @@ phelix build myapp -p 8080 --tag "v1.2.3"
 
 #### `phelix init`
 
-Detects the project type (Go/Rust) and creates `phelix.yaml` with the application name and port. Prompts interactively in a TTY; fully scriptable with flags:
+Detects the project type (Go/Rust) and creates `phelix.yaml` with the
+application name, port, a default health endpoint, and the classic deploy
+strategy (see [Project Configuration](#project-configuration-phelixyaml)).
+Prompts interactively in a TTY; fully scriptable with flags:
 
 ```bash
 phelix init --name api --port 3000 --yes
@@ -379,7 +541,11 @@ Exits non-zero when a critical check fails. Inconclusive detection (no listener 
 
 #### `phelix rebuild <ID|AppName> [flags]`
 Rebuilds an existing app from its source directory. Supports zero-downtime
-deploy.
+deploy. Without an argument, the app is taken from `phelix.yaml` (`name:`)
+when it exists in the current directory, otherwise an interactive picker is
+shown. `--blue-green` / `--replicas` default to the config's
+[`deploy.strategy`](#project-configuration-phelixyaml) when the flags are not
+passed.
 
 | Flag | Default | Description |
 |------|---------|-------------|

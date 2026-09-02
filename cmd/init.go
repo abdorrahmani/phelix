@@ -58,7 +58,19 @@ var InitCmd = &cobra.Command{
 			// Malformed existing file — overwrite path below fixes it.
 		}
 
-		cfg := &project.Config{Name: initName, Port: initPort}
+		cfg := &project.Config{
+			Name: initName,
+			Port: initPort,
+			// Generate a complete, working example: one default health
+			// endpoint and the classic strategy. Every generated field is
+			// supported and validated by project.Load.
+			Health: &project.HealthConfig{
+				Endpoints: []project.HealthEndpoint{
+					{Name: "default", Path: "/health", Interval: "10s", Retries: 3, Mode: "auto"},
+				},
+			},
+			Deploy: &project.DeployConfig{Strategy: project.StrategyClassic},
+		}
 
 		if cfg.Name == "" {
 			cfg.Name = inferProjectName()

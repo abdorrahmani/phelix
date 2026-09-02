@@ -49,9 +49,21 @@ var BuildCmd = &cobra.Command{
 	Long:  "Compiles an application from the current directory (auto-detects language) with the given name and starts it immediately",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Project configuration (phelix.yaml) supplies name/port defaults.
+		// A missing file is fine; a present-but-invalid file fails fast here
+		// so a broken config can never silently affect the build.
+		projCfg, err := loadProjectConfig()
+		if err != nil {
+			return err
+		}
+
+		if len(args) == 0 && projCfg != nil && projCfg.Name != "" {
+			// phelix.yaml supplies the name; no prompt.
+			args = []string{projCfg.Name}
+		}
 		if len(args) == 0 {
 			if !IsInteractive() {
-				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <NAME>; usage: phelix build <NAME> --port <PORT>")
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <NAME>; usage: phelix build <NAME> --port <PORT> (or set name: in phelix.yaml)")
 			}
 			entered, err := PromptString("Application name", "")
 			if err != nil {
@@ -68,20 +80,21 @@ var BuildCmd = &cobra.Command{
 		// Precedence: CLI flag > phelix.yaml > default. When --port was not
 		// passed, a phelix.yaml in the current directory supplies the port.
 		if !cmd.Flags().Changed("port") && !matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms) {
-			if project.Exists(currentDirOrError()) {
-				if cfg, err := project.Load(currentDirOrError()); err == nil && cfg.Port != 0 {
-					buildPort = cfg.Port
-				}
+			if projCfg != nil && projCfg.Port != 0 {
+				buildPort = projCfg.Port
 			}
 
-			// When the port flag was not passed on the command line, offer to
-			// choose it interactively (defaults to the configured port).
-			if IsInteractive() {
-				chosen, err := PromptInt("Port to run the application on", buildPort)
-				if err != nil {
-					return err
+			// When neither the flag nor the config supplied a port, offer to
+			// choose it interactively (defaults to the configured or default
+			// port). A config-supplied value is used as-is, without prompting.
+			if projCfg == nil || projCfg.Port == 0 {
+				if IsInteractive() {
+					chosen, err := PromptInt("Port to run the application on", buildPort)
+					if err != nil {
+						return err
+					}
+					buildPort = chosen
 				}
-				buildPort = chosen
 			}
 		}
 
@@ -149,6 +162,13 @@ var BuildCmd = &cobra.Command{
 
 		if err := createAppEntry(id, name, lang, noUpload); err != nil {
 			return err
+		}
+
+		// Apply health endpoints declared in phelix.yaml (desired state) to
+		// the app's persisted health configuration before the app starts.
+		if serr := syncProjectHealth(projCfg, id, name, buildPort); serr != nil {
+			fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
+				color.YellowString("⚠"), project.FileName, serr)
 		}
 
 		binPath := filepath.Join(currentDir, fmt.Sprintf("app_%s", id))
