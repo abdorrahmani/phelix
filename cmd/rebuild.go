@@ -37,6 +37,24 @@ var RebuildCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Project configuration (phelix.yaml) supplies name/port/strategy
+		// defaults. Missing file is fine; an invalid file fails fast.
+		projCfg, err := loadProjectConfig()
+		if err != nil {
+			return err
+		}
+
+		if err := app.Manager.LoadState(); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
+		}
+
+		if len(args) == 0 && projCfg != nil && projCfg.Name != "" {
+			// phelix.yaml names the app; use it when that app exists so
+			// rebuild inside the project directory needs no argument.
+			if _, err := GetAppInfo(projCfg.Name); err == nil {
+				args = []string{projCfg.Name}
+			}
+		}
 		if len(args) == 0 {
 			if !IsInteractive() {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix rebuild <ID|AppName> --port <PORT>")
@@ -50,10 +68,6 @@ var RebuildCmd = &cobra.Command{
 
 		identifier := args[0]
 
-		if err := app.Manager.LoadState(); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
-		}
-
 		appInfo, err := GetAppInfo(identifier)
 		if err != nil {
 			return err
@@ -64,14 +78,14 @@ var RebuildCmd = &cobra.Command{
 		// Precedence: CLI flag > persisted app port > phelix.yaml. The yaml is
 		// consulted only when neither the flag nor the app's recorded port
 		// applies, so existing managed apps keep their behavior.
-		if !cmd.Flags().Changed("port") && (appInfo.Port == 0) {
-			dir := currentDirOrError()
-			if dir != "" && project.Exists(dir) {
-				if cfg, err := project.Load(dir); err == nil && cfg.Port != 0 {
-					portToUse = cfg.Port
-				}
-			}
+		if !cmd.Flags().Changed("port") && (appInfo.Port == 0) && projCfg != nil && projCfg.Port != 0 {
+			portToUse = projCfg.Port
 		}
+
+		// Deployment strategy from phelix.yaml. Explicit CLI flags always win;
+		// absent flags, a configured blue-green/rolling strategy selects the
+		// existing zero-downtime deploy path (classic stays the default).
+		applyConfigDeployStrategy(cmd, projCfg)
 
 		if err := phelixport.Validate(portToUse); err != nil {
 			return err
@@ -105,6 +119,13 @@ var RebuildCmd = &cobra.Command{
 		if rebuildNoUpload {
 			appInfo.NoUpload = true
 			_ = app.Manager.SaveState()
+		}
+
+		// Apply health endpoints declared in phelix.yaml (desired state) so
+		// both the classic start and the zero-downtime deploy tiers see them.
+		if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil {
+			fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
+				color.YellowString("⚠"), project.FileName, serr)
 		}
 
 		// Zero-downtime deploy paths. When --blue-green or --replicas is set we
@@ -182,6 +203,32 @@ var RebuildCmd = &cobra.Command{
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		return nil
 	},
+}
+
+// applyConfigDeployStrategy maps deploy.strategy from phelix.yaml onto the
+// existing --blue-green / --replicas rebuild flags. Explicit CLI flags always
+// win; classic (or no deploy block) changes nothing, keeping the classic path
+// the default.
+func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config) {
+	if cfg == nil || cfg.Deploy == nil || cfg.Deploy.Strategy == "" ||
+		cfg.Deploy.Strategy == project.StrategyClassic {
+		return
+	}
+	if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
+		return
+	}
+	switch cfg.Deploy.Strategy {
+	case project.StrategyBlueGreen:
+		rebuildBlueGreen = true
+	case project.StrategyRolling:
+		if rebuildReplicas == 0 {
+			if cfg.Deploy.Replicas > 0 {
+				rebuildReplicas = cfg.Deploy.Replicas
+			} else {
+				rebuildReplicas = 1
+			}
+		}
+	}
 }
 
 func init() {

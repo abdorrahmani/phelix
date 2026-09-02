@@ -1,0 +1,99 @@
+package cmd
+
+import (
+	"fmt"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/fatih/color"
+)
+
+// loadProjectConfig loads phelix.yaml from the current directory. A missing
+// file is not an error (nil, nil) — commands keep their existing behavior
+// without a config. A present-but-invalid file IS an error: an invalid
+// configuration must never be silently ignored.
+func loadProjectConfig() (*project.Config, error) {
+	dir := currentDirOrError()
+	if dir == "" {
+		return nil, nil
+	}
+	cfg, err := project.Load(dir)
+	if err != nil {
+		if phelixerr.CodeOf(err) == phelixerr.CodeNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// syncProjectHealth applies the health endpoints declared in phelix.yaml to
+// the app's persisted health configuration (the same store that
+// `phelix health list/status` and the deploy health tiers read).
+//
+// phelix.yaml is the desired state: when the health block is present, its
+// endpoints replace the app's persisted endpoints on every build/rebuild.
+// Apps without a health block keep whatever was configured via the health
+// commands. HTTPMetrics opt-ins from `health set` are preserved.
+//
+// ponytail: backend sync (gRPC SendHealthSetConfig) is not re-sent here; the
+// dashboard picks the config up on the next health set or daemon start. Add
+// the gRPC push when the dashboard needs live yaml edits.
+func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) error {
+	if cfg == nil || cfg.Health == nil || len(cfg.Health.Endpoints) == 0 {
+		return nil
+	}
+
+	configMgr, err := health.InitConfigManager()
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize health config", err)
+	}
+
+	hc := &health.AppHealthConfig{
+		AppID:     appID,
+		AppName:   appName,
+		Endpoints: make(map[string]*health.HealthCheckConfig, len(cfg.Health.Endpoints)),
+		Enabled:   true,
+	}
+	if existing := configMgr.GetConfig(appID); existing != nil {
+		hc.HTTPMetrics = existing.HTTPMetrics
+	}
+
+	for _, ep := range cfg.Health.Endpoints {
+		interval := ep.Interval
+		if interval == "" {
+			interval = "10s"
+		}
+		retries := ep.Retries
+		if retries == 0 {
+			retries = 3
+		}
+		hc.Endpoints[ep.Name] = &health.HealthCheckConfig{
+			Name:          ep.Name,
+			URL:           fmt.Sprintf("http://localhost:%d%s", appPort, ep.Path),
+			Interval:      interval,
+			Retries:       retries,
+			ExpectedCodes: "200-299",
+			Timeout:       "10s",
+		}
+	}
+
+	// Deploy tier mirrors `phelix health set`: only Mode and Path, taken from
+	// the first declared endpoint. Interval/Retries in the yaml describe the
+	// monitoring daemon's cadence and must not inflate the deploy deadline.
+	first := cfg.Health.Endpoints[0]
+	mode := health.TierModeAuto
+	if first.Mode != "" {
+		mode = health.DeployTierMode(first.Mode)
+	}
+	hc.DeployTier = &health.DeployTierConfig{Mode: mode, Path: first.Path}
+
+	if err := configMgr.SaveConfig(appID, hc); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save health config", err)
+	}
+
+	fmt.Printf("  %s Applied %d health endpoint(s) from %s\n",
+		color.BlueString("→"), len(cfg.Health.Endpoints), color.CyanString(project.FileName))
+	return nil
+}
