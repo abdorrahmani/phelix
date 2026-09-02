@@ -52,12 +52,12 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// Compiler/command output is intentionally not dumped into the error
-		// (it can be large); the underlying *exec.ExitError stays reachable
-		// through the wrap.
+		// Compiler output is not dumped into the message. It is kept as a
+		// bounded tail on the ToolError for the CLI error reporter; the
+		// underlying *exec.ExitError stays reachable through the wraps.
 		return phelixerr.Wrapf(
 			phelixerr.CodeBuildFailed,
-			err,
+			&ToolError{Tool: "cargo", Output: tailOutput(output), Err: err},
 			"cargo build failed for %s (%s)",
 			config.Name,
 			config.Language,
