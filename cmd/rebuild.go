@@ -323,8 +323,15 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
+			// Classic → blue-green migration: when the app still runs as a
+			// classic process binding the public port, stop it right before
+			// the proxy enrols (after the candidate is healthy), so the user
+			// never has to run 'phelix stop' by hand.
+			PortHandoff: stopPublicPortOwner,
 		}
-		if err := bg.Deploy(context.Background()); err != nil {
+		err := bg.Deploy(context.Background())
+		reconcileAppWithDeploy(name)
+		if err != nil {
 			return err
 		}
 		fmt.Printf("%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
@@ -349,7 +356,9 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		HealthProvider: healthProvider,
 		Logger:         logger,
 	}
-	if err := r.Deploy(context.Background()); err != nil {
+	err = r.Deploy(context.Background())
+	reconcileAppWithDeploy(name)
+	if err != nil {
 		return err
 	}
 	fmt.Printf("%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",

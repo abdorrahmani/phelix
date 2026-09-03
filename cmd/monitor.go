@@ -47,6 +47,18 @@ func runMonitor() error {
 	if err := app.Manager.LoadState(); err != nil {
 		return err
 	}
+
+	// Apps managed by a zero-downtime deployment must never be classic-started
+	// on the public port; they are restored below through their deployment
+	// (active slot relaunch + proxy route restore).
+	app.DeployedAppSkipper = func(id string) bool {
+		if info, err := GetAppInfo(id); err == nil {
+			return loadDeployState(info.Name) != nil
+		}
+		return false
+	}
+	restoreDeployedApps()
+
 	if _, err := app.Manager.RestoreAutoStartApps(); err != nil {
 		// Restoration is best-effort: log the failure and continue so the
 		// monitoring connection still comes up. Apps can be started manually.
@@ -117,8 +129,6 @@ func runMonitor() error {
 		}
 	}()
 
-	logs.Info("monitor", "gRPC monitor daemon running")
-
 	// Block until SIGINT/SIGTERM, then shut down cleanly. systemd sends SIGTERM
 	// during 'systemctl stop/restart phelix'.
 	sigChan := make(chan os.Signal, 1)
@@ -141,4 +151,28 @@ func runMonitor() error {
 
 	logs.Info("monitor", "daemon stopped")
 	return nil
+}
+
+// restoreDeployedApps best-effort restores zero-downtime deployments the way
+// `phelix start` would: proxy daemon up, active slot relaunched from its
+// recorded binary, proxy route re-established. Failures are logged, never
+// fatal — the operator can always run `phelix start <app>` by hand.
+func restoreDeployedApps() {
+	am, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return
+	}
+	for _, info := range am.Apps {
+		state := loadDeployState(info.Name)
+		if state == nil {
+			continue
+		}
+		// Only restore apps that were serving before (auto-start intent).
+		if !info.AutoStart || info.Status == "running" {
+			continue
+		}
+		if err := runDeployAwareStart(info); err != nil {
+			logs.Warning("monitor", "failed to restore deployment for %s: %v", info.Name, err)
+		}
+	}
 }

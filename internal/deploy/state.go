@@ -52,6 +52,10 @@ type Instance struct {
 	Status string `json:"status"`
 	// Version is the builds/vN label this instance was started from (when known).
 	Version int `json:"version,omitempty"`
+	// EnvPath is the encrypted env snapshot (env/vN.enc) paired with the
+	// binary this instance runs. Recorded so StartDeployment can relaunch the
+	// instance with the same environment later.
+	EnvPath string `json:"env_path,omitempty"`
 }
 
 // RollbackRecord is a compact summary of the last successful rollback for an

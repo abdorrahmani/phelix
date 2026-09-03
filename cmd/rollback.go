@@ -231,6 +231,10 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 		return phelixerr.Wrap(phelixerr.CodeRollbackFailed, "zero-downtime rollback failed", err)
 	}
 
+	// The rollback swapped slots; bring the lifecycle record in line with the
+	// new active instance.
+	reconcileAppWithDeploy(appName)
+
 	// Step: complete
 	fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", appName), target)
 	r.Emit(phelixgrpc.RollbackStepComplete, true, fmt.Sprintf("zero-downtime rollback %s -> %s complete", currentVerStr, targetVerStr), time.Since(totalStart), "")

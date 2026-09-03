@@ -72,6 +72,15 @@ type BlueGreen struct {
 	InFlight InFlightProvider
 	// GracePeriod overrides DefaultGracePeriod when > 0.
 	GracePeriod time.Duration
+	// PortHandoff, when set, is invoked right before the first proxy
+	// enrolment if something still owns the public port — almost always a
+	// classic instance from before the app migrated to blue-green. The CLI
+	// wires this to "gracefully stop the app's own classic process". It runs
+	// only AFTER the replacement instance is healthy, so the downtime window
+	// is the seconds between the classic process exiting and the proxy
+	// binding the port. Returning an error aborts the deploy with the
+	// candidate killed and the classic instance untouched.
+	PortHandoff func(ctx context.Context, appName string, publicPort int) error
 }
 
 // Deploy performs one blue-green deployment. The sequence mirrors the project
@@ -159,6 +168,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		PID:        proc.PID(),
 		Port:       port,
 		BinaryPath: binaryPath,
+		EnvPath:    envPath,
 		StartedAt:  time.Now(),
 		Status:     "starting",
 		Version:    targetVer,
@@ -219,6 +229,17 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			newInst.PID = 0
 			bg.storeState(state)
 			return bg.failf(phelixerr.New(phelixerr.CodeConnection, "deploy aborted: proxy daemon unreachable (is 'phelix proxy' running?)"))
+		}
+		// Classic → blue-green migration: stop the classic instance that owns
+		// the public port so the proxy can bind it. Runs after the candidate
+		// is healthy (pre-warmed), so the interruption is a brief port
+		// handoff rather than a stop-then-deploy round trip.
+		if err := bg.handOffPublicPort(ctx, proc, log); err != nil {
+			_, _ = GracefulStop(ctx, proc, grace, 0)
+			newInst.Status = "failed"
+			newInst.PID = 0
+			bg.storeState(state)
+			return bg.failf(err)
 		}
 		if err := bg.ProxyClient.Add(ctx, bg.AppName, bg.PublicPort, primary); err != nil {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
