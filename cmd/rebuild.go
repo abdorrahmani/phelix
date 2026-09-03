@@ -138,6 +138,14 @@ var RebuildCmd = &cobra.Command{
 			return runZeroDowntimeDeploy(appInfo, name, portToUse)
 		}
 
+		// A classic rebuild of an app still managed by blue-green/rolling is
+		// the documented migration to classic: tear the deployment down first
+		// so no replica survives as an orphan and no proxy route fights the
+		// new classic process for the public port.
+		if err := migrateToClassic(name); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "could not migrate %q to classic deployment", name)
+		}
+
 		// Acquire deploy lock FIRST so two concurrent rebuilds cannot race on
 		// versions.json or double-assign version numbers; previously the old
 		// process was stopped before locking, letting a concurrent rebuild
@@ -355,6 +363,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		ProxyClient:    proxyClient,
 		HealthProvider: healthProvider,
 		Logger:         logger,
+		PortHandoff:    stopPublicPortOwner,
 	}
 	err = r.Deploy(context.Background())
 	reconcileAppWithDeploy(name)

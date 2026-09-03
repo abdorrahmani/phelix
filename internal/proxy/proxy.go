@@ -226,12 +226,24 @@ func (p *Proxy) loadState() *proxyState {
 //
 // If addl is non-empty it replaces the full backend set (used by rolling).
 // Otherwise the backend set is rebuilt to {primary} for blue-green.
+//
+// The set is normalised: the primary is always first and duplicate hosts are
+// dropped. Callers disagree on whether backends already include the primary
+// (the rolling deploy path passes it in), so the daemon — the single point
+// where the routing table and proxy-state.json are written — enforces
+// uniqueness here; idempotent: SetTarget twice yields the same set.
 func (p *Proxy) SetTarget(primary Target, addl ...Target) {
-	next := &proxyState{
-		primary: primary,
-		targets: append([]Target{primary}, addl...),
+	targets := make([]Target, 0, len(addl)+1)
+	targets = append(targets, primary)
+	seen := map[string]bool{primary.Host: true}
+	for _, t := range addl {
+		if t.Host == "" || seen[t.Host] {
+			continue
+		}
+		seen[t.Host] = true
+		targets = append(targets, t)
 	}
-	p.state.Store(next)
+	p.state.Store(&proxyState{primary: primary, targets: targets})
 }
 
 // CurrentTarget returns the primary target the proxy is routing to right now.

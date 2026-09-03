@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -171,6 +173,24 @@ func populateStatusTable(table *tablewriter.Table, status app.AppStatus) {
 	})
 }
 
+// sortedReplicaKeysForDisplay orders replica indices numerically so status
+// output lists replica-0..N deterministically regardless of JSON map order.
+func sortedReplicaKeysForDisplay(m map[string]*deploy.Instance) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, aerr := strconv.Atoi(keys[i])
+		b, berr := strconv.Atoi(keys[j])
+		if aerr == nil && berr == nil {
+			return a < b
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
 // displayDeployAndProxy prints zero-downtime deploy mode and live proxy
 // routing for the app, when available.
 func displayDeployAndProxy(appName string) {
@@ -264,12 +284,17 @@ func displayDeployAndProxy(appName string) {
 			}
 			fmt.Printf("  Replicas:      %d\n", len(state.Replicas))
 			fmt.Printf("  Public port:   %d\n", state.PublicPort)
-			for key, inst := range state.Replicas {
+			for _, key := range sortedReplicaKeysForDisplay(state.Replicas) {
+				inst := state.Replicas[key]
 				if inst == nil {
 					continue
 				}
-				fmt.Printf("  Replica %-3s:   status=%s pid=%d port=%d\n",
-					key, inst.Status, inst.PID, inst.Port)
+				ver := ""
+				if inst.Version > 0 {
+					ver = fmt.Sprintf(" version=v%d", inst.Version)
+				}
+				fmt.Printf("  Replica %-3s:   status=%s pid=%d port=%d%s\n",
+					key, inst.Status, inst.PID, inst.Port, ver)
 			}
 		default:
 			fmt.Printf("  Deploy method: %s\n", color.MagentaString(string(state.Mode)))

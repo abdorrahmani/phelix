@@ -19,6 +19,30 @@ import (
 // classic single-PID flow, which would bind the public port directly and
 // fight the proxy for ownership.
 
+// stopRetiredInstances drains instances left over from a previous deployment
+// strategy (blue-green slots during a migration to rolling, replicas during a
+// migration to blue-green). The caller must only invoke it once the proxy no
+// longer routes to them — i.e. after the new strategy's first successful
+// membership update. Processes are verified by executable path before being
+// signalled, so a stale record can never kill an unrelated process.
+func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.Duration, inFlight int64, log Logger) {
+	if log == nil {
+		log = &nopLogger{}
+	}
+	for _, inst := range retired {
+		if inst == nil || inst.PID <= 0 {
+			continue
+		}
+		log.Stepf("stopping retired %q instance (pid %d) from previous strategy", inst.Slot, inst.PID)
+		report := stopByPID(ctx, inst.PID, grace, inFlight, inst.BinaryPath)
+		if report.ForceKilled {
+			log.Warnf("retired instance %q ignored SIGTERM; SIGKILL applied", inst.Slot)
+		}
+		inst.Status = "stopped"
+		inst.PID = 0
+	}
+}
+
 // InstanceAlive reports whether inst's recorded process is alive AND still
 // resolves to the binary recorded for it. The executable check is what makes
 // a recycled PID unusable as "the instance is running" evidence.
@@ -270,9 +294,10 @@ func RestoreProxyRoute(ctx context.Context, state *DeployState, pc ProxyClient, 
 			if inst == nil || inst.PID <= 0 {
 				continue
 			}
-			t := proxy.Target{Host: hostPort(inst.Port), Label: inst.Slot}
+			t := proxy.Target{Host: hostPort(inst.Port), Label: "replica-" + k}
 			if primary.Host == "" {
 				primary = t
+				continue
 			}
 			backends = append(backends, t)
 		}

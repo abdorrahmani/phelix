@@ -38,6 +38,7 @@ const (
 	OpRemove   Op = "remove"   // stop proxying for an app (close its public port)
 	OpStatus   Op = "status"   // report current targets for one or all apps
 	OpPing     Op = "ping"     // liveness check used by rebuild before deploys
+	OpVersion  Op = "version"  // report daemon's control-protocol version
 	OpShutdown Op = "shutdown" // gracefully stop the daemon (used by 'phelix proxy stop')
 )
 
@@ -52,9 +53,10 @@ type Request struct {
 
 // Response is the wire format from daemon -> client.
 type Response struct {
-	OK     bool        `json:"ok"`
-	Error  string      `json:"error,omitempty"`
-	Status []AppStatus `json:"status,omitempty"`
+	OK      bool        `json:"ok"`
+	Error   string      `json:"error,omitempty"`
+	Status  []AppStatus `json:"status,omitempty"`
+	Version int         `json:"version,omitempty"`
 }
 
 // AppStatus is the per-app slice returned by OpStatus.
@@ -349,6 +351,44 @@ func (d *Daemon) persistState() {
 	}
 }
 
+// reconcileBackends reconciles persisted routing state with runtime reality
+// before a daemon restart restores it: backends that no longer accept
+// connections are dropped so the restored proxy never routes to a dead port,
+// and an unreachable primary falls back to the first live backend. When no
+// backend is reachable the persisted set is kept untouched — every instance
+// may simply still be starting (e.g. after a reboot, instances come back via
+// 'phelix start' after the daemon), and wiping the route would make the
+// daemon forget the app entirely.
+func reconcileBackends(primary Target, backends []Target) (Target, []Target) {
+	if len(backends) == 0 {
+		return primary, backends
+	}
+	dialable := func(host string) bool {
+		if host == "" {
+			return false
+		}
+		conn, err := net.DialTimeout("tcp", host, liveDialTO)
+		if err != nil {
+			return false
+		}
+		conn.Close()
+		return true
+	}
+	live := make([]Target, 0, len(backends))
+	for _, b := range backends {
+		if dialable(b.Host) {
+			live = append(live, b)
+		}
+	}
+	if len(live) == 0 || len(live) == len(backends) {
+		return primary, backends
+	}
+	if !dialable(primary.Host) {
+		primary = live[0]
+	}
+	return primary, live
+}
+
 // restoreState replays ~/.phelix/proxy-state.json: each recorded app's public
 // port is rebound and its last-known targets reinstated. Apps whose ports no
 // longer bind are skipped (logged) — one conflicting port must never take down
@@ -374,9 +414,10 @@ func (d *Daemon) restoreState() {
 		if app.AppName == "" || app.PublicPort <= 0 || app.Primary.Host == "" {
 			continue
 		}
-		p := New(app.AppName, app.PublicPort, app.Primary)
-		if len(app.Backends) > 0 {
-			p.SetTarget(app.Primary, app.Backends...)
+		primary, backends := reconcileBackends(app.Primary, app.Backends)
+		p := New(app.AppName, app.PublicPort, primary)
+		if len(backends) > 0 {
+			p.SetTarget(primary, backends...)
 		}
 		if err := d.startAppProxy(p); err != nil {
 			fmt.Fprintf(os.Stderr, "[proxy] restore %s: %v (skipped)\n", app.AppName, err)
@@ -439,6 +480,9 @@ func (d *Daemon) handleConn(conn net.Conn) {
 	switch req.Op {
 	case OpPing:
 		writeResponse(conn, Response{OK: true})
+
+	case OpVersion:
+		writeResponse(conn, Response{OK: true, Version: proxyProtoVersion})
 
 	case OpAdd:
 		if req.Primary == nil {
@@ -647,6 +691,24 @@ func isPortOpen(port int) bool {
 	return true
 }
 
+// proxyProtoVersion is the daemon control-protocol version. It is bumped when
+// daemon behavior changes in a way an old, still-running daemon cannot honor
+// (e.g. backend-set dedupe). EnsureDaemon compares it against the running
+// daemon's version and restarts stale daemons so a rebuilt CLI never keeps
+// talking to a pre-upgrade proxy that would persist outdated state.
+const proxyProtoVersion = 2
+
+// daemonVersionOf returns the running daemon's protocol version. A daemon
+// older than the version handshake answers OpVersion with an unknown-op
+// error; treat that as version 1.
+func daemonVersionOf(ctx context.Context, c *Client) int {
+	resp, err := c.Do(ctx, Request{Op: OpVersion})
+	if err != nil || !resp.OK {
+		return 1
+	}
+	return resp.Version
+}
+
 // EnsureDaemon checks whether a proxy daemon is reachable on the control
 // socket; if not, it launches `phelix proxy` detached in the background and
 // waits (up to wait) for the socket to start answering. It is what makes
@@ -665,9 +727,23 @@ func EnsureDaemon(ctx context.Context, phelixBin string, wait time.Duration) err
 	}
 	client := NewClient(socket)
 
-	// Fast path: already running.
+	// Fast path: already running. An old daemon left over from a previous
+	// phelix build must not keep serving stale proxy logic (e.g. persisting
+	// duplicate backends): if its protocol version predates the current one,
+	// replace it before the caller enrolls new state into it.
 	if client.IsRunning() {
-		return nil
+		if daemonVersionOf(ctx, client) >= proxyProtoVersion {
+			return nil
+		}
+		// Stale daemon: drain (shutdown drains up to 30s) and replace it with
+		// a fresh one from this binary.
+		_, _ = client.Do(ctx, Request{Op: OpShutdown})
+		staleDeadline := time.Now().Add(35 * time.Second)
+		for client.IsRunning() && time.Now().Before(staleDeadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+		// Give the kernel a beat to release the control socket.
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	// Resolve the binary to launch.
