@@ -126,6 +126,67 @@ func (s *DeployState) InactiveSlot() string {
 	return SlotBlue
 }
 
+// modeSnapshot captures the fields that define which strategy a DeployState
+// represents, so a failed strategy migration can be undone before the new
+// strategy has replaced anything.
+type modeSnapshot struct {
+	mode       Mode
+	activeSlot string
+	slots      map[string]*Instance
+	replicas   map[string]*Instance
+}
+
+func captureMode(s *DeployState) modeSnapshot {
+	return modeSnapshot{mode: s.Mode, activeSlot: s.ActiveSlot, slots: s.Slots, replicas: s.Replicas}
+}
+
+func (s *DeployState) restoreMode(m modeSnapshot) {
+	s.Mode, s.ActiveSlot, s.Slots, s.Replicas = m.mode, m.activeSlot, m.slots, m.replicas
+}
+
+// MigrateTo switches the recorded strategy and retires every instance that
+// belonged to the previous one. The retired instances are returned so the
+// caller can stop their processes at the right moment — after the new
+// strategy's instances actually serve traffic; stopping them earlier would
+// drop requests. A no-op returning (nil, nil) when already in mode.
+//
+// The mode switch is persisted immediately: a crash mid-rollout must not
+// leave the old strategy recorded as the active one. Callers that must keep
+// the previous strategy when the rollout fails before it replaced anything
+// capture the four fields with captureMode and restore them with restoreMode.
+func (s *DeployState) MigrateTo(mode Mode) ([]*Instance, error) {
+	if s == nil || s.Mode == mode {
+		return nil, nil
+	}
+	var retired []*Instance
+	for _, inst := range s.Slots {
+		if inst != nil && inst.PID > 0 {
+			retired = append(retired, inst)
+		}
+	}
+	for _, inst := range s.Replicas {
+		if inst != nil && inst.PID > 0 {
+			retired = append(retired, inst)
+		}
+	}
+	s.Slots = nil
+	s.Replicas = nil
+	s.ActiveSlot = ""
+	s.Mode = mode
+	if mode == ModeBlueGreen {
+		s.Slots = map[string]*Instance{
+			SlotBlue:  {Slot: SlotBlue, Status: "stopped"},
+			SlotGreen: {Slot: SlotGreen, Status: "stopped"},
+		}
+	} else {
+		s.Replicas = make(map[string]*Instance)
+	}
+	if err := Store(s); err != nil {
+		return nil, err
+	}
+	return retired, nil
+}
+
 // ActiveInstance returns the currently serving instance, or nil if none.
 func (s *DeployState) ActiveInstance() *Instance {
 	if s == nil {
@@ -231,6 +292,21 @@ func Remove(appName string) error {
 		return err
 	}
 	if err := os.RemoveAll(filepath.Dir(path)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// RemoveState deletes only deploy.json, leaving versions.json and the build
+// metadata that share the app's data directory intact. It is the strategy
+// migration to classic: the deployment record goes away, the rollback history
+// stays.
+func RemoveState(appName string) error {
+	path, err := statePath(appName)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil

@@ -120,6 +120,34 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state"))
 	}
 	state.AppID = bg.AppID
+
+	// Strategy migration (e.g. rolling → blue-green): switch the recorded mode
+	// up front and keep the previous strategy's instances — they keep serving
+	// until the proxy switch succeeds, then they are drained. If the deploy
+	// fails before the switch, the migration is undone via the deferred hook
+	// below so the state again describes the deployment that is serving.
+	pre := captureMode(state)
+	if pre.mode != "" && pre.mode != ModeBlueGreen {
+		log.Stepf("strategy migration: %s → blue-green (previous strategy's instances retire after the traffic switch)", pre.mode)
+	}
+	legacy, err := state.MigrateTo(ModeBlueGreen)
+	if err != nil {
+		return bg.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "persist strategy migration to blue-green"))
+	}
+	switched := false
+	defer func() {
+		if errRet != nil && !switched {
+			if pre.mode != "" && pre.mode != ModeBlueGreen {
+				state.restoreMode(pre)
+				_ = Store(state)
+			} else if pre.mode == "" {
+				// First-ever blue-green attempt: remove the half-created
+				// deploy state so reconciliation keeps trusting the classic
+				// app record that still serves reality.
+				_ = RemoveState(bg.AppName)
+			}
+		}
+	}()
 	inactive := state.InactiveSlot()
 	active := state.ActiveSlot
 
@@ -233,13 +261,17 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		// Classic → blue-green migration: stop the classic instance that owns
 		// the public port so the proxy can bind it. Runs after the candidate
 		// is healthy (pre-warmed), so the interruption is a brief port
-		// handoff rather than a stop-then-deploy round trip.
-		if err := bg.handOffPublicPort(ctx, proc, log); err != nil {
-			_, _ = GracefulStop(ctx, proc, grace, 0)
-			newInst.Status = "failed"
-			newInst.PID = 0
-			bg.storeState(state)
-			return bg.failf(err)
+		// handoff rather than a stop-then-deploy round trip. Skipped when the
+		// app is already enrolled: the port then belongs to the proxy itself
+		// (e.g. a rolling → blue-green migration), not to a classic process.
+		if !proxyEnrolled {
+			if err := bg.handOffPublicPort(ctx, proc, log); err != nil {
+				_, _ = GracefulStop(ctx, proc, grace, 0)
+				newInst.Status = "failed"
+				newInst.PID = 0
+				bg.storeState(state)
+				return bg.failf(err)
+			}
 		}
 		if err := bg.ProxyClient.Add(ctx, bg.AppName, bg.PublicPort, primary); err != nil {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
@@ -258,6 +290,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		// The stale slot record no longer describes reality (the app it
 		// pointed at is not what the proxy serves); normalize it.
 		active = ""
+		switched = true
 	} else {
 		if bg.ProxyClient == nil {
 			// We must not leak the healthy instance we just started. Traffic
@@ -283,6 +316,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			))
 		}
 		log.Successf("traffic switched to slot %s (zero downtime)", inactive)
+		switched = true
 	}
 
 	// 8. Promote the new slot and gracefully stop the old instance. Version and
@@ -290,6 +324,11 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	// rule as forward deploy (never point current at an unhealthy instance).
 	oldActive := active
 	state.ActiveSlot = inactive
+	// Retired instances from a previous strategy (rolling → blue-green): the
+	// proxy no longer routes to them, so drain and stop them here alongside
+	// the previous active slot.
+	stopRetiredInstances(ctx, legacy, grace, bg.inFlight(bg.AppName), log)
+	legacy = nil
 	if targetVer > 0 {
 		state.ActiveVersion = targetVer
 		if err := PromoteVersion(bg.AppName, targetVer, string(ModeBlueGreen)); err != nil {

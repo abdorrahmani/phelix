@@ -132,8 +132,15 @@ func newProxyClientOrNull() *proxy.Client {
 // runDeployAwareStop tears down a blue-green/rolling deployment for `stop`:
 // proxy route removed first (traffic stops flowing), then every instance is
 // gracefully stopped, then the lifecycle record is updated. Historical
-// metadata in deploy.json is preserved for a later start.
+// metadata in deploy.json is preserved for a later start. The per-app deploy
+// lock serialises the teardown against concurrent deploys/rollbacks.
 func runDeployAwareStop(appInfo *app.AppInfo) error {
+	release, lerr := deploy.AcquireDeployLock(appInfo.Name, "stop")
+	if lerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lerr)
+	}
+	defer release()
+
 	state := loadDeployState(appInfo.Name)
 	if state == nil {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "no zero-downtime deployment for %s", appInfo.Name)
@@ -176,6 +183,12 @@ func runDeployAwareStop(appInfo *app.AppInfo) error {
 // binaries + env snapshots, proxy route re-established, lifecycle record
 // reconciled. The public port stays proxy-owned.
 func runDeployAwareStart(appInfo *app.AppInfo) error {
+	release, lerr := deploy.AcquireDeployLock(appInfo.Name, "start")
+	if lerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lerr)
+	}
+	defer release()
+
 	state := loadDeployState(appInfo.Name)
 	if state == nil {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "no zero-downtime deployment for %s", appInfo.Name)
@@ -186,8 +199,8 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 		if err := syncAppInfoWithDeploy(appInfo, state); err != nil {
 			return err
 		}
-		fmt.Printf("%s Deployment for %s is already running (active slot %s)\n",
-			color.GreenString("✓"), color.CyanString("'%s'", appInfo.Name), state.ActiveSlot)
+		fmt.Printf("%s Deployment for %s is already running (mode %s)\n",
+			color.GreenString("✓"), color.CyanString("'%s'", appInfo.Name), state.Mode)
 		return nil
 	}
 
@@ -215,9 +228,26 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 	if err := syncAppInfoWithDeploy(appInfo, state); err != nil {
 		return err
 	}
-	fmt.Printf("%s Deployment for %s restored (active slot %s, public port %d)\n",
-		color.GreenString("✓"), color.CyanString("'%s'", appInfo.Name), state.ActiveSlot, state.PublicPort)
+	fmt.Printf("%s Deployment for %s restored (mode %s, public port %d)\n",
+		color.GreenString("✓"), color.CyanString("'%s'", appInfo.Name), state.Mode, state.PublicPort)
 	return nil
+}
+
+// migrateToClassic performs the documented strategy migration to classic
+// (blue-green → classic, rolling → classic): the proxy route is removed, every
+// instance is stopped, and deploy.json is deleted so subsequent
+// start/stop/rebuild run the classic path. versions.json survives so rollback
+// history is kept. A no-op for apps without a zero-downtime deployment.
+func migrateToClassic(appName string) error {
+	state := loadDeployState(appName)
+	if state == nil {
+		return nil
+	}
+	fmt.Printf("%s Migrating %s from %s to classic deployment\n", color.BlueString("→"), color.CyanString("'%s'", appName), state.Mode)
+	if err := runDeployAwareStop(&app.AppInfo{Name: appName}); err != nil {
+		return err
+	}
+	return deploy.RemoveState(appName)
 }
 
 // stopPublicPortOwner is the PortHandoff implementation for

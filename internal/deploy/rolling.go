@@ -8,6 +8,7 @@ import (
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/health"
+	phelixport "github.com/abdorrahmani/phelix/internal/port"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 )
 
@@ -28,6 +29,14 @@ type Rolling struct {
 	Notifier       Notifier
 	InFlight       InFlightProvider
 	GracePeriod    time.Duration
+	// PortHandoff, when set, is invoked right before the first proxy enrolment
+	// if something still owns the public port — almost always a classic
+	// instance from before the app migrated to rolling (classic → rolling
+	// migration). The CLI wires this to "gracefully stop the app's own classic
+	// process". It runs only AFTER the first replacement is healthy, so the
+	// downtime window is the seconds between the classic process exiting and
+	// the proxy binding the port.
+	PortHandoff func(ctx context.Context, appName string, publicPort int) error
 
 	// enrolled tracks whether the app has been registered with the proxy
 	// daemon during this deploy so the first healthy replica can Add instead
@@ -79,6 +88,22 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	}
 	state.AppID = r.AppID
 
+	// Strategy migration (e.g. blue-green → rolling): switch the recorded mode
+	// up front so every subsequent persist is rolling-shaped, and keep the
+	// previous strategy's instances — they keep serving until the first replica
+	// is in rotation, then they are drained. If the rollout fails before it
+	// replaced anything, the migration is undone below so the state again
+	// describes the deployment that is actually serving.
+	pre := captureMode(state)
+	if pre.mode != "" && pre.mode != ModeRolling {
+		log.Stepf("strategy migration: %s → rolling (retiring previous strategy's instances after first replica is healthy)", pre.mode)
+	}
+	legacy, err := state.MigrateTo(ModeRolling)
+	if err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "persist strategy migration to rolling")
+	}
+	migrated := legacy != nil
+
 	// Shrink handling: snapshot instances beyond the desired replica count so
 	// they can be drained once the proxy membership no longer includes them.
 	surplus := applyReplicaSet(state.Replicas, r.Replicas)
@@ -91,10 +116,16 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	log.Stepf("%s", src.Describe())
 	binaryPath, envPath, err := src.Build(ctx)
 	if err != nil {
+		if migrated {
+			r.undoMigration(state, pre, log)
+		}
 		return phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact")
 	}
 	envOverlay, err := EnvOverlayFromSnapshot(envPath, r.AppID)
 	if err != nil {
+		if migrated {
+			r.undoMigration(state, pre, log)
+		}
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "env snapshot")
 	}
 
@@ -106,13 +137,36 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 
 	// Iterate over replica indices in order.
 	indices := replicaIndices(state.Replicas)
+	progressed := false
+	failed := false
 	for _, key := range indices {
 		if err := ctx.Err(); err != nil {
+			failed = true
+			if !progressed {
+				r.undoMigration(state, pre, log)
+			}
 			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "rolling deploy cancelled before replica %s", key)
 		}
 		if err := r.rollOne(ctx, state, binaryPath, envOverlay, targetVer, key, tier, tierCfg, grace); err != nil {
+			failed = true
+			if !progressed {
+				// No replacement ever reached rotation, so nothing about the
+				// previous strategy's serving instance changed: restore the
+				// pre-migration strategy so state and reality agree.
+				r.undoMigration(state, pre, log)
+			}
 			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "rolling deploy failed at replica %s", key)
 		}
+		if !progressed && migrated {
+			// First replacement healthy and in rotation: the previous
+			// strategy's instances are out of the serving path. Drain them.
+			stopRetiredInstances(ctx, legacy, grace, r.inFlight(r.AppName), log)
+			legacy = nil
+		}
+		progressed = true
+	}
+	if failed {
+		return phelixerr.New(phelixerr.CodeDeployFailed, "rolling deploy did not complete")
 	}
 
 	// Every replica now runs the new binary. Surplus replicas were excluded
@@ -138,6 +192,48 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 
 	log.Successf("rolling deploy of %s complete: %d replicas updated", r.AppName, len(indices))
 	return nil
+}
+
+// handOffPublicPort frees the public port before the first proxy enrolment
+// during a classic → rolling migration: the CLI-wired PortHandoff stops the
+// classic instance that still binds the port. The replacement is already
+// healthy at this point, so the window is only the handoff itself.
+func (r *Rolling) handOffPublicPort(ctx context.Context, log Logger) error {
+	if r.PortHandoff == nil {
+		return phelixerr.Newf(phelixerr.CodePortUnavailable,
+			"public port %d is owned by another process (classic instance?); stop it once, then deploy",
+			r.PublicPort)
+	}
+	log.Stepf("public port %d is owned by a classic instance; handing it to the proxy", r.PublicPort)
+	if err := r.PortHandoff(ctx, r.AppName, r.PublicPort); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeProxy, err, "classic-to-rolling handoff failed")
+	}
+	if !waitForPortRelease(r.PublicPort, 5*time.Second) {
+		return phelixerr.Newf(phelixerr.CodePortUnavailable,
+			"public port %d still bound after stopping the classic instance", r.PublicPort)
+	}
+	return nil
+}
+
+// undoMigration reverts a strategy migration whose rollout failed before it
+// replaced anything, so deploy.json again describes the deployment that is
+// still actually serving (e.g. the blue-green slot that owns the proxy).
+// For a first-ever deploy attempt there was no previous strategy to restore:
+// the half-created deploy.json is removed so status/list/reconciliation fall
+// back to the classic app record that still describes reality.
+func (r *Rolling) undoMigration(state *DeployState, pre modeSnapshot, log Logger) {
+	if pre.mode == "" || pre.mode == ModeRolling {
+		if pre.mode == "" {
+			if err := RemoveState(r.AppName); err != nil {
+				log.Warnf("failed to remove half-created deploy state: %v", err)
+			}
+		}
+		return
+	}
+	state.restoreMode(pre)
+	if err := Store(state); err != nil {
+		log.Warnf("failed to persist strategy migration rollback: %v", err)
+	}
 }
 
 // rollOne replaces exactly one replica while it keeps serving. Ordering rules
@@ -197,6 +293,19 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	}
 	var proxyErr error
 	if !r.enrolled {
+		// Classic → rolling migration: the public port may still be owned by
+		// the app's classic instance. Free it before the proxy can bind — but
+		// only when a handoff callback is wired; without one the subsequent
+		// Add fails with its own (clear) bind error.
+		if r.PortHandoff != nil && r.PublicPort > 0 && !phelixport.IsAvailable(r.PublicPort) {
+			if err := r.handOffPublicPort(ctx, log); err != nil {
+				stopHeldProcess(ctx, proc, grace)
+				inst.Status = "failed"
+				inst.PID = oldPID
+				_ = Store(state)
+				return err
+			}
+		}
 		proxyErr = r.ProxyClient.Add(ctx, r.AppName, r.PublicPort, primary, backends...)
 		if proxyErr == nil {
 			r.enrolled = true
@@ -369,7 +478,10 @@ func stopHeldProcess(ctx context.Context, proc Process, grace time.Duration) {
 }
 
 // healthyTargets returns (primary, backends) over all healthy replicas. The
-// primary is the lowest-index healthy replica; backends includes the primary.
+// primary is the lowest-index healthy replica. Backends exclude the primary —
+// the wire contract (EnrollApp/SwitchApp) treats primary and backends as
+// disjoint sets; the daemon unions them. Sending the primary inside backends
+// too made old daemons (pre-dedupe SetTarget) persist it twice.
 func healthyTargets(replicas map[string]*Instance) (proxy.Target, []proxy.Target) {
 	indices := replicaIndices(replicas)
 	var backends []proxy.Target
@@ -380,10 +492,11 @@ func healthyTargets(replicas map[string]*Instance) (proxy.Target, []proxy.Target
 			continue
 		}
 		t := proxy.Target{Host: hostPort(inst.Port), Label: "replica-" + k}
-		backends = append(backends, t)
 		if primary.Host == "" {
 			primary = t
+			continue
 		}
+		backends = append(backends, t)
 	}
 	if primary.Host == "" {
 		primary = proxy.Target{Host: "127.0.0.1:0", Label: "none"}
