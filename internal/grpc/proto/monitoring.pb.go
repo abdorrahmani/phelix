@@ -346,15 +346,17 @@ func (x *ServerInfo) GetSecurity() *ServerSecurity {
 }
 
 // ServerConnection mirrors the backend server's ServerConnection model: how
-// the backend should reach this host over SSH. ssh_password and private_key
-// are WRITE-ONLY — the agent sends them, but the backend must never echo
-// them back to the CLI/UI or persist them anywhere they can be read back.
-// public_key is READ-ONLY (agent-to-backend only).
+// the backend should reach this host over SSH. The agent NEVER populates this
+// group — SSH connection details and key material stay on the host, so every
+// field is always empty agent-to-backend; only the backend's own API fills it
+// in. ssh_password and private_key are WRITE-ONLY — the backend must never
+// echo them back to the CLI/UI or persist them anywhere they can be read
+// back. public_key is READ-ONLY (never sent to the agent).
 type ServerConnection struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SshPort       int32                  `protobuf:"varint,1,opt,name=ssh_port,json=sshPort,proto3" json:"ssh_port,omitempty"`            // listening sshd port; CLI default 22
-	SshUser       string                 `protobuf:"bytes,2,opt,name=ssh_user,json=sshUser,proto3" json:"ssh_user,omitempty"`             // SSH user; CLI default "phelix"
-	AuthMethod    string                 `protobuf:"bytes,3,opt,name=auth_method,json=authMethod,proto3" json:"auth_method,omitempty"`    // "key" or "password"; CLI default "key"
+	SshPort       int32                  `protobuf:"varint,1,opt,name=ssh_port,json=sshPort,proto3" json:"ssh_port,omitempty"`            // listening sshd port; always empty from the agent
+	SshUser       string                 `protobuf:"bytes,2,opt,name=ssh_user,json=sshUser,proto3" json:"ssh_user,omitempty"`             // SSH user; always empty from the agent
+	AuthMethod    string                 `protobuf:"bytes,3,opt,name=auth_method,json=authMethod,proto3" json:"auth_method,omitempty"`    // "key" or "password"; always empty from the agent
 	SshPassword   string                 `protobuf:"bytes,4,opt,name=ssh_password,json=sshPassword,proto3" json:"ssh_password,omitempty"` // WRITE-ONLY, never serialized back
 	PrivateKey    string                 `protobuf:"bytes,5,opt,name=private_key,json=privateKey,proto3" json:"private_key,omitempty"`    // WRITE-ONLY, never serialized back
 	PublicKey     string                 `protobuf:"bytes,6,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`       // READ-ONLY

@@ -24,18 +24,17 @@ import (
 // (0600, survives restarts), and reports them inside the ServerInfo snapshot
 // on every MonitorStream (re)connection.
 //
-// The reported values are the host's actual configuration (sshd Port and
-// PermitRootLogin, real listening TCP ports, firewall/auto-update state, the
-// operator's real SSH keypair and login user, and the agent's own alert
-// configuration), not product defaults.
+// The reported values are the host's actual configuration (sshd
+// PermitRootLogin, real listening TCP ports, firewall/auto-update state, and
+// the agent's own alert configuration), not product defaults.
+//
+// The Connection group is deliberately NOT collected: SSH port, login user,
+// auth method and key material stay on the host and are always reported empty.
 // ============================================================================
 
 // Fallbacks for auto-detection. Each detector prefers the host's real value
 // and falls back to these only when the value cannot be determined.
 const (
-	defaultSSHPort          = 22
-	defaultSSHUser          = "phelix" // last resort when $USER/whoami both fail
-	defaultAuthMethod       = "key"
 	defaultCPUThreshold     = 80.0
 	defaultRAMThreshold     = 90.0
 	defaultDiskThreshold    = 90.0
@@ -46,7 +45,11 @@ const (
 // serverSettingsFileName is the settings file name under ~/.phelix.
 const serverSettingsFileName = "settings.json"
 
-// ServerConnection mirrors the backend's ServerConnection model.
+// ServerConnection mirrors the backend's ServerConnection model. Every field
+// is always empty: the agent does not collect SSH connection details or key
+// material. The struct is kept because the wire message and the persisted
+// settings file still carry the group; settingsManager.ensure zeroes it on
+// every load so a file written by an older build stops reporting values.
 type ServerConnection struct {
 	SSHPort     int    `json:"ssh_port" yaml:"ssh_port"`
 	SSHUser     string `json:"ssh_user" yaml:"ssh_user"`
@@ -120,13 +123,24 @@ func GetSettings() *Settings {
 
 func (m *settingsManager) ensure() {
 	m.once.Do(func() {
-		if s := m.load(); s != nil {
-			m.settings = s
-			return
+		s := m.load()
+		dirty := s == nil // freshly detected settings always need persisting
+		if s == nil {
+			s = m.detect()
 		}
-		m.settings = m.detect()
-		if err := m.persist(m.settings); err != nil {
-			logs.Error("settings", "failed to persist server settings: %v", err)
+		// Single chokepoint for the Connection group: whether the settings
+		// were loaded or detected, the SSH details never leave the host. A
+		// file written by an older build (or hand-edited) is scrubbed here and
+		// rewritten, so the key material is removed from disk too.
+		if s.Connection != (ServerConnection{}) {
+			s.Connection = ServerConnection{}
+			dirty = true
+		}
+		m.settings = s
+		if dirty {
+			if err := m.persist(s); err != nil {
+				logs.Error("settings", "failed to persist server settings: %v", err)
+			}
 		}
 	})
 }
@@ -181,10 +195,6 @@ func (m *settingsManager) persist(s *Settings) error {
 var (
 	readFile          = os.ReadFile
 	execOutput        = runCommand
-	detectSSHPort     = detectSSHPortImpl
-	detectSSHUser     = detectSSHUserImpl // real login user, not a product default
-	detectAuthMethod  = detectAuthMethodImpl
-	detectSSHKeys     = detectSSHKeysImpl // (privateKey, publicKey)
 	detectFirewall    = detectFirewallImpl
 	detectAutoUpdates = detectAutoUpdatesImpl
 	detectSSHRoot     = detectSSHRootLoginImpl
@@ -231,31 +241,13 @@ func alertFromConfig() ServerAlert {
 }
 
 func detectSettings() *Settings {
-	sshPort := detectSSHPort()
-	if sshPort == 0 {
-		sshPort = defaultSSHPort
-	}
-
-	authMethod := detectAuthMethod()
-	if authMethod == "" {
-		authMethod = defaultAuthMethod
-	}
-
-	privateKey, publicKey := detectSSHKeys()
-
 	rootLogin := detectSSHRoot()
 	if rootLogin == "" {
 		rootLogin = defaultSSHRootLogin
 	}
 
 	return &Settings{
-		Connection: ServerConnection{
-			SSHPort:    sshPort,
-			SSHUser:    detectSSHUser(),
-			AuthMethod: authMethod,
-			PrivateKey: privateKey,
-			PublicKey:  publicKey,
-		},
+		// Connection is intentionally left zero — see ServerConnection.
 		Alert: alertFromConfig(),
 		Security: ServerSecurity{
 			FirewallEnabled: detectFirewall(),
@@ -271,7 +263,6 @@ func detectSettings() *Settings {
 // ============================================================================
 
 var (
-	sshPortRe   = regexp.MustCompile(`(?i)^\s*Port\s+(\d+)\s*$`)
 	rootLoginRe = regexp.MustCompile(`(?i)^\s*PermitRootLogin\s+(\S+)\s*$`)
 	portRe      = regexp.MustCompile(`:(\d+)\s*$`)
 )
@@ -335,32 +326,6 @@ func configLines(text string) []string {
 	return out
 }
 
-// detectSSHUserImpl reports the real login user: $USER first, then a
-// whoami fallback. Falls back to defaultSSHUser when neither yields a
-// usable username (e.g. running under a service manager with no env).
-func detectSSHUserImpl() string {
-	if u := os.Getenv("USER"); u != "" {
-		return u
-	}
-	if u, err := execOutput("whoami"); err == nil && u != "" {
-		return u
-	}
-	return defaultSSHUser
-}
-
-// detectSSHPortImpl reads the configured sshd Port (sshd applies the
-// first-obtained value). Falls back to 22.
-func detectSSHPortImpl() int {
-	for _, line := range configLines(readSSHDConfig()) {
-		if m := sshPortRe.FindStringSubmatch(line); m != nil {
-			if p, err := strconv.Atoi(m[1]); err == nil && p > 0 && p <= 65535 {
-				return p
-			}
-		}
-	}
-	return defaultSSHPort
-}
-
 // detectSSHRootLoginImpl reads the sshd PermitRootLogin value. Legacy
 // "without-password" is normalized to "prohibit-password". Falls back to
 // "prohibit-password" (the modern OpenSSH default).
@@ -378,71 +343,6 @@ func detectSSHRootLoginImpl() string {
 		}
 	}
 	return defaultSSHRootLogin
-}
-
-// sshKeyCandidates are the client key files considered, in priority order.
-var sshKeyCandidates = []string{"id_ed25519", "id_rsa", "id_ecdsa"}
-
-// sshDirFromHome returns the SSH directory for the current user, honoring a
-// HOME override for tests.
-func sshDirFromHome() string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = os.Getenv("USERPROFILE") // Windows
-	}
-	return filepath.Join(home, ".ssh")
-}
-
-// findSSHKeyPath returns the path of the highest-priority existing client
-// private key, or "".
-func findSSHKeyPath() string {
-	dir := sshDirFromHome()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-	have := map[string]bool{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			have[e.Name()] = true
-		}
-	}
-	for _, name := range sshKeyCandidates {
-		if have[name] {
-			return filepath.Join(dir, name)
-		}
-	}
-	return ""
-}
-
-// detectAuthMethodImpl reports the auth method ("key" or "password"). The
-// CLI has no interactive password flow today, so auto-detection reports
-// "key" when a client key exists and otherwise falls back to the product
-// default "key"; it never invents a password.
-func detectAuthMethodImpl() string {
-	if findSSHKeyPath() != "" {
-		return "key"
-	}
-	return defaultAuthMethod
-}
-
-// detectSSHKeysImpl reads the highest-priority private key present and its
-// matching public key (.pub). Any read error produces empty strings so a
-// half-parsed key is never reported.
-func detectSSHKeysImpl() (privateKey, publicKey string) {
-	path := findSSHKeyPath()
-	if path == "" {
-		return "", ""
-	}
-	data, err := readFile(path)
-	if err != nil {
-		return "", ""
-	}
-	pub := ""
-	if d, err := readFile(path + ".pub"); err == nil {
-		pub = string(d)
-	}
-	return string(data), pub
 }
 
 // detectFirewallImpl reports whether a host firewall appears active. It is a
