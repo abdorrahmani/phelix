@@ -30,6 +30,13 @@ type CommandExecutor interface {
 type CommandPayload struct {
 	Type    string `json:"type"`
 	AppName string `json:"appName"`
+
+	// Strategy/Replicas are one-off deployment overrides carried by a
+	// "rebuild" command. Empty/zero means the rebuild resolves its strategy
+	// the way a local rebuild does — from the app's phelix.yaml — and the
+	// override is never written back to that file.
+	Strategy string `json:"strategy,omitempty"`
+	Replicas int    `json:"replicas,omitempty"`
 }
 
 // Command is a remote-control command received from the backend.

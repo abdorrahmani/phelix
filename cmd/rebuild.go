@@ -25,6 +25,7 @@ var rebuildArgs []string
 var rebuildNoUpload bool
 var rebuildBlueGreen bool
 var rebuildReplicas int
+var rebuildStrategy string
 var rebuildTag string
 
 var RebuildCmd = &cobra.Command{
@@ -82,10 +83,12 @@ var RebuildCmd = &cobra.Command{
 			portToUse = projCfg.Port
 		}
 
-		// Deployment strategy from phelix.yaml. Explicit CLI flags always win;
-		// absent flags, a configured blue-green/rolling strategy selects the
-		// existing zero-downtime deploy path (classic stays the default).
-		applyConfigDeployStrategy(cmd, projCfg)
+		// Deployment strategy: --strategy (one-off, e.g. a backend-issued
+		// rebuild) beats phelix.yaml, and explicit --blue-green/--replicas beat
+		// both. Classic stays the default.
+		if err := applyConfigDeployStrategy(cmd, projCfg); err != nil {
+			return err
+		}
 
 		if err := phelixport.Validate(portToUse); err != nil {
 			return err
@@ -226,36 +229,47 @@ var RebuildCmd = &cobra.Command{
 	},
 }
 
-// applyConfigDeployStrategy maps deploy.strategy from phelix.yaml onto the
-// existing --blue-green / --replicas rebuild flags. Explicit CLI flags always
-// win; classic (or no deploy block) changes nothing, keeping the classic path
-// the default.
-func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config) {
-	if cfg == nil || cfg.Deploy == nil || cfg.Deploy.Strategy == "" ||
-		cfg.Deploy.Strategy == project.StrategyClassic {
-		return
-	}
+// applyConfigDeployStrategy resolves which deployment path this rebuild takes
+// and maps it onto the existing --blue-green / --replicas flags.
+//
+// Precedence: explicit --blue-green/--replicas > --strategy > phelix.yaml >
+// classic. --strategy is the one-off override (the backend's remote rebuild
+// uses it); it is never written back to phelix.yaml.
+func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config) error {
 	if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
-		return
+		return nil
 	}
-	switch cfg.Deploy.Strategy {
+
+	strategy := rebuildStrategy
+	if strategy == "" && cfg != nil && cfg.Deploy != nil {
+		strategy = cfg.Deploy.Strategy
+	}
+
+	switch strategy {
+	case "", project.StrategyClassic:
+		// Classic is the default path; nothing to set.
 	case project.StrategyBlueGreen:
 		rebuildBlueGreen = true
 	case project.StrategyRolling:
-		if rebuildReplicas == 0 {
-			if cfg.Deploy.Replicas > 0 {
-				rebuildReplicas = cfg.Deploy.Replicas
-			} else {
-				rebuildReplicas = 1
-			}
+		// Rolling needs a replica count. phelix.yaml supplies one when it has
+		// it — including for an override that only named the strategy — and 1
+		// is the floor.
+		rebuildReplicas = 1
+		if cfg != nil && cfg.Deploy != nil && cfg.Deploy.Replicas > 0 {
+			rebuildReplicas = cfg.Deploy.Replicas
 		}
+	default:
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid --strategy %q\nHint: expected one of: classic, blue-green, rolling", strategy)
 	}
+	return nil
 }
 
 func init() {
 	RebuildCmd.Flags().IntVarP(&rebuildPort, "port", "p", 8080, "Port to run the application on (defaults to previous port if unspecified)")
 	RebuildCmd.Flags().StringArrayVarP(&rebuildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	RebuildCmd.Flags().BoolVar(&rebuildNoUpload, "no-upload", false, "If set, do not upload/send app information to the server after rebuild")
+	RebuildCmd.Flags().StringVar(&rebuildStrategy, "strategy", "", "Deployment strategy for this rebuild only: classic, blue-green, or rolling (overrides phelix.yaml, never written to it)")
 	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().StringVar(&rebuildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")

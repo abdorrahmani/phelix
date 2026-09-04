@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -97,5 +98,65 @@ func TestExecuteUnknownApp_Fails(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Execute for unknown app should fail")
+	}
+}
+
+// TestRebuildOverrideArgs pins the backend override → `phelix rebuild` flag
+// mapping: no override adds no flags (phelix.yaml still decides), a valid one
+// becomes --strategy [--replicas N], and anything the CLI cannot honor exactly
+// is an error rather than a silent downgrade.
+func TestRebuildOverrideArgs(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload CommandPayload
+		want    []string
+		wantErr bool
+	}{
+		{name: "no override", payload: CommandPayload{Type: "rebuild", AppName: "web"}},
+		{name: "classic", payload: CommandPayload{Type: "rebuild", Strategy: "classic"}, want: []string{"--strategy", "classic"}},
+		{name: "blue-green", payload: CommandPayload{Type: "rebuild", Strategy: "blue-green"}, want: []string{"--strategy", "blue-green"}},
+		{name: "rolling without replicas", payload: CommandPayload{Type: "rebuild", Strategy: "rolling"}, want: []string{"--strategy", "rolling"}},
+		{name: "rolling with replicas", payload: CommandPayload{Type: "rebuild", Strategy: "rolling", Replicas: 3}, want: []string{"--strategy", "rolling", "--replicas", "3"}},
+
+		{name: "unknown strategy", payload: CommandPayload{Type: "rebuild", Strategy: "canary"}, wantErr: true},
+		{name: "replicas on blue-green", payload: CommandPayload{Type: "rebuild", Strategy: "blue-green", Replicas: 2}, wantErr: true},
+		{name: "replicas without a strategy", payload: CommandPayload{Type: "rebuild", Replicas: 2}, wantErr: true},
+		{name: "negative replicas", payload: CommandPayload{Type: "rebuild", Strategy: "rolling", Replicas: -1}, wantErr: true},
+		{name: "override on restart", payload: CommandPayload{Type: "restart", Strategy: "rolling", Replicas: 2}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := rebuildOverrideArgs(tc.payload)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got args %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Errorf("args = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// An override the executor rejects must never reach the app manager: a
+// restart carrying a strategy is a backend/agent disagreement, not a restart.
+func TestExecuteRejectsOverrideOnLifecycleCommand(t *testing.T) {
+	stub := &stubManager{}
+	withStubManager(t, stub)
+
+	err := NewCommandExecutor().Execute(Command{
+		Type:    "restart",
+		Payload: CommandPayload{Type: "restart", AppName: "web", Strategy: "rolling", Replicas: 2},
+	})
+	if err == nil {
+		t.Fatal("expected Execute to reject a lifecycle command carrying deployment overrides")
+	}
+	if stub.restartCalled != "" {
+		t.Fatalf("RestartApplication was called with %q despite the rejection", stub.restartCalled)
 	}
 }

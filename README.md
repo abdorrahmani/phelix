@@ -439,7 +439,9 @@ deploy:
 ```
 
 Explicit flags still override the config (`--blue-green`, `--replicas`,
-`--port`). `phelix rollback` needs no configuration: it inspects the
+`--port`), and `--strategy` overrides it for a single rebuild without editing
+the file — the same one-off override the dashboard sends for a remote rebuild.
+`phelix rollback` needs no configuration: it inspects the
 recorded deploy state and automatically uses classic or zero-downtime
 rollback to match how the app was actually deployed. `phelix proxy` is
 required for blue-green/rolling, exactly as with the flags.
@@ -543,9 +545,9 @@ Exits non-zero when a critical check fails. Inconclusive detection (no listener 
 Rebuilds an existing app from its source directory. Supports zero-downtime
 deploy. Without an argument, the app is taken from `phelix.yaml` (`name:`)
 when it exists in the current directory, otherwise an interactive picker is
-shown. `--blue-green` / `--replicas` default to the config's
-[`deploy.strategy`](#project-configuration-phelixyaml) when the flags are not
-passed.
+shown. The deployment path is resolved in this order: explicit
+`--blue-green` / `--replicas` → `--strategy` → the config's
+[`deploy.strategy`](#project-configuration-phelixyaml) → classic.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -553,13 +555,25 @@ passed.
 | `--build-arg, -a` | — | Extra build args (repeatable) |
 | `--tag` | — | Version label |
 | `--no-upload` | `false` | Skip server sync |
+| `--strategy` | — | Strategy for this rebuild only: `classic`, `blue-green`, or `rolling`. Overrides `phelix.yaml`; never written back to it |
 | `--blue-green` | `false` | Zero-downtime blue-green deploy (needs `phelix proxy`) |
 | `--replicas` | `0` | Zero-downtime rolling deploy over N replicas |
 
 ```bash
 phelix rebuild myapp --blue-green
 phelix rebuild myapp --replicas 3
+
+# One-off override: deploy classic once, even though phelix.yaml says rolling
+phelix rebuild myapp --strategy classic
+
+# Rolling once; replica count comes from deploy.replicas, else 1
+phelix rebuild myapp --strategy rolling
 ```
+
+`--strategy rolling` combined with `--replicas N` uses N replicas. An
+unrecognized value fails with `INVALID_ARGUMENT` (exit code `2`) before
+anything is built. This is the same override the dashboard sends for a remote
+rebuild — see [gRPC monitoring](docs/grpc-monitoring.md#24-one-off-deployment-overrides).
 
 #### Automatic Build Reports
 

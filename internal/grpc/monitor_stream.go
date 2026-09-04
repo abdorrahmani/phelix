@@ -246,6 +246,10 @@ func (c *Client) handleMonitorPing(ping *pb.Ping) {
 // metrics resume and an immediate refreshed snapshot is pushed.
 func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
 	logs.InfoFile("grpc", "[gRPC Monitor] received command: type=%s app=%s", req.GetType(), req.GetAppName())
+	if req.GetStrategy() != "" || req.GetReplicas() != 0 {
+		logs.InfoFile("grpc", "[gRPC Monitor] one-off deployment override: strategy=%s replicas=%d",
+			req.GetStrategy(), req.GetReplicas())
+	}
 
 	monitorStream.pause()
 
@@ -254,6 +258,12 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
 		Payload: monitor.CommandPayload{
 			Type:    req.GetType(),
 			AppName: req.GetAppName(),
+			// Unset means "no override" — the executor then resolves the
+			// strategy from the app's phelix.yaml, as before these fields
+			// existed. An override the CLI cannot honor is rejected by the
+			// executor and surfaces as an error MonitorCommandResult below.
+			Strategy: req.GetStrategy(),
+			Replicas: int(req.GetReplicas()),
 		},
 	}
 

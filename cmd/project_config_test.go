@@ -119,13 +119,14 @@ func TestSyncProjectHealthNoBlockNoOp(t *testing.T) {
 	}
 }
 
-// TestApplyConfigDeployStrategy verifies the phelix.yaml → existing deploy
-// flags mapping: explicit CLI flags win, classic/no-config changes nothing,
-// rolling without replicas defaults to 1.
+// TestApplyConfigDeployStrategy verifies the strategy → deploy flags mapping:
+// explicit CLI flags win over --strategy, --strategy wins over phelix.yaml,
+// classic/no-config changes nothing, rolling without replicas defaults to 1.
 func TestApplyConfigDeployStrategy(t *testing.T) {
 	reset := func() {
 		rebuildBlueGreen = false
 		rebuildReplicas = 0
+		rebuildStrategy = ""
 	}
 	t.Cleanup(reset)
 	reset()
@@ -134,30 +135,55 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 		c := &cobra.Command{Use: "rebuild"}
 		c.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "")
 		c.Flags().IntVar(&rebuildReplicas, "replicas", 0, "")
+		c.Flags().StringVar(&rebuildStrategy, "strategy", "", "")
 		for _, f := range changed {
 			_ = c.Flags().Set(f, "1")
 		}
 		return c
 	}
 
+	rollingCfg := &project.Config{Deploy: &project.DeployConfig{Strategy: "rolling", Replicas: 3}}
+
 	cases := []struct {
-		name    string
-		cfg     *project.Config
-		changed []string
-		wantBG  bool
-		wantRep int
+		name     string
+		cfg      *project.Config
+		override string
+		changed  []string
+		wantBG   bool
+		wantRep  int
+		wantErr  bool
 	}{
-		{"classic changes nothing", &project.Config{Deploy: &project.DeployConfig{Strategy: "classic"}}, nil, false, 0},
-		{"no deploy block changes nothing", &project.Config{}, nil, false, 0},
-		{"blue-green", &project.Config{Deploy: &project.DeployConfig{Strategy: "blue-green"}}, nil, true, 0},
-		{"rolling with replicas", &project.Config{Deploy: &project.DeployConfig{Strategy: "rolling", Replicas: 3}}, nil, false, 3},
-		{"rolling without replicas defaults 1", &project.Config{Deploy: &project.DeployConfig{Strategy: "rolling"}}, nil, false, 1},
-		{"explicit --blue-green wins over config rolling", &project.Config{Deploy: &project.DeployConfig{Strategy: "rolling", Replicas: 3}}, []string{"blue-green"}, true, 0},
+		{name: "classic changes nothing", cfg: &project.Config{Deploy: &project.DeployConfig{Strategy: "classic"}}},
+		{name: "no deploy block changes nothing", cfg: &project.Config{}},
+		{name: "nil config changes nothing"},
+		{name: "blue-green", cfg: &project.Config{Deploy: &project.DeployConfig{Strategy: "blue-green"}}, wantBG: true},
+		{name: "rolling with replicas", cfg: rollingCfg, wantRep: 3},
+		{name: "rolling without replicas defaults 1", cfg: &project.Config{Deploy: &project.DeployConfig{Strategy: "rolling"}}, wantRep: 1},
+		{name: "explicit --blue-green wins over config rolling", cfg: rollingCfg, changed: []string{"blue-green"}, wantBG: true},
+
+		// --strategy: one-off override, higher precedence than phelix.yaml.
+		{name: "override blue-green beats config classic", cfg: &project.Config{Deploy: &project.DeployConfig{Strategy: "classic"}}, override: "blue-green", wantBG: true},
+		{name: "override classic beats config rolling", cfg: rollingCfg, override: "classic"},
+		{name: "override rolling takes replicas from config", cfg: rollingCfg, override: "rolling", wantRep: 3},
+		{name: "override rolling without config defaults 1", override: "rolling", wantRep: 1},
+		{name: "explicit --replicas wins over override blue-green", cfg: rollingCfg, override: "blue-green", changed: []string{"replicas"}, wantRep: 1},
+		{name: "unknown override is an error", override: "canary", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reset()
-			applyConfigDeployStrategy(newCmd(tc.changed...), tc.cfg)
+			cmd := newCmd(tc.changed...)
+			rebuildStrategy = tc.override
+			err := applyConfigDeployStrategy(cmd, tc.cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error for an unsupported strategy")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if rebuildBlueGreen != tc.wantBG || rebuildReplicas != tc.wantRep {
 				t.Errorf("blue-green=%v replicas=%d, want %v/%d", rebuildBlueGreen, rebuildReplicas, tc.wantBG, tc.wantRep)
 			}

@@ -248,6 +248,18 @@ message MonitorCommandRequest {
   string request_id = 1;
   string type = 2;
   string app_name = 3;
+
+  // Optional one-off deployment overrides for a "rebuild" command. Empty /
+  // zero means "use the app's persisted phelix.yaml", which is the behavior
+  // of every command sent before these fields existed. The agent never
+  // writes an override back to phelix.yaml.
+  //
+  // The agent rejects the command through MonitorCommandResult rather than
+  // degrading silently when it cannot honor the override exactly: a strategy
+  // it does not implement, replicas on a non-rolling strategy, or either
+  // field set on a command other than "rebuild".
+  string strategy = 4;  // "classic" | "blue-green" | "rolling"
+  int32 replicas = 5;   // rolling only; >= 1
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message

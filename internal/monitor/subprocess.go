@@ -9,17 +9,19 @@ import (
 	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
-// newPhelixCommand builds the `phelix <type> <id>` subprocess for command types
-// the app manager does not handle in-process. It returns nil if the phelix
-// executable cannot be located in PATH.
-func newPhelixCommand(cmdType, appID string) (*exec.Cmd, error) {
+// newPhelixCommand builds the `phelix <args...>` subprocess for command types
+// the app manager does not handle in-process, running it in dir so a rebuild
+// picks up that app's phelix.yaml. An empty or missing dir falls back to the
+// daemon's own working directory rather than failing the command. It returns an
+// error if the phelix executable cannot be located in PATH.
+func newPhelixCommand(dir string, args ...string) (*exec.Cmd, error) {
 	// Find the phelix executable in PATH
 	phelixPath, err := exec.LookPath("phelix")
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeProcessFailed, "phelix executable not found in PATH", err)
 	}
 
-	execCmd := exec.Command(phelixPath, cmdType, appID)
+	execCmd := exec.Command(phelixPath, args...)
 
 	// Set up environment with Go variables
 	env := os.Environ()
@@ -36,6 +38,11 @@ func newPhelixCommand(cmdType, appID string) (*exec.Cmd, error) {
 
 	execCmd.Env = env
 	execCmd.Dir = "."
+	if dir != "" {
+		if st, serr := os.Stat(dir); serr == nil && st.IsDir() {
+			execCmd.Dir = dir
+		}
+	}
 
 	return execCmd, nil
 }

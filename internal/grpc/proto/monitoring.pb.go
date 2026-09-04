@@ -1618,10 +1618,21 @@ func (x *MonitorLogEntry) GetComponent() string {
 // (monitor.CommandPayload): a remote-control instruction from the backend,
 // e.g. restart/stop/start a specific managed application.
 type MonitorCommandRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
-	AppName       string                 `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Type      string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	AppName   string                 `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	// Optional one-off deployment overrides for a "rebuild" command. Empty /
+	// zero means "use the app's persisted phelix.yaml", which is the behavior
+	// of every command sent before these fields existed. The agent never
+	// writes an override back to phelix.yaml.
+	//
+	// The agent rejects the command through MonitorCommandResult rather than
+	// degrading silently when it cannot honor the override exactly: a strategy
+	// it does not implement, replicas on a non-rolling strategy, or either
+	// field set on a command other than "rebuild".
+	Strategy      string `protobuf:"bytes,4,opt,name=strategy,proto3" json:"strategy,omitempty"`  // "classic" | "blue-green" | "rolling"
+	Replicas      int32  `protobuf:"varint,5,opt,name=replicas,proto3" json:"replicas,omitempty"` // rolling only; >= 1
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1675,6 +1686,20 @@ func (x *MonitorCommandRequest) GetAppName() string {
 		return x.AppName
 	}
 	return ""
+}
+
+func (x *MonitorCommandRequest) GetStrategy() string {
+	if x != nil {
+		return x.Strategy
+	}
+	return ""
+}
+
+func (x *MonitorCommandRequest) GetReplicas() int32 {
+	if x != nil {
+		return x.Replicas
+	}
+	return 0
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -2232,12 +2257,14 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05level\x18\x06 \x01(\tR\x05level\x12)\n" +
 	"\x06source\x18\a \x01(\x0e2\x11.phelix.LogSourceR\x06source\x12)\n" +
 	"\x06stream\x18\b \x01(\x0e2\x11.phelix.LogStreamR\x06stream\x12\x1c\n" +
-	"\tcomponent\x18\t \x01(\tR\tcomponent\"e\n" +
+	"\tcomponent\x18\t \x01(\tR\tcomponent\"\x9d\x01\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x19\n" +
-	"\bapp_name\x18\x03 \x01(\tR\aappName\"\xb6\x01\n" +
+	"\bapp_name\x18\x03 \x01(\tR\aappName\x12\x1a\n" +
+	"\bstrategy\x18\x04 \x01(\tR\bstrategy\x12\x1a\n" +
+	"\breplicas\x18\x05 \x01(\x05R\breplicas\"\xb6\x01\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
