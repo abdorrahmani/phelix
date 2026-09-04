@@ -113,6 +113,12 @@ type DeployState struct {
 	LastRollback *RollbackRecord `json:"last_rollback,omitempty"`
 	// OpLock is set while a blue-green/rolling deploy or rollback is in flight.
 	OpLock *DeployLock `json:"op_lock,omitempty"`
+	// LastDeploymentID is the telemetry id of the most recent deployment
+	// operation on this app (see internal/deploy/telemetry.go). It is recorded
+	// so a snapshot rebuilt later — by the monitor daemon after a reconnect, or
+	// by another process — can be correlated with the events that deployment
+	// emitted. Absent for deployments made before telemetry existed.
+	LastDeploymentID string `json:"last_deployment_id,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }

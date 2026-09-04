@@ -10,6 +10,7 @@ import "internal/grpc/proto/metadata.proto";
 import "internal/grpc/proto/envelope.proto";
 import "internal/grpc/proto/health.proto";
 import "internal/grpc/proto/monitoring.proto";
+import "internal/grpc/proto/deployment.proto";
 
 // PhelixService is the main service for CLI-to-backend communication.
 service PhelixService {
@@ -47,6 +48,16 @@ service PhelixService {
   // Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
   // emits its own event so the backend can reconstruct the full timeline.
   rpc ReportRollbackEvent(RollbackLifecycleEvent) returns (EventResponse);
+
+  // ReportDeploymentEvent sends one deployment lifecycle transition
+  // (classic / blue-green / rolling) to the backend. Every event carries the
+  // full DeploymentSnapshot, so a backend that missed earlier events can still
+  // reconstruct the current topology from any single event.
+  //
+  // Backward compatibility: a backend that does not implement this RPC answers
+  // UNIMPLEMENTED. The CLI treats that as "telemetry not consumed yet" and
+  // continues the deployment unchanged.
+  rpc ReportDeploymentEvent(DeploymentEvent) returns (EventResponse);
 
   // MonitorStream is the persistent, bidirectional monitoring channel that
   // replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
