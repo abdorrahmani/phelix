@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/spf13/cobra"
@@ -144,9 +145,21 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 
 	rollingCfg := &project.Config{Deploy: &project.DeployConfig{Strategy: "rolling", Replicas: 3}}
 
+	// Deployed state lives under $HOME/.phelix/apps/<name>/deploy.json.
+	t.Setenv("HOME", t.TempDir())
+	const appName = "web"
+	deployedBlueGreen := &deploy.DeployState{AppName: appName, Mode: deploy.ModeBlueGreen, PublicPort: 8080}
+	deployedRolling := &deploy.DeployState{
+		AppName: appName, Mode: deploy.ModeRolling, PublicPort: 8080,
+		Replicas: map[string]*deploy.Instance{
+			"0": {Slot: "0"}, "1": {Slot: "1"}, "2": {Slot: "2"}, "3": {Slot: "3"},
+		},
+	}
+
 	cases := []struct {
 		name     string
 		cfg      *project.Config
+		deployed *deploy.DeployState
 		override string
 		changed  []string
 		wantBG   bool
@@ -168,13 +181,31 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 		{name: "override rolling without config defaults 1", override: "rolling", wantRep: 1},
 		{name: "explicit --replicas wins over override blue-green", cfg: rollingCfg, override: "blue-green", changed: []string{"replicas"}, wantRep: 1},
 		{name: "unknown override is an error", override: "canary", wantErr: true},
+
+		// deploy.json: the strategy the app is actually running. Inherited only
+		// when nothing else names one — a rebuild that names no strategy must
+		// not demote a live deployment to classic and delete its state.
+		{name: "deployed blue-green is inherited", deployed: deployedBlueGreen, wantBG: true},
+		{name: "deployed blue-green is inherited over an empty deploy block", cfg: &project.Config{}, deployed: deployedBlueGreen, wantBG: true},
+		{name: "deployed rolling keeps its replica width", deployed: deployedRolling, wantRep: 4},
+		{name: "config replicas win over the deployed width", cfg: rollingCfg, deployed: deployedRolling, wantRep: 3},
+		{name: "config classic still migrates a deployed rolling app", cfg: &project.Config{Deploy: &project.DeployConfig{Strategy: "classic"}}, deployed: deployedRolling},
+		{name: "override classic still migrates a deployed blue-green app", deployed: deployedBlueGreen, override: "classic"},
+		{name: "explicit --blue-green wins over deployed rolling", deployed: deployedRolling, changed: []string{"blue-green"}, wantBG: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reset()
+			if tc.deployed != nil {
+				if err := deploy.Store(tc.deployed); err != nil {
+					t.Fatalf("seed deploy state: %v", err)
+				}
+			} else if err := deploy.RemoveState(appName); err != nil {
+				t.Fatalf("clear deploy state: %v", err)
+			}
 			cmd := newCmd(tc.changed...)
 			rebuildStrategy = tc.override
-			err := applyConfigDeployStrategy(cmd, tc.cfg)
+			err := applyConfigDeployStrategy(cmd, tc.cfg, appName)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected an error for an unsupported strategy")

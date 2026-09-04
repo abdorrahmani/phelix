@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/project"
@@ -82,11 +83,17 @@ func rebuildOverrideArgs(payload CommandPayload) ([]string, error) {
 
 // Execute runs a lifecycle command against a managed application.
 //
-// The common types (start/stop/restart) are dispatched in-process through the
-// app manager so they work regardless of the daemon's environment — in
-// particular under systemd, where the PATH may not include the directory the
-// phelix binary lives in. Unknown types fall back to a `phelix <type> <id>`
-// subprocess, preserving the previous behavior for any future command.
+// Classic apps take start/stop/restart/remove in-process through the app
+// manager so they work regardless of the daemon's environment. Apps managed by
+// a zero-downtime strategy do not: their instances, internal ports and proxy
+// route live in deploy.json, and the single-PID app manager would kill the
+// serving instance and then try to bind the proxy-owned public port — leaving
+// the app down while reporting success. Those go through the CLI, whose
+// start/stop/restart/remove already tear down and restore a deployment
+// (cmd/lifecycle.go), exactly as a local invocation would.
+//
+// Unknown types also fall back to `phelix <type> <id>`, preserving the previous
+// behavior for any future command.
 func (e *appCommandExecutor) Execute(cmd Command) error {
 	// Validated before dispatch, not inside the fallback: the in-process
 	// branches below would otherwise accept an override and ignore it.
@@ -102,17 +109,22 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 
 	logs.Info("monitor", "executing command '%s' for app '%s' (ID: %s)", cmd.Payload.Type, target.Name, target.ID)
 
-	switch cmd.Payload.Type {
-	case "start":
-		// Reuse the app's persisted port so `start` never overrides it with a
-		// default.
-		return app.Manager.StartApplication(target.ID, target.Port, target.Name)
-	case "stop":
-		return app.Manager.StopApplication(target.ID)
-	case "restart":
-		return app.Manager.RestartApplication(target.ID)
-	case "remove":
-		return app.Manager.RemoveApplication(target.ID)
+	if state := deploy.LoadZeroDowntime(target.Name); state != nil {
+		logs.Info("monitor", "app '%s' is deploy-managed (mode %s); running '%s' through the CLI",
+			target.Name, state.Mode, cmd.Payload.Type)
+	} else {
+		switch cmd.Payload.Type {
+		case "start":
+			// Reuse the app's persisted port so `start` never overrides it with a
+			// default.
+			return app.Manager.StartApplication(target.ID, target.Port, target.Name)
+		case "stop":
+			return app.Manager.StopApplication(target.ID)
+		case "restart":
+			return app.Manager.RestartApplication(target.ID)
+		case "remove":
+			return app.Manager.RemoveApplication(target.ID)
+		}
 	}
 
 	return e.execFallback(cmd, target, overrideArgs)

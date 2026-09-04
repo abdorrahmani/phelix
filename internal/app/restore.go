@@ -13,6 +13,15 @@ import (
 // cycle), and the deploy layer restores its own apps.
 var DeployedAppSkipper func(id string) bool
 
+// DeployedAppRestarter, when set, restarts an app managed by a zero-downtime
+// deployment the way `phelix restart` does: tear the deployment down, then
+// relaunch its instances and re-establish the proxy route. Callers that would
+// otherwise reach for RestartApplication must prefer it for any app
+// DeployedAppSkipper claims — the single-PID restart would kill the serving
+// instance and then try to bind the proxy-owned public port, leaving the app
+// down. Wired by the cmd layer for the same import-cycle reason.
+var DeployedAppRestarter func(id string) error
+
 // RestoreAutoStartApps restarts every application flagged for auto-start that
 // is not currently running. It is invoked at the start of the monitor daemon
 // (e.g. on machine boot via systemd) so applications that were intentionally

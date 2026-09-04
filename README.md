@@ -441,10 +441,14 @@ deploy:
 Explicit flags still override the config (`--blue-green`, `--replicas`,
 `--port`), and `--strategy` overrides it for a single rebuild without editing
 the file — the same one-off override the dashboard sends for a remote rebuild.
-`phelix rollback` needs no configuration: it inspects the
-recorded deploy state and automatically uses classic or zero-downtime
-rollback to match how the app was actually deployed. `phelix proxy` is
-required for blue-green/rolling, exactly as with the flags.
+When nothing names a strategy, a rebuild keeps the one the app is already
+deployed with (from `deploy.json`) instead of falling back to classic:
+demoting a live blue-green/rolling app tears its instances down and drops its
+deployment state, so it has to be asked for — `strategy: classic` here, or
+`--strategy classic` for one rebuild. `phelix rollback` needs no
+configuration: it inspects the recorded deploy state and automatically uses
+classic or zero-downtime rollback to match how the app was actually deployed.
+`phelix proxy` is required for blue-green/rolling, exactly as with the flags.
 
 #### Validation
 
@@ -547,7 +551,11 @@ deploy. Without an argument, the app is taken from `phelix.yaml` (`name:`)
 when it exists in the current directory, otherwise an interactive picker is
 shown. The deployment path is resolved in this order: explicit
 `--blue-green` / `--replicas` → `--strategy` → the config's
-[`deploy.strategy`](#project-configuration-phelixyaml) → classic.
+[`deploy.strategy`](#project-configuration-phelixyaml) → the strategy the app
+is currently deployed with → classic. An app already running blue-green or
+rolling therefore stays on it unless a classic rebuild is asked for
+explicitly; a rolling rebuild inherited this way keeps the replica count the
+app is running at.
 
 | Flag | Default | Description |
 |------|---------|-------------|

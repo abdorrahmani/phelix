@@ -84,9 +84,11 @@ var RebuildCmd = &cobra.Command{
 		}
 
 		// Deployment strategy: --strategy (one-off, e.g. a backend-issued
-		// rebuild) beats phelix.yaml, and explicit --blue-green/--replicas beat
-		// both. Classic stays the default.
-		if err := applyConfigDeployStrategy(cmd, projCfg); err != nil {
+		// rebuild) beats phelix.yaml, explicit --blue-green/--replicas beat
+		// both, and an app already running blue-green/rolling keeps that
+		// strategy when nothing names one. Classic stays the default for apps
+		// with no deployment.
+		if err := applyConfigDeployStrategy(cmd, projCfg, name); err != nil {
 			return err
 		}
 
@@ -233,9 +235,19 @@ var RebuildCmd = &cobra.Command{
 // and maps it onto the existing --blue-green / --replicas flags.
 //
 // Precedence: explicit --blue-green/--replicas > --strategy > phelix.yaml >
-// classic. --strategy is the one-off override (the backend's remote rebuild
-// uses it); it is never written back to phelix.yaml.
-func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config) error {
+// the strategy the app is currently deployed with > classic. --strategy is the
+// one-off override (the backend's remote rebuild uses it); it is never written
+// back to phelix.yaml.
+//
+// Inheriting the deployed strategy matters: falling straight through to classic
+// meant any rebuild that named no strategy — a phelix.yaml without a deploy
+// block, or a backend-issued rebuild that sent no override — silently migrated
+// a live blue-green/rolling app to classic, tearing down its instances and
+// deleting deploy.json along with the mode, public port, active version, health
+// tier and rollback record it holds. Demoting a deployment destroys state, so
+// it has to be asked for (--strategy classic, or deploy.strategy in
+// phelix.yaml), not defaulted into.
+func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName string) error {
 	if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
 		return nil
 	}
@@ -243,6 +255,10 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config) error {
 	strategy := rebuildStrategy
 	if strategy == "" && cfg != nil && cfg.Deploy != nil {
 		strategy = cfg.Deploy.Strategy
+	}
+	deployed := loadDeployState(appName)
+	if strategy == "" && deployed != nil {
+		strategy = string(deployed.Mode)
 	}
 
 	switch strategy {
@@ -252,11 +268,15 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config) error {
 		rebuildBlueGreen = true
 	case project.StrategyRolling:
 		// Rolling needs a replica count. phelix.yaml supplies one when it has
-		// it — including for an override that only named the strategy — and 1
-		// is the floor.
+		// it — including for an override that only named the strategy — then the
+		// width the app is already running at (so an inherited rolling rebuild
+		// does not silently shrink it), and 1 is the floor.
 		rebuildReplicas = 1
-		if cfg != nil && cfg.Deploy != nil && cfg.Deploy.Replicas > 0 {
+		switch {
+		case cfg != nil && cfg.Deploy != nil && cfg.Deploy.Replicas > 0:
 			rebuildReplicas = cfg.Deploy.Replicas
+		case deployed != nil && len(deployed.Replicas) > 0:
+			rebuildReplicas = len(deployed.Replicas)
 		}
 	default:
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,

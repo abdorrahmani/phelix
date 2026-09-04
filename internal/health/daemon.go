@@ -326,7 +326,7 @@ func (d *Daemon) startAutoRestarter() {
 
 				if record.CrashCount24h <= 10 {
 					logs.Info("health", "auto-restarting %s...", record.AppName)
-					if err := app.Manager.RestartApplication(record.AppID); err != nil {
+					if err := restartForAutoRestart(record.AppID); err != nil {
 						logs.Error("health", "failed to restart %s: %v", record.AppName, err)
 						record.ExitCode = 1
 					} else {
@@ -336,6 +336,24 @@ func (d *Daemon) startAutoRestarter() {
 			}
 		}
 	}()
+}
+
+// restartForAutoRestart restarts an unhealthy app. Apps managed by a
+// zero-downtime deployment own their instances, their internal ports and the
+// proxy route, so the single-PID RestartApplication would kill the serving
+// instance and then try to bind the proxy-owned public port — turning an
+// unhealthy app into a down one. Those go through the deploy-aware restart the
+// cmd layer wires up (health cannot import deploy: deploy already imports
+// health).
+func restartForAutoRestart(appID string) error {
+	if app.DeployedAppSkipper == nil || !app.DeployedAppSkipper(appID) {
+		return app.Manager.RestartApplication(appID)
+	}
+	if app.DeployedAppRestarter == nil {
+		return phelixerr.Newf(phelixerr.CodeProcessFailed,
+			"app %s is managed by a zero-downtime deployment and no deploy-aware restart is available", appID)
+	}
+	return app.DeployedAppRestarter(appID)
 }
 
 // startMaintenanceWorker performs periodic cleanup

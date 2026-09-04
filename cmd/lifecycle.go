@@ -24,14 +24,7 @@ import (
 // loadDeployState returns the app's deploy state, or nil when the app is not
 // managed by a zero-downtime strategy.
 func loadDeployState(appName string) *deploy.DeployState {
-	state, err := deploy.Load(appName)
-	if err != nil || state == nil {
-		return nil
-	}
-	if state.Mode != deploy.ModeBlueGreen && state.Mode != deploy.ModeRolling {
-		return nil
-	}
-	return state
+	return deploy.LoadZeroDowntime(appName)
 }
 
 // servingDeployInstance returns the instance that should be serving traffic

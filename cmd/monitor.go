@@ -57,6 +57,19 @@ func runMonitor() error {
 		}
 		return false
 	}
+	// Same rule for the health daemon's auto-restart: tear the deployment down
+	// and bring it back, exactly as `phelix restart` does, instead of killing
+	// the serving instance and rebinding the proxy-owned public port.
+	app.DeployedAppRestarter = func(id string) error {
+		info, err := GetAppInfo(id)
+		if err != nil {
+			return err
+		}
+		if err := runDeployAwareStop(info); err != nil {
+			return err
+		}
+		return runDeployAwareStart(info)
+	}
 	restoreDeployedApps()
 
 	if _, err := app.Manager.RestoreAutoStartApps(); err != nil {
