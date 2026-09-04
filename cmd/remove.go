@@ -37,6 +37,14 @@ var RemoveCmd = &cobra.Command{
 			return err
 		}
 
+		// A zero-downtime deployment owns its instances and its proxy route;
+		// tearing it down (and dropping deploy.json) first prevents orphaned
+		// replicas and a proxy route that outlives the app.
+		if err := migrateToClassic(appInfo.Name); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
+				"failed to stop the zero-downtime deployment for %q before removal", appInfo.Name)
+		}
+
 		fmt.Printf("• Removing application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
 		if err := app.Manager.RemoveApplication(appInfo.ID); err != nil {
 			if rerr := phelixgrpc.ReportEventResult(appInfo.ID, appInfo.Name, "remove", false, err.Error(), 0, "", ""); rerr != nil {

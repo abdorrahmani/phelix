@@ -36,6 +36,25 @@ var StopCmd = &cobra.Command{
 			return err
 		}
 
+		// Zero-downtime deployments own their instances through deploy.json;
+		// stopping them means tearing down the deployment (proxy route first,
+		// then every slot), not killing some legacy AppManager PID.
+		if state := loadDeployState(appInfo.Name); state != nil {
+			if err := runDeployAwareStop(appInfo); err != nil {
+				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", false, err.Error(), 0, "", "")
+				return phelixerr.Wrapf(
+					phelixerr.CodeProcessFailed,
+					err,
+					"failed to stop deployment for %q (ID: %s)",
+					appInfo.Name,
+					appInfo.ID,
+				)
+			}
+			fmt.Printf("✓ Application '%s' (ID: %s) stopped successfully\n", appInfo.Name, appInfo.ID)
+			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", true, "", 0, "", "")
+			return nil
+		}
+
 		if err := app.Manager.StopApplication(appInfo.ID); err != nil {
 			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", false, err.Error(), 0, "", "")
 			return phelixerr.Wrapf(

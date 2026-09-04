@@ -158,6 +158,12 @@ func (c *Client) runMonitorStream() error {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
 
+	// Deployment state resync: pushed on every (re)connection so a backend that
+	// missed a deployment's events — it restarted, or the connection was down
+	// while the deploy ran — converges on the real topology instead of waiting
+	// for the next deploy.
+	c.sendDeploymentSnapshots()
+
 	recvErrCh := make(chan error, 1)
 	go func() {
 		recvErrCh <- c.monitorRecvLoop(stream)
@@ -165,6 +171,12 @@ func (c *Client) runMonitorStream() error {
 
 	ticker := time.NewTicker(monitorMetricsInterval)
 	defer ticker.Stop()
+
+	// Deployment topology changes only during a deploy, which reports its own
+	// events; the periodic snapshot is a slow safety net against divergence,
+	// not a metrics feed.
+	deployTicker := time.NewTicker(deploymentResyncInterval)
+	defer deployTicker.Stop()
 
 	for {
 		select {
@@ -177,6 +189,11 @@ func (c *Client) runMonitorStream() error {
 				continue
 			}
 			c.sendMonitorTick()
+		case <-deployTicker.C:
+			if monitorStream.isPaused() {
+				continue
+			}
+			c.sendDeploymentSnapshots()
 		}
 	}
 }
@@ -229,6 +246,10 @@ func (c *Client) handleMonitorPing(ping *pb.Ping) {
 // metrics resume and an immediate refreshed snapshot is pushed.
 func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
 	logs.InfoFile("grpc", "[gRPC Monitor] received command: type=%s app=%s", req.GetType(), req.GetAppName())
+	if req.GetStrategy() != "" || req.GetReplicas() != 0 {
+		logs.InfoFile("grpc", "[gRPC Monitor] one-off deployment override: strategy=%s replicas=%d",
+			req.GetStrategy(), req.GetReplicas())
+	}
 
 	monitorStream.pause()
 
@@ -237,6 +258,12 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
 		Payload: monitor.CommandPayload{
 			Type:    req.GetType(),
 			AppName: req.GetAppName(),
+			// Unset means "no override" — the executor then resolves the
+			// strategy from the app's phelix.yaml, as before these fields
+			// existed. An override the CLI cannot honor is rejected by the
+			// executor and surfaces as an error MonitorCommandResult below.
+			Strategy: req.GetStrategy(),
+			Replicas: int(req.GetReplicas()),
 		},
 	}
 

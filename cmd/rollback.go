@@ -33,6 +33,7 @@ var RollbackCmd = &cobra.Command{
 		// before the CLI process exits. 5s is generous enough for a
 		// single gRPC round-trip; if it times out we log and move on.
 		defer phelixgrpc.StopRollbackSender(5 * time.Second)
+		defer phelixgrpc.StopDeploymentSender(5 * time.Second)
 
 		if len(args) == 0 {
 			if !IsInteractive() {
@@ -214,6 +215,11 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	// pre/post events around the call; the deploy package emits its own
 	// internal log lines via the Logger.
 	stepStart = time.Now()
+	// Deployment telemetry runs alongside the rollback reporter: the rollback
+	// events describe the CLI's own steps, the deployment events describe the
+	// resulting deployment transition (slots/replicas/proxy/versions) in the
+	// same shape a forward deploy reports.
+	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, appName, strategy)
 	err = deploy.ExecuteRollback(context.Background(), deploy.RollbackOptions{
 		AppName:        appName,
 		AppID:          appInfo.ID,
@@ -223,6 +229,7 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 		ProxyClient:    proxyClient,
 		HealthProvider: deploy.DefaultHealthProvider(),
 		Logger:         &colorLogger{},
+		Telemetry:      tracker,
 	})
 	rollbackDuration := time.Since(stepStart)
 	r.SetMetadata("rollback_duration_ms", fmt.Sprintf("%d", rollbackDuration.Milliseconds()))
@@ -230,6 +237,10 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 		r.Emit(phelixgrpc.RollbackStepFailed, false, "zero-downtime rollback failed", time.Since(totalStart), err.Error())
 		return phelixerr.Wrap(phelixerr.CodeRollbackFailed, "zero-downtime rollback failed", err)
 	}
+
+	// The rollback swapped slots; bring the lifecycle record in line with the
+	// new active instance.
+	reconcileAppWithDeploy(appName)
 
 	// Step: complete
 	fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", appName), target)

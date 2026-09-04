@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -198,20 +197,12 @@ func renderCLIError(err error, debug bool) int {
 		}
 	}
 
-	// Point at --debug when a deeper cause exists but was not shown. Known
-	// errors already carry docs and a fix, so only unknown errors get pointer.
-	if !known && !debug {
-		if c := phelixerr.Cause(err); c != nil && c != err {
-			fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Run with --debug for the full error chain."))
-		}
-	}
-
 	// Structured cause chain (everything below the headline), redacted and
 	// bounded — the canonical rendering of wrapped causes in both modes.
 	renderCauseChain(err, debug)
 
-	// Point at --debug when the chain was capped in normal mode. Known errors
-	// already carry docs and a fix, so only unknown errors get the pointer.
+	// Point at --debug when a deeper cause exists but was not shown. Known
+	// errors already carry docs and a fix, so only unknown errors get pointer.
 	if !known && !debug {
 		if c := phelixerr.Cause(err); c != nil && c != err {
 			fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Run with --debug for the full error chain."))
@@ -222,34 +213,58 @@ func renderCLIError(err error, debug bool) int {
 	return exitCode
 }
 
-// renderReport prints a known-error report block to stderr. Every dynamic
-// field passes through phelixerr.Redact before rendering; suggested commands
-// are informational only and are never executed by Phelix.
-func renderReport(rep errreport.Report) {
-	if rep.Title != "" {
-		fmt.Fprintln(errOut)
-		fmt.Fprintf(errOut, "  %s\n", color.HiWhiteString(phelixerr.Redact(rep.Title)))
+// causeMaxMessagesNormal bounds how many cause lines normal mode shows. Debug
+// mode always prints the full chain.
+const causeMaxMessagesNormal = 3
+
+// causeMessages returns the messages of every error below the headline, most
+// specific last, deduplicated (re-wrapping the same message is common when
+// layers annotate each other) and with the headline's own message excluded —
+// it is already rendered as the "Error:" line.
+func causeMessages(err error) []string {
+	if err == nil {
+		return nil
 	}
-	if rep.Explanation != "" {
-		fmt.Fprintln(errOut)
-		for _, line := range splitLines(phelixerr.Redact(rep.Explanation)) {
-			fmt.Fprintf(errOut, "  %s\n", line)
+	seen := map[string]bool{err.Error(): true}
+	var out []string
+	for e := err; ; {
+		u, ok := e.(interface{ Unwrap() error })
+		if !ok {
+			break
 		}
-	}
-	if rep.Suggestion != "" {
-		fmt.Fprintln(errOut)
-		fmt.Fprintf(errOut, "  %s\n", color.CyanString("Suggested fix:"))
-		for _, line := range splitLines(phelixerr.Redact(rep.Suggestion)) {
-			fmt.Fprintf(errOut, "  %s\n", line)
+		inner := u.Unwrap()
+		if inner == nil {
+			break
 		}
+		e = inner
+		msg := e.Error()
+		if seen[msg] {
+			continue
+		}
+		seen[msg] = true
+		out = append(out, msg)
 	}
-	if rep.Command != "" {
-		fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Run:"))
-		fmt.Fprintf(errOut, "    %s\n", color.CyanString(phelixerr.Redact(rep.Command)))
+	return out
+}
+
+// renderCauseChain prints the cause chain below the headline. Normal mode
+// caps the chain at causeMaxMessagesNormal lines; --debug always shows all of
+// them. A cause-less error renders nothing (no empty "Cause:" block).
+func renderCauseChain(err error, debug bool) {
+	chain := causeMessages(err)
+	if len(chain) == 0 {
+		return
 	}
-	if rep.DocsURL != "" {
-		fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Documentation:"))
-		fmt.Fprintf(errOut, "    %s\n", phelixerr.Redact(rep.DocsURL))
+	shown := chain
+	if !debug && len(chain) > causeMaxMessagesNormal {
+		shown = chain[:causeMaxMessagesNormal]
+	}
+	fmt.Fprintf(errOut, "  %s\n", color.HiBlackString("Cause:"))
+	for _, msg := range shown {
+		fmt.Fprintf(errOut, "  %s\n", phelixerr.Redact(msg))
+	}
+	if hidden := len(chain) - len(shown); hidden > 0 {
+		fmt.Fprintf(errOut, "  %s\n", color.HiBlackString(fmt.Sprintf("… %d more cause(s), run with --debug", hidden)))
 	}
 }
 

@@ -61,6 +61,21 @@ var StartCmd = &cobra.Command{
 					continue
 				}
 
+				// Zero-downtime deployments restore through their own path so
+				// the public port stays proxy-owned (never classic-bound).
+				if loadDeployState(a.Name) != nil {
+					info, gerr := GetAppInfo(a.ID)
+					if gerr == nil {
+						if serr := runDeployAwareStart(info); serr != nil {
+							fmt.Printf("    %s Failed to start %s (ID: %s): %v\n", color.RedString("✗"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), serr)
+							failed = append(failed, fmt.Sprintf("%s: %v", a.Name, serr))
+						} else {
+							phelixgrpc.ReportEvent(a.ID, a.Name, "start", true, "", 0, "", "")
+						}
+						continue
+					}
+				}
+
 				fmt.Printf("  %s Starting %s (ID: %s) on port %d...\n", color.BlueString("→"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), a.Port)
 				if err := app.Manager.StartApplication(a.ID, a.Port, a.Name); err != nil {
 					// Collect per-app failures and return a single aggregated
@@ -99,6 +114,14 @@ var StartCmd = &cobra.Command{
 		if startEnsure && appInfo.Status == "running" {
 			fmt.Printf("%s Application %s (ID: %s) is already running on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), appInfo.Port)
 			return nil
+		}
+
+		// Zero-downtime deployments restore through their own path: relaunch
+		// the active slot from its recorded binary and re-establish the proxy
+		// route. Launching a classic process on the public port would fight
+		// the proxy for ownership.
+		if loadDeployState(name) != nil {
+			return runDeployAwareStart(appInfo)
 		}
 
 		fmt.Printf("%s Starting application %s (ID: %s) on port %d\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), usePort)

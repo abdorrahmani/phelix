@@ -20,6 +20,15 @@ var ListCmd = &cobra.Command{
 	Short: "Lists all applications with their ID, status, PID, and uptime",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		apps := app.Manager.ListApplications()
+
+		// Reconcile zero-downtime deployments first so the top-level STATUS
+		// column reflects deployment reality (active slot process alive or
+		// not), then re-read the list.
+		for _, a := range apps {
+			reconcileAppWithDeploy(a.Name)
+		}
+		apps = app.Manager.ListApplications()
+
 		if len(apps) == 0 {
 			fmt.Println("No applications found.")
 			return nil

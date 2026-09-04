@@ -6,9 +6,12 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/fatih/color v1.19.0
 	github.com/olekukonko/tablewriter v1.1.4
+	github.com/prometheus/client_model v0.6.2
+	github.com/prometheus/common v0.65.0
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/term v0.45.0
 	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
@@ -33,8 +36,6 @@ require (
 	github.com/olekukonko/errors v1.3.0 // indirect
 	github.com/olekukonko/ll v0.1.8 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.65.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
@@ -43,7 +44,6 @@ require (
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect

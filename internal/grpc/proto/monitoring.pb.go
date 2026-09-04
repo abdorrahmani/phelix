@@ -125,7 +125,8 @@ func (LogStream) EnumDescriptor() ([]byte, []int) {
 }
 
 // ServerInfo mirrors server.Info. Sent once when the monitor stream is
-// (re)established, exactly like the old "servers" WebSocket message.
+// (re)established, exactly like the old "servers" WebSocket message. id is
+// the persistent Phelix agent_id; it is not a host machine ID.
 type ServerInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1617,10 +1618,21 @@ func (x *MonitorLogEntry) GetComponent() string {
 // (monitor.CommandPayload): a remote-control instruction from the backend,
 // e.g. restart/stop/start a specific managed application.
 type MonitorCommandRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
-	AppName       string                 `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Type      string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	AppName   string                 `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	// Optional one-off deployment overrides for a "rebuild" command. Empty /
+	// zero means "use the app's persisted phelix.yaml", which is the behavior
+	// of every command sent before these fields existed. The agent never
+	// writes an override back to phelix.yaml.
+	//
+	// The agent rejects the command through MonitorCommandResult rather than
+	// degrading silently when it cannot honor the override exactly: a strategy
+	// it does not implement, replicas on a non-rolling strategy, or either
+	// field set on a command other than "rebuild".
+	Strategy      string `protobuf:"bytes,4,opt,name=strategy,proto3" json:"strategy,omitempty"`  // "classic" | "blue-green" | "rolling"
+	Replicas      int32  `protobuf:"varint,5,opt,name=replicas,proto3" json:"replicas,omitempty"` // rolling only; >= 1
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1674,6 +1686,20 @@ func (x *MonitorCommandRequest) GetAppName() string {
 		return x.AppName
 	}
 	return ""
+}
+
+func (x *MonitorCommandRequest) GetStrategy() string {
+	if x != nil {
+		return x.Strategy
+	}
+	return ""
+}
+
+func (x *MonitorCommandRequest) GetReplicas() int32 {
+	if x != nil {
+		return x.Replicas
+	}
+	return 0
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -1783,6 +1809,7 @@ type MonitorEvent struct {
 	//	*MonitorEvent_LogEntry
 	//	*MonitorEvent_CommandResult
 	//	*MonitorEvent_Pong
+	//	*MonitorEvent_DeploymentSnapshot
 	Payload       isMonitorEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1902,6 +1929,15 @@ func (x *MonitorEvent) GetPong() *Pong {
 	return nil
 }
 
+func (x *MonitorEvent) GetDeploymentSnapshot() *DeploymentSnapshot {
+	if x != nil {
+		if x, ok := x.Payload.(*MonitorEvent_DeploymentSnapshot); ok {
+			return x.DeploymentSnapshot
+		}
+	}
+	return nil
+}
+
 type isMonitorEvent_Payload interface {
 	isMonitorEvent_Payload()
 }
@@ -1934,6 +1970,15 @@ type MonitorEvent_Pong struct {
 	Pong *Pong `protobuf:"bytes,16,opt,name=pong,proto3,oneof"`
 }
 
+type MonitorEvent_DeploymentSnapshot struct {
+	// deployment_snapshot resyncs the current deployment topology of one app.
+	// The monitor daemon pushes it periodically and after every reconnect, so
+	// a backend that missed the deployment's events (or restarted) still
+	// converges on the real state. Optional: an older backend simply sees an
+	// unknown oneof case and ignores it.
+	DeploymentSnapshot *DeploymentSnapshot `protobuf:"bytes,17,opt,name=deployment_snapshot,json=deploymentSnapshot,proto3,oneof"`
+}
+
 func (*MonitorEvent_ServerInfo) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_ServerMetrics) isMonitorEvent_Payload() {}
@@ -1947,6 +1992,8 @@ func (*MonitorEvent_LogEntry) isMonitorEvent_Payload() {}
 func (*MonitorEvent_CommandResult) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_Pong) isMonitorEvent_Payload() {}
+
+func (*MonitorEvent_DeploymentSnapshot) isMonitorEvent_Payload() {}
 
 // MonitorControl is a single message sent from the backend to the CLI
 // monitor daemon over the same long-lived MonitorStream. It mirrors the old
@@ -2037,7 +2084,7 @@ var File_internal_grpc_proto_monitoring_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
-	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\"\xd1\x05\n" +
+	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\"\xd1\x05\n" +
 	"\n" +
 	"ServerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
@@ -2210,12 +2257,14 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05level\x18\x06 \x01(\tR\x05level\x12)\n" +
 	"\x06source\x18\a \x01(\x0e2\x11.phelix.LogSourceR\x06source\x12)\n" +
 	"\x06stream\x18\b \x01(\x0e2\x11.phelix.LogStreamR\x06stream\x12\x1c\n" +
-	"\tcomponent\x18\t \x01(\tR\tcomponent\"e\n" +
+	"\tcomponent\x18\t \x01(\tR\tcomponent\"\x9d\x01\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x19\n" +
-	"\bapp_name\x18\x03 \x01(\tR\aappName\"\xb6\x01\n" +
+	"\bapp_name\x18\x03 \x01(\tR\aappName\x12\x1a\n" +
+	"\bstrategy\x18\x04 \x01(\tR\bstrategy\x12\x1a\n" +
+	"\breplicas\x18\x05 \x01(\x05R\breplicas\"\xb6\x01\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -2223,7 +2272,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\bapp_name\x18\x03 \x01(\tR\aappName\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x14\n" +
 	"\x05error\x18\x05 \x01(\tR\x05error\x12\x1c\n" +
-	"\ttimestamp\x18\x06 \x01(\x03R\ttimestamp\"\xe3\x03\n" +
+	"\ttimestamp\x18\x06 \x01(\x03R\ttimestamp\"\xb2\x04\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
@@ -2236,7 +2285,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\bapp_info\x18\r \x01(\v2\x17.phelix.ApplicationInfoH\x00R\aappInfo\x126\n" +
 	"\tlog_entry\x18\x0e \x01(\v2\x17.phelix.MonitorLogEntryH\x00R\blogEntry\x12E\n" +
 	"\x0ecommand_result\x18\x0f \x01(\v2\x1c.phelix.MonitorCommandResultH\x00R\rcommandResult\x12\"\n" +
-	"\x04pong\x18\x10 \x01(\v2\f.phelix.PongH\x00R\x04pongB\t\n" +
+	"\x04pong\x18\x10 \x01(\v2\f.phelix.PongH\x00R\x04pong\x12M\n" +
+	"\x13deployment_snapshot\x18\x11 \x01(\v2\x1a.phelix.DeploymentSnapshotH\x00R\x12deploymentSnapshotB\t\n" +
 	"\apayload\"z\n" +
 	"\x0eMonitorControl\x129\n" +
 	"\acommand\x18\x01 \x01(\v2\x1d.phelix.MonitorCommandRequestH\x00R\acommand\x12\"\n" +
@@ -2285,7 +2335,8 @@ var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(*MonitorEvent)(nil),          // 16: phelix.MonitorEvent
 	(*MonitorControl)(nil),        // 17: phelix.MonitorControl
 	(*Pong)(nil),                  // 18: phelix.Pong
-	(*Ping)(nil),                  // 19: phelix.Ping
+	(*DeploymentSnapshot)(nil),    // 19: phelix.DeploymentSnapshot
+	(*Ping)(nil),                  // 20: phelix.Ping
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	3,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -2304,13 +2355,14 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	13, // 13: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
 	15, // 14: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
 	18, // 15: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	14, // 16: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	19, // 17: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	19, // 16: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
+	14, // 17: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	20, // 18: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	19, // [19:19] is the sub-list for method output_type
+	19, // [19:19] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -2319,6 +2371,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		return
 	}
 	file_internal_grpc_proto_ping_proto_init()
+	file_internal_grpc_proto_deployment_proto_init()
 	file_internal_grpc_proto_monitoring_proto_msgTypes[14].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
@@ -2327,6 +2380,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_LogEntry)(nil),
 		(*MonitorEvent_CommandResult)(nil),
 		(*MonitorEvent_Pong)(nil),
+		(*MonitorEvent_DeploymentSnapshot)(nil),
 	}
 	file_internal_grpc_proto_monitoring_proto_msgTypes[15].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),

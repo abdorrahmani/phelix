@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -38,6 +40,11 @@ var StatusCmd = &cobra.Command{
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
+
+		// Reconcile zero-downtime deployment reality into the lifecycle record
+		// before rendering: the app is "running" only when the active slot's
+		// process is alive, never merely because deploy.json says so.
+		reconcileAppWithDeploy(identifier)
 
 		status, err := app.Manager.StatusApplication(identifier)
 		if err != nil {
@@ -166,6 +173,24 @@ func populateStatusTable(table *tablewriter.Table, status app.AppStatus) {
 	})
 }
 
+// sortedReplicaKeysForDisplay orders replica indices numerically so status
+// output lists replica-0..N deterministically regardless of JSON map order.
+func sortedReplicaKeysForDisplay(m map[string]*deploy.Instance) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, aerr := strconv.Atoi(keys[i])
+		b, berr := strconv.Atoi(keys[j])
+		if aerr == nil && berr == nil {
+			return a < b
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
 // displayDeployAndProxy prints zero-downtime deploy mode and live proxy
 // routing for the app, when available.
 func displayDeployAndProxy(appName string) {
@@ -259,12 +284,17 @@ func displayDeployAndProxy(appName string) {
 			}
 			fmt.Printf("  Replicas:      %d\n", len(state.Replicas))
 			fmt.Printf("  Public port:   %d\n", state.PublicPort)
-			for key, inst := range state.Replicas {
+			for _, key := range sortedReplicaKeysForDisplay(state.Replicas) {
+				inst := state.Replicas[key]
 				if inst == nil {
 					continue
 				}
-				fmt.Printf("  Replica %-3s:   status=%s pid=%d port=%d\n",
-					key, inst.Status, inst.PID, inst.Port)
+				ver := ""
+				if inst.Version > 0 {
+					ver = fmt.Sprintf(" version=v%d", inst.Version)
+				}
+				fmt.Printf("  Replica %-3s:   status=%s pid=%d port=%d%s\n",
+					key, inst.Status, inst.PID, inst.Port, ver)
 			}
 		default:
 			fmt.Printf("  Deploy method: %s\n", color.MagentaString(string(state.Mode)))
@@ -284,6 +314,18 @@ func displayDeployAndProxy(appName string) {
 		fmt.Printf("  Proxy:         %s  (start with %s)\n",
 			color.HiBlackString("not running"),
 			color.CyanString("phelix proxy"))
+		// Case C: instance alive but proxy down — the process runs internally,
+		// yet nothing serves it publicly. Distinguish the two.
+		if state != nil {
+			switch inst := state.ServingInstance(); {
+			case inst != nil && deploy.InstanceAlive(inst):
+				fmt.Printf("  %s Proxy is down but the %s instance (pid %d) is still running — it is not publicly reachable.\n",
+					color.YellowString("⚠"), inst.Slot, inst.PID)
+			case state.ActiveSlot != "" && state.ActiveInstance() != nil && state.ActiveInstance().Status == "running":
+				fmt.Printf("  %s Proxy is down and the active slot's recorded process is dead — run %s to restore it.\n",
+					color.YellowString("⚠"), color.CyanString("phelix start "+appName))
+			}
+		}
 		return
 	}
 	if ps, ok := proxyByApp[appName]; ok {
@@ -301,6 +343,13 @@ func displayDeployAndProxy(appName string) {
 			fmt.Println()
 		}
 		fmt.Printf("  In-flight:     %d\n", ps.InFlight)
+		// Case D: proxy points at a slot whose recorded instance is dead.
+		if state != nil && state.Mode == deploy.ModeBlueGreen && state.ActiveSlot != "" {
+			if inst := state.ActiveInstance(); inst != nil && !deploy.InstanceAlive(inst) && inst.PID > 0 {
+				fmt.Printf("  %s Proxy routes to slot %s whose process (pid %d) is dead — traffic is failing. Run %s or redeploy.\n",
+					color.RedString("✗"), inst.Slot, inst.PID, color.CyanString("phelix start "+appName))
+			}
+		}
 	} else {
 		fmt.Printf("  Proxy:         %s (daemon up, app not enrolled)\n",
 			color.YellowString("not enrolled"))

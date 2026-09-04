@@ -25,6 +25,7 @@ var rebuildArgs []string
 var rebuildNoUpload bool
 var rebuildBlueGreen bool
 var rebuildReplicas int
+var rebuildStrategy string
 var rebuildTag string
 
 var RebuildCmd = &cobra.Command{
@@ -82,10 +83,14 @@ var RebuildCmd = &cobra.Command{
 			portToUse = projCfg.Port
 		}
 
-		// Deployment strategy from phelix.yaml. Explicit CLI flags always win;
-		// absent flags, a configured blue-green/rolling strategy selects the
-		// existing zero-downtime deploy path (classic stays the default).
-		applyConfigDeployStrategy(cmd, projCfg)
+		// Deployment strategy: --strategy (one-off, e.g. a backend-issued
+		// rebuild) beats phelix.yaml, explicit --blue-green/--replicas beat
+		// both, and an app already running blue-green/rolling keeps that
+		// strategy when nothing names one. Classic stays the default for apps
+		// with no deployment.
+		if err := applyConfigDeployStrategy(cmd, projCfg, name); err != nil {
+			return err
+		}
 
 		if err := phelixport.Validate(portToUse); err != nil {
 			return err
@@ -138,6 +143,14 @@ var RebuildCmd = &cobra.Command{
 			return runZeroDowntimeDeploy(appInfo, name, portToUse)
 		}
 
+		// A classic rebuild of an app still managed by blue-green/rolling is
+		// the documented migration to classic: tear the deployment down first
+		// so no replica survives as an orphan and no proxy route fights the
+		// new classic process for the public port.
+		if err := migrateToClassic(name); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "could not migrate %q to classic deployment", name)
+		}
+
 		// Acquire deploy lock FIRST so two concurrent rebuilds cannot race on
 		// versions.json or double-assign version numbers; previously the old
 		// process was stopped before locking, letting a concurrent rebuild
@@ -148,12 +161,19 @@ var RebuildCmd = &cobra.Command{
 		}
 		defer release()
 
+		currentVer, _ := deploy.CurrentVersion(name)
+		tracker, flushTelemetry := classicTracker(appInfo.ID, name, portToUse, currentVer)
+		defer flushTelemetry()
+
 		if err := stopExistingApp(appInfo); err != nil {
+			tracker.Failed(err)
 			return err
 		}
 
+		tracker.Building("classic rebuild")
 		rebuildReport, rerr := rebuildApp(appInfo.ID, rebuildArgs, buildMgr)
 		if rerr != nil {
+			tracker.Failed(rerr)
 			return rerr
 		}
 
@@ -173,6 +193,7 @@ var RebuildCmd = &cobra.Command{
 			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
 		} else {
 			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
+			tracker.SetTargetVersion(rec.Version)
 		}
 
 		// --- Build Report + regression analysis ---------------------------------
@@ -182,14 +203,17 @@ var RebuildCmd = &cobra.Command{
 		if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
 			// Deploy failed. Version exists on disk but is_current is
 			// false and PromoteVersion was never called.
-			return phelixerr.Wrapf(
+			startErr := phelixerr.Wrapf(
 				phelixerr.CodeProcessFailed,
 				err,
 				"failed to start rebuilt application %q (ID: %s)",
 				name,
 				appInfo.ID,
 			)
+			tracker.Failed(startErr)
+			return startErr
 		}
+		tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
 
 		// Deploy succeeded — promote the version.
 		if rec != nil {
@@ -197,6 +221,8 @@ var RebuildCmd = &cobra.Command{
 				fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
 			}
 		}
+		tracker.PromoteCurrentVersion()
+		tracker.Completed(fmt.Sprintf("running on port %d", portToUse))
 
 		fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
 		phelixgrpc.ReportEvent(appInfo.ID, name, "rebuild", true, "", 0, "", "")
@@ -205,36 +231,65 @@ var RebuildCmd = &cobra.Command{
 	},
 }
 
-// applyConfigDeployStrategy maps deploy.strategy from phelix.yaml onto the
-// existing --blue-green / --replicas rebuild flags. Explicit CLI flags always
-// win; classic (or no deploy block) changes nothing, keeping the classic path
-// the default.
-func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config) {
-	if cfg == nil || cfg.Deploy == nil || cfg.Deploy.Strategy == "" ||
-		cfg.Deploy.Strategy == project.StrategyClassic {
-		return
-	}
+// applyConfigDeployStrategy resolves which deployment path this rebuild takes
+// and maps it onto the existing --blue-green / --replicas flags.
+//
+// Precedence: explicit --blue-green/--replicas > --strategy > phelix.yaml >
+// the strategy the app is currently deployed with > classic. --strategy is the
+// one-off override (the backend's remote rebuild uses it); it is never written
+// back to phelix.yaml.
+//
+// Inheriting the deployed strategy matters: falling straight through to classic
+// meant any rebuild that named no strategy — a phelix.yaml without a deploy
+// block, or a backend-issued rebuild that sent no override — silently migrated
+// a live blue-green/rolling app to classic, tearing down its instances and
+// deleting deploy.json along with the mode, public port, active version, health
+// tier and rollback record it holds. Demoting a deployment destroys state, so
+// it has to be asked for (--strategy classic, or deploy.strategy in
+// phelix.yaml), not defaulted into.
+func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName string) error {
 	if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
-		return
+		return nil
 	}
-	switch cfg.Deploy.Strategy {
+
+	strategy := rebuildStrategy
+	if strategy == "" && cfg != nil && cfg.Deploy != nil {
+		strategy = cfg.Deploy.Strategy
+	}
+	deployed := loadDeployState(appName)
+	if strategy == "" && deployed != nil {
+		strategy = string(deployed.Mode)
+	}
+
+	switch strategy {
+	case "", project.StrategyClassic:
+		// Classic is the default path; nothing to set.
 	case project.StrategyBlueGreen:
 		rebuildBlueGreen = true
 	case project.StrategyRolling:
-		if rebuildReplicas == 0 {
-			if cfg.Deploy.Replicas > 0 {
-				rebuildReplicas = cfg.Deploy.Replicas
-			} else {
-				rebuildReplicas = 1
-			}
+		// Rolling needs a replica count. phelix.yaml supplies one when it has
+		// it — including for an override that only named the strategy — then the
+		// width the app is already running at (so an inherited rolling rebuild
+		// does not silently shrink it), and 1 is the floor.
+		rebuildReplicas = 1
+		switch {
+		case cfg != nil && cfg.Deploy != nil && cfg.Deploy.Replicas > 0:
+			rebuildReplicas = cfg.Deploy.Replicas
+		case deployed != nil && len(deployed.Replicas) > 0:
+			rebuildReplicas = len(deployed.Replicas)
 		}
+	default:
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid --strategy %q\nHint: expected one of: classic, blue-green, rolling", strategy)
 	}
+	return nil
 }
 
 func init() {
 	RebuildCmd.Flags().IntVarP(&rebuildPort, "port", "p", 8080, "Port to run the application on (defaults to previous port if unspecified)")
 	RebuildCmd.Flags().StringArrayVarP(&rebuildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	RebuildCmd.Flags().BoolVar(&rebuildNoUpload, "no-upload", false, "If set, do not upload/send app information to the server after rebuild")
+	RebuildCmd.Flags().StringVar(&rebuildStrategy, "strategy", "", "Deployment strategy for this rebuild only: classic, blue-green, or rolling (overrides phelix.yaml, never written to it)")
 	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().StringVar(&rebuildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
@@ -312,6 +367,16 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	}
 	defer release()
 
+	// Deployment telemetry. The sink is nil when the CLI has no session, which
+	// makes the tracker nil and the deploy identical to an offline run. Queued
+	// events are flushed before the command returns.
+	strategy := string(deploy.ModeRolling)
+	if rebuildBlueGreen {
+		strategy = string(deploy.ModeBlueGreen)
+	}
+	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, strategy)
+	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
+
 	if rebuildBlueGreen {
 		bg := &deploy.BlueGreen{
 			AppName:        name,
@@ -323,8 +388,16 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
+			Telemetry:      tracker,
+			// Classic → blue-green migration: when the app still runs as a
+			// classic process binding the public port, stop it right before
+			// the proxy enrols (after the candidate is healthy), so the user
+			// never has to run 'phelix stop' by hand.
+			PortHandoff: stopPublicPortOwner,
 		}
-		if err := bg.Deploy(context.Background()); err != nil {
+		err := bg.Deploy(context.Background())
+		reconcileAppWithDeploy(name)
+		if err != nil {
 			return err
 		}
 		fmt.Printf("%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
@@ -348,8 +421,12 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		ProxyClient:    proxyClient,
 		HealthProvider: healthProvider,
 		Logger:         logger,
+		PortHandoff:    stopPublicPortOwner,
+		Telemetry:      tracker,
 	}
-	if err := r.Deploy(context.Background()); err != nil {
+	err = r.Deploy(context.Background())
+	reconcileAppWithDeploy(name)
+	if err != nil {
 		return err
 	}
 	fmt.Printf("%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",

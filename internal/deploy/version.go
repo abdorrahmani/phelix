@@ -455,8 +455,14 @@ func updateCurrentSymlink(appName string, ver int) error {
 	return nil
 }
 
-// PruneVersions removes oldest versions beyond the retention limit. The
-// version marked is_current is never deleted.
+// PruneVersions removes oldest versions beyond the retention limit. Never
+// deleted:
+//   - the version marked is_current;
+//   - the current version in versions.json if it differs from is_current;
+//   - any version recorded as deployed by deploy.json (blue-green active
+//     slot, blue-green candidate mid-rollout, rolling replicas mid-rollout —
+//     all of which may still be running that binary);
+//   - the version rollback targets (the one preceding the deployed version).
 func PruneVersions(appName string, policy RetentionPolicy, log Logger) error {
 	if policy == nil {
 		policy = DefaultRetention{}
@@ -470,14 +476,15 @@ func PruneVersions(appName string, policy RetentionPolicy, log Logger) error {
 		return err
 	}
 	cur, _ := CurrentVersion(appName)
+	protected := deploymentProtectedVersions(appName)
 	sort.Slice(vf.Versions, func(i, j int) bool {
 		return vf.Versions[i].Version < vf.Versions[j].Version
 	})
-	// Keep at most max versions total, but never drop cur.
+	// Keep at most max versions total, but never drop a protected version.
 	for len(vf.Versions) > max {
 		removed := false
 		for i, v := range vf.Versions {
-			if v.IsCurrent || v.Version == cur {
+			if v.IsCurrent || v.Version == cur || protected[v.Version] {
 				continue
 			}
 			if err := removeVersionArtifacts(appName, v.Version); err != nil {
@@ -495,6 +502,52 @@ func PruneVersions(appName string, policy RetentionPolicy, log Logger) error {
 		}
 	}
 	return saveVersions(appName, vf)
+}
+
+// deploymentProtectedVersions collects the versions deploy.json says are in
+// active use (slot instance or replica) plus the rollback target, so pruning
+// can never delete a binary that is running or is the designated rollback.
+// Best-effort: a missing deploy state protects nothing.
+func deploymentProtectedVersions(appName string) map[int]bool {
+	protected := make(map[int]bool)
+	state, err := Load(appName)
+	if err != nil || state == nil {
+		return protected
+	}
+	collect := func(m map[string]*Instance) {
+		for _, inst := range m {
+			if inst != nil && inst.PID > 0 && inst.Version > 0 {
+				protected[inst.Version] = true
+			}
+		}
+	}
+	collect(state.Slots)
+	collect(state.Replicas)
+	if state.ActiveVersion > 0 {
+		protected[state.ActiveVersion] = true
+	}
+	// Rollback target: the highest version below the deployed one.
+	if deployed := state.ActiveVersion; deployed > 0 {
+		rollback := 0
+		for _, v := range vfList(appName) {
+			if v.Version < deployed && v.Version > rollback {
+				rollback = v.Version
+			}
+		}
+		if rollback > 0 {
+			protected[rollback] = true
+		}
+	}
+	return protected
+}
+
+// vfList returns versions.json rows (empty when unreadable).
+func vfList(appName string) []VersionMeta {
+	vf, err := LoadVersions(appName)
+	if err != nil || vf == nil {
+		return nil
+	}
+	return vf.Versions
 }
 
 func removeVersionArtifacts(appName string, ver int) error {

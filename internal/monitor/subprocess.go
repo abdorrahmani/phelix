@@ -9,17 +9,26 @@ import (
 	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
-// newPhelixCommand builds the `phelix <type> <id>` subprocess for command types
-// the app manager does not handle in-process. It returns nil if the phelix
-// executable cannot be located in PATH.
-func newPhelixCommand(cmdType, appID string) (*exec.Cmd, error) {
-	// Find the phelix executable in PATH
-	phelixPath, err := exec.LookPath("phelix")
-	if err != nil {
-		return nil, phelixerr.Wrap(phelixerr.CodeProcessFailed, "phelix executable not found in PATH", err)
+// newPhelixCommand builds the `phelix <args...>` subprocess for command types
+// the app manager does not handle in-process, running it in dir so a rebuild
+// picks up that app's phelix.yaml. An empty or missing dir falls back to the
+// daemon's own working directory rather than failing the command.
+//
+// The daemon *is* a phelix process, so its own executable is the correct binary
+// to re-invoke: same version, and no dependence on PATH. Under systemd PATH
+// routinely excludes the install directory, which made every subprocess-backed
+// remote command fail with "phelix executable not found in PATH". PATH is kept
+// only as a fallback for the rare case os.Executable cannot resolve.
+func newPhelixCommand(dir string, args ...string) (*exec.Cmd, error) {
+	phelixPath, err := os.Executable()
+	if err != nil || phelixPath == "" {
+		phelixPath, err = exec.LookPath("phelix")
+		if err != nil {
+			return nil, phelixerr.Wrap(phelixerr.CodeProcessFailed, "phelix executable not found in PATH", err)
+		}
 	}
 
-	execCmd := exec.Command(phelixPath, cmdType, appID)
+	execCmd := exec.Command(phelixPath, args...)
 
 	// Set up environment with Go variables
 	env := os.Environ()
@@ -36,6 +45,11 @@ func newPhelixCommand(cmdType, appID string) (*exec.Cmd, error) {
 
 	execCmd.Env = env
 	execCmd.Dir = "."
+	if dir != "" {
+		if st, serr := os.Stat(dir); serr == nil && st.IsDir() {
+			execCmd.Dir = dir
+		}
+	}
 
 	return execCmd, nil
 }
@@ -43,7 +57,10 @@ func newPhelixCommand(cmdType, appID string) (*exec.Cmd, error) {
 // runPhelixCommand pipes the subprocess's stdout/stderr to the daemon log and
 // waits for it to finish. Any captured output is surfaced so backend-issued
 // commands remain diagnosable through journalctl / phelix.log.
-func runPhelixCommand(execCmd *exec.Cmd) error {
+//
+// A var, not a func, so tests can assert which `phelix` invocation a remote
+// command routes to without spawning a process.
+var runPhelixCommand = func(execCmd *exec.Cmd) error {
 	stdout, err := execCmd.StdoutPipe()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to create stdout pipe", err)

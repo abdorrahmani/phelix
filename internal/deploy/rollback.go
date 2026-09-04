@@ -72,6 +72,9 @@ type RollbackOptions struct {
 	Logger         Logger
 	Notifier       Notifier
 	InFlight       InFlightProvider
+	// Telemetry observes the rollback as a deployment. Optional: a nil Tracker
+	// is silent.
+	Telemetry *Tracker
 }
 
 // ExecuteRollback runs rollback through the same zero-downtime path as forward
@@ -155,6 +158,7 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 			Logger:         log,
 			Notifier:       opts.Notifier,
 			InFlight:       opts.InFlight,
+			Telemetry:      opts.Telemetry,
 		}
 		if opts.PublicPort == 0 {
 			bg.PublicPort = state.PublicPort
@@ -180,6 +184,7 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 			Logger:         log,
 			Notifier:       opts.Notifier,
 			InFlight:       opts.InFlight,
+			Telemetry:      opts.Telemetry,
 		}
 		deployErr = r.Deploy(ctx)
 	default:

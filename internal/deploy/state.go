@@ -52,6 +52,10 @@ type Instance struct {
 	Status string `json:"status"`
 	// Version is the builds/vN label this instance was started from (when known).
 	Version int `json:"version,omitempty"`
+	// EnvPath is the encrypted env snapshot (env/vN.enc) paired with the
+	// binary this instance runs. Recorded so StartDeployment can relaunch the
+	// instance with the same environment later.
+	EnvPath string `json:"env_path,omitempty"`
 }
 
 // RollbackRecord is a compact summary of the last successful rollback for an
@@ -109,6 +113,12 @@ type DeployState struct {
 	LastRollback *RollbackRecord `json:"last_rollback,omitempty"`
 	// OpLock is set while a blue-green/rolling deploy or rollback is in flight.
 	OpLock *DeployLock `json:"op_lock,omitempty"`
+	// LastDeploymentID is the telemetry id of the most recent deployment
+	// operation on this app (see internal/deploy/telemetry.go). It is recorded
+	// so a snapshot rebuilt later — by the monitor daemon after a reconnect, or
+	// by another process — can be correlated with the events that deployment
+	// emitted. Absent for deployments made before telemetry existed.
+	LastDeploymentID string `json:"last_deployment_id,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -120,6 +130,67 @@ func (s *DeployState) InactiveSlot() string {
 		return SlotGreen
 	}
 	return SlotBlue
+}
+
+// modeSnapshot captures the fields that define which strategy a DeployState
+// represents, so a failed strategy migration can be undone before the new
+// strategy has replaced anything.
+type modeSnapshot struct {
+	mode       Mode
+	activeSlot string
+	slots      map[string]*Instance
+	replicas   map[string]*Instance
+}
+
+func captureMode(s *DeployState) modeSnapshot {
+	return modeSnapshot{mode: s.Mode, activeSlot: s.ActiveSlot, slots: s.Slots, replicas: s.Replicas}
+}
+
+func (s *DeployState) restoreMode(m modeSnapshot) {
+	s.Mode, s.ActiveSlot, s.Slots, s.Replicas = m.mode, m.activeSlot, m.slots, m.replicas
+}
+
+// MigrateTo switches the recorded strategy and retires every instance that
+// belonged to the previous one. The retired instances are returned so the
+// caller can stop their processes at the right moment — after the new
+// strategy's instances actually serve traffic; stopping them earlier would
+// drop requests. A no-op returning (nil, nil) when already in mode.
+//
+// The mode switch is persisted immediately: a crash mid-rollout must not
+// leave the old strategy recorded as the active one. Callers that must keep
+// the previous strategy when the rollout fails before it replaced anything
+// capture the four fields with captureMode and restore them with restoreMode.
+func (s *DeployState) MigrateTo(mode Mode) ([]*Instance, error) {
+	if s == nil || s.Mode == mode {
+		return nil, nil
+	}
+	var retired []*Instance
+	for _, inst := range s.Slots {
+		if inst != nil && inst.PID > 0 {
+			retired = append(retired, inst)
+		}
+	}
+	for _, inst := range s.Replicas {
+		if inst != nil && inst.PID > 0 {
+			retired = append(retired, inst)
+		}
+	}
+	s.Slots = nil
+	s.Replicas = nil
+	s.ActiveSlot = ""
+	s.Mode = mode
+	if mode == ModeBlueGreen {
+		s.Slots = map[string]*Instance{
+			SlotBlue:  {Slot: SlotBlue, Status: "stopped"},
+			SlotGreen: {Slot: SlotGreen, Status: "stopped"},
+		}
+	} else {
+		s.Replicas = make(map[string]*Instance)
+	}
+	if err := Store(s); err != nil {
+		return nil, err
+	}
+	return retired, nil
 }
 
 // ActiveInstance returns the currently serving instance, or nil if none.
@@ -196,6 +267,25 @@ func Load(appName string) (*DeployState, error) {
 	return &s, nil
 }
 
+// LoadZeroDowntime returns the app's state when it is managed by a
+// zero-downtime strategy (blue-green/rolling), and nil otherwise — no state
+// file, an unreadable one, or a mode outside those two all mean "classic".
+//
+// It is the single definition of "is this app deploy-managed", shared by the
+// CLI lifecycle commands and the monitor daemon's remote-command executor.
+// Those two disagreeing is what let a backend-issued start/restart kill a
+// serving instance and try to rebind the proxy-owned public port.
+func LoadZeroDowntime(appName string) *DeployState {
+	s, err := Load(appName)
+	if err != nil || s == nil {
+		return nil
+	}
+	if s.Mode != ModeBlueGreen && s.Mode != ModeRolling {
+		return nil
+	}
+	return s
+}
+
 // LoadOrInit returns the existing state for the app, or a freshly initialised
 // one with the given mode and public port when none exists yet.
 func LoadOrInit(appName string, mode Mode, publicPort int) (*DeployState, error) {
@@ -227,6 +317,21 @@ func Remove(appName string) error {
 		return err
 	}
 	if err := os.RemoveAll(filepath.Dir(path)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// RemoveState deletes only deploy.json, leaving versions.json and the build
+// metadata that share the app's data directory intact. It is the strategy
+// migration to classic: the deployment record goes away, the rollback history
+// stays.
+func RemoveState(appName string) error {
+	path, err := statePath(appName)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
