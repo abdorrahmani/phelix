@@ -158,6 +158,12 @@ func (c *Client) runMonitorStream() error {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
 
+	// Deployment state resync: pushed on every (re)connection so a backend that
+	// missed a deployment's events — it restarted, or the connection was down
+	// while the deploy ran — converges on the real topology instead of waiting
+	// for the next deploy.
+	c.sendDeploymentSnapshots()
+
 	recvErrCh := make(chan error, 1)
 	go func() {
 		recvErrCh <- c.monitorRecvLoop(stream)
@@ -165,6 +171,12 @@ func (c *Client) runMonitorStream() error {
 
 	ticker := time.NewTicker(monitorMetricsInterval)
 	defer ticker.Stop()
+
+	// Deployment topology changes only during a deploy, which reports its own
+	// events; the periodic snapshot is a slow safety net against divergence,
+	// not a metrics feed.
+	deployTicker := time.NewTicker(deploymentResyncInterval)
+	defer deployTicker.Stop()
 
 	for {
 		select {
@@ -177,6 +189,11 @@ func (c *Client) runMonitorStream() error {
 				continue
 			}
 			c.sendMonitorTick()
+		case <-deployTicker.C:
+			if monitorStream.isPaused() {
+				continue
+			}
+			c.sendDeploymentSnapshots()
 		}
 	}
 }

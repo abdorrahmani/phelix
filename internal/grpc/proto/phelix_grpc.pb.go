@@ -19,18 +19,19 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PhelixService_ReportEvent_FullMethodName          = "/phelix.PhelixService/ReportEvent"
-	PhelixService_SyncMetadata_FullMethodName         = "/phelix.PhelixService/SyncMetadata"
-	PhelixService_StreamEvents_FullMethodName         = "/phelix.PhelixService/StreamEvents"
-	PhelixService_AgentStream_FullMethodName          = "/phelix.PhelixService/AgentStream"
-	PhelixService_HealthSetConfig_FullMethodName      = "/phelix.PhelixService/HealthSetConfig"
-	PhelixService_HealthAddEndpoint_FullMethodName    = "/phelix.PhelixService/HealthAddEndpoint"
-	PhelixService_HealthRemoveEndpoint_FullMethodName = "/phelix.PhelixService/HealthRemoveEndpoint"
-	PhelixService_ReportHealthResult_FullMethodName   = "/phelix.PhelixService/ReportHealthResult"
-	PhelixService_ReportAutoRestart_FullMethodName    = "/phelix.PhelixService/ReportAutoRestart"
-	PhelixService_ReportRollbackEvent_FullMethodName  = "/phelix.PhelixService/ReportRollbackEvent"
-	PhelixService_MonitorStream_FullMethodName        = "/phelix.PhelixService/MonitorStream"
-	PhelixService_AgentLogout_FullMethodName          = "/phelix.PhelixService/AgentLogout"
+	PhelixService_ReportEvent_FullMethodName           = "/phelix.PhelixService/ReportEvent"
+	PhelixService_SyncMetadata_FullMethodName          = "/phelix.PhelixService/SyncMetadata"
+	PhelixService_StreamEvents_FullMethodName          = "/phelix.PhelixService/StreamEvents"
+	PhelixService_AgentStream_FullMethodName           = "/phelix.PhelixService/AgentStream"
+	PhelixService_HealthSetConfig_FullMethodName       = "/phelix.PhelixService/HealthSetConfig"
+	PhelixService_HealthAddEndpoint_FullMethodName     = "/phelix.PhelixService/HealthAddEndpoint"
+	PhelixService_HealthRemoveEndpoint_FullMethodName  = "/phelix.PhelixService/HealthRemoveEndpoint"
+	PhelixService_ReportHealthResult_FullMethodName    = "/phelix.PhelixService/ReportHealthResult"
+	PhelixService_ReportAutoRestart_FullMethodName     = "/phelix.PhelixService/ReportAutoRestart"
+	PhelixService_ReportRollbackEvent_FullMethodName   = "/phelix.PhelixService/ReportRollbackEvent"
+	PhelixService_ReportDeploymentEvent_FullMethodName = "/phelix.PhelixService/ReportDeploymentEvent"
+	PhelixService_MonitorStream_FullMethodName         = "/phelix.PhelixService/MonitorStream"
+	PhelixService_AgentLogout_FullMethodName           = "/phelix.PhelixService/AgentLogout"
 )
 
 // PhelixServiceClient is the client API for PhelixService service.
@@ -64,6 +65,15 @@ type PhelixServiceClient interface {
 	// Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
 	// emits its own event so the backend can reconstruct the full timeline.
 	ReportRollbackEvent(ctx context.Context, in *RollbackLifecycleEvent, opts ...grpc.CallOption) (*EventResponse, error)
+	// ReportDeploymentEvent sends one deployment lifecycle transition
+	// (classic / blue-green / rolling) to the backend. Every event carries the
+	// full DeploymentSnapshot, so a backend that missed earlier events can still
+	// reconstruct the current topology from any single event.
+	//
+	// Backward compatibility: a backend that does not implement this RPC answers
+	// UNIMPLEMENTED. The CLI treats that as "telemetry not consumed yet" and
+	// continues the deployment unchanged.
+	ReportDeploymentEvent(ctx context.Context, in *DeploymentEvent, opts ...grpc.CallOption) (*EventResponse, error)
 	// MonitorStream is the persistent, bidirectional monitoring channel that
 	// replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
 	// stream once and keeps it open for the lifetime of the process, pushing a
@@ -195,6 +205,16 @@ func (c *phelixServiceClient) ReportRollbackEvent(ctx context.Context, in *Rollb
 	return out, nil
 }
 
+func (c *phelixServiceClient) ReportDeploymentEvent(ctx context.Context, in *DeploymentEvent, opts ...grpc.CallOption) (*EventResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EventResponse)
+	err := c.cc.Invoke(ctx, PhelixService_ReportDeploymentEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *phelixServiceClient) MonitorStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MonitorEvent, MonitorControl], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &PhelixService_ServiceDesc.Streams[2], PhelixService_MonitorStream_FullMethodName, cOpts...)
@@ -249,6 +269,15 @@ type PhelixServiceServer interface {
 	// Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
 	// emits its own event so the backend can reconstruct the full timeline.
 	ReportRollbackEvent(context.Context, *RollbackLifecycleEvent) (*EventResponse, error)
+	// ReportDeploymentEvent sends one deployment lifecycle transition
+	// (classic / blue-green / rolling) to the backend. Every event carries the
+	// full DeploymentSnapshot, so a backend that missed earlier events can still
+	// reconstruct the current topology from any single event.
+	//
+	// Backward compatibility: a backend that does not implement this RPC answers
+	// UNIMPLEMENTED. The CLI treats that as "telemetry not consumed yet" and
+	// continues the deployment unchanged.
+	ReportDeploymentEvent(context.Context, *DeploymentEvent) (*EventResponse, error)
 	// MonitorStream is the persistent, bidirectional monitoring channel that
 	// replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
 	// stream once and keeps it open for the lifetime of the process, pushing a
@@ -303,6 +332,9 @@ func (UnimplementedPhelixServiceServer) ReportAutoRestart(context.Context, *Repo
 }
 func (UnimplementedPhelixServiceServer) ReportRollbackEvent(context.Context, *RollbackLifecycleEvent) (*EventResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportRollbackEvent not implemented")
+}
+func (UnimplementedPhelixServiceServer) ReportDeploymentEvent(context.Context, *DeploymentEvent) (*EventResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportDeploymentEvent not implemented")
 }
 func (UnimplementedPhelixServiceServer) MonitorStream(grpc.BidiStreamingServer[MonitorEvent, MonitorControl]) error {
 	return status.Error(codes.Unimplemented, "method MonitorStream not implemented")
@@ -489,6 +521,24 @@ func _PhelixService_ReportRollbackEvent_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PhelixService_ReportDeploymentEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeploymentEvent)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).ReportDeploymentEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_ReportDeploymentEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).ReportDeploymentEvent(ctx, req.(*DeploymentEvent))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _PhelixService_MonitorStream_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(PhelixServiceServer).MonitorStream(&grpc.GenericServerStream[MonitorEvent, MonitorControl]{ServerStream: stream})
 }
@@ -552,6 +602,10 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportRollbackEvent",
 			Handler:    _PhelixService_ReportRollbackEvent_Handler,
+		},
+		{
+			MethodName: "ReportDeploymentEvent",
+			Handler:    _PhelixService_ReportDeploymentEvent_Handler,
 		},
 		{
 			MethodName: "AgentLogout",

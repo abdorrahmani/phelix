@@ -5,6 +5,7 @@ package phelix;
 option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 
 import "internal/grpc/proto/ping.proto";
+import "internal/grpc/proto/deployment.proto";
 
 // ============================================================================
 // Monitoring data messages
@@ -280,6 +281,12 @@ message MonitorEvent {
     MonitorLogEntry log_entry = 14;
     MonitorCommandResult command_result = 15;
     Pong pong = 16;
+    // deployment_snapshot resyncs the current deployment topology of one app.
+    // The monitor daemon pushes it periodically and after every reconnect, so
+    // a backend that missed the deployment's events (or restarted) still
+    // converges on the real state. Optional: an older backend simply sees an
+    // unknown oneof case and ignores it.
+    DeploymentSnapshot deployment_snapshot = 17;
   }
 }
 

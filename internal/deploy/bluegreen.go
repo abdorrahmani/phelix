@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -81,6 +82,9 @@ type BlueGreen struct {
 	// binding the port. Returning an error aborts the deploy with the
 	// candidate killed and the classic instance untouched.
 	PortHandoff func(ctx context.Context, appName string, publicPort int) error
+	// Telemetry observes the deployment lifecycle for the backend. Optional:
+	// a nil Tracker is silent and changes no deployment behaviour.
+	Telemetry *Tracker
 }
 
 // Deploy performs one blue-green deployment. The sequence mirrors the project
@@ -106,6 +110,10 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		grace = DefaultGracePeriod
 	}
 
+	// Announce the deployment before anything can fail, so every deployment the
+	// backend hears about begins with a started event.
+	bg.Telemetry.Started(activeVersionOf(nil, bg.AppName), 0, "blue-green deploy of "+bg.AppName)
+
 	src := bg.Source
 	if src == nil && bg.Builder != nil {
 		src = BuilderSource(bg.Builder)
@@ -120,6 +128,8 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state"))
 	}
 	state.AppID = bg.AppID
+	bg.Telemetry.Bind(state)
+	bg.Telemetry.SetVersions(activeVersionOf(state, bg.AppName), 0)
 
 	// Strategy migration (e.g. rolling → blue-green): switch the recorded mode
 	// up front and keep the previous strategy's instances — they keep serving
@@ -174,6 +184,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 3. Prepare binary + paired env snapshot (fresh compile or rollback target).
 	log.Stepf("%s for slot %s", src.Describe(), inactive)
+	bg.Telemetry.Building(src.Describe())
 	binaryPath, envPath, err := src.Build(ctx)
 	if err != nil {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact failed"))
@@ -210,10 +221,14 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	newInst.Status = "starting"
 	state.Slots[inactive] = newInst
 	bg.storeState(state) // persist intermediate state so a crash here is observable
+	bg.Telemetry.SetTargetVersion(targetVer)
+	bg.Telemetry.InstanceStarted(inactive, newInst.PID, port)
 
 	// 5. Select the health tier for the new instance (shared with rolling).
 	tierCfg := bg.healthCfg()
 	tier := selectDeployHealth(ctx, tierCfg, bg.AppName, hostPort(port), log, bg.Notifier)
+	bg.Telemetry.SetHealthConfig(tierCfg, tier)
+	bg.Telemetry.HealthCheckStarted(inactive, port)
 
 	// 6. Wait for healthy. On failure, abort and leave the active instance
 	//    untouched.
@@ -238,6 +253,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	state.Health.Tier = int(tier)
 	state.Health.TierLabel = tier.String()
 	state.Health.HealthyAt = time.Now()
+	bg.Telemetry.InstanceHealthy(inactive, newInst.PID, port)
 
 	// 7. Atomically switch the proxy to the new instance.
 	primary := proxy.Target{Host: hostPort(port), Label: inactive}
@@ -273,6 +289,8 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 				return bg.failf(err)
 			}
 		}
+		bg.Telemetry.ProxySwitching(inactive, port,
+			fmt.Sprintf("enrolling %s with proxy on public port %d", bg.AppName, bg.PublicPort))
 		if err := bg.ProxyClient.Add(ctx, bg.AppName, bg.PublicPort, primary); err != nil {
 			_, _ = GracefulStop(ctx, proc, grace, 0)
 			newInst.Status = "failed"
@@ -287,6 +305,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 				bg.AppName, bg.AppName))
 		}
 		log.Successf("enrolled %s with proxy on public port %d -> slot %s", bg.AppName, bg.PublicPort, inactive)
+		bg.Telemetry.SetProxy(bg.PublicPort, inactive, port, []string{hostPort(port)})
+		bg.Telemetry.ProxySwitched(inactive, port,
+			fmt.Sprintf("enrolled on public port %d", bg.PublicPort))
 		// The stale slot record no longer describes reality (the app it
 		// pointed at is not what the proxy serves); normalize it.
 		active = ""
@@ -302,6 +323,8 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			bg.storeState(state)
 			return bg.failf(phelixerr.New(phelixerr.CodeProxy, "deploy aborted: no proxy client for switch"))
 		}
+		bg.Telemetry.ProxySwitching(inactive, port,
+			fmt.Sprintf("switching public port %d from slot %s", bg.PublicPort, active))
 		if err := bg.ProxyClient.Switch(ctx, bg.AppName, primary); err != nil {
 			// The new instance is healthy and running; we switch failure means
 			// traffic is still on the old instance. Kill the new one and abort.
@@ -316,6 +339,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			))
 		}
 		log.Successf("traffic switched to slot %s (zero downtime)", inactive)
+		bg.Telemetry.SetProxy(bg.PublicPort, inactive, port, []string{hostPort(port)})
+		bg.Telemetry.ProxySwitched(inactive, port,
+			fmt.Sprintf("public port %d now routes to slot %s", bg.PublicPort, inactive))
 		switched = true
 	}
 
@@ -324,6 +350,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	// rule as forward deploy (never point current at an unhealthy instance).
 	oldActive := active
 	state.ActiveSlot = inactive
+	// Traffic is on the new slot: only now may telemetry report the target
+	// version as the one actually serving.
+	bg.Telemetry.PromoteCurrentVersion()
 	// Retired instances from a previous strategy (rolling → blue-green): the
 	// proxy no longer routes to them, so drain and stop them here alongside
 	// the previous active slot.
@@ -342,10 +371,12 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	if oldActive != "" {
 		if old := state.Slots[oldActive]; old != nil && old.PID > 0 {
 			log.Stepf("gracefully stopping old slot %s (pid %d, grace %s)", oldActive, old.PID, grace)
+			bg.Telemetry.InstanceDraining(oldActive, old.PID)
 			// We no longer hold the *os.Process for the previous instance (it
 			// was started by a prior invocation), so stop it by PID. The
 			// expected executable path guards against PID recycling.
 			report := stopByPID(ctx, old.PID, grace, bg.inFlight(bg.AppName), old.BinaryPath)
+			stoppedPID := old.PID
 			if report.ForceKilled {
 				log.Warnf("old slot %s did not exit within grace; SIGKILL applied (in-flight: %d)", oldActive, report.InFlight)
 			} else {
@@ -353,12 +384,14 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			}
 			old.Status = "stopped"
 			old.PID = 0
+			bg.Telemetry.InstanceStopped(oldActive, stoppedPID, drainOutcome(report))
 		}
 	}
 
 	bg.storeState(state)
 	log.Successf("blue-green deploy of %s complete: active slot %s (pid %d, port %d)",
 		bg.AppName, inactive, newInst.PID, newInst.Port)
+	bg.Telemetry.Completed(fmt.Sprintf("active slot %s on port %d", inactive, newInst.Port))
 	return nil
 }
 
@@ -443,10 +476,13 @@ func (bg *BlueGreen) recoverStaleSlots(ctx context.Context, state *DeployState, 
 }
 
 // failf logs err and returns it unchanged so Deploy's callers see a single
-// structured error. It is the one place blue-green errors reach the Logger.
+// structured error. It is the one place blue-green errors reach the Logger,
+// which also makes it the one place a failed deployment is reported to the
+// backend — the telemetry can never disagree with what Deploy returned.
 func (bg *BlueGreen) failf(err error) error {
 	if err != nil {
 		bg.logger().Errorf("%v", err)
+		reportDeployFailure(bg.Telemetry, err)
 	}
 	return err
 }

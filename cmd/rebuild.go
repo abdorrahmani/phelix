@@ -156,12 +156,19 @@ var RebuildCmd = &cobra.Command{
 		}
 		defer release()
 
+		currentVer, _ := deploy.CurrentVersion(name)
+		tracker, flushTelemetry := classicTracker(appInfo.ID, name, portToUse, currentVer)
+		defer flushTelemetry()
+
 		if err := stopExistingApp(appInfo); err != nil {
+			tracker.Failed(err)
 			return err
 		}
 
+		tracker.Building("classic rebuild")
 		rebuildReport, rerr := rebuildApp(appInfo.ID, rebuildArgs, buildMgr)
 		if rerr != nil {
+			tracker.Failed(rerr)
 			return rerr
 		}
 
@@ -181,6 +188,7 @@ var RebuildCmd = &cobra.Command{
 			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
 		} else {
 			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
+			tracker.SetTargetVersion(rec.Version)
 		}
 
 		// --- Build Report + regression analysis ---------------------------------
@@ -190,14 +198,17 @@ var RebuildCmd = &cobra.Command{
 		if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
 			// Deploy failed. Version exists on disk but is_current is
 			// false and PromoteVersion was never called.
-			return phelixerr.Wrapf(
+			startErr := phelixerr.Wrapf(
 				phelixerr.CodeProcessFailed,
 				err,
 				"failed to start rebuilt application %q (ID: %s)",
 				name,
 				appInfo.ID,
 			)
+			tracker.Failed(startErr)
+			return startErr
 		}
+		tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
 
 		// Deploy succeeded — promote the version.
 		if rec != nil {
@@ -205,6 +216,8 @@ var RebuildCmd = &cobra.Command{
 				fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
 			}
 		}
+		tracker.PromoteCurrentVersion()
+		tracker.Completed(fmt.Sprintf("running on port %d", portToUse))
 
 		fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
 		phelixgrpc.ReportEvent(appInfo.ID, name, "rebuild", true, "", 0, "", "")
@@ -320,6 +333,16 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	}
 	defer release()
 
+	// Deployment telemetry. The sink is nil when the CLI has no session, which
+	// makes the tracker nil and the deploy identical to an offline run. Queued
+	// events are flushed before the command returns.
+	strategy := string(deploy.ModeRolling)
+	if rebuildBlueGreen {
+		strategy = string(deploy.ModeBlueGreen)
+	}
+	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, strategy)
+	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
+
 	if rebuildBlueGreen {
 		bg := &deploy.BlueGreen{
 			AppName:        name,
@@ -331,6 +354,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
+			Telemetry:      tracker,
 			// Classic → blue-green migration: when the app still runs as a
 			// classic process binding the public port, stop it right before
 			// the proxy enrols (after the candidate is healthy), so the user
@@ -364,6 +388,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		HealthProvider: healthProvider,
 		Logger:         logger,
 		PortHandoff:    stopPublicPortOwner,
+		Telemetry:      tracker,
 	}
 	err = r.Deploy(context.Background())
 	reconcileAppWithDeploy(name)

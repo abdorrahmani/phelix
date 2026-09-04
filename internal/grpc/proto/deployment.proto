@@ -1,0 +1,170 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// Deployment telemetry: the state and lifecycle of one Phelix deployment
+// (classic / blue-green / rolling) as observed by the CLI that performs it.
+//
+// Two shapes are carried over the wire:
+//
+//   * DeploymentEvent   — an incremental lifecycle transition, sent through
+//                         ReportDeploymentEvent while a deployment runs.
+//   * DeploymentSnapshot — the full current topology, embedded in every event
+//                         and pushed periodically over MonitorStream so the
+//                         backend can resync after a reconnect.
+//
+// Every string enum-like field ("strategy", "phase", "status", "health", ...)
+// is deliberately a string: the CLI may learn new values before the backend
+// does, and an unknown value must degrade to "unknown" rather than break
+// decoding. Absent/empty always means "the CLI does not know", never "false".
+//
+// Version identifiers use the "vN" form ("v15"), matching
+// RollbackLifecycleEvent.current_version / target_version. An empty version
+// means the CLI could not resolve one (e.g. an app that predates versioning,
+// or a fresh build whose version number is not assigned yet).
+
+// DeploymentFailure explains why a deployment stopped. code is a Phelix
+// structured error code (internal/errors/codes.go) such as BUILD_FAILED,
+// INSTANCE_START_FAILED, HEALTH_CHECK_FAILED, PROXY_ERROR or DEPLOY_FAILED.
+// message is redacted before it leaves the CLI.
+message DeploymentFailure {
+  string code = 1;
+  string message = 2;
+  // retryable is the CLI's judgement on whether repeating the same deployment
+  // could plausibly succeed (health/proxy/port/timeout conditions) as opposed
+  // to needing a code or configuration change (build/validation conditions).
+  bool retryable = 3;
+}
+
+// DeploymentSlot is one blue-green slot. Both slots are reported whenever the
+// app has blue-green state, including the one that is stopped.
+message DeploymentSlot {
+  string slot = 1;          // "blue" or "green"
+  string version = 2;       // "vN"; empty when unknown
+  string status = 3;        // running | starting | replacing | failed | stopped
+  string health = 4;        // healthy | unhealthy | pending | unknown
+  int32 internal_port = 5;  // 0 when the slot has no live listener
+  int32 pid = 6;            // 0 when stopped
+  bool active = 7;          // true for the slot the proxy points at
+  int64 started_at = 8;     // unix millis; 0 when unknown
+  int64 healthy_at = 9;     // unix millis of the last passed health window
+}
+
+// DeploymentReplica is one rolling replica. Replicas are reported in index
+// order.
+message DeploymentReplica {
+  string id = 1;            // "replica-0"
+  int32 index = 2;          // 0-based
+  string version = 3;
+  string status = 4;        // running | starting | replacing | failed | stopped
+  string health = 5;        // healthy | unhealthy | pending | unknown
+  int32 internal_port = 6;
+  int32 pid = 7;
+  int64 started_at = 8;
+  int64 healthy_at = 9;
+}
+
+// DeploymentProxy is the routing state of the Phelix proxy daemon for this
+// app. It is only populated from facts the CLI actually has: a successful
+// enrol/switch during a deployment, or a live query of the daemon's control
+// socket. An absent proxy message means "unknown", NOT "disabled" — the
+// backend must not infer routing from application status.
+message DeploymentProxy {
+  bool enabled = 1;
+  int32 public_port = 2;
+  string target_slot = 3;          // proxy primary label: slot or "replica-N"
+  int32 target_internal_port = 4;
+  repeated string upstreams = 5;   // every active upstream as host:port
+  int64 in_flight = 6;             // in-flight requests, when the daemon reports it
+}
+
+// DeploymentHealth is the deploy-time health-check configuration and outcome,
+// taken from the app's persisted health config and the tier actually selected.
+// No new metrics are computed for telemetry.
+message DeploymentHealth {
+  string mode = 1;            // auto | http | tcp-only | none
+  string path = 2;            // configured Tier 1 path; empty when none
+  int32 retries = 3;          // consecutive successes required
+  string interval = 4;        // probe interval, Go duration string
+  string timeout = 5;         // overall health deadline, Go duration string
+  int32 tier = 6;             // 1..4, the tier selected for this deployment
+  string tier_label = 7;      // human label for tier
+  int64 last_healthy_at = 8;  // unix millis the app last passed its window
+}
+
+// DeploymentSnapshot is the complete deployment topology of one app at one
+// instant: enough for the backend to reconstruct current state without
+// replaying events.
+message DeploymentSnapshot {
+  string server_id = 1;      // agent_id of the reporting Phelix runtime
+  string app_id = 2;         // CLI application id
+  string app_name = 3;
+  string deployment_id = 4;  // last/current deployment operation id
+  string strategy = 5;       // classic | blue-green | rolling
+  string phase = 6;          // see DeploymentEvent.phase
+  string status = 7;         // idle | in_progress | succeeded | failed | cancelled
+  string current_version = 8; // version actually serving traffic
+  string target_version = 9;  // version this deployment is moving to
+  string active_slot = 10;    // blue-green only
+  repeated DeploymentSlot slots = 11;
+  repeated DeploymentReplica replicas = 12;
+  // Replica counters. desired is what was asked for; current/ready/healthy are
+  // observed. They are never derived from desired.
+  int32 replicas_desired = 13;
+  int32 replicas_current = 14;  // recorded replicas with a live process
+  int32 replicas_ready = 15;    // live, status=running (in rotation)
+  int32 replicas_healthy = 16;  // ready AND passed their health window
+  DeploymentProxy proxy = 17;
+  DeploymentHealth health = 18;
+  DeploymentFailure failure = 19; // last failure of this deployment, if any
+  int64 started_at = 20;          // unix millis the deployment started
+  int64 updated_at = 21;          // unix millis this snapshot was produced
+}
+
+// DeploymentEvent is one lifecycle transition of a deployment. All events of
+// one deployment share deployment_id; ordering is the order of emission
+// (timestamp is monotonic within a deployment).
+message DeploymentEvent {
+  string server_id = 1;
+  string app_id = 2;
+  string app_name = 3;
+  string deployment_id = 4;
+  // event is the transition name, e.g. deployment.started,
+  // deployment.instance_started, deployment.health_check_started,
+  // deployment.instance_healthy, deployment.proxy_switching,
+  // deployment.proxy_switched, deployment.instance_draining,
+  // deployment.instance_stopped, deployment.replica_started,
+  // deployment.replica_health_check_started, deployment.replica_healthy,
+  // deployment.replica_replaced, deployment.replica_draining,
+  // deployment.replica_stopped, deployment.completed, deployment.failed,
+  // deployment.cancelled.
+  string event = 5;
+  string strategy = 6;
+  // phase is the lifecycle phase the deployment is in at emission time:
+  // idle | building | starting | health_check | switching | promoting |
+  // draining | completed | failed | cancelled.
+  string phase = 7;
+  string status = 8;
+  string current_version = 9;
+  string target_version = 10;
+  // slot / replica identify which instance the event is about. Empty for
+  // deployment-wide events.
+  string slot = 11;
+  string replica_id = 12;
+  int32 replica_index = 13;
+  int32 internal_port = 14;
+  int32 pid = 15;
+  int32 replicas_desired = 16;
+  string message = 17;
+  DeploymentFailure failure = 18;
+  // snapshot is the full state at emission time, so a backend that missed
+  // earlier events can still reconstruct the topology from any single event.
+  DeploymentSnapshot snapshot = 19;
+  int64 timestamp = 20;
+  // user_id is the session id of the operator that triggered the deployment.
+  // The raw session token is never carried in the body — the RPC is
+  // authenticated via gRPC metadata.
+  string user_id = 21;
+}

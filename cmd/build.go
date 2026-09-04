@@ -172,8 +172,13 @@ var BuildCmd = &cobra.Command{
 		}
 
 		binPath := filepath.Join(currentDir, fmt.Sprintf("app_%s", id))
+		tracker, flushTelemetry := classicTracker(id, name, buildPort, 0)
+		defer flushTelemetry()
+
+		tracker.Building("classic build")
 		report, err := buildApplication(id, buildArgs, buildMgr, binPath)
 		if err != nil {
+			tracker.Failed(err)
 			return err
 		}
 
@@ -198,6 +203,7 @@ var BuildCmd = &cobra.Command{
 			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
 		} else {
 			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
+			tracker.SetTargetVersion(rec.Version)
 		}
 
 		// --- Build Report + regression analysis ---------------------------------
@@ -225,8 +231,10 @@ var BuildCmd = &cobra.Command{
 			// builds/vN/ but is_current was never set to true and
 			// PromoteVersion was never called, so the user can inspect
 			// or retry without having a broken "current" pointer.
+			tracker.Failed(err)
 			return err
 		}
+		tracker.InstanceStarted("", classicPID(id), buildPort)
 
 		// Deploy succeeded — promote the version so it becomes current.
 		// This updates versions.json (is_current, deployed_at) and the
@@ -236,6 +244,8 @@ var BuildCmd = &cobra.Command{
 				fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
 			}
 		}
+		tracker.PromoteCurrentVersion()
+		tracker.Completed(fmt.Sprintf("running on port %d", buildPort))
 
 		fmt.Printf("%s Application %s (ID: %s) started successfully on port %d\n",
 			color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(id), buildPort)

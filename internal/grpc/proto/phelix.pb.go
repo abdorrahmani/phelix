@@ -80,10 +80,10 @@ var File_internal_grpc_proto_phelix_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_phelix_proto_rawDesc = "" +
 	"\n" +
-	" internal/grpc/proto/phelix.proto\x12\x06phelix\x1a internal/grpc/proto/events.proto\x1a\"internal/grpc/proto/rollback.proto\x1a\"internal/grpc/proto/metadata.proto\x1a\"internal/grpc/proto/envelope.proto\x1a internal/grpc/proto/health.proto\x1a$internal/grpc/proto/monitoring.proto\"G\n" +
+	" internal/grpc/proto/phelix.proto\x12\x06phelix\x1a internal/grpc/proto/events.proto\x1a\"internal/grpc/proto/rollback.proto\x1a\"internal/grpc/proto/metadata.proto\x1a\"internal/grpc/proto/envelope.proto\x1a internal/grpc/proto/health.proto\x1a$internal/grpc/proto/monitoring.proto\x1a$internal/grpc/proto/deployment.proto\"G\n" +
 	"\x12AgentLogoutRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason2\x9f\a\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason2\xe8\a\n" +
 	"\rPhelixService\x12>\n" +
 	"\vReportEvent\x12\x18.phelix.ApplicationEvent\x1a\x15.phelix.EventResponse\x12=\n" +
 	"\fSyncMetadata\x12\x13.phelix.CLIMetadata\x1a\x18.phelix.MetadataResponse\x12>\n" +
@@ -94,7 +94,8 @@ const file_internal_grpc_proto_phelix_proto_rawDesc = "" +
 	"\x14HealthRemoveEndpoint\x12#.phelix.HealthRemoveEndpointRequest\x1a\x1c.phelix.HealthConfigResponse\x12[\n" +
 	"\x12ReportHealthResult\x12!.phelix.ReportHealthResultRequest\x1a\".phelix.ReportHealthResultResponse\x12X\n" +
 	"\x11ReportAutoRestart\x12 .phelix.ReportAutoRestartRequest\x1a!.phelix.ReportAutoRestartResponse\x12L\n" +
-	"\x13ReportRollbackEvent\x12\x1e.phelix.RollbackLifecycleEvent\x1a\x15.phelix.EventResponse\x12A\n" +
+	"\x13ReportRollbackEvent\x12\x1e.phelix.RollbackLifecycleEvent\x1a\x15.phelix.EventResponse\x12G\n" +
+	"\x15ReportDeploymentEvent\x12\x17.phelix.DeploymentEvent\x1a\x15.phelix.EventResponse\x12A\n" +
 	"\rMonitorStream\x12\x14.phelix.MonitorEvent\x1a\x16.phelix.MonitorControl(\x010\x01\x12C\n" +
 	"\vAgentLogout\x12\x1a.phelix.AgentLogoutRequest\x1a\x18.phelix.MetadataResponseB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
 
@@ -122,15 +123,16 @@ var file_internal_grpc_proto_phelix_proto_goTypes = []any{
 	(*ReportHealthResultRequest)(nil),   // 7: phelix.ReportHealthResultRequest
 	(*ReportAutoRestartRequest)(nil),    // 8: phelix.ReportAutoRestartRequest
 	(*RollbackLifecycleEvent)(nil),      // 9: phelix.RollbackLifecycleEvent
-	(*MonitorEvent)(nil),                // 10: phelix.MonitorEvent
-	(*EventResponse)(nil),               // 11: phelix.EventResponse
-	(*MetadataResponse)(nil),            // 12: phelix.MetadataResponse
-	(*EventAck)(nil),                    // 13: phelix.EventAck
-	(*ServerToClient)(nil),              // 14: phelix.ServerToClient
-	(*HealthConfigResponse)(nil),        // 15: phelix.HealthConfigResponse
-	(*ReportHealthResultResponse)(nil),  // 16: phelix.ReportHealthResultResponse
-	(*ReportAutoRestartResponse)(nil),   // 17: phelix.ReportAutoRestartResponse
-	(*MonitorControl)(nil),              // 18: phelix.MonitorControl
+	(*DeploymentEvent)(nil),             // 10: phelix.DeploymentEvent
+	(*MonitorEvent)(nil),                // 11: phelix.MonitorEvent
+	(*EventResponse)(nil),               // 12: phelix.EventResponse
+	(*MetadataResponse)(nil),            // 13: phelix.MetadataResponse
+	(*EventAck)(nil),                    // 14: phelix.EventAck
+	(*ServerToClient)(nil),              // 15: phelix.ServerToClient
+	(*HealthConfigResponse)(nil),        // 16: phelix.HealthConfigResponse
+	(*ReportHealthResultResponse)(nil),  // 17: phelix.ReportHealthResultResponse
+	(*ReportAutoRestartResponse)(nil),   // 18: phelix.ReportAutoRestartResponse
+	(*MonitorControl)(nil),              // 19: phelix.MonitorControl
 }
 var file_internal_grpc_proto_phelix_proto_depIdxs = []int32{
 	1,  // 0: phelix.PhelixService.ReportEvent:input_type -> phelix.ApplicationEvent
@@ -143,22 +145,24 @@ var file_internal_grpc_proto_phelix_proto_depIdxs = []int32{
 	7,  // 7: phelix.PhelixService.ReportHealthResult:input_type -> phelix.ReportHealthResultRequest
 	8,  // 8: phelix.PhelixService.ReportAutoRestart:input_type -> phelix.ReportAutoRestartRequest
 	9,  // 9: phelix.PhelixService.ReportRollbackEvent:input_type -> phelix.RollbackLifecycleEvent
-	10, // 10: phelix.PhelixService.MonitorStream:input_type -> phelix.MonitorEvent
-	0,  // 11: phelix.PhelixService.AgentLogout:input_type -> phelix.AgentLogoutRequest
-	11, // 12: phelix.PhelixService.ReportEvent:output_type -> phelix.EventResponse
-	12, // 13: phelix.PhelixService.SyncMetadata:output_type -> phelix.MetadataResponse
-	13, // 14: phelix.PhelixService.StreamEvents:output_type -> phelix.EventAck
-	14, // 15: phelix.PhelixService.AgentStream:output_type -> phelix.ServerToClient
-	15, // 16: phelix.PhelixService.HealthSetConfig:output_type -> phelix.HealthConfigResponse
-	15, // 17: phelix.PhelixService.HealthAddEndpoint:output_type -> phelix.HealthConfigResponse
-	15, // 18: phelix.PhelixService.HealthRemoveEndpoint:output_type -> phelix.HealthConfigResponse
-	16, // 19: phelix.PhelixService.ReportHealthResult:output_type -> phelix.ReportHealthResultResponse
-	17, // 20: phelix.PhelixService.ReportAutoRestart:output_type -> phelix.ReportAutoRestartResponse
-	11, // 21: phelix.PhelixService.ReportRollbackEvent:output_type -> phelix.EventResponse
-	18, // 22: phelix.PhelixService.MonitorStream:output_type -> phelix.MonitorControl
-	12, // 23: phelix.PhelixService.AgentLogout:output_type -> phelix.MetadataResponse
-	12, // [12:24] is the sub-list for method output_type
-	0,  // [0:12] is the sub-list for method input_type
+	10, // 10: phelix.PhelixService.ReportDeploymentEvent:input_type -> phelix.DeploymentEvent
+	11, // 11: phelix.PhelixService.MonitorStream:input_type -> phelix.MonitorEvent
+	0,  // 12: phelix.PhelixService.AgentLogout:input_type -> phelix.AgentLogoutRequest
+	12, // 13: phelix.PhelixService.ReportEvent:output_type -> phelix.EventResponse
+	13, // 14: phelix.PhelixService.SyncMetadata:output_type -> phelix.MetadataResponse
+	14, // 15: phelix.PhelixService.StreamEvents:output_type -> phelix.EventAck
+	15, // 16: phelix.PhelixService.AgentStream:output_type -> phelix.ServerToClient
+	16, // 17: phelix.PhelixService.HealthSetConfig:output_type -> phelix.HealthConfigResponse
+	16, // 18: phelix.PhelixService.HealthAddEndpoint:output_type -> phelix.HealthConfigResponse
+	16, // 19: phelix.PhelixService.HealthRemoveEndpoint:output_type -> phelix.HealthConfigResponse
+	17, // 20: phelix.PhelixService.ReportHealthResult:output_type -> phelix.ReportHealthResultResponse
+	18, // 21: phelix.PhelixService.ReportAutoRestart:output_type -> phelix.ReportAutoRestartResponse
+	12, // 22: phelix.PhelixService.ReportRollbackEvent:output_type -> phelix.EventResponse
+	12, // 23: phelix.PhelixService.ReportDeploymentEvent:output_type -> phelix.EventResponse
+	19, // 24: phelix.PhelixService.MonitorStream:output_type -> phelix.MonitorControl
+	13, // 25: phelix.PhelixService.AgentLogout:output_type -> phelix.MetadataResponse
+	13, // [13:26] is the sub-list for method output_type
+	0,  // [0:13] is the sub-list for method input_type
 	0,  // [0:0] is the sub-list for extension type_name
 	0,  // [0:0] is the sub-list for extension extendee
 	0,  // [0:0] is the sub-list for field type_name
@@ -175,6 +179,7 @@ func file_internal_grpc_proto_phelix_proto_init() {
 	file_internal_grpc_proto_envelope_proto_init()
 	file_internal_grpc_proto_health_proto_init()
 	file_internal_grpc_proto_monitoring_proto_init()
+	file_internal_grpc_proto_deployment_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

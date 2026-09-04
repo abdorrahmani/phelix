@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -38,6 +39,10 @@ type Rolling struct {
 	// the proxy binding the port.
 	PortHandoff func(ctx context.Context, appName string, publicPort int) error
 
+	// Telemetry observes the rollout lifecycle for the backend. Optional: a
+	// nil Tracker is silent and changes no deployment behaviour.
+	Telemetry *Tracker
+
 	// enrolled tracks whether the app has been registered with the proxy
 	// daemon during this deploy so the first healthy replica can Add instead
 	// of Switch-ing against an unknown app (which silently routes nothing).
@@ -64,8 +69,11 @@ type Rolling struct {
 // Shrinking (--replicas fewer than before): surplus replicas stay serving
 // until the first successful membership update excludes them, then they are
 // drained and stopped at the end of the rollout.
-func (r *Rolling) Deploy(ctx context.Context) error {
+func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	log := r.logger()
+	// Rolling reports failures from many points; one deferred hook keeps the
+	// telemetry's terminal event identical to what Deploy actually returned.
+	defer func() { reportDeployFailure(r.Telemetry, errRet) }()
 	grace := r.GracePeriod
 	if grace <= 0 {
 		grace = DefaultGracePeriod
@@ -73,6 +81,11 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	if r.Replicas < 1 {
 		r.Replicas = 1
 	}
+	// Announce before anything can fail, so every deployment the backend hears
+	// about begins with a started event.
+	r.Telemetry.SetReplicasDesired(r.Replicas)
+	r.Telemetry.Started(activeVersionOf(nil, r.AppName), 0,
+		fmt.Sprintf("rolling deploy of %s over %d replicas", r.AppName, r.Replicas))
 
 	src := r.Source
 	if src == nil && r.Builder != nil {
@@ -87,6 +100,8 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
+	r.Telemetry.Bind(state)
+	r.Telemetry.SetVersions(activeVersionOf(state, r.AppName), 0)
 
 	// Strategy migration (e.g. blue-green → rolling): switch the recorded mode
 	// up front so every subsequent persist is rolling-shaped, and keep the
@@ -114,6 +129,7 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 
 	// Build/prepare once — FreshBuildSource must not create a new version per replica.
 	log.Stepf("%s", src.Describe())
+	r.Telemetry.Building(src.Describe())
 	binaryPath, envPath, err := src.Build(ctx)
 	if err != nil {
 		if migrated {
@@ -130,10 +146,12 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 	}
 
 	targetVer := targetVersionFromSource(src)
+	r.Telemetry.SetTargetVersion(targetVer)
 
 	tierCfg := r.healthCfg()
 	// Shared tier resolution/warning with blue-green (internal/deploy/health.go).
 	tier := selectDeployHealth(ctx, tierCfg, r.AppName, firstPortAddr(state), log, r.Notifier)
+	r.Telemetry.SetHealthConfig(tierCfg, tier)
 
 	// Iterate over replica indices in order.
 	indices := replicaIndices(state.Replicas)
@@ -186,11 +204,15 @@ func (r *Rolling) Deploy(ctx context.Context) error {
 			log.Warnf("failed to promote version v%d: %v", ver, err)
 		}
 	}
+	// Every replica is in rotation on the new binary: the target version is now
+	// the one serving traffic.
+	r.Telemetry.PromoteCurrentVersion()
 	if err := Store(state); err != nil {
 		log.Warnf("failed to persist rolling deploy state: %v (traffic already routed)", err)
 	}
 
 	log.Successf("rolling deploy of %s complete: %d replicas updated", r.AppName, len(indices))
+	r.Telemetry.Completed(fmt.Sprintf("%d replicas updated", len(indices)))
 	return nil
 }
 
@@ -241,6 +263,9 @@ func (r *Rolling) undoMigration(state *DeployState, pre modeSnapshot, log Logger
 // membership → drain old instance.
 func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath string, envOverlay []string, targetVer int, key string, tier health.Tier, tierCfg *health.DeployTierConfig, grace time.Duration) error {
 	log := r.logger()
+	// Replica identity is the index deploy.json already keys instances by, so
+	// telemetry, the proxy label ("replica-N") and the state file all agree.
+	index, _ := strconv.Atoi(key)
 
 	// Snapshot whatever serves this replica today.
 	oldPID, oldBinary := 0, ""
@@ -268,8 +293,10 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 		inst.Status = "replacing"
 		_ = Store(state)
 	}
+	r.Telemetry.ReplicaStarted(index, newPID, port)
 
 	// 2. Health-check ONLY the replacement's port.
+	r.Telemetry.ReplicaHealthCheckStarted(index, port)
 	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), newPID, nil); err != nil {
 		stopHeldProcess(ctx, proc, grace)
 		inst.Status = "failed"
@@ -283,6 +310,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	}
 
 	// 3. Membership swap FIRST: new instance in, old instance out.
+	r.Telemetry.ReplicaHealthy(index, newPID, port)
 	primary, backends := membershipAfterReplace(state.Replicas, key, port)
 	if r.ProxyClient == nil {
 		stopHeldProcess(ctx, proc, grace)
@@ -292,6 +320,8 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 		return phelixerr.Newf(phelixerr.CodeProxy, "replica %s: no proxy client configured", key)
 	}
 	var proxyErr error
+	r.Telemetry.ReplicaProxySwitching(index, port,
+		fmt.Sprintf("replica %s entering rotation on public port %d", key, r.PublicPort))
 	if !r.enrolled {
 		// Classic → rolling migration: the public port may still be owned by
 		// the app's classic instance. Free it before the proxy can bind — but
@@ -329,13 +359,18 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 
 	// 4. Old instance is out of rotation: drain and stop it. Identity of the
 	// PID is verified against its recorded executable path first.
+	r.Telemetry.SetProxy(r.PublicPort, primary.Label, port, upstreamHosts(primary, backends))
+	r.Telemetry.ReplicaReplaced(index, newPID, port,
+		fmt.Sprintf("proxy primary %s, %d upstream(s)", primary.Label, len(backends)+1))
 	if oldPID > 0 {
+		r.Telemetry.ReplicaDraining(index, oldPID)
 		report := stopByPID(ctx, oldPID, grace, r.inFlight(r.AppName), oldBinary)
 		if report.ForceKilled {
 			log.Warnf("replica %s: old instance (pid %d) ignored SIGTERM; SIGKILL applied", key, oldPID)
 		} else if report.Exited {
 			log.Stepf("replica %s: old instance drained and stopped", key)
 		}
+		r.Telemetry.ReplicaStopped(index, oldPID, drainOutcome(report))
 	}
 
 	inst.PID = newPID
