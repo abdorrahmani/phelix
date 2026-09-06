@@ -659,17 +659,52 @@ blue-green/rolling.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--to` | — | Target: `v3`, `3`, or a tag name (default: previous version) |
-| `--list` | `false` | List all retained versions with metadata |
+| `--to` | — | Target: `v3`, `3`, or a tag name (bypasses the interactive picker) |
+| `--list` | `false` | List all retained versions with metadata (non-interactive) |
 | `--dry-run` | `false` | Preview the rollback plan without changing application, process, proxy, or deployment state |
 
+**Interactive picker:** in a TTY, `phelix rollback <App>` without `--to` opens an
+interactive picker instead of silently choosing the previous version. It lists
+valid rollback targets newest → oldest (current version and versions whose
+binary is missing are excluded), shows built-time metadata per entry, and after
+you press Enter displays the rollback preview and asks for confirmation before
+executing. `Esc`/`Ctrl-C` cancels cleanly without touching the deployment.
+
+**Explicit mode:** `--to v7` resolves and executes the requested target exactly
+as before — no picker, no confirmation prompt — keeping scripts and automation
+deterministic. In non-interactive environments (CI, redirected stdin) the
+picker is skipped and rollback falls back to the previous-version default.
+
 ```bash
-phelix rollback myapp              # previous version
+phelix rollback myapp              # interactive picker (TTY), else previous version
 phelix rollback myapp --to v3
 phelix rollback myapp --to "hotfix-auth"
 phelix rollback myapp --list
 phelix rollback myapp --to v3 --dry-run   # preview only — no changes
 ```
+
+Interactive picker example (actual versions and metadata depend on the application):
+
+```text
+Rollback 'myapp'
+
+Current: v12
+
+Select version to rollback to:
+
+❯ v11   hotfix-auth           2 min ago
+  v10   release-2.4.0         1 hour ago
+  v9    stable                yesterday
+  v8    —                     3 days ago
+
+↑/↓ select   Enter continue   Esc cancel
+```
+
+Pressing Enter shows the same rollback preview as `--dry-run` followed by a
+`Proceed with rollback?` confirmation before anything executes.
+
+For interactive inspection use the picker; for deterministic automation always
+pass an explicit `--to`.
 
 ### Lifecycle
 
@@ -833,13 +868,32 @@ Roll back to a previous version. The rollback path depends on how the app was de
 - **Classic apps** (built with plain `phelix build` / `phelix rebuild`): rollback stops the current instance, copies the versioned binary into place, and starts it. This is a brief downtime rollback (stop → start).
 
 ```bash
-phelix rollback myapp              # roll back to the previous version
-phelix rollback myapp --to v2      # roll back to a specific version
+phelix rollback myapp              # interactive picker (TTY), else previous version
+phelix rollback myapp --to v2      # roll back to a specific version (no picker, no prompt)
 phelix rollback myapp --to 3       # version number without 'v' prefix also works
 phelix rollback myapp --to hotfix-auth-bug   # roll back by tag name
 ```
 
 The `--to` flag accepts either a version ID (`v3`, `3`) or a unique tag name. If a tag matches exactly one version, it resolves automatically. If a tag matches zero or more than one version, an error is returned — use a version ID to disambiguate.
+
+**Interactive rollback:** when run in a terminal without `--to`, `phelix rollback myapp` opens an interactive picker listing valid rollback targets (newest → oldest; the current version and versions whose binary is missing are excluded). After you select a version, the rollback preview is shown and a confirmation prompt gates execution:
+
+```text
+Rollback 'myapp'
+
+Current: v12
+
+Select version to rollback to:
+
+❯ v11   hotfix-auth           2 min ago
+  v10   release-2.4.0         1 hour ago
+  v9    stable                yesterday
+  v8    —                     3 days ago
+
+↑/↓ select   Enter continue   Esc cancel
+```
+
+`Esc` (or `Ctrl-C`) cancels cleanly — `Rollback cancelled.` is printed, nothing is deployed, and this is not reported as a rollback failure. Without a TTY (CI, scripts, redirected stdin) the picker never opens and rollback falls back to the previous-version default, so automation never hangs waiting for input. Prefer the picker for interactive inspection and an explicit `--to` for deterministic automation.
 
 #### `phelix rollback <AppName> --list`
 Show all retained versions with metadata.

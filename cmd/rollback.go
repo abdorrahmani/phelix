@@ -2,10 +2,10 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -49,10 +49,22 @@ var RollbackCmd = &cobra.Command{
 
 		name := args[0]
 
-		if IsInteractive() && rollbackTo == "" && !rollbackList {
-			if v, err := promptRollbackVersion(name); err == nil && v != "" {
-				rollbackTo = v
+		fromPicker := false
+		if IsInteractive() && rollbackTo == "" && !rollbackList && !rollbackDryRun {
+			target, picked, err := promptRollbackVersion(name)
+			if err != nil {
+				if errors.Is(err, errRollbackCancelled) {
+					fmt.Println("Rollback cancelled.")
+					return nil
+				}
+				return err
 			}
+			if !picked {
+				// Nothing to choose from — message already printed.
+				return nil
+			}
+			rollbackTo = fmt.Sprintf("%d", target)
+			fromPicker = true
 		}
 
 		if err := app.Manager.LoadState(); err != nil {
@@ -89,6 +101,24 @@ var RollbackCmd = &cobra.Command{
 			return renderRollbackPreview(appInfo, name, target)
 		}
 
+		// Interactive picker path: show the rollback preview and require an
+		// explicit confirmation before anything executes. Explicit --to and
+		// non-interactive invocations keep their immediate behavior.
+		if fromPicker {
+			if err := renderRollbackPreview(appInfo, name, target); err != nil {
+				return err
+			}
+			ok, err := PromptConfirm(fmt.Sprintf("Proceed with rollback to v%d?", target), false)
+			if err != nil {
+				fmt.Println("Rollback cancelled.")
+				return nil
+			}
+			if !ok {
+				fmt.Println("Rollback cancelled.")
+				return nil
+			}
+		}
+
 		// Check whether a deploy state exists (blue-green / rolling).
 		state, deployErr := deploy.Load(name)
 		if deployErr != nil || state == nil || state.Mode == "" {
@@ -106,38 +136,112 @@ func init() {
 	RollbackCmd.Flags().BoolVar(&rollbackDryRun, "dry-run", false, "Preview the rollback without making any changes")
 }
 
-// promptRollbackVersion offers an interactive choice of which retained version
-// to roll back to. Returns "" (and no error) when the user declines or no
-// versions are available, so callers fall back to the previous-version default.
-func promptRollbackVersion(appName string) (string, error) {
-	policy := deploy.DefaultRetention{Max: 5}
-	vers, err := deploy.ListVersionsForDisplay(appName, policy)
-	if err != nil || len(vers) == 0 {
-		return "", err
-	}
+// errRollbackCancelled marks a user cancellation (Esc / Ctrl-C in the picker)
+// so the command exits cleanly instead of falling back to an automatic
+// previous-version rollback.
+var errRollbackCancelled = phelixerr.New(phelixerr.CodeInvalidArgument, "rollback cancelled")
 
-	opts := make([]string, 0, len(vers))
-	for _, v := range vers {
-		label := fmt.Sprintf("v%d", v.Version)
-		if v.Tag != "" {
-			label = fmt.Sprintf("%s (%s)", label, v.Tag)
-		}
-		if v.IsCurrent {
-			label += " — current"
-		}
-		opts = append(opts, label)
-	}
-
-	chosen, err := PromptSelect("Roll back to which version?", opts)
+// promptRollbackVersion presents an interactive list of valid rollback
+// candidates — newest → oldest, excluding the current version and versions
+// whose binary no longer exists on disk — and returns the chosen version
+// number. picked is false when the user cancelled or no candidates exist.
+// With a single candidate the picker is still shown so the interactive flow
+// stays consistent (details + confirmation always gate the rollback).
+func promptRollbackVersion(appName string) (target int, picked bool, err error) {
+	candidates, cur, err := rollbackCandidates(appName)
 	if err != nil {
-		return "", err
+		return 0, false, err
 	}
-	// Map "v3 (hotfix-auth)" / "v3 — current" back to the bare version string.
-	idx := strings.Index(chosen, " ")
-	if idx > 0 {
-		chosen = chosen[:idx]
+	if len(candidates) == 0 {
+		fmt.Printf("Rollback %s\n\nNo previous versions are available for rollback.\n", color.CyanString("'%s'", appName))
+		if cur > 0 {
+			fmt.Printf("\nCurrent version: v%d\n", cur)
+		}
+		return 0, false, nil
 	}
-	return strings.TrimPrefix(chosen, "v"), nil
+
+	fmt.Printf("Rollback %s\n\n", color.CyanString("'%s'", appName))
+	if cur > 0 {
+		fmt.Printf("Current: v%d\n\n", cur)
+	}
+
+	opts := make([]string, len(candidates))
+	for i, v := range candidates {
+		tag := v.Tag
+		if tag == "" {
+			tag = "—"
+		}
+		// %-20.20s keeps long tags from destroying the layout.
+		opts[i] = fmt.Sprintf("v%-4d %-20.20s %s", v.Version, tag, relTime(v.BuiltAt))
+	}
+
+	chosen, err := PromptSelect("Select version to rollback to:", opts)
+	if err != nil {
+		// Survey reports Esc / Ctrl-C as a prompt error; treat it as a
+		// cancellation, never as a signal to roll back automatically.
+		return 0, false, errRollbackCancelled
+	}
+	for i, o := range opts {
+		if o == chosen {
+			return candidates[i].Version, true, nil
+		}
+	}
+	return 0, false, errRollbackCancelled
+}
+
+// rollbackCandidates returns rollback targets newest-first, excluding the
+// current version and versions whose binary artifact is missing (stale
+// versions.json entries cannot actually be rolled back to). Env snapshots are
+// NOT required here — a missing snapshot is a warning in the rollback plan,
+// matching the real rollback validation model.
+func rollbackCandidates(appName string) ([]deploy.VersionMeta, int, error) {
+	vers, err := deploy.ListVersionsForDisplay(appName, deploy.DefaultRetention{Max: 5})
+	if err != nil {
+		return nil, 0, err
+	}
+	cur, _ := deploy.CurrentVersion(appName)
+
+	out := make([]deploy.VersionMeta, 0, len(vers))
+	for _, v := range vers {
+		if v.IsCurrent || v.Version == cur {
+			continue
+		}
+		// Same artifact check the real rollback performs via
+		// ExistingVersionSource → VersionPaths.
+		if _, _, err := deploy.VersionPaths(appName, v.Version); err != nil {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, cur, nil
+}
+
+// relTime renders a coarse human-readable age ("2 min ago", "3 days ago").
+func relTime(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	d := time.Since(t)
+	n := int(d.Hours() / 24)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%d min ago", int(d.Minutes()))
+	case n < 1:
+		return fmt.Sprintf("%d hour%s ago", int(d.Hours()), plural(int(d.Hours())))
+	case n < 7:
+		return fmt.Sprintf("%d day%s ago", n, plural(n))
+	default:
+		return t.Format("Jan 2, 2006")
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // rollbackZeroDowntime handles rollback through the blue-green or rolling
