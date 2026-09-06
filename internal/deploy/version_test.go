@@ -615,7 +615,18 @@ func createTestVersion(t *testing.T, appName string, ver int, isCurrent bool) {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(vdir, "binary")
-	if err := os.WriteFile(bin, []byte("fake"), 0o755); err != nil {
+	// Copy this test binary so instances launched by httpLauncher (which use
+	// the test process as their PID) pass identity verification — the same
+	// liveness rule production code applies to recorded instances.
+	src, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	vf, err := LoadVersions(appName)

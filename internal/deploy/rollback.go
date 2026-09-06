@@ -126,6 +126,11 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		return err
 	}
 
+	// Instances from an aborted predecessor may still be recorded as running
+	// with PIDs that no longer exist. Clear them so the rollback starts from
+	// records that describe reality and cannot inherit stale PIDs.
+	ReapStaleInstances(state)
+
 	ev := RollbackEvent{
 		AppName:   opts.AppName,
 		FromVer:   fromVer,
@@ -197,13 +202,25 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, deployErr, "rollback failed; active instance untouched")
 	}
 
-	// Record the successful rollback in state and audit log.
-	state.LastRollback = &RollbackRecord{
-		FromVersion: fromVer,
-		ToVersion:   toVer,
-		At:          ev.Timestamp,
+	// Record the successful rollback in state and audit log. The deploy path
+	// re-persisted the full state with the post-rollback reality (new PIDs,
+	// ports, active slot/version); reload it rather than mutating the stale
+	// pre-rollback snapshot — writing that snapshot back was clobbering the
+	// fresh records and resurrecting dead PIDs as "running", which made list/
+	// status contradict the live instances and the proxy.
+	state, err = Load(opts.AppName)
+	if err != nil {
+		log.Warnf("failed to reload deploy state after rollback: %v", err)
+	} else {
+		state.LastRollback = &RollbackRecord{
+			FromVersion: fromVer,
+			ToVersion:   toVer,
+			At:          ev.Timestamp,
+		}
+		if err := Store(state); err != nil {
+			log.Warnf("failed to persist rollback record: %v", err)
+		}
 	}
-	_ = Store(state)
 	appendRollbackLog(opts.AppName, ev)
 	return nil
 }

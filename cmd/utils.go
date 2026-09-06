@@ -57,6 +57,8 @@ func FormatStatus(status string) string {
 	switch status {
 	case "running":
 		return color.GreenString("running")
+	case "degraded":
+		return color.YellowString("degraded")
 	case "stopped":
 		return color.RedString("stopped")
 	default:

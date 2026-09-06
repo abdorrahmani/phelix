@@ -42,14 +42,19 @@ func servingDeployInstance(state *deploy.DeployState) *deploy.Instance {
 
 // syncAppInfoWithDeploy reconciles AppInfo with deployment reality:
 //
-//   - serving instance alive  -> status "running", PID = that instance's PID
-//     (so uptime/RAM/CPU and the list PID column describe the real worker),
-//     auto-start intent recorded.
-//   - serving instance dead   -> status "stopped", PID 0. deploy.json claiming
-//     an active slot is never enough; the process must be alive and resolve
-//     to the recorded binary (PID-recycling safe).
+//   - every instance the deployment claims to serve is alive → "running",
+//     PID = the serving instance's PID (so uptime/RAM/CPU and the list PID
+//     column describe the real worker), auto-start intent recorded.
+//   - some claimed instances dead, some alive → "degraded".
+//   - all claimed instances dead → "stopped", PID 0. deploy.json claiming an
+//     active slot is never enough; the process must be alive and resolve to
+//     the recorded binary (PID-recycling safe).
 //
-// Classic apps (no deploy state) are left to the existing AppManager logic.
+// The status is derived from verified process liveness here — never from the
+// persisted AppInfo/AppInstance status strings, which can be stale. Only
+// degraded/running are persisted over the stored record: this read may race a
+// concurrent deploy that just wrote fresher state, and stamping "stopped"
+// from an old snapshot would clobber it (the list-vs-status contradiction).
 func syncAppInfoWithDeploy(info *app.AppInfo, state *deploy.DeployState) error {
 	if info == nil || state == nil {
 		return nil
@@ -59,40 +64,44 @@ func syncAppInfoWithDeploy(info *app.AppInfo, state *deploy.DeployState) error {
 		return nil
 	}
 
-	d := deploy.DecideLifecycle(state)
-	changed := false
-	if d.Running {
-		if info.Status != "running" || info.PID != d.PID {
-			info.Status = "running"
-			info.PID = d.PID
-			if !d.StartedAt.IsZero() {
-				info.Start = d.StartedAt
-			}
-			info.Port = d.PublicPort
-			info.UpdatedAt = time.Now()
-			info.AutoStart = true
-			changed = true
+	d, err := state.Reconcile()
+	if err != nil {
+		return err
+	}
+	before := *info
+	switch d.Status {
+	case "running":
+		info.Status = "running"
+		info.PID = d.PID
+		if !d.StartedAt.IsZero() {
+			info.Start = d.StartedAt
 		}
-	} else if info.Status == "running" || info.PID != 0 {
-		// Case B: the state file names an active slot, but the process behind
-		// it is dead (or was never ours). Report — and persist — stopped.
+		info.Port = d.PublicPort
+		info.AutoStart = true
+	case "degraded":
+		info.Status = "degraded"
+		info.PID = d.PID // first alive replica, so list shows a real worker
+		info.AutoStart = true
+	default: // stopped
 		info.Status = "stopped"
 		info.PID = 0
-		info.UpdatedAt = time.Now()
-		changed = true
 	}
-	if !changed {
-		return nil
+	if info.Status == before.Status && info.PID == before.PID {
+		return nil // nothing drifted — no write, no timestamp churn
 	}
-	if err := am.SaveState(); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to persist reconciled app state", err)
-	}
-	return nil
+	info.UpdatedAt = time.Now()
+	return am.SaveState()
 }
 
 // reconcileAppWithDeploy is the convenience wrapper used by status/list and
-// after deploy operations.
+// after deploy operations. `appName` may be an ID or a name — it is resolved
+// first, because deploy state is keyed by app name; reconciling with the raw
+// identifier made `phelix status <ID>` skip reconciliation entirely and
+// disagree with `phelix list`.
 func reconcileAppWithDeploy(appName string) {
+	if resolved, err := GetAppInfo(appName); err == nil && resolved != nil {
+		appName = resolved.Name
+	}
 	if err := app.Manager.LoadState(); err != nil {
 		return
 	}

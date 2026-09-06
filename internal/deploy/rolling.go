@@ -119,6 +119,11 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	}
 	migrated := legacy != nil
 
+	// Instances from an aborted predecessor may still be recorded as running
+	// with dead PIDs. Clear them before the rollout so replacements never
+	// build membership from stale records.
+	ReapStaleInstances(state)
+
 	// Shrink handling: snapshot instances beyond the desired replica count so
 	// they can be drained once the proxy membership no longer includes them.
 	surplus := applyReplicaSet(state.Replicas, r.Replicas)

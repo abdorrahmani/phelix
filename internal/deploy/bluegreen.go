@@ -165,7 +165,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 1b. Recover leftovers from a previously interrupted deploy before we
 	// touch anything else: stale non-active instances would otherwise be
-	// orphaned when this deploy overwrites their slot records.
+	// orphaned when this deploy overwrites their slot records. (The active
+	// slot is intentionally not rewritten here — a failed deploy must leave
+	// it byte-identical; a dead active PID is cleared after the switch.)
 	bg.recoverStaleSlots(ctx, state, grace)
 	if state.Slots[inactive] == nil {
 		state.Slots[inactive] = &Instance{Slot: inactive, Status: "stopped"}
