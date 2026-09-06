@@ -700,11 +700,66 @@ Select version to rollback to:
 ↑/↓ select   Enter continue   Esc cancel
 ```
 
+Moving the cursor updates a details footer for the focused version, rendered
+from stored build metadata only (no process is started, no network check runs
+while navigating; values that are not stored show `—`):
+
+```text
+❯ v11   hotfix-auth           2 min ago
+  v10   release-2.4.0         1 hour ago
+
+v11
+├── Tag: hotfix-auth
+├── Commit: 8f31c2a
+├── Built: 2 min ago
+├── Binary: 14.8 MB
+├── Health: —
+└── Deploy: blue-green
+```
+
 Pressing Enter shows the same rollback preview as `--dry-run` followed by a
 `Proceed with rollback?` confirmation before anything executes.
 
 For interactive inspection use the picker; for deterministic automation always
 pass an explicit `--to`.
+
+#### `phelix rollback history <AppName> [--limit N]`
+Shows the recorded rollback outcomes for one application, newest first. Every
+rollback attempt that reaches execution is recorded — successes and failures —
+at the moment the rollback transaction completes, together with the deployment
+mode actually used for that rollback (`classic`, `blue-green`, `rolling`). The
+mode is a historical fact: later re-deploys of the app never rewrite old
+records. `FROM`/`TO` are the versions of that transition, not the app's
+current version.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--limit` | `20` | Maximum number of entries to show (must be a positive number) |
+
+```text
+Rollback History — myapp
+
+TIME                  FROM   TO     STATUS   MODE
+2026-09-06 14:20:31   v12    v7     SUCCESS  blue-green
+2026-09-02 09:13:12   v9     v8     FAILED   rolling
+2026-08-28 18:42:09   v8     v6     SUCCESS  classic
+```
+
+Notes:
+
+* An app with no rollbacks shows `No rollback history found.` — normal state,
+  not an error.
+* `--dry-run` previews never record history; cancelling the interactive
+  picker (`Esc`) never records history either, and is not a failure.
+* Malformed legacy lines in the history file are skipped with a short
+  warning; they are never silently rewritten.
+* History is stored per app as JSON Lines at
+  `~/.phelix/apps/<AppName>/rollback_history.jsonl`.
+
+```bash
+phelix rollback history myapp
+phelix rollback history myapp --limit 50
+```
 
 ### Lifecycle
 

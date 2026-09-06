@@ -175,7 +175,18 @@ func promptRollbackVersion(appName string) (target int, picked bool, err error) 
 		opts[i] = fmt.Sprintf("v%-4d %-20.20s %s", v.Version, tag, relTime(v.BuiltAt))
 	}
 
-	chosen, err := PromptSelect("Select version to rollback to:", opts)
+	// Details footer follows the cursor: rendered from stored versions.json
+	// metadata only, so it updates instantly on every arrow key press.
+	byIndex := make(map[int]deploy.VersionMeta, len(candidates))
+	for i, v := range candidates {
+		byIndex[i] = v
+	}
+	chosen, err := askSelectWithDetails("Select version to rollback to:", opts, func(value string, index int) string {
+		if v, ok := byIndex[index]; ok {
+			return pickerVersionDetails(v)
+		}
+		return ""
+	})
 	if err != nil {
 		// Survey reports Esc / Ctrl-C as a prompt error; treat it as a
 		// cancellation, never as a signal to roll back automatically.
@@ -366,7 +377,7 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 // Ordering guarantee: the version is only promoted (is_current set to true,
 // current symlink updated) after the start succeeds. If the start fails, the
 // version exists on disk but the active instance is untouched.
-func rollbackClassic(appInfo *app.AppInfo, appName string, target int) error {
+func rollbackClassic(appInfo *app.AppInfo, appName string, target int) (err error) {
 	totalStart := time.Now()
 	strategy := "classic"
 
@@ -374,6 +385,13 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int) error {
 	currentVer, _ := deploy.CurrentVersion(appName)
 	currentVerStr := fmt.Sprintf("v%d", currentVer)
 	targetVerStr := fmt.Sprintf("v%d", target)
+
+	defer func() {
+		// History records the terminal outcome of the classic rollback: only
+		// full completion (start + promotion done) is success; any error path
+		// below lands here as FAILED.
+		deploy.RecordRollbackResult(appName, currentVer, target, strategy, err)
+	}()
 
 	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, strategy, strategy, currentVerStr, targetVerStr, rollbackTo)
 

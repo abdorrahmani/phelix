@@ -137,6 +137,7 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		ToVer:     toVer,
 		Timestamp: time.Now(),
 	}
+	mode := string(state.Mode)
 	var deployErr error
 	defer func() {
 		ev.Success = deployErr == nil
@@ -148,6 +149,10 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		if opts.Notifier != nil {
 			_ = opts.Notifier.Notify(ctx, msg)
 		}
+		// Structured history record: written for BOTH outcomes, at the single
+		// terminal point of the rollback transaction, with the mode actually
+		// used. A failed rollback must never end up recorded as success.
+		RecordRollbackResult(opts.AppName, fromVer, toVer, mode, deployErr)
 	}()
 
 	switch state.Mode {
