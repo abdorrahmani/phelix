@@ -164,6 +164,12 @@ func (c *Client) runMonitorStream() error {
 	// for the next deploy.
 	c.sendDeploymentSnapshots()
 
+	// Health resync, same reason and same shape: a full snapshot per app on
+	// every (re)connection is what makes health configuration changes and
+	// deletions durable across a disconnect. Nothing else carries them, so this
+	// must run on every stream open, not just the first.
+	c.sendHealthSnapshots()
+
 	recvErrCh := make(chan error, 1)
 	go func() {
 		recvErrCh <- c.monitorRecvLoop(stream)
@@ -177,6 +183,12 @@ func (c *Client) runMonitorStream() error {
 	// not a metrics feed.
 	deployTicker := time.NewTicker(deploymentResyncInterval)
 	defer deployTicker.Stop()
+
+	// Health, by contrast, changes on its own as endpoints are probed, so its
+	// snapshot IS the update channel — at the endpoint check cadence, not the
+	// metrics cadence.
+	healthTicker := time.NewTicker(healthSnapshotInterval)
+	defer healthTicker.Stop()
 
 	for {
 		select {
@@ -194,6 +206,11 @@ func (c *Client) runMonitorStream() error {
 				continue
 			}
 			c.sendDeploymentSnapshots()
+		case <-healthTicker.C:
+			if monitorStream.isPaused() {
+				continue
+			}
+			c.sendHealthSnapshots()
 		}
 	}
 }

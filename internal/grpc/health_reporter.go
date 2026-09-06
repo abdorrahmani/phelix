@@ -4,13 +4,20 @@ import (
 	"context"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
-	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
-// GrpcHealthReporter implements health.HealthReporter and sends health data via gRPC.
+// GrpcHealthReporter implements health.HealthReporter and sends auto-restart
+// events to the backend via gRPC.
+//
+// It deliberately does NOT report health check results. Configuration and runtime
+// status reach the backend as AppHealthSnapshot messages on the monitor stream
+// (health_snapshot.go), where each message is a complete, idempotent statement of
+// one app's health. An auto-restart is different in kind: a point-in-time fact
+// that no later snapshot can reconstruct, so it keeps a dedicated RPC.
 type GrpcHealthReporter struct {
 	client *Client
 }
@@ -23,61 +30,13 @@ func NewGrpcHealthReporter(client *Client) *GrpcHealthReporter {
 	return &GrpcHealthReporter{client: client}
 }
 
-// SendHealthCheckResult sends a health check result to the backend via gRPC.
-func (r *GrpcHealthReporter) SendHealthCheckResult(result *health.HealthCheckResult, appID string, appName string) error {
-	if r.client == nil {
-		return nil
-	}
-	serviceClient := r.client.GetServiceClient()
-	if !r.client.IsConnected() || serviceClient == nil {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	serverID := server.GetServerID()
-	authCtx, err := attachAuthMetadata(ctx, serverID)
-	if err != nil {
-		logs.Error("health", "auth failed: %v", err)
-		return err
-	}
-
-	var statusCode int32
-	if result.StatusCode != nil {
-		statusCode = int32(*result.StatusCode)
-	}
-	var latencyMs int64
-	if result.LatencyMs != nil {
-		latencyMs = *result.LatencyMs
-	}
-	var errMsg string
-	if result.Error != nil {
-		errMsg = *result.Error
-	}
-
-	resp, err := serviceClient.ReportHealthResult(authCtx, &pb.ReportHealthResultRequest{
-		AppId:        appID,
-		AppName:      appName,
-		EndpointName: result.EndpointName,
-		Url:          result.URL,
-		Status:       result.Status,
-		StatusCode:   statusCode,
-		LatencyMs:    latencyMs,
-		CheckedAt:    result.CheckedAt.UnixMilli(),
-		Error:        errMsg,
-	})
-	if err != nil {
-		logs.Error("health", "failed to report health result: %v", err)
-		return err
-	}
-	if !resp.Success {
-		logs.Error("health", "health result rejected: %s", resp.GetError())
-	}
-	return nil
-}
-
 // SendAutoRestartEvent sends an auto-restart event to the backend via gRPC.
+//
+// A disconnected client is not an error: the restart already happened locally and
+// Phelix keeps working offline (the record is persisted to
+// ~/.phelix/apps/<app>/health/restarts.json regardless). A live connection that
+// rejects the event IS returned, classified by gRPC status, so the caller can log
+// an authentication or validation failure as such instead of as "offline".
 func (r *GrpcHealthReporter) SendAutoRestartEvent(record *health.AutoRestartRecord) error {
 	if r.client == nil {
 		return nil
@@ -90,16 +49,16 @@ func (r *GrpcHealthReporter) SendAutoRestartEvent(record *health.AutoRestartReco
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	serverID := server.GetServerID()
-	authCtx, err := attachAuthMetadata(ctx, serverID)
+	authCtx, err := attachAuthMetadata(ctx, server.GetServerID())
 	if err != nil {
-		logs.Error("health", "auth failed: %v", err)
 		return err
 	}
 
 	resp, err := serviceClient.ReportAutoRestart(authCtx, &pb.ReportAutoRestartRequest{
 		AppId:              record.AppID,
 		AppName:            record.AppName,
+		EndpointId:         record.EndpointID,
+		EndpointName:       record.EndpointName,
 		Reason:             record.Reason,
 		ExitCode:           int32(record.ExitCode),
 		BackoffNextSeconds: int32(record.BackoffNextSeconds),
@@ -107,11 +66,10 @@ func (r *GrpcHealthReporter) SendAutoRestartEvent(record *health.AutoRestartReco
 		CrashCount_24H:     int32(record.CrashCount24h),
 	})
 	if err != nil {
-		logs.Error("health", "failed to report auto-restart: %v", err)
-		return err
+		return rpcFailed("report auto-restart", err)
 	}
 	if !resp.Success {
-		logs.Error("health", "auto-restart report rejected: %s", resp.GetError())
+		return phelixerr.Newf(phelixerr.CodeServer, "backend rejected auto-restart event: %s", resp.GetError())
 	}
 	return nil
 }

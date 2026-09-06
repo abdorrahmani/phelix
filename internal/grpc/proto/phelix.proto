@@ -30,18 +30,39 @@ service PhelixService {
   rpc AgentStream(stream ClientToServer) returns (stream ServerToClient);
 
   // HealthSetConfig initializes health checks for an application (CLI-initiated).
-  rpc HealthSetConfig(HealthSetConfigRequest) returns (HealthConfigResponse);
+  //
+  // DEPRECATED: the agent no longer calls this. Health configuration reaches the
+  // backend through AppHealthSnapshot on MonitorStream, which survives a
+  // disconnect and propagates deletes. Kept declared so existing backends keep
+  // compiling; remove the handler in Phase 2.
+  rpc HealthSetConfig(HealthSetConfigRequest) returns (HealthConfigResponse) {
+    option deprecated = true;
+  }
 
   // HealthAddEndpoint adds a health check endpoint (CLI-initiated).
-  rpc HealthAddEndpoint(HealthAddEndpointRequest) returns (HealthConfigResponse);
+  // DEPRECATED — see HealthSetConfig.
+  rpc HealthAddEndpoint(HealthAddEndpointRequest) returns (HealthConfigResponse) {
+    option deprecated = true;
+  }
 
   // HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
-  rpc HealthRemoveEndpoint(HealthRemoveEndpointRequest) returns (HealthConfigResponse);
+  // DEPRECATED — see HealthSetConfig.
+  rpc HealthRemoveEndpoint(HealthRemoveEndpointRequest) returns (HealthConfigResponse) {
+    option deprecated = true;
+  }
 
   // ReportHealthResult sends a health check result from the daemon to the backend.
-  rpc ReportHealthResult(ReportHealthResultRequest) returns (ReportHealthResultResponse);
+  //
+  // DEPRECATED: one unary RPC per endpoint per interval, with no stable endpoint
+  // identity and no ordering against configuration. Superseded by
+  // AppHealthSnapshot on MonitorStream. The agent no longer calls this.
+  rpc ReportHealthResult(ReportHealthResultRequest) returns (ReportHealthResultResponse) {
+    option deprecated = true;
+  }
 
   // ReportAutoRestart sends an auto-restart event from the daemon to the backend.
+  // Still in use: an auto-restart is a point-in-time event that cannot be
+  // re-derived from a later snapshot.
   rpc ReportAutoRestart(ReportAutoRestartRequest) returns (ReportAutoRestartResponse);
 
   // ReportRollbackEvent sends a detailed rollback lifecycle event to the backend.

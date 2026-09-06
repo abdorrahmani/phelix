@@ -8,6 +8,12 @@ import (
 
 // HealthCheckConfig represents the configuration for a single health check endpoint
 type HealthCheckConfig struct {
+	// ID is the stable identity of this endpoint, minted once by
+	// ConfigManager.SaveConfig and preserved across every later edit, agent
+	// restart and backend reconnect. It is what the backend keys its endpoint
+	// records on — Name is a display label that a future rename may change, and
+	// URL changes whenever the app's port does.
+	ID            string `json:"id"`
 	Name          string `json:"name"`
 	URL           string `json:"url"`
 	Interval      string `json:"interval"` // e.g., "10s", "1m"
@@ -156,8 +162,13 @@ type HealthCheckHistory struct {
 
 // AutoRestartRecord tracks restart events
 type AutoRestartRecord struct {
-	AppID              string    `json:"app_id"`
-	AppName            string    `json:"app_name"`
+	AppID   string `json:"app_id"`
+	AppName string `json:"app_name"`
+	// EndpointID / EndpointName attribute the restart to the endpoint whose
+	// failures triggered it, so the backend can join it against the endpoint it
+	// already holds instead of parsing Reason.
+	EndpointID         string    `json:"endpoint_id,omitempty"`
+	EndpointName       string    `json:"endpoint_name,omitempty"`
 	Reason             string    `json:"reason"`
 	ExitCode           int       `json:"exit_code"`
 	BackoffNextSeconds int       `json:"backoff_next_seconds"`

@@ -37,9 +37,11 @@ func loadProjectConfig() (*project.Config, error) {
 // Apps without a health block keep whatever was configured via the health
 // commands. HTTPMetrics opt-ins from `health set` are preserved.
 //
-// ponytail: backend sync (gRPC SendHealthSetConfig) is not re-sent here; the
-// dashboard picks the config up on the next health set or daemon start. Add
-// the gRPC push when the dashboard needs live yaml edits.
+// Endpoint identities survive the wholesale replace: ConfigManager.SaveConfig
+// carries each endpoint's ID over by name, so a rebuild is an update on the
+// backend rather than delete-all-then-recreate. Nothing is pushed over gRPC from
+// here — the monitor daemon reports the new configuration in the app's next
+// health snapshot (docs/health-backend-contract.md).
 func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) error {
 	if cfg == nil || cfg.Health == nil || len(cfg.Health.Endpoints) == 0 {
 		return nil

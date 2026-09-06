@@ -6,6 +6,7 @@ option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 
 import "internal/grpc/proto/ping.proto";
 import "internal/grpc/proto/deployment.proto";
+import "internal/grpc/proto/health.proto";
 
 // ============================================================================
 // Monitoring data messages
@@ -301,6 +302,17 @@ message MonitorEvent {
     // converges on the real state. Optional: an older backend simply sees an
     // unknown oneof case and ignores it.
     DeploymentSnapshot deployment_snapshot = 17;
+    // app_health is the complete health state of ONE application (see
+    // health.proto). The monitor daemon pushes one per app with a health
+    // configuration on every (re)connection and every health tick, so the
+    // backend converges on the real configuration and runtime state without
+    // depending on events that happened while the connection was down.
+    //
+    // Apps with no health configuration produce no message at all: absence
+    // means "health is not configured", never "unhealthy". An app whose
+    // configuration exists but lists zero endpoints IS reported, with an empty
+    // endpoints list, so deleting the last endpoint still propagates.
+    AppHealthSnapshot app_health = 18;
   }
 }
 

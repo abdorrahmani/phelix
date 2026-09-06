@@ -1812,6 +1812,7 @@ type MonitorEvent struct {
 	//	*MonitorEvent_CommandResult
 	//	*MonitorEvent_Pong
 	//	*MonitorEvent_DeploymentSnapshot
+	//	*MonitorEvent_AppHealth
 	Payload       isMonitorEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1940,6 +1941,15 @@ func (x *MonitorEvent) GetDeploymentSnapshot() *DeploymentSnapshot {
 	return nil
 }
 
+func (x *MonitorEvent) GetAppHealth() *AppHealthSnapshot {
+	if x != nil {
+		if x, ok := x.Payload.(*MonitorEvent_AppHealth); ok {
+			return x.AppHealth
+		}
+	}
+	return nil
+}
+
 type isMonitorEvent_Payload interface {
 	isMonitorEvent_Payload()
 }
@@ -1981,6 +1991,20 @@ type MonitorEvent_DeploymentSnapshot struct {
 	DeploymentSnapshot *DeploymentSnapshot `protobuf:"bytes,17,opt,name=deployment_snapshot,json=deploymentSnapshot,proto3,oneof"`
 }
 
+type MonitorEvent_AppHealth struct {
+	// app_health is the complete health state of ONE application (see
+	// health.proto). The monitor daemon pushes one per app with a health
+	// configuration on every (re)connection and every health tick, so the
+	// backend converges on the real configuration and runtime state without
+	// depending on events that happened while the connection was down.
+	//
+	// Apps with no health configuration produce no message at all: absence
+	// means "health is not configured", never "unhealthy". An app whose
+	// configuration exists but lists zero endpoints IS reported, with an empty
+	// endpoints list, so deleting the last endpoint still propagates.
+	AppHealth *AppHealthSnapshot `protobuf:"bytes,18,opt,name=app_health,json=appHealth,proto3,oneof"`
+}
+
 func (*MonitorEvent_ServerInfo) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_ServerMetrics) isMonitorEvent_Payload() {}
@@ -1996,6 +2020,8 @@ func (*MonitorEvent_CommandResult) isMonitorEvent_Payload() {}
 func (*MonitorEvent_Pong) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_DeploymentSnapshot) isMonitorEvent_Payload() {}
+
+func (*MonitorEvent_AppHealth) isMonitorEvent_Payload() {}
 
 // MonitorControl is a single message sent from the backend to the CLI
 // monitor daemon over the same long-lived MonitorStream. It mirrors the old
@@ -2086,7 +2112,7 @@ var File_internal_grpc_proto_monitoring_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
-	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\"\xd1\x05\n" +
+	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\"\xd1\x05\n" +
 	"\n" +
 	"ServerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
@@ -2274,7 +2300,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\bapp_name\x18\x03 \x01(\tR\aappName\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x14\n" +
 	"\x05error\x18\x05 \x01(\tR\x05error\x12\x1c\n" +
-	"\ttimestamp\x18\x06 \x01(\x03R\ttimestamp\"\xb2\x04\n" +
+	"\ttimestamp\x18\x06 \x01(\x03R\ttimestamp\"\xee\x04\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
@@ -2288,7 +2314,9 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\tlog_entry\x18\x0e \x01(\v2\x17.phelix.MonitorLogEntryH\x00R\blogEntry\x12E\n" +
 	"\x0ecommand_result\x18\x0f \x01(\v2\x1c.phelix.MonitorCommandResultH\x00R\rcommandResult\x12\"\n" +
 	"\x04pong\x18\x10 \x01(\v2\f.phelix.PongH\x00R\x04pong\x12M\n" +
-	"\x13deployment_snapshot\x18\x11 \x01(\v2\x1a.phelix.DeploymentSnapshotH\x00R\x12deploymentSnapshotB\t\n" +
+	"\x13deployment_snapshot\x18\x11 \x01(\v2\x1a.phelix.DeploymentSnapshotH\x00R\x12deploymentSnapshot\x12:\n" +
+	"\n" +
+	"app_health\x18\x12 \x01(\v2\x19.phelix.AppHealthSnapshotH\x00R\tappHealthB\t\n" +
 	"\apayload\"z\n" +
 	"\x0eMonitorControl\x129\n" +
 	"\acommand\x18\x01 \x01(\v2\x1d.phelix.MonitorCommandRequestH\x00R\acommand\x12\"\n" +
@@ -2338,7 +2366,8 @@ var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(*MonitorControl)(nil),        // 17: phelix.MonitorControl
 	(*Pong)(nil),                  // 18: phelix.Pong
 	(*DeploymentSnapshot)(nil),    // 19: phelix.DeploymentSnapshot
-	(*Ping)(nil),                  // 20: phelix.Ping
+	(*AppHealthSnapshot)(nil),     // 20: phelix.AppHealthSnapshot
+	(*Ping)(nil),                  // 21: phelix.Ping
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	3,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -2358,13 +2387,14 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	15, // 14: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
 	18, // 15: phelix.MonitorEvent.pong:type_name -> phelix.Pong
 	19, // 16: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
-	14, // 17: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	20, // 18: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	19, // [19:19] is the sub-list for method output_type
-	19, // [19:19] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	20, // 17: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
+	14, // 18: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	21, // 19: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -2374,6 +2404,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 	}
 	file_internal_grpc_proto_ping_proto_init()
 	file_internal_grpc_proto_deployment_proto_init()
+	file_internal_grpc_proto_health_proto_init()
 	file_internal_grpc_proto_monitoring_proto_msgTypes[14].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
@@ -2383,6 +2414,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_CommandResult)(nil),
 		(*MonitorEvent_Pong)(nil),
 		(*MonitorEvent_DeploymentSnapshot)(nil),
+		(*MonitorEvent_AppHealth)(nil),
 	}
 	file_internal_grpc_proto_monitoring_proto_msgTypes[15].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),
