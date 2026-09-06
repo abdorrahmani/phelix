@@ -21,6 +21,7 @@ import (
 
 var rollbackTo string
 var rollbackList bool
+var rollbackDryRun bool
 
 var RollbackCmd = &cobra.Command{
 	Use:           "rollback [AppName]",
@@ -84,6 +85,10 @@ var RollbackCmd = &cobra.Command{
 			}
 		}
 
+		if rollbackDryRun {
+			return renderRollbackPreview(appInfo, name, target)
+		}
+
 		// Check whether a deploy state exists (blue-green / rolling).
 		state, deployErr := deploy.Load(name)
 		if deployErr != nil || state == nil || state.Mode == "" {
@@ -98,6 +103,7 @@ var RollbackCmd = &cobra.Command{
 func init() {
 	RollbackCmd.Flags().StringVar(&rollbackTo, "to", "", "Roll back to a specific version (e.g. v3, 3, or a tag name)")
 	RollbackCmd.Flags().BoolVar(&rollbackList, "list", false, "List retained versions with metadata")
+	RollbackCmd.Flags().BoolVar(&rollbackDryRun, "dry-run", false, "Preview the rollback without making any changes")
 }
 
 // promptRollbackVersion offers an interactive choice of which retained version
@@ -383,6 +389,119 @@ func copyFileForRollback(src, dst string) error {
 		}
 	}
 	return out.Close()
+}
+
+// renderRollbackPreview builds the read-only rollback plan and prints it.
+// It performs no mutations: no process, proxy, versions.json, deploy.json,
+// symlink or audit-log changes — the plan builder only reads state, and the
+// gRPC rollback reporters are deliberately not constructed here so no
+// rollback telemetry events are emitted for a preview.
+func renderRollbackPreview(appInfo *app.AppInfo, appName string, target int) error {
+	// Classic-path context mirrors what rollbackClassic would use.
+	port := appInfo.Port
+	if port == 0 {
+		port = defaultPort
+	}
+	destBin := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
+
+	plan, err := deploy.PlanRollback(appName, deploy.RollbackPlanInput{
+		AppID:          appInfo.ID,
+		Target:         target,
+		ClassicRunning: appInfo.Status == "running",
+		ClassicPort:    port,
+		ClassicDestBin: destBin,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s Rollback Preview\n\n", color.BlueString("→"))
+
+	fmt.Printf("  %-14s %s\n", "Application", appName)
+	fmt.Printf("  %-14s %s\n", "Current", versionLabel(plan.CurrentVersion, plan.CurrentTag))
+	fmt.Printf("  %-14s %s\n", "Target", versionLabel(plan.TargetVersion, plan.TargetTag))
+	if !plan.TargetBuiltAt.IsZero() {
+		fmt.Printf("  %-14s %s\n", "Built", plan.TargetBuiltAt.Format("2006-01-02 15:04:05"))
+	}
+	if plan.TargetCommit != "" {
+		commit := plan.TargetCommit
+		if len(commit) > 12 {
+			commit = commit[:12]
+		}
+		fmt.Printf("  %-14s %s\n", "Commit", commit)
+	}
+	fmt.Printf("  %-14s %s\n", "Deploy Mode", plan.Strategy)
+	fmt.Printf("  %-14s %s\n", "Health Check", plan.HealthCheck)
+	fmt.Printf("  %-14s %s\n", "Environment", plan.EnvSummary)
+
+	if len(plan.Warnings) > 0 {
+		fmt.Printf("\nWarnings:\n")
+		for _, w := range plan.Warnings {
+			fmt.Printf("  %s %s\n", color.YellowString("!"), w)
+		}
+	}
+
+	// Changes: only rows where both sides are known.
+	fmt.Printf("\nChanges:\n")
+	if plan.CurrentVersion > 0 {
+		fmt.Printf("  %-14s v%d → v%d\n", "Version", plan.CurrentVersion, plan.TargetVersion)
+		if plan.CurrentSize > 0 && plan.TargetSize > 0 {
+			fmt.Printf("  %-14s %.1f MB → %.1f MB\n", "Binary",
+				float64(plan.CurrentSize)/(1024*1024), float64(plan.TargetSize)/(1024*1024))
+		}
+		if plan.CurrentCommit != "" && plan.TargetCommit != "" && plan.CurrentCommit != plan.TargetCommit {
+			cur, tgt := plan.CurrentCommit, plan.TargetCommit
+			if len(cur) > 12 {
+				cur = cur[:12]
+			}
+			if len(tgt) > 12 {
+				tgt = tgt[:12]
+			}
+			fmt.Printf("  %-14s %s → %s\n", "Commit", cur, tgt)
+		}
+		if plan.Strategy != "classic" {
+			fmt.Printf("  %-14s %s\n", "Environment", plan.EnvSummary)
+		}
+	}
+
+	if plan.Strategy == string(deploy.ModeBlueGreen) {
+		fmt.Printf("\nTraffic:\n")
+		fmt.Printf("  %-14s :%d\n", "Public", plan.PublicPort)
+		fmt.Printf("  %-14s %s\n", "Current", slotOrNone(plan.CurrentSlot))
+		fmt.Printf("  %-14s %s\n", "Target", plan.TargetSlot)
+		if plan.CurrentPort > 0 {
+			fmt.Printf("  %-14s :%d → assigned at startup\n", "Backend", plan.CurrentPort)
+		}
+	}
+	if plan.Strategy == string(deploy.ModeRolling) {
+		fmt.Printf("\n  %-13s %d\n", "Replicas", plan.Replicas)
+	}
+	if plan.Downtime {
+		fmt.Printf("\nDowntime:\n  %-14s %s\n", "Expected", color.YellowString("yes (stop → start)"))
+	}
+
+	fmt.Printf("\nRollback Plan:\n")
+	for i, step := range plan.Steps {
+		fmt.Printf("  %2d. %s\n", i+1, step)
+	}
+
+	fmt.Printf("\n%s No changes will be made.\n", color.GreenString("✓"))
+	return nil
+}
+
+// versionLabel renders "v12" or "v12 (stable)".
+func versionLabel(ver int, tag string) string {
+	if tag == "" {
+		return fmt.Sprintf("v%d", ver)
+	}
+	return fmt.Sprintf("v%d (%s)", ver, tag)
+}
+
+func slotOrNone(slot string) string {
+	if slot == "" {
+		return "—"
+	}
+	return slot
 }
 
 func listRollbackVersions(appName string, policy deploy.RetentionPolicy, appInfo *app.AppInfo) error {

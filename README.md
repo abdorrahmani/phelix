@@ -661,12 +661,14 @@ blue-green/rolling.
 |------|---------|-------------|
 | `--to` | — | Target: `v3`, `3`, or a tag name (default: previous version) |
 | `--list` | `false` | List all retained versions with metadata |
+| `--dry-run` | `false` | Preview the rollback plan without changing application, process, proxy, or deployment state |
 
 ```bash
 phelix rollback myapp              # previous version
 phelix rollback myapp --to v3
 phelix rollback myapp --to "hotfix-auth"
 phelix rollback myapp --list
+phelix rollback myapp --to v3 --dry-run   # preview only — no changes
 ```
 
 ### Lifecycle
@@ -853,7 +855,78 @@ Output table columns:
 - **Current** — whether this version is actively serving traffic
 - **Prune soon** — whether this version would be removed after the next build (based on retention policy)
 
+#### `phelix rollback <AppName> --dry-run`
+Preview exactly what a rollback **would** do — target resolution, strategy,
+traffic transition, health checks, and the step-by-step plan — without making
+any changes. Nothing is started, stopped, switched, promoted, or written: no
+process, proxy, `versions.json`, `deploy.json`, `current` symlink, or
+`rollback.log` mutation, and no rollback audit entry is recorded. It is safe to
+run any number of times, including while the app serves traffic.
+
+The preview is a **plan and validation preview**, not a guarantee: it reads the
+same metadata the real rollback resolves (current/target version, deploy mode,
+env snapshot presence, health-tier configuration), validates that the target
+artifact exists, and reports warnings — but it does not start instances,
+perform live health checks, or predict ports that are only assigned at startup.
+
+The same target resolution as a real rollback applies (`--to` with `vN`, `N`,
+or a tag; default previous version), so `--dry-run` fails on an invalid or
+missing target with the same error codes a real rollback would return. (Output
+below is illustrative — actual values come from your app's state.)
+
+```bash
+phelix rollback myapp --to v7 --dry-run
+```
+```text
+→ Rollback Preview
+
+  Application    myapp
+  Current        v12
+  Target         v7
+  Built          2026-08-31 14:22:10
+  Commit         8f31c2a
+  Deploy Mode    blue-green
+  Health Check   Tier 1 (/health, 2xx required)
+  Environment    v7 snapshot available
+
+Changes:
+  Version        v12 → v7
+  Binary         15.2 MB → 14.8 MB
+  Environment    v7 snapshot available
+
+Traffic:
+  Public         :3000
+  Current        green
+  Target         blue
+
+Rollback Plan:
+   1. Ensure the proxy daemon is running
+   2. Load the v7 artifact (.../builds/v7/binary)
+   3. Restore the v7 environment snapshot (env/v7.enc)
+   4. Start the new instance on the inactive slot blue (internal port assigned at startup)
+   5. Run health checks against the new instance
+   6. Switch proxy traffic on public port 3000 from slot green to slot blue
+   7. Promote v7 as current (versions.json + current symlink)
+   8. Drain and stop the old slot green instance (grace 30s)
+
+✓ No changes will be made.
+```
+
+For **classic** apps the preview shows the stop→start plan and an explicit
+`Downtime: Expected yes` line; for **rolling** apps it lists one replacement
+step per replica, in the order the real rollback replaces them. If validation
+fails (missing binary, unknown version, tag ambiguity, target == current), the
+preview reports the same structured error a real rollback would return — with
+nothing modified. Warnings (e.g. a missing env snapshot, a large rollback
+distance, a deploy lock held by another operation) are shown in a `Warnings:`
+section without blocking the preview.
+
 #### How rollback works
+
+Rollback is split into two phases: **resolve + plan**, then **execute**. The
+CLI first resolves the target version and deployment strategy and validates
+the target artifact (shared by both the preview and the real path); a real
+rollback then executes the plan, `--dry-run` renders it and exits.
 
 **Zero-downtime path** (blue-green / rolling apps):
 1. `ResolveVersionOrTag` resolves the `--to` argument to a concrete version ID
@@ -876,6 +949,7 @@ If the rollback target fails its health check, the rollback **aborts** and the a
 If the start fails, the version exists on disk but `is_current` stays false — you can retry without a broken "current" pointer.
 
 #### Rollback safety
+- **Dry-run preview**: `--dry-run` shows the full plan with zero mutations — verify before you commit (see above)
 - **Concurrent protection**: A deploy lock prevents rollback from racing with another deploy or rollback on the same app
 - **Versioned env**: Binary and env are paired per version; rollback always restores both
 - **Audit log**: Every rollback attempt (success or failure) is recorded in `~/.phelix/apps/<AppName>/rollback.log`
@@ -1286,12 +1360,17 @@ guidelines.
 11. **Regularly rotate sensitive credentials.**
 12. **Use descriptive variable names** (e.g., `DATABASE_CONNECTION_URL` instead of `DB`).
 13. **Use `phelix rollback --list`** to review available versions before rolling back.
-14. **Keep the proxy daemon running** (`phelix proxy`) for zero-downtime rollbacks.
-15. **Use `--tag`** to label important builds (e.g. `--tag "v2.1-release"`) for easier rollback identification.
-16. **Check `phelix status <app>`** for version history before deciding to roll back.
-17. **Use `phelix dockerize`** to containerize apps with optimized, cached Dockerfiles.
-18. **Watch the automatic Build Report after every build** — it is the fastest way to detect unexpected binary growth, compilation regressions, or toolchain changes (the compiler version in the report makes accidental toolchain bumps visible).
-19. **Treat repeated duration regressions in the same cache mode as a signal**: if cold builds keep getting slower across versions, the codebase — not the cache — is the problem.
+14. **Preview destructive rollbacks with `--dry-run`** before executing — especially for production rollbacks, large rollback distances (many versions behind), tagged-release rollbacks, rollbacks after a failed deployment, and blue-green/rolling apps where the traffic transition matters:
+    ```bash
+    phelix rollback myapp --to stable --dry-run   # inspect the plan
+    phelix rollback myapp --to stable             # then execute
+    ```
+15. **Keep the proxy daemon running** (`phelix proxy`) for zero-downtime rollbacks.
+16. **Use `--tag`** to label important builds (e.g. `--tag "v2.1-release"`) for easier rollback identification.
+17. **Check `phelix status <app>`** for version history before deciding to roll back.
+18. **Use `phelix dockerize`** to containerize apps with optimized, cached Dockerfiles.
+19. **Watch the automatic Build Report after every build** — it is the fastest way to detect unexpected binary growth, compilation regressions, or toolchain changes (the compiler version in the report makes accidental toolchain bumps visible).
+20. **Treat repeated duration regressions in the same cache mode as a signal**: if cold builds keep getting slower across versions, the codebase — not the cache — is the problem.
 20. **Use `phelix build-report <AppName>`** to review stored build history before investigating a performance or size issue; it is read-only and works offline.
 21. **After a matrix build, check each combination's summary** — a size regression in one platform/toolchain combination won't show up in the others.
 
