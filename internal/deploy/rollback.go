@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -75,6 +76,22 @@ type RollbackOptions struct {
 	// Telemetry observes the rollback as a deployment. Optional: a nil Tracker
 	// is silent.
 	Telemetry *Tracker
+	// Reason is the operator-supplied explanation persisted with the rollback
+	// history record. Optional; validated by ValidateRollbackReason.
+	Reason string
+	// Verify, when non-nil, requests post-rollback stability observation: the
+	// serving instances are probed for the requested duration after the
+	// rollback's state commit, and the outcome is recorded in history.
+	Verify *VerifyRequest
+}
+
+// VerifyRequest configures post-rollback stability verification.
+type VerifyRequest struct {
+	// Duration is the observation window (the whole window, not one probe).
+	Duration time.Duration
+	// OnTick, when set, receives a progress callback per observation sweep;
+	// the CLI renders progress lines from it.
+	OnTick func(elapsed time.Duration, err error)
 }
 
 // ExecuteRollback runs rollback through the same zero-downtime path as forward
@@ -139,6 +156,11 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	}
 	mode := string(state.Mode)
 	var deployErr error
+	// verify is filled in only on the success path below (execution failures
+	// never reach verification); the deferred history write picks it up so the
+	// record is written once, at the single terminal point, with the full
+	// outcome.
+	var verify *RollbackVerification
 	defer func() {
 		ev.Success = deployErr == nil
 		if deployErr != nil {
@@ -152,7 +174,7 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		// Structured history record: written for BOTH outcomes, at the single
 		// terminal point of the rollback transaction, with the mode actually
 		// used. A failed rollback must never end up recorded as success.
-		RecordRollbackResult(opts.AppName, fromVer, toVer, mode, deployErr)
+		RecordRollbackResult(opts.AppName, fromVer, toVer, mode, opts.Reason, verify, deployErr)
 	}()
 
 	switch state.Mode {
@@ -227,5 +249,45 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		}
 	}
 	appendRollbackLog(opts.AppName, ev)
+
+	// Post-rollback stability verification. Runs only after the authoritative
+	// state commit above, so it observes exactly the version/slot/replicas now
+	// serving. It stays inside the deploy lock deliberately: the lock only
+	// excludes concurrent deploy/rollback mutations (reads never take it), so
+	// holding it guarantees a second rollout cannot invalidate the observation
+	// window undetected. ponytail: no invalidation-detection protocol — add
+	// one if a mid-verification emergency deploy ever needs to be allowed.
+	if opts.Verify != nil {
+		verr := VerifyRollbackStability(ctx, VerificationOptions{
+			AppName:        opts.AppName,
+			AppID:          opts.AppID,
+			Duration:       opts.Verify.Duration,
+			HealthProvider: opts.HealthProvider,
+			Logger:         log,
+			OnTick:         opts.Verify.OnTick,
+		})
+		verify = &RollbackVerification{
+			Requested: true,
+			Duration:  opts.Verify.Duration.String(),
+			At:        time.Now(),
+		}
+		switch {
+		case verr == nil:
+			verify.Status = RollbackVerifyPassed
+		case errors.Is(verr, context.Canceled):
+			verify.Status = RollbackVerifyCancelled
+			verify.Error = verr.Error()
+			log.Warnf("rollback verification cancelled; rollback to v%d remains active", toVer)
+			return phelixerr.Newf(phelixerr.CodeRollbackVerifyFailed,
+				"rollback verification cancelled; rollback to v%d remains active", toVer)
+		default:
+			verify.Status = RollbackVerifyFailed
+			verify.Error = verr.Error()
+			log.Errorf("rollback verification failed: %v", verr)
+			return phelixerr.Wrapf(phelixerr.CodeRollbackVerifyFailed, verr,
+				"rollback to v%d completed, but the application did not remain healthy during the %s verification window",
+				toVer, opts.Verify.Duration)
+		}
+	}
 	return nil
 }

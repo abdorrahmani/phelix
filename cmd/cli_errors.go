@@ -35,20 +35,21 @@ func RenderError(err error, debug bool) int {
 // so they are documented in the README and must remain stable. They are
 // derived from the structured error category, never from arbitrary internals.
 const (
-	ExitOK         = 0  // success
-	ExitFailure    = 1  // generic failure
-	ExitUsage      = 2  // invalid usage / invalid arguments
-	ExitAuth       = 10 // authentication failure
-	ExitPermission = 11 // permission denied
-	ExitNotFound   = 12 // resource not found
-	ExitBuild      = 20 // build failure
-	ExitDeploy     = 21 // deployment failure
-	ExitRollback   = 22 // rollback failure
-	ExitNetwork    = 30 // network / connection failure
-	ExitConfig     = 40 // configuration failure
-	ExitDocker     = 50 // docker failure
-	ExitTimeout    = 60 // timeout
-	ExitEncryption = 70 // encryption failure
+	ExitOK             = 0  // success
+	ExitFailure        = 1  // generic failure
+	ExitUsage          = 2  // invalid usage / invalid arguments
+	ExitAuth           = 10 // authentication failure
+	ExitPermission     = 11 // permission denied
+	ExitNotFound       = 12 // resource not found
+	ExitBuild          = 20 // build failure
+	ExitDeploy         = 21 // deployment failure
+	ExitRollback       = 22 // rollback failure
+	ExitRollbackVerify = 23 // rollback executed, verification failed/cancelled
+	ExitNetwork        = 30 // network / connection failure
+	ExitConfig         = 40 // configuration failure
+	ExitDocker         = 50 // docker failure
+	ExitTimeout        = 60 // timeout
+	ExitEncryption     = 70 // encryption failure
 )
 
 // isUsageError reports whether err is a command-usage error raised by cobra
@@ -98,6 +99,8 @@ func ExitCodeFor(err error) int {
 		return ExitDeploy
 	case phelixerr.CodeRollbackFailed:
 		return ExitRollback
+	case phelixerr.CodeRollbackVerifyFailed:
+		return ExitRollbackVerify
 	case phelixerr.CodeUpdateFailed:
 		return ExitFailure
 	case phelixerr.CodeNetwork, phelixerr.CodeConnection, phelixerr.CodeGRPC,

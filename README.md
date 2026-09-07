@@ -662,6 +662,8 @@ blue-green/rolling.
 | `--to` | — | Target: `v3`, `3`, or a tag name (bypasses the interactive picker) |
 | `--list` | `false` | List all retained versions with metadata (non-interactive) |
 | `--dry-run` | `false` | Preview the rollback plan without changing application, process, proxy, or deployment state |
+| `--reason` | — | Record why the rollback was performed (stored in rollback history; max 500 characters) |
+| `--verify` | — | Observe rollback stability for a Go duration (e.g. `30s`, `1m`, `2m30s`) after the rollback completes |
 
 **Interactive picker:** in a TTY, `phelix rollback <App>` without `--to` opens an
 interactive picker instead of silently choosing the previous version. It lists
@@ -681,6 +683,71 @@ phelix rollback myapp --to v3
 phelix rollback myapp --to "hotfix-auth"
 phelix rollback myapp --list
 phelix rollback myapp --to v3 --dry-run   # preview only — no changes
+```
+
+#### Rollback reason (`--reason`)
+The reason becomes part of the rollback history/audit record, so `phelix
+rollback history` explains *why* each rollback happened:
+
+```bash
+phelix rollback myapp --to v7 --reason "Login endpoint returning 500"
+```
+
+The reason is optional; `--dry-run` displays it in the plan but persists
+nothing. Explicitly supplied-but-empty reasons are rejected
+(`rollback reason cannot be empty`), whitespace is collapsed, and the text is
+capped at 500 characters. It is serialized through `encoding/json` — never
+concatenated — so it cannot corrupt the structured history or inject log
+lines. In the interactive picker the reason is requested after the target
+version is chosen (Enter skips it); an explicit `--reason` never re-prompts.
+
+#### Rollback verification (`--verify`)
+A rollback should not count as successful merely because the process started.
+With `--verify <duration>`, Phelix observes the application for the requested
+period **after** the rollback reaches its committed, traffic-serving state
+(target loaded, environment restored, instance healthy, proxy switched,
+deployment state persisted) and fails if it does not remain healthy:
+
+```bash
+phelix rollback myapp --to v7 --verify 30s
+```
+
+```text
+→ Verifying rollback stability...
+  5s    ✓ healthy
+  10s   ✓ healthy
+  ...
+✓ Rollback remained healthy for 30s
+```
+
+Semantics:
+
+* Verification observes the instances **actually serving traffic** — the
+  active blue-green slot, all rolling replicas, or the classic process — never
+  a drained slot.
+* It reuses the existing tiered health checks and the per-app health
+  configuration (`phelix health set`); the duration is the observation
+  window, not a request timeout, and it is parsed as a real Go duration
+  (`30` is rejected — use `30s`).
+* **Verification failure is distinct from rollback execution failure.** The
+  CLI prints `Rollback execution: SUCCESS / Verification: FAILED` and exits
+  **23** (`ROLLBACK_VERIFY_FAILED`), while an execution failure exits **22**
+  (`ROLLBACK_FAILED`). History records the execution as `SUCCESS` with a
+  verification block (`passed` / `failed` / `cancelled`).
+* `Ctrl+C` during the window cancels the observation (history: `cancelled`);
+  the completed rollback stays active. Phelix never rolls forward/backward on
+  its own — recovery is your call.
+* Omitting `--verify` preserves the existing rollback behavior exactly; no
+  extra delay is added.
+* `--dry-run --verify 30s` shows the planned window and performs nothing.
+
+Combined:
+
+```bash
+phelix rollback myapp \
+  --to v7 \
+  --reason "Login endpoint returning 500" \
+  --verify 30s
 ```
 
 Interactive picker example (actual versions and metadata depend on the application):
@@ -739,10 +806,11 @@ current version.
 ```text
 Rollback History — myapp
 
-TIME                  FROM   TO     STATUS   MODE
-2026-09-06 14:20:31   v12    v7     SUCCESS  blue-green
-2026-09-02 09:13:12   v9     v8     FAILED   rolling
-2026-08-28 18:42:09   v8     v6     SUCCESS  classic
+TIME                  FROM   TO     STATUS   MODE         REASON
+2026-09-06 14:20:31   v12    v7     SUCCESS  blue-green   Login endpoint returning 500
+2026-09-06 13:11:02   v13    v12    SUCCESS  rolling      API regression
+2026-09-02 09:13:12   v9     v8     FAILED   rolling      Database migration issue
+2026-08-28 18:42:09   v8     v6     SUCCESS  classic      —
 ```
 
 Notes:
@@ -753,6 +821,15 @@ Notes:
   picker (`Esc`) never records history either, and is not a failure.
 * Malformed legacy lines in the history file are skipped with a short
   warning; they are never silently rewritten.
+* `REASON` shows the recorded `--reason`, or `—` for reason-free and
+  pre-reason records (old history entries load unchanged and are never
+  rewritten to add an empty reason).
+* When `--verify` was requested, each record also carries a verification
+  block on disk (`"verification": {"requested": true, "duration": "30s",
+  "status": "passed"}` with status `passed` / `failed` / `cancelled`). A
+  failed window renders as `VERIFY_FAILED` while `STATUS` stays `SUCCESS` —
+  execution outcome and verification outcome are kept separate so history
+  always tells the truth about what happened.
 * History is stored per app as JSON Lines at
   `~/.phelix/apps/<AppName>/rollback_history.jsonl`.
 
@@ -1442,6 +1519,7 @@ exit code**, so automation can rely on them:
 | 20 | build | `BUILD_FAILED`, `BUILD_TIMEOUT`, `TOOLCHAIN_NOT_FOUND`, `UNSUPPORTED_PROJECT` |
 | 21 | deploy | `DEPLOY_FAILED`, `INSTANCE_START_FAILED`, `HEALTH_CHECK_FAILED`, `DEPLOY_LOCKED` |
 | 22 | rollback | `ROLLBACK_FAILED` |
+| 23 | rollback verification failed/cancelled | `ROLLBACK_VERIFY_FAILED` |
 | 30 | network | `CONNECTION_ERROR`, `PORT_UNAVAILABLE` |
 | 40 | configuration | `CONFIGURATION_ERROR` |
 | 50 | docker | `DOCKER_ERROR` |

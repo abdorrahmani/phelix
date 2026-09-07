@@ -89,13 +89,25 @@ func runRollbackHistory(appName string) error {
 	}
 
 	table := tablewriter.NewTable(os.Stdout)
-	table.Header([]string{"TIME", "FROM", "TO", "STATUS", "MODE"})
+	table.Header([]string{"TIME", "FROM", "TO", "STATUS", "MODE", "REASON"})
 	for _, rec := range records {
 		status := strings.ToUpper(rec.Status)
 		if rec.Status == deploy.RollbackStatusFailed {
 			status = color.RedString(status)
 		} else if rec.Status == deploy.RollbackStatusSuccess {
-			status = color.GreenString(status)
+			if rec.Verification != nil && rec.Verification.Status == deploy.RollbackVerifyFailed {
+				// Execution succeeded but the stability window failed: the two
+				// outcomes must stay distinguishable at a glance.
+				status = color.YellowString("VERIFY_FAILED")
+			} else {
+				status = color.GreenString(status)
+			}
+		}
+		reason := rec.Reason
+		if reason == "" {
+			// Absent reason: old records never had one, and reason-less
+			// rollbacks stay reason-free — both render the missing-value dash.
+			reason = "—"
 		}
 		table.Append([]string{
 			rec.Time.Format("2006-01-02 15:04:05"),
@@ -103,6 +115,7 @@ func runRollbackHistory(appName string) error {
 			rec.To,
 			status,
 			rec.Mode,
+			reason,
 		})
 	}
 	table.Render()

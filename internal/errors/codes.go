@@ -40,6 +40,12 @@ const (
 	// Rollback.
 	CodeRollbackFailed         Code = "ROLLBACK_FAILED"
 	CodeRollbackTargetNotFound Code = "ROLLBACK_TARGET_NOT_FOUND"
+	// CodeRollbackVerifyFailed: the rollback execution itself succeeded (the
+	// target version is serving), but stability verification failed or was
+	// cancelled. Distinct from ROLLBACK_FAILED so automation can tell "the
+	// switch never happened" from "the switch happened and the target proved
+	// unstable".
+	CodeRollbackVerifyFailed Code = "ROLLBACK_VERIFY_FAILED"
 
 	// Process / OS.
 	CodeProcessFailed Code = "PROCESS_FAILED"
