@@ -45,6 +45,7 @@ const (
 	ExitDeploy         = 21 // deployment failure
 	ExitRollback       = 22 // rollback failure
 	ExitRollbackVerify = 23 // rollback executed, verification failed/cancelled
+	ExitAutoRollback   = 24 // deployment failed AND automatic rollback failed (state degraded)
 	ExitNetwork        = 30 // network / connection failure
 	ExitConfig         = 40 // configuration failure
 	ExitDocker         = 50 // docker failure
@@ -101,6 +102,8 @@ func ExitCodeFor(err error) int {
 		return ExitRollback
 	case phelixerr.CodeRollbackVerifyFailed:
 		return ExitRollbackVerify
+	case phelixerr.CodeAutoRollbackFailed:
+		return ExitAutoRollback
 	case phelixerr.CodeUpdateFailed:
 		return ExitFailure
 	case phelixerr.CodeNetwork, phelixerr.CodeConnection, phelixerr.CodeGRPC,

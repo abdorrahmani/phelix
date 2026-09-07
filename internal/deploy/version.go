@@ -224,6 +224,39 @@ func CurrentVersion(appName string) (int, error) {
 	return 0, nil
 }
 
+// LastKnownGoodVersion returns the version automatic rollback should restore:
+// the version versions.json currently marks, when it was successfully
+// promoted and its binary still exists. A failed deploy never promotes
+// itself, so the current pointer still names the version that was serving
+// before the failed rollout — even when the failed version already reached
+// some replicas. When the current record was never promoted (or its binary is
+// gone), the newest other promoted version with an existing binary wins, so a
+// chain of bad deploys (v11, v12 bad, v13 current-failed) resolves to the
+// last genuinely good one, never to "current - 1".
+func LastKnownGoodVersion(appName string) (int, error) {
+	vf, err := LoadVersions(appName)
+	if err != nil {
+		return 0, err
+	}
+	promoted := func(v VersionMeta) bool { return v.DeployedAt != nil }
+	usable := func(ver int) bool {
+		_, _, err := VersionPaths(appName, ver)
+		return err == nil
+	}
+	best := 0
+	for _, v := range vf.Versions {
+		if v.Version > best && promoted(v) && usable(v.Version) {
+			best = v.Version
+		}
+	}
+	if best == 0 {
+		list := formatAvailableVersions(vf)
+		return 0, phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound,
+			"deploy: no previous known-good version to roll back to for %q (available: %s)", appName, list)
+	}
+	return best, nil
+}
+
 // PreviousVersion returns the version before the current one in build order.
 func PreviousVersion(appName string) (int, error) {
 	vf, err := LoadVersions(appName)

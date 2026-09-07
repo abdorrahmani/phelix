@@ -566,6 +566,7 @@ app is running at.
 | `--strategy` | — | Strategy for this rebuild only: `classic`, `blue-green`, or `rolling`. Overrides `phelix.yaml`; never written back to it |
 | `--blue-green` | `false` | Zero-downtime blue-green deploy (needs `phelix proxy`) |
 | `--replicas` | `0` | Zero-downtime rolling deploy over N replicas |
+| `--auto-rollback` | `false` | On a deploy-phase failure (instance start, health check, traffic switch), automatically restore the previous known-good version. Build/compile failures never trigger it |
 
 ```bash
 phelix rebuild myapp --blue-green
@@ -749,6 +750,57 @@ phelix rollback myapp \
   --reason "Login endpoint returning 500" \
   --verify 30s
 ```
+
+#### Automatic rollback on failed deployment (`phelix rebuild --auto-rollback`)
+Add `--auto-rollback` to `phelix rebuild` and a deploy-phase failure restores
+the previous known-good version automatically — the same path a manual
+rollback takes, so locks, health checks, proxy switching, state reconciliation
+and history are shared, not duplicated:
+
+```bash
+phelix rebuild myapp --blue-green --auto-rollback
+phelix rebuild myapp --replicas 4 --auto-rollback
+```
+
+```text
+✗ v13 failed health checks
+→ Automatic rollback enabled
+  → automatic rollback: restoring v12
+  ✓ v12 started, healthy and serving traffic
+✓ Deployment rolled back automatically
+```
+
+Behavior:
+
+* **Failure boundaries.** Build/compile failures never trigger a rollback
+  (no new version was recorded, nothing was displaced). Deployment-phase
+  failures do: instance start failure, failed health checks, proxy switch
+  failure, and a partially-completed rolling rollout.
+* **Blue-green.** A failed candidate is killed *before* the traffic switch,
+  so the previous version usually kept serving the whole time — Phelix reports
+  that ("kept serving") instead of faking a rollback. No history entry is
+  written for a rollback that did not happen.
+* **Rolling.** If the rollout failed after some replicas switched to the new
+  version, recovery redeploys the known-good version over the fleet one
+  replica at a time, preserving availability. If it failed at the first
+  replica, the old fleet is still intact and nothing is redeployed.
+* **Classic.** The known-good binary is copied back and restarted (brief
+  downtime is inherent to classic — Phelix does not claim zero downtime).
+* **Last known good is authoritative.** The restore target is the version
+  versions.json currently promotes (a failed deploy never promotes itself),
+  restricted to versions whose binary still exists — never "current - 1".
+  With no known-good version, Phelix says so instead of fabricating a target.
+* **History.** Automatic recoveries appear in `phelix rollback history` with
+  the `SOURCE` column set to `automatic` and a reason derived from the
+  deployment failure ("Deployment v13 failed: …"). Manual rollbacks show
+  `manual`.
+* **Recovery can fail too.** If the previous version cannot be restored
+  safely, Phelix prints the degraded state explicitly and exits **24**
+  (`AUTO_ROLLBACK_FAILED`) — it never claims success. A recovered deployment
+  still exits **21** (the deployment itself failed; the output and history
+  say recovery succeeded).
+* The rollback is triggered exactly once per failed deployment and cannot
+  recurse: recovery failures are terminal, never new rollback triggers.
 
 Interactive picker example (actual versions and metadata depend on the application):
 
@@ -1520,6 +1572,7 @@ exit code**, so automation can rely on them:
 | 21 | deploy | `DEPLOY_FAILED`, `INSTANCE_START_FAILED`, `HEALTH_CHECK_FAILED`, `DEPLOY_LOCKED` |
 | 22 | rollback | `ROLLBACK_FAILED` |
 | 23 | rollback verification failed/cancelled | `ROLLBACK_VERIFY_FAILED` |
+| 24 | deployment failed AND automatic rollback failed (state degraded — manual intervention required) | `AUTO_ROLLBACK_FAILED` |
 | 30 | network | `CONNECTION_ERROR`, `PORT_UNAVAILABLE` |
 | 40 | configuration | `CONFIGURATION_ERROR` |
 | 50 | docker | `DOCKER_ERROR` |

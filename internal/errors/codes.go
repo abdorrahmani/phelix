@@ -47,6 +47,13 @@ const (
 	// unstable".
 	CodeRollbackVerifyFailed Code = "ROLLBACK_VERIFY_FAILED"
 
+	// CodeAutoRollbackFailed: the deployment failed and the automatic
+	// rollback ALSO failed — the previous known-good version could not be
+	// restored safely and the app may need manual intervention. Distinct from
+	// DEPLOY_FAILED so automation can tell "deploy failed, previous version
+	// serving again" from "deploy failed AND recovery failed; state degraded".
+	CodeAutoRollbackFailed Code = "AUTO_ROLLBACK_FAILED"
+
 	// Process / OS.
 	CodeProcessFailed Code = "PROCESS_FAILED"
 	CodeFilesystem    Code = "FILESYSTEM_ERROR"

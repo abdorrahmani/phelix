@@ -79,10 +79,20 @@ type RollbackOptions struct {
 	// Reason is the operator-supplied explanation persisted with the rollback
 	// history record. Optional; validated by ValidateRollbackReason.
 	Reason string
+	// SourceTag overrides the history origin tag ("manual"/"automatic").
+	// Empty defaults to automatic when Recovery is set, manual otherwise.
+	SourceTag string
 	// Verify, when non-nil, requests post-rollback stability observation: the
 	// serving instances are probed for the requested duration after the
 	// rollback's state commit, and the outcome is recorded in history.
 	Verify *VerifyRequest
+	// Recovery, when set, marks this rollback as an automatic post-deployment
+	// recovery: fromVer is taken from Recovery.FailedVersion (the version the
+	// failed deploy tried to promote — the current version record still names
+	// the known-good target), and the rollback-to-current guard is bypassed
+	// because a partial rolling rollout legitimately redeploys the version
+	// versions.json already marks current.
+	Recovery *RollbackRecovery
 }
 
 // VerifyRequest configures post-rollback stability verification.
@@ -101,7 +111,12 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	if opts.AppName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: rollback requires app name")
 	}
-	fromVer, _ := CurrentVersion(opts.AppName)
+	var fromVer int
+	if opts.Recovery != nil && opts.Recovery.FailedVersion > 0 {
+		fromVer = opts.Recovery.FailedVersion
+	} else {
+		fromVer, _ = CurrentVersion(opts.AppName)
+	}
 
 	src := opts.Source
 	if src == nil {
@@ -116,7 +131,13 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	if toVer <= 0 {
 		return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: could not resolve rollback target version for %q", opts.AppName)
 	}
-	if fromVer > 0 && toVer == fromVer {
+	// Rolling back to the version already recorded as current is a no-op
+	// request for a manual rollback — executing it would restart the instance
+	// while claiming a version change that never happened. Recovery is the
+	// exception: a partial rolling rollout can leave the failed version
+	// serving replicas while versions.json still names the known-good
+	// version, and the recovery legitimately redeploys it.
+	if opts.Recovery == nil && fromVer > 0 && toVer == fromVer {
 		return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: already running v%d; nothing to roll back to", fromVer)
 	}
 
@@ -174,7 +195,14 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		// Structured history record: written for BOTH outcomes, at the single
 		// terminal point of the rollback transaction, with the mode actually
 		// used. A failed rollback must never end up recorded as success.
-		RecordRollbackResult(opts.AppName, fromVer, toVer, mode, opts.Reason, verify, deployErr)
+		source := opts.SourceTag
+		switch {
+		case source == "" && opts.Recovery != nil:
+			source = RollbackSourceAutomatic
+		case source == "":
+			source = RollbackSourceManual
+		}
+		RecordRollbackResultSource(opts.AppName, fromVer, toVer, mode, opts.Reason, verify, deployErr, source)
 	}()
 
 	switch state.Mode {
@@ -223,6 +251,13 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		deployErr = phelixerr.Newf(phelixerr.CodeRollbackFailed, "deploy: rollback unsupported for mode %q", state.Mode)
 	}
 	if deployErr != nil {
+		if opts.Recovery != nil {
+			// Recovery failure must not claim the active instance is
+			// untouched — the recovery deploy may already have switched or
+			// drained instances before failing.
+			return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, deployErr,
+				"automatic recovery failed; application state may require manual intervention")
+		}
 		// "active instance untouched" is only claimed on this path because the
 		// blue-green/rolling rollback abort leaves the previous instance active
 		// (the deploy layer already guarantees that on failure).
@@ -248,7 +283,9 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 			log.Warnf("failed to persist rollback record: %v", err)
 		}
 	}
-	appendRollbackLog(opts.AppName, ev)
+	if opts.Recovery == nil {
+		appendRollbackLog(opts.AppName, ev)
+	}
 
 	// Post-rollback stability verification. Runs only after the authoritative
 	// state commit above, so it observes exactly the version/slot/replicas now

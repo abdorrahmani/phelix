@@ -89,7 +89,7 @@ func runRollbackHistory(appName string) error {
 	}
 
 	table := tablewriter.NewTable(os.Stdout)
-	table.Header([]string{"TIME", "FROM", "TO", "STATUS", "MODE", "REASON"})
+	table.Header([]string{"TIME", "FROM", "TO", "STATUS", "MODE", "SOURCE", "REASON"})
 	for _, rec := range records {
 		status := strings.ToUpper(rec.Status)
 		if rec.Status == deploy.RollbackStatusFailed {
@@ -109,12 +109,18 @@ func runRollbackHistory(appName string) error {
 			// rollbacks stay reason-free — both render the missing-value dash.
 			reason = "—"
 		}
+		source := rec.Source
+		if source == "" {
+			// Records written before the source field existed were manual.
+			source = deploy.RollbackSourceManual
+		}
 		table.Append([]string{
 			rec.Time.Format("2006-01-02 15:04:05"),
 			rec.From,
 			rec.To,
 			status,
 			rec.Mode,
+			source,
 			reason,
 		})
 	}

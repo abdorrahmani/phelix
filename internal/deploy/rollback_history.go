@@ -34,10 +34,20 @@ type RollbackHistoryRecord struct {
 	// so the text cannot break the structured record. Size is bounded by
 	// ValidateRollbackReason at the CLI boundary.
 	Reason string `json:"reason,omitempty"`
+	// Source distinguishes a manually requested rollback from an automatic
+	// post-deployment recovery. Empty on records written before the field
+	// existed (and treated as manual by readers that default it).
+	Source string `json:"source,omitempty"`
 	// Verification describes post-rollback stability observation. nil when
 	// verification was not requested.
 	Verification *RollbackVerification `json:"verification,omitempty"`
 }
+
+// Rollback history Source values.
+const (
+	RollbackSourceManual    = "manual"
+	RollbackSourceAutomatic = "automatic"
+)
 
 // RollbackVerification records the outcome of post-rollback stability
 // observation. Status distinguishes passed / failed / cancelled (the user
@@ -83,7 +93,15 @@ func rollbackHistoryPath(appName string) (string, error) {
 // operator-supplied explanation ("" when none); verification is the
 // post-rollback stability outcome (nil when not requested) — it records how
 // the verification window ended while Status stays the execution outcome.
+// source distinguishes manual vs automatic recovery ("" defaults to manual in
+// display).
 func RecordRollbackResult(appName string, fromVer, toVer int, mode, reason string, verification *RollbackVerification, runErr error) {
+	RecordRollbackResultSource(appName, fromVer, toVer, mode, reason, verification, runErr, "")
+}
+
+// RecordRollbackResultSource is RecordRollbackResult with an explicit origin
+// tag (RollbackSourceManual / RollbackSourceAutomatic).
+func RecordRollbackResultSource(appName string, fromVer, toVer int, mode, reason string, verification *RollbackVerification, runErr error, source string) {
 	path, err := rollbackHistoryPath(appName)
 	if err != nil {
 		return
@@ -99,6 +117,7 @@ func RecordRollbackResult(appName string, fromVer, toVer int, mode, reason strin
 		Status: RollbackStatusSuccess,
 		Mode:   mode,
 		Reason: reason,
+		Source: source,
 	}
 	if runErr != nil {
 		rec.Status = RollbackStatusFailed

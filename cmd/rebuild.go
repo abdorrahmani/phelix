@@ -27,6 +27,7 @@ var rebuildBlueGreen bool
 var rebuildReplicas int
 var rebuildStrategy string
 var rebuildTag string
+var rebuildAutoRollback bool
 
 var RebuildCmd = &cobra.Command{
 	Use:   "rebuild [ID|AppName] --port <PORT>",
@@ -211,6 +212,13 @@ var RebuildCmd = &cobra.Command{
 				appInfo.ID,
 			)
 			tracker.Failed(startErr)
+			if rec != nil && rebuildAutoRollback {
+				// The version was recorded but never promoted; the previous
+				// classic process was stopped above, so the old version must
+				// be restarted to restore service. Brief downtime is
+				// unavoidable here — classic has no second slot.
+				runClassicAutoRollback(name, appInfo, rec.Version, portToUse, startErr)
+			}
 			return startErr
 		}
 		tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
@@ -293,6 +301,8 @@ func init() {
 	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().StringVar(&rebuildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
+	RebuildCmd.Flags().BoolVar(&rebuildAutoRollback, "auto-rollback", false,
+		"On a deploy-phase failure (start, health check, traffic switch), automatically restore the previous known-good version")
 }
 
 // runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a
@@ -365,7 +375,9 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
 	}
-	defer release()
+	// The lock is NOT deferred: automatic rollback must acquire it again after
+	// the failed deploy returns (same-process flock excludes re-acquisition),
+	// and the recovery path below releases it explicitly first.
 
 	// Deployment telemetry. The sink is nil when the CLI has no session, which
 	// makes the tracker nil and the deploy identical to an offline run. Queued
@@ -398,8 +410,11 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		err := bg.Deploy(context.Background())
 		reconcileAppWithDeploy(name)
 		if err != nil {
-			return err
+			release()
+			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+				proxyClient, healthProvider, logger, tracker, err)
 		}
+		release()
 		fmt.Printf("%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
 		// Build Report + regression analysis (observability only; the deploy
 		// outcome above is already committed).
@@ -427,8 +442,11 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	err = r.Deploy(context.Background())
 	reconcileAppWithDeploy(name)
 	if err != nil {
-		return err
+		release()
+		return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+			proxyClient, healthProvider, logger, tracker, err)
 	}
+	release()
 	fmt.Printf("%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
 		color.GreenString("✓"), color.CyanString("'%s'", name), rebuildReplicas)
 	// Build Report + regression analysis (observability only).
@@ -436,6 +454,118 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
 	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	return nil
+}
+
+// autoRollbackAfterFailedDeploy responds to one failed zero-downtime deploy
+// when --auto-rollback is enabled. It is the SINGLE trigger point per failed
+// deployment (called once, at the failure return), so the recovery cannot
+// double-fire. Build/compile failures and user cancellations never reach it
+// as triggers: RecoverableDeployFailure classifies the error, and the failed
+// version must have been recorded (a pure build failure has no version to
+// roll back from).
+func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort int,
+	freshSource *deploy.FreshBuildSource, proxyClient *proxy.Client,
+	healthProvider deploy.HealthConfigProvider, logger *colorLogger,
+	tracker *deploy.Tracker, deployErr error) error {
+
+	failedVer := freshSource.TargetVersion()
+	if !rebuildAutoRollback || !deploy.RecoverableDeployFailure(deployErr) {
+		return deployErr
+	}
+	fmt.Printf("%s %v\n", color.RedString("✗"), deployErr)
+	fmt.Printf("%s Automatic rollback enabled\n", color.BlueString("→"))
+
+	if failedVer <= 0 {
+		// No version was recorded (build failed after PrepareBuild but the
+		// error still classified as deploy-phase): nothing to roll back from.
+		fmt.Printf("%s No version was recorded for this deployment; nothing to roll back\n",
+			color.YellowString("⚠"))
+		return deployErr
+	}
+
+	res := deploy.RunAutoRollback(context.Background(), deploy.AutoRollbackOptions{
+		AppName:        name,
+		AppID:          appInfo.ID,
+		PublicPort:     publicPort,
+		Launcher:       deploy.DefaultLauncher,
+		ProxyClient:    proxyClient,
+		HealthProvider: healthProvider,
+		Logger:         logger,
+		Replicas:       rebuildReplicas,
+		FailedVersion:  failedVer,
+		FailureReason:  deploy.AutoRollbackReason(failedVer, deployErr),
+	})
+	reconcileAppWithDeploy(name)
+	if !res.Restored {
+		if phelixerr.IsCode(res.Err, phelixerr.CodeRollbackTargetNotFound) {
+			// No previous known-good version: report it, do not fabricate a
+			// rollback target.
+			fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n",
+				color.RedString("✗"))
+			fmt.Printf("  %v\n", res.Err)
+			return deployErr
+		}
+		tracker.Failed(deployErr)
+		fmt.Printf("%s Automatic rollback failed\n", color.RedString("✗"))
+		fmt.Printf("\nPrevious known-good version could not be restored safely.\n")
+		fmt.Printf("Application state may require manual intervention.\n")
+		return phelixerr.Wrapf(phelixerr.CodeAutoRollbackFailed, res.Err,
+			"deployment of v%d failed and automatic rollback did not succeed", failedVer)
+	}
+	if res.AlreadyServing {
+		// The failure never reached traffic (blue-green pre-switch abort,
+		// rolling failure at the first replica): the known-good version kept
+		// serving the whole time.
+		fmt.Printf("%s Deployment rolled back automatically — %s kept serving\n",
+			color.GreenString("✓"), color.CyanString("v%d", res.ToVer))
+		return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
+			"deployment of v%d failed; previous version v%d is serving again", failedVer, res.ToVer)
+	}
+	fmt.Printf("%s Deployment rolled back automatically\n", color.GreenString("✓"))
+	return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
+		"deployment of v%d failed; previous version v%d restored automatically", failedVer, res.ToVer)
+}
+
+// runClassicAutoRollback restores the previous known-good version after a
+// failed CLASSIC rebuild start. The old process was already stopped before
+// the failed start, so service is down; recovery restarts the known-good
+// binary (brief downtime is inherent to classic). History records the
+// recovery as automatic. Promotion of the failed version never happened, so
+// versions.json still names the known-good version as current.
+func runClassicAutoRollback(name string, appInfo *app.AppInfo, failedVer, port int, deployErr error) {
+	logger := &colorLogger{}
+	fmt.Printf("%s Automatic rollback enabled\n", color.BlueString("→"))
+	target, err := deploy.LastKnownGoodVersion(name)
+	if err != nil || target == failedVer {
+		fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n", color.RedString("✗"))
+		return
+	}
+	logger.Stepf("automatic rollback: restoring v%d", target)
+	binPath, _, err := deploy.VersionPaths(name, target)
+	if err != nil {
+		fmt.Printf("%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
+		return
+	}
+	destBin := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
+	if err := copyFileForRollback(binPath, destBin); err != nil {
+		fmt.Printf("%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
+		return
+	}
+	if err := app.Manager.StartApplication(appInfo.ID, port, name); err != nil {
+		fmt.Printf("%s Automatic rollback failed: could not start v%d: %v\n", color.RedString("✗"), target, err)
+		fmt.Printf("Application state may require manual intervention.\n")
+		deploy.RecordRollbackResultSource(name, failedVer, target, "classic",
+			deploy.AutoRollbackReason(failedVer, deployErr), nil, err, deploy.RollbackSourceAutomatic)
+		return
+	}
+	// Promotion failed earlier only as a warning path — here the known-good
+	// version is already current in versions.json; re-promote is idempotent.
+	if err := deploy.PromoteVersion(name, target, "classic"); err != nil {
+		logger.Warnf("could not re-promote v%d: %v", target, err)
+	}
+	deploy.RecordRollbackResultSource(name, failedVer, target, "classic",
+		deploy.AutoRollbackReason(failedVer, deployErr), nil, nil, deploy.RollbackSourceAutomatic)
+	logger.Successf("v%d started; previous version restored automatically", target)
 }
 
 // colorLogger implements deploy.Logger using the project's existing color
