@@ -19,6 +19,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - gRPC-based monitoring service (persistent, TLS-secured, auto-reconnecting)
 - **Encrypted environment variable management** (AES-256-GCM)
 - **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
+- **Canary & progressive rollouts** (route a percentage of traffic to the new version, verify health and metrics against the stable baseline, promote step by step — automatic rollback to the stable version on any regression)
 - **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
 - **Build Reports + Regression Alerts** (every successful build automatically records metrics — compiler, duration, cache status, binary size — and compares them against previous comparable builds to detect meaningful regressions, fully offline)
 - **Docker image building** (auto-generated multi-stage Dockerfiles for Go/Rust with optimized layer caching)
@@ -56,7 +57,10 @@ phelix init
 phelix build myapp --port 8080
 
 # Rebuild after a code change — zero downtime via blue-green
-phelix rebuild myapp --blue-green
+phelix rebuild
+
+# Ship a change to 5% of traffic first, verify, then promote
+phelix rebuild --canary 5 myapp --blue-green
 
 # Diagnose project compatibility (PORT usage, config, toolchain)
 phelix doctor
@@ -366,8 +370,12 @@ deploy:
 | `health.endpoints[].interval` | no | Monitoring check interval (e.g. `10s`, `1m`). Default `10s`. |
 | `health.endpoints[].retries` | no | Consecutive failures before marking DOWN. Default `3`. |
 | `health.endpoints[].mode` | no | Deploy health tier: `auto` (default), `http`, `tcp-only`, `none`. |
-| `deploy.strategy` | no | `classic` (default), `blue-green`, or `rolling`. |
+| `deploy.strategy` | no | `classic` (default), `blue-green`, `rolling`, `canary`, or `progressive`. |
 | `deploy.replicas` | no | Replica count for `rolling` (requires `deploy.strategy: rolling`). |
+| `deploy.rollout.canary` | no | Traffic share (percent) for `canary` before promotion. Default `10`. |
+| `deploy.rollout.duration` | no | Verification window for `canary` (e.g. `2m`). Default `30s`. |
+| `deploy.rollout.steps[]` | no | Progressive steps: `traffic` (percent) and optional `duration` per step; must strictly increase and end at `100`. |
+| `deploy.rollout.verification` | no | Regression thresholds: `interval`, `max_error_rate`, `max_error_delta`, `max_p95_factor` (see [Canary & progressive rollouts](#canary--progressive-rollouts)). |
 
 The configuration file is fully optional. Projects without `phelix.yaml`
 keep working exactly as before — every existing flag and prompt is unchanged.
@@ -438,17 +446,111 @@ deploy:
   replicas: 3
 ```
 
+```yaml
+deploy:
+  strategy: canary           # one-shot canary share, then promotion
+  rollout:
+    canary: 5%               # traffic share for the canary (default 10%)
+    duration: 2m             # verification window before promotion (default 30s)
+```
+
+```yaml
+deploy:
+  strategy: progressive      # step-by-step traffic increase
+  rollout:
+    steps:
+      - traffic: 5%
+        duration: 2m
+      - traffic: 25%
+        duration: 5m
+      - traffic: 50%
+        duration: 5m
+      - traffic: 100%        # the final promotion step (required)
+    verification:
+      interval: 5s           # health/metrics poll cadence (default 5s)
+      max_error_rate: 5      # absolute canary error-rate cap, percent (default 5)
+      max_error_delta: 2     # canary minus baseline, percentage points (default 2)
+      max_p95_factor: 3      # canary p95 at most N × baseline p95 (default 3)
+```
+
 Explicit flags still override the config (`--blue-green`, `--replicas`,
-`--port`), and `--strategy` overrides it for a single rebuild without editing
-the file — the same one-off override the dashboard sends for a remote rebuild.
-When nothing names a strategy, a rebuild keeps the one the app is already
-deployed with (from `deploy.json`) instead of falling back to classic:
-demoting a live blue-green/rolling app tears its instances down and drops its
-deployment state, so it has to be asked for — `strategy: classic` here, or
-`--strategy classic` for one rebuild. `phelix rollback` needs no
-configuration: it inspects the recorded deploy state and automatically uses
-classic or zero-downtime rollback to match how the app was actually deployed.
-`phelix proxy` is required for blue-green/rolling, exactly as with the flags.
+`--canary`, `--port`), and `--strategy` overrides it for a single rebuild
+without editing the file — the same one-off override the dashboard sends for a
+remote rebuild. When nothing names a strategy, a rebuild keeps the one the app
+is already deployed with (from `deploy.json`) instead of falling back to
+classic: demoting a live blue-green/rolling app tears its instances down and
+drops its deployment state, so it has to be asked for — `strategy: classic`
+here, or `--strategy classic` for one rebuild. A rollout runs on the
+blue-green topology, so an app whose last deploy was canary/progressive
+inherits blue-green when nothing names a strategy; put `strategy: canary` or
+`progressive` in `phelix.yaml` to make rollouts the app's default.
+`phelix rollback` needs no configuration: it inspects the recorded deploy
+state and automatically uses classic or zero-downtime rollback to match how
+the app was actually deployed. `phelix proxy` is required for
+blue-green/rolling/canary, exactly as with the flags.
+
+#### Canary & progressive rollouts
+
+A rollout deploys the new version *alongside* the stable one instead of
+replacing it: the stable version keeps serving while the new version (the
+canary) receives a share of live traffic through the proxy's weighted
+routing. Every step of the plan is verified before the next share is applied,
+and the final `100%` step is the promotion.
+
+```bash
+# One-shot canary: 5% of traffic for the verification window, then promote
+phelix rebuild myapp --canary 5
+
+# Same thing, resolved from phelix.yaml (deploy.strategy: canary)
+phelix rebuild myapp
+
+# Multi-step progressive rollout from phelix.yaml
+phelix rebuild myapp --strategy progressive
+```
+
+`--canary` requires an existing deployment to serve as the stable baseline —
+deploy with `--blue-green` (or `--replicas N`) first. A rollout over a
+rolling fleet consolidates it to a single stable instance (its first replica)
+for the comparison and promotion.
+
+```text
+→ step 1/4: routing 5% of traffic to the canary for 2m
+    v12  ███████████████████  95%
+    v13  █                     5%
+  → monitoring canary for 2m (health and metrics every 5s)
+    v13: 1,284 requests, 0.23% errors, p95 81ms
+    v12: 24,391 requests, 0.31% errors, p95 74ms
+  ✓ step 1/4 verified at 5% traffic
+...
+✓ traffic switched fully to slot green (zero downtime)
+✓ progressive rollout of myapp complete: v13 serves 100% of traffic on slot green
+```
+
+Safety behavior:
+
+* **Never route to an unhealthy canary.** The canary must pass the same
+  deploy-tier health gate blue-green uses before it receives any traffic, and
+  every step keeps probing it for the whole window.
+* **Metric comparison.** The proxy counts requests, 5xx/failed responses and
+  latency per backend, so each window compares the canary's error rate and
+  p95 latency against the stable baseline using the `verification` thresholds
+  above. With no per-backend metrics available the rollout degrades to
+  health-only verification instead of guessing.
+* **Automatic rollback to stable.** Any regression (health failure, error
+  rate, latency) aborts the rollout: traffic switches back to the stable
+  version at 100% atomically, the canary instance is stopped, and the failure
+  is reported (`CANARY_REGRESSION`). This restore is built into the rollout —
+  it does not need `--auto-rollback`, which still covers the cases where the
+  restore itself fails.
+* **Cancellation.** Ctrl-C aborts the rollout through the same restore path
+  (the stable version keeps 100% of traffic); the cleanup runs even though
+  the deploy was interrupted.
+* **Crash recovery.** A rollout interrupted by a crash leaves the stable
+  version serving; the next deploy restores stable routing and reclaims the
+  leftover canary before doing anything else.
+* **Success is durable.** The rollout is only reported successful after the
+  final promotion is complete: state persisted, version promoted in
+  `versions.json`, old instance drained.
 
 #### Validation
 
@@ -458,12 +560,16 @@ ignored:
 
 ```text
 Configuration error: invalid deploy.strategy "foobar"
-Hint: expected one of: classic, blue-green, rolling
+Hint: expected one of: classic, blue-green, rolling, canary, progressive
 ```
 
 Validated: YAML syntax, port range, strategy name, `replicas` (≥ 1, rolling
 only), endpoint names (required, unique), paths (must start with `/`),
-durations (`10s`, `1m`, …), modes (`auto`, `http`, `tcp-only`, `none`).
+durations (`10s`, `1m`, …), modes (`auto`, `http`, `tcp-only`, `none`), and
+the rollout plan: traffic percentages (whole numbers, `25` or `"25%"`), each
+step within `1-100`, strictly increasing shares ending at the `100%`
+promotion, non-negative durations, `canary` within `1-99`, and verification
+thresholds (positive interval, error rates within `0-100`, p95 factor ≥ 1).
 
 #### Related commands
 
@@ -563,14 +669,18 @@ app is running at.
 | `--build-arg, -a` | — | Extra build args (repeatable) |
 | `--tag` | — | Version label |
 | `--no-upload` | `false` | Skip server sync |
-| `--strategy` | — | Strategy for this rebuild only: `classic`, `blue-green`, or `rolling`. Overrides `phelix.yaml`; never written back to it |
+| `--strategy` | — | Strategy for this rebuild only: `classic`, `blue-green`, `rolling`, `canary`, or `progressive`. Overrides `phelix.yaml`; never written back to it |
 | `--blue-green` | `false` | Zero-downtime blue-green deploy (needs `phelix proxy`) |
 | `--replicas` | `0` | Zero-downtime rolling deploy over N replicas |
+| `--canary` | `0` | Canary deploy: route N percent (1-99) of traffic to the new version, verify health and metrics, then promote. Verification window/thresholds come from `phelix.yaml` `deploy.rollout` (needs `phelix proxy` and an existing deployment) |
 | `--auto-rollback` | `false` | On a deploy-phase failure (instance start, health check, traffic switch), automatically restore the previous known-good version. Build/compile failures never trigger it |
 
 ```bash
 phelix rebuild myapp --blue-green
 phelix rebuild myapp --replicas 3
+
+# Canary: 5% of traffic, verified, then promoted
+phelix rebuild myapp --canary 5
 
 # One-off override: deploy classic once, even though phelix.yaml says rolling
 phelix rebuild myapp --strategy classic
@@ -579,10 +689,15 @@ phelix rebuild myapp --strategy classic
 phelix rebuild myapp --strategy rolling
 ```
 
-`--strategy rolling` combined with `--replicas N` uses N replicas. An
-unrecognized value fails with `INVALID_ARGUMENT` (exit code `2`) before
-anything is built. This is the same override the dashboard sends for a remote
-rebuild — see [gRPC monitoring](docs/grpc-monitoring.md#24-one-off-deployment-overrides).
+`--strategy rolling` combined with `--replicas N` uses N replicas. `--canary`
+cannot be combined with `--strategy`, `--blue-green` or `--replicas` — it
+already names a strategy. An unrecognized value fails with
+`INVALID_ARGUMENT` (exit code `2`) before anything is built. This is the same
+override the dashboard sends for a remote rebuild — see
+[gRPC monitoring](docs/grpc-monitoring.md#24-one-off-deployment-overrides)
+(`canary`/`progressive` overrides resolve their plan from the app's
+`phelix.yaml`). See [Canary & progressive
+rollouts](#canary--progressive-rollouts) for the rollout behavior.
 
 #### Automatic Build Reports
 
@@ -776,6 +891,12 @@ Behavior:
   (no new version was recorded, nothing was displaced). Deployment-phase
   failures do: instance start failure, failed health checks, proxy switch
   failure, and a partially-completed rolling rollout.
+* **Canary/progressive.** A regression during a rollout is handled by the
+  rollout itself: the stable version is restored to 100% of traffic before
+  the command returns (`CANARY_REGRESSION`), so there is normally nothing
+  left for `--auto-rollback` to do — it reports "kept serving" instead of
+  faking a rollback. It still covers the corner cases where the rollout's
+  own restore fails.
 * **Blue-green.** A failed candidate is killed *before* the traffic switch,
   so the previous version usually kept serving the whole time — Phelix reports
   that ("kept serving") instead of faking a rollback. No history entry is

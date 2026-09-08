@@ -37,6 +37,7 @@ const (
 	OpAdd      Op = "add"      // enrol a brand-new app (open its public port)
 	OpRemove   Op = "remove"   // stop proxying for an app (close its public port)
 	OpStatus   Op = "status"   // report current targets for one or all apps
+	OpStats    Op = "stats"    // report per-backend request statistics for one app
 	OpPing     Op = "ping"     // liveness check used by rebuild before deploys
 	OpVersion  Op = "version"  // report daemon's control-protocol version
 	OpShutdown Op = "shutdown" // gracefully stop the daemon (used by 'phelix proxy stop')
@@ -53,10 +54,11 @@ type Request struct {
 
 // Response is the wire format from daemon -> client.
 type Response struct {
-	OK      bool        `json:"ok"`
-	Error   string      `json:"error,omitempty"`
-	Status  []AppStatus `json:"status,omitempty"`
-	Version int         `json:"version,omitempty"`
+	OK      bool          `json:"ok"`
+	Error   string        `json:"error,omitempty"`
+	Status  []AppStatus   `json:"status,omitempty"`
+	Stats   []BackendStat `json:"stats,omitempty"`
+	Version int           `json:"version,omitempty"`
 }
 
 // AppStatus is the per-app slice returned by OpStatus.
@@ -460,6 +462,22 @@ func (d *Daemon) Status(appName string) []AppStatus {
 	return out
 }
 
+// Stats reports per-backend request statistics for one app (or all apps if
+// name is ""). Statistics are cumulative since the daemon started.
+func (d *Daemon) Stats(appName string) []BackendStat {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	out := make([]BackendStat, 0, len(d.proxies))
+	for name, p := range d.proxies {
+		if appName != "" && name != appName {
+			continue
+		}
+		out = append(out, p.Stats()...)
+	}
+	return out
+}
+
 // handleConn processes one control connection: one JSON Request -> one Response.
 func (d *Daemon) handleConn(conn net.Conn) {
 	reader := bufio.NewReader(conn)
@@ -515,6 +533,9 @@ func (d *Daemon) handleConn(conn net.Conn) {
 
 	case OpStatus:
 		writeResponse(conn, Response{OK: true, Status: d.Status(req.AppName)})
+
+	case OpStats:
+		writeResponse(conn, Response{OK: true, Stats: d.Stats(req.AppName)})
 
 	case OpShutdown:
 		// Acknowledge first so the client gets a clean reply before we tear
@@ -661,6 +682,20 @@ func (c *Client) Status(ctx context.Context, appName string) ([]AppStatus, error
 	return resp.Status, nil
 }
 
+// Stats returns per-backend request statistics for one app ("" for all apps).
+// The counters are cumulative since the daemon started; diff two snapshots to
+// get windowed rates (the canary rollout verifier does exactly that).
+func (c *Client) Stats(ctx context.Context, appName string) ([]BackendStat, error) {
+	resp, err := c.Do(ctx, Request{Op: OpStats, AppName: appName})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK {
+		return nil, phelixerr.Newf(phelixerr.CodeProxy, "proxy: stats failed: %s", resp.Error)
+	}
+	return resp.Stats, nil
+}
+
 // Shutdown asks a running daemon to drain and exit. Used by 'phelix proxy stop'.
 func (c *Client) Shutdown(ctx context.Context) error {
 	resp, err := c.Do(ctx, Request{Op: OpShutdown})
@@ -693,10 +728,15 @@ func isPortOpen(port int) bool {
 
 // proxyProtoVersion is the daemon control-protocol version. It is bumped when
 // daemon behavior changes in a way an old, still-running daemon cannot honor
-// (e.g. backend-set dedupe). EnsureDaemon compares it against the running
-// daemon's version and restarts stale daemons so a rebuilt CLI never keeps
-// talking to a pre-upgrade proxy that would persist outdated state.
-const proxyProtoVersion = 2
+// (e.g. backend-set dedupe, weighted routing, per-backend stats).
+// EnsureDaemon compares it against the running daemon's version and restarts
+// stale daemons so a rebuilt CLI never keeps talking to a pre-upgrade proxy
+// that would persist outdated state.
+//
+// v3 added: Target.Weight on Add/Switch (an older daemon silently drops the
+// field and would split canary traffic 50/50) and the OpStats per-backend
+// metrics op (an older daemon answers "unknown op").
+const proxyProtoVersion = 3
 
 // daemonVersionOf returns the running daemon's protocol version. A daemon
 // older than the version handshake answers OpVersion with an unknown-op

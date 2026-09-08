@@ -83,7 +83,11 @@ func rebuildOverrideArgs(payload CommandPayload) ([]string, error) {
 	}
 
 	switch payload.Strategy {
-	case project.StrategyClassic, project.StrategyBlueGreen:
+	case project.StrategyClassic, project.StrategyBlueGreen,
+		project.StrategyCanary, project.StrategyProgressive:
+		// Canary/progressive resolve their rollout plan from the app's
+		// phelix.yaml (deploy.rollout.*), the same file a local rebuild in
+		// that directory reads; no extra payload fields are needed.
 		return []string{"--strategy", payload.Strategy}, nil
 	case project.StrategyRolling:
 		args := []string{"--strategy", payload.Strategy}
@@ -93,7 +97,7 @@ func rebuildOverrideArgs(payload CommandPayload) ([]string, error) {
 		return args, nil
 	}
 	return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
-		"unsupported deployment strategy %q: expected one of classic, blue-green, rolling", payload.Strategy)
+		"unsupported deployment strategy %q: expected one of: classic, blue-green, rolling, canary, progressive", payload.Strategy)
 }
 
 // Execute runs a lifecycle command against a managed application.

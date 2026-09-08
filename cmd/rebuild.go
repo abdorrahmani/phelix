@@ -3,7 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -28,6 +31,12 @@ var rebuildReplicas int
 var rebuildStrategy string
 var rebuildTag string
 var rebuildAutoRollback bool
+var rebuildCanary int
+
+// rolloutPlan is non-nil when this rebuild takes the canary/progressive path.
+// It is resolved by applyConfigDeployStrategy from --canary, --strategy or
+// phelix.yaml before the zero-downtime branch dispatches on it.
+var rolloutPlan *deploy.RolloutPlan
 
 var RebuildCmd = &cobra.Command{
 	Use:   "rebuild [ID|AppName] --port <PORT>",
@@ -134,13 +143,14 @@ var RebuildCmd = &cobra.Command{
 				color.YellowString("⚠"), project.FileName, serr)
 		}
 
-		// Zero-downtime deploy paths. When --blue-green or --replicas is set we
-		// hand off to the deploy package instead of the stop->build->start flow
-		// below. The deploy package builds via the same builder, starts the new
-		// instance on an internal port, runs the tiered health check, then
-		// atomically switches the proxy target — so the public port never drops
-		// a connection.
-		if rebuildBlueGreen || rebuildReplicas > 0 {
+		// Zero-downtime deploy paths. When --blue-green, --replicas or a
+		// canary/progressive rollout is selected we hand off to the deploy
+		// package instead of the stop->build->start flow below. The deploy
+		// package builds via the same builder, starts the new instance on an
+		// internal port, runs the tiered health check, then atomically
+		// switches the proxy target — so the public port never drops a
+		// connection.
+		if rebuildBlueGreen || rebuildReplicas > 0 || rolloutPlan != nil {
 			return runZeroDowntimeDeploy(appInfo, name, portToUse)
 		}
 
@@ -240,12 +250,13 @@ var RebuildCmd = &cobra.Command{
 }
 
 // applyConfigDeployStrategy resolves which deployment path this rebuild takes
-// and maps it onto the existing --blue-green / --replicas flags.
+// and maps it onto the existing --blue-green / --replicas flags or a rollout
+// plan.
 //
-// Precedence: explicit --blue-green/--replicas > --strategy > phelix.yaml >
-// the strategy the app is currently deployed with > classic. --strategy is the
-// one-off override (the backend's remote rebuild uses it); it is never written
-// back to phelix.yaml.
+// Precedence: explicit --blue-green/--replicas/--canary > --strategy >
+// phelix.yaml > the strategy the app is currently deployed with > classic.
+// --strategy is the one-off override (the backend's remote rebuild uses it);
+// it is never written back to phelix.yaml.
 //
 // Inheriting the deployed strategy matters: falling straight through to classic
 // meant any rebuild that named no strategy — a phelix.yaml without a deploy
@@ -255,7 +266,36 @@ var RebuildCmd = &cobra.Command{
 // tier and rollback record it holds. Demoting a deployment destroys state, so
 // it has to be asked for (--strategy classic, or deploy.strategy in
 // phelix.yaml), not defaulted into.
+//
+// A canary/progressive rollout runs on the blue-green topology, so an app whose
+// last deploy was a rollout inherits blue-green when nothing names a strategy —
+// a safe full cut-over, never a destructive downgrade. Put deploy.strategy:
+// canary/progressive in phelix.yaml to make rollouts the app's default.
 func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName string) error {
+	// The explicit canary flag: one-shot rollout at the given traffic share.
+	// It names a strategy just like --blue-green does, so combining them is a
+	// contradiction rather than a precedence question.
+	if cmd.Flags().Changed("canary") {
+		if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"--canary cannot be combined with --blue-green or --replicas")
+		}
+		if rebuildStrategy != "" {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"--canary cannot be combined with --strategy (the flag already selects a canary rollout)")
+		}
+		if rebuildCanary < 1 || rebuildCanary > 99 {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"--canary must be between 1 and 99 (percent of traffic for the canary), got %d", rebuildCanary)
+		}
+		plan, err := canaryPlanFromFlag(cfg, rebuildCanary)
+		if err != nil {
+			return err
+		}
+		rolloutPlan = plan
+		return nil
+	}
+
 	if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
 		return nil
 	}
@@ -276,9 +316,9 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 		rebuildBlueGreen = true
 	case project.StrategyRolling:
 		// Rolling needs a replica count. phelix.yaml supplies one when it has
-		// it — including for an override that only named the strategy — then the
-		// width the app is already running at (so an inherited rolling rebuild
-		// does not silently shrink it), and 1 is the floor.
+		// it — including for an override that only named the strategy — then
+		// the width the app is already running at (so an inherited rolling
+		// rebuild does not silently shrink it), and 1 is the floor.
 		rebuildReplicas = 1
 		switch {
 		case cfg != nil && cfg.Deploy != nil && cfg.Deploy.Replicas > 0:
@@ -286,9 +326,17 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 		case deployed != nil && len(deployed.Replicas) > 0:
 			rebuildReplicas = len(deployed.Replicas)
 		}
+	case project.StrategyCanary, project.StrategyProgressive:
+		// The rollout plan (steps, verification window, thresholds) lives in
+		// phelix.yaml; project.Load has already validated its shape.
+		plan, err := rolloutPlanFromProject(cfg, strategy)
+		if err != nil {
+			return err
+		}
+		rolloutPlan = plan
 	default:
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-			"invalid --strategy %q\nHint: expected one of: classic, blue-green, rolling", strategy)
+			"invalid --strategy %q\nHint: expected one of: classic, blue-green, rolling, canary, progressive", strategy)
 	}
 	return nil
 }
@@ -297,9 +345,10 @@ func init() {
 	RebuildCmd.Flags().IntVarP(&rebuildPort, "port", "p", 8080, "Port to run the application on (defaults to previous port if unspecified)")
 	RebuildCmd.Flags().StringArrayVarP(&rebuildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	RebuildCmd.Flags().BoolVar(&rebuildNoUpload, "no-upload", false, "If set, do not upload/send app information to the server after rebuild")
-	RebuildCmd.Flags().StringVar(&rebuildStrategy, "strategy", "", "Deployment strategy for this rebuild only: classic, blue-green, or rolling (overrides phelix.yaml, never written to it)")
+	RebuildCmd.Flags().StringVar(&rebuildStrategy, "strategy", "", "Deployment strategy for this rebuild only: classic, blue-green, rolling, canary, or progressive (overrides phelix.yaml, never written to it)")
 	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
+	RebuildCmd.Flags().IntVar(&rebuildCanary, "canary", 0, "Rebuild with a canary deployment: route N percent of traffic to the new version, verify health and metrics, then promote (requires 'phelix proxy' and an existing deployment)")
 	RebuildCmd.Flags().StringVar(&rebuildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
 	RebuildCmd.Flags().BoolVar(&rebuildAutoRollback, "auto-rollback", false,
 		"On a deploy-phase failure (start, health check, traffic switch), automatically restore the previous known-good version")
@@ -386,8 +435,54 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	if rebuildBlueGreen {
 		strategy = string(deploy.ModeBlueGreen)
 	}
+	if rolloutPlan != nil {
+		strategy = rolloutPlan.Strategy
+	}
 	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, strategy)
 	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
+
+	// Canary/progressive rollouts run step windows that can take minutes; a
+	// Ctrl-C must abort the rollout through its cancellation path (which
+	// restores the stable version to 100% of traffic) instead of killing the
+	// CLI mid-switch. Blue-green and rolling keep their existing behavior.
+	deployCtx := context.Background()
+	if rolloutPlan != nil {
+		signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
+		deployCtx = signalCtx
+	}
+
+	if rolloutPlan != nil {
+		ro := &deploy.Rollout{
+			AppName:        name,
+			AppID:          appInfo.ID,
+			PublicPort:     publicPort,
+			Plan:           *rolloutPlan,
+			ExtraArgs:      rebuildArgs,
+			Source:         freshSource,
+			Launcher:       deploy.DefaultLauncher,
+			ProxyClient:    proxyClient,
+			HealthProvider: healthProvider,
+			Logger:         logger,
+			PortHandoff:    stopPublicPortOwner,
+			Telemetry:      tracker,
+		}
+		err := ro.Deploy(deployCtx)
+		reconcileAppWithDeploy(name)
+		if err != nil {
+			release()
+			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+				proxyClient, healthProvider, logger, tracker, err)
+		}
+		release()
+		fmt.Printf("%s %s rollout complete for %s (%d steps)\n",
+			color.GreenString("✓"), rolloutPlan.Strategy, color.CyanString("'%s'", name), len(rolloutPlan.Steps))
+		// Build Report + regression analysis (observability only).
+		emitBuildReport(name, lastReport, gitCommit,
+			&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
+		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
+		return nil
+	}
 
 	if rebuildBlueGreen {
 		bg := &deploy.BlueGreen{

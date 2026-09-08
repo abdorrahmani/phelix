@@ -36,6 +36,13 @@ const (
 	CodeHealthCheckFailed   Code = "HEALTH_CHECK_FAILED"
 	CodeDeployLocked        Code = "DEPLOY_LOCKED"
 	CodeVersionNotFound     Code = "VERSION_NOT_FOUND"
+	// CodeCanaryRegression: a canary/progressive rollout was aborted because
+	// the new version degraded traffic it served (failed health probes or a
+	// metrics comparison against the stable baseline). Distinct from
+	// HEALTH_CHECK_FAILED so automation can tell "candidate never became
+	// healthy" from "candidate was healthy but regressed under real traffic".
+	// The rollout engine restores the stable version before returning this.
+	CodeCanaryRegression Code = "CANARY_REGRESSION"
 
 	// Rollback.
 	CodeRollbackFailed         Code = "ROLLBACK_FAILED"

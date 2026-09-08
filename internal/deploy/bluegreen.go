@@ -171,7 +171,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	// orphaned when this deploy overwrites their slot records. (The active
 	// slot is intentionally not rewritten here — a failed deploy must leave
 	// it byte-identical; a dead active PID is cleared after the switch.)
-	bg.recoverStaleSlots(ctx, state, grace)
+	recoverStaleSlots(ctx, state, bg.AppName, grace, bg.inFlight(bg.AppName), log)
 	if state.Slots[inactive] == nil {
 		state.Slots[inactive] = &Instance{Slot: inactive, Status: "stopped"}
 	}
@@ -532,7 +532,11 @@ func (bg *BlueGreen) storeState(state *DeployState) {
 // leftover that would otherwise run forever while its record gets overwritten
 // by the next deploy. Processes are verified by executable path before being
 // signalled so PID recycling can never make Phelix kill an unrelated victim.
-func (bg *BlueGreen) recoverStaleSlots(ctx context.Context, state *DeployState, grace time.Duration) {
+// Shared by the blue-green and canary-rollout engines.
+func recoverStaleSlots(ctx context.Context, state *DeployState, appName string, grace time.Duration, inFlight int64, log Logger) {
+	if log == nil {
+		log = &nopLogger{}
+	}
 	for name, inst := range state.Slots {
 		if name == state.ActiveSlot || inst == nil || inst.PID <= 0 {
 			continue
@@ -545,10 +549,10 @@ func (bg *BlueGreen) recoverStaleSlots(ctx context.Context, state *DeployState, 
 			}
 			continue // genuinely gone — nothing to reclaim
 		}
-		bg.logger().Stepf("recovering stale %s instance from previous deploy (slot %s, pid %d)", bg.AppName, name, inst.PID)
-		report := stopByPID(ctx, inst.PID, grace, bg.inFlight(bg.AppName), inst.BinaryPath)
+		log.Stepf("recovering stale %s instance from previous deploy (slot %s, pid %d)", appName, name, inst.PID)
+		report := stopByPID(ctx, inst.PID, grace, inFlight, inst.BinaryPath)
 		if report.ForceKilled {
-			bg.logger().Warnf("stale slot %s ignored SIGTERM; SIGKILL applied", name)
+			log.Warnf("stale slot %s ignored SIGTERM; SIGKILL applied", name)
 		}
 		inst.Status = "stopped"
 		inst.PID = 0

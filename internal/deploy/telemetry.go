@@ -34,6 +34,7 @@ const (
 	PhaseStarting    = "starting"
 	PhaseHealthCheck = "health_check"
 	PhaseSwitching   = "switching"
+	PhaseObserving   = "observing"
 	PhasePromoting   = "promoting"
 	PhaseDraining    = "draining"
 	PhaseCompleted   = "completed"
@@ -69,6 +70,13 @@ const (
 	EventReplicaReplaced           = "deployment.replica_replaced"
 	EventReplicaDraining           = "deployment.replica_draining"
 	EventReplicaStopped            = "deployment.replica_stopped"
+
+	// Canary / progressive rollout steps. The step's traffic share and its
+	// place in the plan travel in the event Message; a step that fails needs
+	// no dedicated event because the deployment's terminal failure event
+	// carries the regression reason.
+	EventRolloutStepStarted  = "deployment.rollout_step_started"
+	EventRolloutStepVerified = "deployment.rollout_step_verified"
 
 	EventCompleted = "deployment.completed"
 	EventFailed    = "deployment.failed"
@@ -605,6 +613,27 @@ func (t *Tracker) ReplicaStopped(index int, pid int, message string) {
 		return
 	}
 	t.emit(EventReplicaStopped, replicaOpts(index, eventOpts{pid: pid, message: message}))
+}
+
+// RolloutStepStarted reports that a canary/progressive rollout is about to
+// switch traffic for one step of its plan. The message carries the step's
+// position and traffic share (e.g. "step 2/4: routing 25% to the canary for 5m").
+func (t *Tracker) RolloutStepStarted(slot string, port int, message string) {
+	if t == nil {
+		return
+	}
+	t.transition(PhaseSwitching, StatusInProgress)
+	t.emit(EventRolloutStepStarted, eventOpts{slot: slot, internalPort: port, message: message})
+}
+
+// RolloutStepVerified reports that one rollout step's verification window
+// completed (health and metrics) and the rollout proceeds to the next step.
+func (t *Tracker) RolloutStepVerified(slot string, port int, message string) {
+	if t == nil {
+		return
+	}
+	t.transition(PhaseObserving, StatusInProgress)
+	t.emit(EventRolloutStepVerified, eventOpts{slot: slot, internalPort: port, message: message})
 }
 
 // Completed marks the deployment successful. Callers invoke it only once the

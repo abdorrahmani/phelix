@@ -177,6 +177,11 @@ type RollbackRecovery struct {
 // and toolchain failures (no new version was ever recorded) and user
 // interruptions are NOT recoverable — rolling back for them would restore
 // state that was never displaced.
+//
+// A canary regression is listed because the regression may be discovered only
+// after the rollout engine already moved traffic: when the engine restored the
+// stable version itself the recovery takes its no-op path, and when the
+// engine's own compensation failed this is the trigger for a real rollback.
 func RecoverableDeployFailure(err error) bool {
 	if err == nil {
 		return false
@@ -186,6 +191,7 @@ func RecoverableDeployFailure(err error) bool {
 	}
 	switch phelixerr.CodeOf(err) {
 	case phelixerr.CodeInstanceStartFailed, phelixerr.CodeHealthCheckFailed,
+		phelixerr.CodeCanaryRegression,
 		phelixerr.CodeProxy, phelixerr.CodeConnection, phelixerr.CodeDeployFailed:
 		return true
 	}
