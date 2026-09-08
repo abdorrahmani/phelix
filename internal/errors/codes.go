@@ -78,6 +78,12 @@ const (
 	CodeGRPC       Code = "GRPC_ERROR"
 	CodeServer     Code = "SERVER_ERROR"
 	CodeEncryption Code = "ENCRYPTION_ERROR"
+
+	// Remote command channel (MonitorStream). CodeUnimplemented marks a
+	// command type the agent cannot execute (e.g. rollback before a handler
+	// is wired); CodeUnavailable a capability temporarily not usable.
+	CodeUnimplemented Code = "UNIMPLEMENTED"
+	CodeUnavailable   Code = "UNAVAILABLE"
 )
 
 // String returns the stable code string.

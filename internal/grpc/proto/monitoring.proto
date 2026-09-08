@@ -263,6 +263,30 @@ message MonitorCommandRequest {
   // field set on a command other than "rebuild".
   string strategy = 4;  // "classic" | "blue-green" | "rolling"
   int32 replicas = 5;   // rolling only; >= 1
+
+  // Remote rollback options, carried by type="rollback" commands only
+  // (additive; older agents ignore them). Reuse the existing rollback engine —
+  // never a second implementation. See docs/remote-rollback-command-contract.md.
+  //
+  // target follows the local `phelix rollback --to` semantics exactly: "vN",
+  // "N", or a tag name, resolved on the agent via ResolveVersionOrTag. There is
+  // deliberately ONE selector field — the version-or-tag vocabulary of --to —
+  // so a request can never be ambiguous ("target_version=7 AND
+  // target_tag=v7" is unrepresentable by construction). Empty means "previous
+  // version", the same as a local rollback without --to.
+  string target = 6;
+  // Operator-supplied reason, validated on the agent by
+  // ValidateRollbackReason (trimmed, whitespace collapsed, <= 500 chars).
+  // Empty = no reason.
+  string reason = 7;
+  // Post-rollback stability observation window in MILLISECONDS
+  // (30000 = 30s), matching verify_duration_ms on RollbackLifecycleEvent.
+  // 0 = no verification.
+  int64 verify_duration_ms = 8;
+  // Read-only dry-run: uses the same planning path as the local --dry-run
+  // flag. Never mutates process/proxy/version/audit state; the structured
+  // RollbackPreview is delivered through the normal rollback event stream.
+  bool dry_run = 9;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -274,6 +298,12 @@ message MonitorCommandResult {
   string status = 4;
   string error = 5;
   int64 timestamp = 6;
+  // Machine-readable phelix error code (internal/errors/codes.go), set when
+  // status="error" and the failure carries a structured code
+  // (e.g. ROLLBACK_TARGET_NOT_FOUND, DEPLOY_LOCKED). Empty on success and for
+  // unclassified errors — never parse `error` to derive it. Additive field:
+  // older backends see "" and ignore it.
+  string error_code = 7;
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the

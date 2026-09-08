@@ -57,6 +57,11 @@ func agentDataDir() string {
 	return filepath.Join(homeDir, ".phelix")
 }
 
+// DataDir returns the persistent Phelix runtime data directory. Runtime
+// subsystems use this single resolver so identity, command ledgers, and other
+// durable state honor PHELIX_DATA_DIR and container storage consistently.
+func DataDir() string { return agentDataDir() }
+
 // getNetworkStats returns total network bytes in and out across all interfaces
 func getNetworkStats() (uint64, uint64, error) {
 	var totalBytesIn, totalBytesOut uint64

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
@@ -22,6 +23,9 @@ import (
 // accessing CLI logs.
 type RollbackReporter struct {
 	event *pb.RollbackLifecycleEvent
+	// localLog, when false, suppresses the local rollback.log append. Dry-run
+	// previews use it: a preview must not mutate audit state, even locally.
+	localLog bool
 }
 
 // RollbackStep constants identify each phase of the rollback lifecycle.
@@ -50,6 +54,21 @@ const (
 
 	// RollbackStepVersionPromoted Version promotion
 	RollbackStepVersionPromoted = "version_promoted"
+
+	// RollbackStepPreview Dry-run preview (read-only; no execution follows
+	// necessarily — the operator may cancel).
+	RollbackStepPreview = "preview"
+
+	// RollbackStepHistory History sync (read-only; carries the structured
+	// history records in the history field).
+	RollbackStepHistory = "history"
+
+	// RollbackStepVerifyPassed / RollbackStepVerifyFailed are the terminal
+	// verification events. A cancelled window reports step=verify_failed with
+	// verify_status="cancelled" — the outcome lives in the status field, the
+	// step only distinguishes pass from not-pass.
+	RollbackStepVerifyPassed = "verify_passed"
+	RollbackStepVerifyFailed = "verify_failed"
 
 	// RollbackStepComplete Terminal
 	RollbackStepComplete = "complete"
@@ -251,6 +270,46 @@ func sanitizeEventStrings(e *pb.RollbackLifecycleEvent) {
 	e.Error = sanitizeUTF8(e.Error)
 	e.UserId = sanitizeUTF8(e.UserId)
 	e.SessionToken = sanitizeUTF8(e.SessionToken)
+	e.ErrorCode = sanitizeUTF8(e.ErrorCode)
+	e.Reason = sanitizeUTF8(e.Reason)
+	e.VerifyStatus = sanitizeUTF8(e.VerifyStatus)
+	e.VerifyError = sanitizeUTF8(e.VerifyError)
+	e.TargetSource = sanitizeUTF8(e.TargetSource)
+	e.Source = sanitizeUTF8(e.Source)
+	e.RequestId = sanitizeUTF8(e.RequestId)
+
+	if e.Preview != nil {
+		p := e.Preview
+		p.AppName = sanitizeUTF8(p.AppName)
+		p.CurrentTag = sanitizeUTF8(p.CurrentTag)
+		p.CurrentCommit = sanitizeUTF8(p.CurrentCommit)
+		p.TargetTag = sanitizeUTF8(p.TargetTag)
+		p.TargetCommit = sanitizeUTF8(p.TargetCommit)
+		p.Strategy = sanitizeUTF8(p.Strategy)
+		p.CurrentSlot = sanitizeUTF8(p.CurrentSlot)
+		p.TargetSlot = sanitizeUTF8(p.TargetSlot)
+		p.HealthCheck = sanitizeUTF8(p.HealthCheck)
+		p.EnvSummary = sanitizeUTF8(p.EnvSummary)
+		for i, s := range p.Steps {
+			p.Steps[i] = sanitizeUTF8(s)
+		}
+		for i, s := range p.Warnings {
+			p.Warnings[i] = sanitizeUTF8(s)
+		}
+	}
+
+	for _, h := range e.History {
+		h.FromVersion = sanitizeUTF8(h.FromVersion)
+		h.ToVersion = sanitizeUTF8(h.ToVersion)
+		h.Status = sanitizeUTF8(h.Status)
+		h.Mode = sanitizeUTF8(h.Mode)
+		h.Reason = sanitizeUTF8(h.Reason)
+		h.Source = sanitizeUTF8(h.Source)
+		h.Error = sanitizeUTF8(h.Error)
+		h.VerifyStatus = sanitizeUTF8(h.VerifyStatus)
+		h.VerifyDuration = sanitizeUTF8(h.VerifyDuration)
+		h.VerifyError = sanitizeUTF8(h.VerifyError)
+	}
 
 	for k, v := range e.Metadata {
 		e.Metadata[k] = sanitizeUTF8(v)
@@ -304,7 +363,15 @@ func NewRollbackReporter(serverID, cliAppID, resolvedAppID, appName, mode, strat
 			Pid:              int32(os.Getpid()),
 			Metadata:         make(map[string]string),
 		},
+		localLog: true,
 	}
+}
+
+// DisableLocalLog suppresses the local rollback.log append for this reporter.
+// Used by the dry-run preview: the preview is read-only and must not mutate
+// audit state.
+func (r *RollbackReporter) DisableLocalLog() {
+	r.localLog = false
 }
 
 // Emit sends a lifecycle event for the given step. It fills in timestamp,
@@ -317,6 +384,9 @@ func (r *RollbackReporter) Emit(step string, success bool, msg string, duration 
 	r.event.Timestamp = time.Now().UnixMilli()
 	r.event.DurationMs = duration.Milliseconds()
 	r.event.Error = errMsg
+	if success || (step != RollbackStepFailed && step != RollbackStepVerifyFailed) {
+		r.event.ErrorCode = ""
+	}
 
 	// Ensure server ID is populated.
 	if r.event.ServerId == "" {
@@ -338,7 +408,9 @@ func (r *RollbackReporter) Emit(step string, success bool, msg string, duration 
 	gRPCQueued := enqueueRollbackEvent(r.event)
 
 	// Append to local rollback audit log.
-	r.writeLocalLog(step, success, msg, duration, errMsg, gRPCQueued)
+	if r.localLog {
+		r.writeLocalLog(step, success, msg, duration, errMsg, gRPCQueued)
+	}
 }
 
 // SetVersionList populates the version list for --list events.
@@ -349,6 +421,99 @@ func (r *RollbackReporter) SetVersionList(versions []*pb.RollbackVersionEntry) {
 // SetMetadata adds a key-value pair to the event metadata.
 func (r *RollbackReporter) SetMetadata(key, value string) {
 	r.event.Metadata[key] = value
+	if key == "request_id" {
+		r.event.RequestId = value
+	}
+}
+
+// SetRequestID sets the typed command correlation field and preserves the
+// legacy metadata fallback for backends that have not adopted field 32 yet.
+func (r *RollbackReporter) SetRequestID(requestID string) {
+	r.event.RequestId = requestID
+	if requestID != "" {
+		r.event.Metadata["request_id"] = requestID
+	} else {
+		delete(r.event.Metadata, "request_id")
+	}
+}
+
+// SetErrorCode sets the machine-readable phelix error code for a failed
+// terminal event (e.g. ROLLBACK_FAILED, ROLLBACK_VERIFY_FAILED). Must be a
+// code from internal/errors/codes.go, never a free-form message.
+func (r *RollbackReporter) SetErrorCode(code string) {
+	r.event.ErrorCode = code
+}
+
+// EmitError emits a terminal failure and derives its machine-readable code
+// from the typed error in the same operation. This prevents a terminal event
+// from being queued before its error_code is assigned.
+func (r *RollbackReporter) EmitError(step, msg string, duration time.Duration, err error) {
+	if err == nil {
+		err = phelixerr.New(phelixerr.CodeUnknown, "rollback failed")
+	}
+	r.event.ErrorCode = string(phelixerr.CodeOf(err))
+	r.Emit(step, false, msg, duration, err.Error())
+}
+
+// SetReason attaches the validated rollback reason to every subsequent event
+// of this rollback.
+func (r *RollbackReporter) SetReason(reason string) {
+	r.event.Reason = reason
+}
+
+// SetTargetSource records how the target was chosen ("explicit",
+// "interactive" or "previous").
+func (r *RollbackReporter) SetTargetSource(source string) {
+	r.event.TargetSource = source
+}
+
+// SetVerification marks the rollback as carrying a verification request. The
+// duration is recorded in milliseconds; the status/error fields are filled by
+// EmitVerifyOutcome at the terminal verification event.
+func (r *RollbackReporter) SetVerification(duration time.Duration) {
+	r.event.VerifyRequested = true
+	r.event.VerifyDurationMs = duration.Milliseconds()
+}
+
+// EmitVerifyOutcome reports the outcome of a requested verification window.
+// It emits one terminal event so the backend timeline ends in a state that
+// reflects whether the rollback truly held: a failed or cancelled window is
+// reported via error_code=ROLLBACK_VERIFY_FAILED on this event — never via
+// success=false on the earlier "complete" event, because the rollback
+// execution itself committed.
+func (r *RollbackReporter) EmitVerifyOutcome(status string, verifyErr string) {
+	r.event.VerifyStatus = status
+	r.event.VerifyError = verifyErr
+	switch status {
+	case deploy.RollbackVerifyFailed, deploy.RollbackVerifyCancelled:
+		r.SetErrorCode(string(phelixerr.CodeRollbackVerifyFailed))
+		r.Emit(RollbackStepVerifyFailed, false, "rollback verification "+status, 0, verifyErr)
+	default: // passed
+		r.SetErrorCode("")
+		r.Emit(RollbackStepVerifyPassed, true, "rollback verification passed", 0, "")
+	}
+}
+
+// SetPreview attaches the structured dry-run preview to the event.
+func (r *RollbackReporter) SetPreview(p *pb.RollbackPreview) {
+	r.event.Preview = p
+}
+
+// SetDryRun marks the event stream as a read-only dry-run report.
+func (r *RollbackReporter) SetDryRun(dryRun bool) {
+	r.event.DryRun = dryRun
+}
+
+// SetSource records the rollback origin ("manual" / "automatic"). Automatic
+// recoveries are otherwise indistinguishable from operator rollbacks on the
+// wire — the backend needs both to render an honest audit trail.
+func (r *RollbackReporter) SetSource(source string) {
+	r.event.Source = source
+}
+
+// SetHistory attaches structured history records to the event.
+func (r *RollbackReporter) SetHistory(entries []*pb.RollbackHistoryEntry) {
+	r.event.History = entries
 }
 
 // Event returns the underlying proto event for inspection or testing.

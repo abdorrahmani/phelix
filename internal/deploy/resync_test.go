@@ -51,6 +51,7 @@ func TestSnapshotForApp_BlueGreen_ReportsBothSlotsAndProxyTarget(t *testing.T) {
 		ActiveSlot:       SlotGreen,
 		ActiveVersion:    15,
 		LastDeploymentID: "dep-abc",
+		LastRequestID:    "req-abc",
 		Slots: map[string]*Instance{
 			SlotBlue: {
 				Slot: SlotBlue, Version: 14, Status: "stopped", Port: 49152, PID: 0,
@@ -82,6 +83,9 @@ func TestSnapshotForApp_BlueGreen_ReportsBothSlotsAndProxyTarget(t *testing.T) {
 	}
 	if snap.DeploymentID != "dep-abc" {
 		t.Fatalf("deployment id = %q, want the persisted dep-abc", snap.DeploymentID)
+	}
+	if snap.RequestID != "req-abc" {
+		t.Fatalf("request id = %q, want the persisted req-abc", snap.RequestID)
 	}
 	if snap.CurrentVersion != "v15" {
 		t.Fatalf("current version = %q, want v15", snap.CurrentVersion)
@@ -270,12 +274,16 @@ func TestSnapshotForApp_InFlightOperation_ReportsInProgress(t *testing.T) {
 
 	state := &DeployState{
 		AppName: "busy", AppID: "13", Mode: ModeBlueGreen, PublicPort: 3005,
-		Slots:  map[string]*Instance{SlotBlue: {Slot: SlotBlue, Status: "starting"}},
-		OpLock: &DeployLock{Operation: "deploy", StartedAt: time.Now(), PID: os.Getpid()},
+		Slots: map[string]*Instance{SlotBlue: {Slot: SlotBlue, Status: "starting"}},
 	}
 	if err := Store(state); err != nil {
 		t.Fatalf("store: %v", err)
 	}
+	release, err := AcquireDeployLock("busy", "deploy")
+	if err != nil {
+		t.Fatalf("acquire lock: %v", err)
+	}
+	defer release()
 
 	snap := SnapshotForApp(context.Background(), "busy", "13", nil)
 	if snap.Status != StatusInProgress {
@@ -283,6 +291,22 @@ func TestSnapshotForApp_InFlightOperation_ReportsInProgress(t *testing.T) {
 	}
 	if snap.Slots[0].Health != HealthPending {
 		t.Fatalf("a starting instance is pending, got %q", snap.Slots[0].Health)
+	}
+}
+
+func TestSnapshotForApp_StaleOpLockDoesNotReportInProgress(t *testing.T) {
+	resetHome(t)
+	state := &DeployState{
+		AppName: "stale", AppID: "14", Mode: ModeBlueGreen, PublicPort: 3006,
+		Slots:  map[string]*Instance{SlotBlue: {Slot: SlotBlue, Status: "stopped"}},
+		OpLock: &DeployLock{Operation: "rollback", StartedAt: time.Now(), PID: 999999},
+	}
+	if err := Store(state); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	snap := SnapshotForApp(context.Background(), "stale", "14", nil)
+	if snap.Status == StatusInProgress {
+		t.Fatalf("stale persisted OpLock must not report in_progress after owner exit")
 	}
 }
 

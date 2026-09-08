@@ -18,6 +18,7 @@ func TestToProtoDeploymentEvent_CarriesIdentityAndSnapshot(t *testing.T) {
 		AppID:           "42",
 		AppName:         "shop",
 		DeploymentID:    "dep-1",
+		RequestID:       "req-1",
 		Event:           deploy.EventProxySwitched,
 		Strategy:        "blue-green",
 		Phase:           deploy.PhasePromoting,
@@ -31,9 +32,11 @@ func TestToProtoDeploymentEvent_CarriesIdentityAndSnapshot(t *testing.T) {
 		Message:         "switched",
 		Timestamp:       now,
 		Snapshot: &deploy.Snapshot{
-			AppID:      "42",
-			AppName:    "shop",
-			Strategy:   "blue-green",
+			AppID:     "42",
+			AppName:   "shop",
+			RequestID: "req-1",
+			Strategy:  "blue-green",
+
 			ActiveSlot: "green",
 			Slots: []deploy.SlotState{
 				{Slot: "blue", Version: "v14", Status: "draining", Health: deploy.HealthHealthy, InternalPort: 49152, PID: 111},
@@ -57,6 +60,9 @@ func TestToProtoDeploymentEvent_CarriesIdentityAndSnapshot(t *testing.T) {
 	}
 	if out.GetDeploymentId() != "dep-1" {
 		t.Fatalf("deployment id = %q", out.GetDeploymentId())
+	}
+	if out.GetRequestId() != "req-1" || out.GetSnapshot().GetRequestId() != "req-1" {
+		t.Fatalf("request correlation event=%q snapshot=%q", out.GetRequestId(), out.GetSnapshot().GetRequestId())
 	}
 	if out.GetEvent() != deploy.EventProxySwitched {
 		t.Fatalf("event = %q", out.GetEvent())

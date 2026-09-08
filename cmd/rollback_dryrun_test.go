@@ -89,7 +89,7 @@ func capturePreview(t *testing.T, name string, target int) string {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	err = renderRollbackPreview(previewAppInfo(name), name, target, "", 0)
+	err = renderRollbackPreview(previewAppInfo(name), name, target, "", rollbackTargetExplicit, "", 0)
 	os.Stdout = old
 	w.Close()
 	if err != nil {

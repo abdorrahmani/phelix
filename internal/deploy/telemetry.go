@@ -152,6 +152,7 @@ type Snapshot struct {
 	AppID          string
 	AppName        string
 	DeploymentID   string
+	RequestID      string
 	Strategy       string
 	Phase          string
 	Status         string
@@ -180,6 +181,7 @@ type Event struct {
 	AppID        string
 	AppName      string
 	DeploymentID string
+	RequestID    string
 	Event        string
 	Strategy     string
 	Phase        string
@@ -213,10 +215,11 @@ type Sink interface {
 type Tracker struct {
 	mu sync.Mutex
 
-	sink    Sink
-	id      string
-	appID   string
-	appName string
+	sink      Sink
+	id        string
+	requestID string
+	appID     string
+	appName   string
 
 	strategy string
 	phase    string
@@ -267,6 +270,20 @@ func (t *Tracker) DeploymentID() string {
 	return t.id
 }
 
+// SetRequestID associates a backend command correlation id with every future
+// event and snapshot, and persists it when state is already bound.
+func (t *Tracker) SetRequestID(requestID string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.requestID = requestID
+	if t.state != nil {
+		t.state.LastRequestID = requestID
+	}
+	t.mu.Unlock()
+}
+
 // newDeploymentID mints an opaque, unique id for one deployment operation.
 // Phelix has no pre-existing per-operation identifier (the deploy lock records
 // operation/pid/time, which is not stable across the operation's events), so
@@ -294,6 +311,7 @@ func (t *Tracker) Bind(state *DeployState) {
 	t.state = state
 	if state != nil {
 		state.LastDeploymentID = t.id
+		state.LastRequestID = t.requestID
 	}
 	t.mu.Unlock()
 }
@@ -659,6 +677,7 @@ func (t *Tracker) emit(name string, o eventOpts) {
 		AppID:           t.appID,
 		AppName:         t.appName,
 		DeploymentID:    t.id,
+		RequestID:       t.requestID,
 		Event:           name,
 		Strategy:        t.strategy,
 		Phase:           t.phase,
@@ -700,6 +719,7 @@ func (t *Tracker) snapshotLocked() *Snapshot {
 		AppID:           t.appID,
 		AppName:         t.appName,
 		DeploymentID:    t.id,
+		RequestID:       t.requestID,
 		Strategy:        t.strategy,
 		Phase:           t.phase,
 		Status:          t.status,

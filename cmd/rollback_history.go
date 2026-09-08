@@ -9,6 +9,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
@@ -48,7 +50,7 @@ var rollbackHistoryCmd = &cobra.Command{
 			return err
 		}
 
-		return runRollbackHistory(appInfo.Name)
+		return runRollbackHistory(appInfo)
 	},
 }
 
@@ -58,19 +60,15 @@ func init() {
 	RollbackCmd.AddCommand(rollbackHistoryCmd)
 }
 
-// runRollbackHistory renders the rollback history for one app: the newest
-// --limit records, newest first, from the per-app structured history file.
-func runRollbackHistory(appName string) error {
+// runRollbackHistory renders the rollback history for one app — the newest
+// --limit records, newest first, from the per-app structured history file —
+// and reports the same structured records to the backend (one "history"
+// event), so the dashboard can display history without parsing CLI output.
+func runRollbackHistory(appInfo *app.AppInfo) error {
+	appName := appInfo.Name
 	records, skipped, err := deploy.ReadRollbackHistory(appName)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read rollback history", err)
-	}
-
-	fmt.Printf("Rollback History — %s\n\n", color.CyanString(appName))
-
-	if len(records) == 0 {
-		fmt.Println("No rollback history found.")
-		return nil
 	}
 
 	// Newest first. History lines are appended oldest-first; sort on the
@@ -81,6 +79,18 @@ func runRollbackHistory(appName string) error {
 	})
 	if len(records) > rollbackHistoryLimit {
 		records = records[:rollbackHistoryLimit]
+	}
+
+	// Backend sync: structured records, newest-first, limited — the same
+	// slice the table below renders. Read-only; a sync failure never breaks
+	// the command.
+	emitRollbackHistory(appInfo, records, rollbackHistoryLimit, skipped)
+
+	fmt.Printf("Rollback History — %s\n\n", color.CyanString(appName))
+
+	if len(records) == 0 {
+		fmt.Println("No rollback history found.")
+		return nil
 	}
 
 	if skipped > 0 {
@@ -126,4 +136,43 @@ func runRollbackHistory(appName string) error {
 	}
 	table.Render()
 	return nil
+}
+
+// emitRollbackHistory reports the rendered history slice to the backend as
+// structured records. Mirrors the local record semantics: status is the
+// EXECUTION outcome, the mode is the strategy that rollback actually used,
+// and the verification block carries the window outcome separately.
+func emitRollbackHistory(appInfo *app.AppInfo, records []deploy.RollbackHistoryRecord, limit, skipped int) {
+	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appInfo.Name, "history", "history", "", "", "")
+	r.SetHistory(rollbackHistoryEntries(records))
+	if skipped > 0 {
+		r.SetMetadata("malformed_skipped", fmt.Sprintf("%d", skipped))
+	}
+	r.SetMetadata("limit", fmt.Sprintf("%d", limit))
+	r.SetMetadata("record_count", fmt.Sprintf("%d", len(records)))
+	r.Emit(phelixgrpc.RollbackStepHistory, true, fmt.Sprintf("reported %d rollback history records", len(records)), 0, "")
+}
+
+// rollbackHistoryEntries maps local history records onto the wire message.
+func rollbackHistoryEntries(records []deploy.RollbackHistoryRecord) []*pb.RollbackHistoryEntry {
+	entries := make([]*pb.RollbackHistoryEntry, 0, len(records))
+	for _, rec := range records {
+		e := &pb.RollbackHistoryEntry{
+			Time:        rec.Time.UnixMilli(),
+			FromVersion: rec.From,
+			ToVersion:   rec.To,
+			Status:      rec.Status,
+			Mode:        rec.Mode,
+			Reason:      rec.Reason,
+			Source:      rec.Source,
+			Error:       rec.Error,
+		}
+		if rec.Verification != nil {
+			e.VerifyStatus = rec.Verification.Status
+			e.VerifyDuration = rec.Verification.Duration
+			e.VerifyError = rec.Verification.Error
+		}
+		entries = append(entries, e)
+	}
+	return entries
 }

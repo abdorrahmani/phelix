@@ -20,40 +20,45 @@ type ConfigManager struct {
 	configs  map[string]*AppHealthConfig // key is app ID
 }
 
-var configMgr *ConfigManager
+var (
+	configMgr   *ConfigManager
+	configMgrMu sync.Mutex
+)
 
-// InitConfigManager initializes the config manager
+// InitConfigManager initializes the config manager for the current persistent
+// configuration root. HOME may change in embedded/test processes, so a manager
+// cached for a different root must never be reused.
 func InitConfigManager() (*ConfigManager, error) {
-	if configMgr != nil {
-		return configMgr, nil
-	}
-
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to resolve home directory", err)
 	}
-
-	// Persist per-app under ~/.phelix/apps/<AppName>/health.json
 	basePath := filepath.Join(home, ".phelix", "apps")
+
+	configMgrMu.Lock()
+	defer configMgrMu.Unlock()
+	if configMgr != nil && configMgr.basePath == basePath {
+		return configMgr, nil
+	}
+
 	if err := os.MkdirAll(basePath, 0755); err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create health config directory %s", basePath)
 	}
-
-	configMgr = &ConfigManager{
+	cm := &ConfigManager{
 		basePath: basePath,
 		configs:  make(map[string]*AppHealthConfig),
 	}
-
-	// Load all existing configs
-	if err := configMgr.loadAllConfigs(); err != nil {
+	if err := cm.loadAllConfigs(); err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to load health configs", err)
 	}
-
+	configMgr = cm
 	return configMgr, nil
 }
 
-// GetConfigManager returns the singleton instance
+// GetConfigManager returns the singleton instance.
 func GetConfigManager() *ConfigManager {
+	configMgrMu.Lock()
+	defer configMgrMu.Unlock()
 	if configMgr == nil {
 		panic("ConfigManager not initialized")
 	}

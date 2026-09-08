@@ -64,7 +64,12 @@ type RollbackOptions struct {
 	PublicPort int
 	// TargetVersion is 0 for "previous", or explicit vN.
 	TargetVersion int
-	Replicas      int // for rolling mode; 0 = use state
+	// ExpectedCurrentVersion, when positive, binds a caller's pre-lock target
+	// resolution to the same current version under which it was computed. A
+	// concurrent promotion rejects the rollback instead of silently changing its
+	// logical from/previous relationship.
+	ExpectedCurrentVersion int
+	Replicas               int // for rolling mode; 0 = use state
 
 	Source         BuildSource // if nil, ExistingVersionSource is constructed
 	Launcher       InstanceLauncher
@@ -111,46 +116,15 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	if opts.AppName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: rollback requires app name")
 	}
-	var fromVer int
-	if opts.Recovery != nil && opts.Recovery.FailedVersion > 0 {
-		fromVer = opts.Recovery.FailedVersion
-	} else {
-		fromVer, _ = CurrentVersion(opts.AppName)
-	}
 
-	src := opts.Source
-	if src == nil {
-		src = &ExistingVersionSource{AppName: opts.AppName, Version: opts.TargetVersion}
-	}
-	toVer := opts.TargetVersion
-	if ev, ok := src.(*ExistingVersionSource); ok {
-		toVer = ev.TargetVersion()
-	} else if va, ok := src.(VersionAwareSource); ok {
-		toVer = va.TargetVersion()
-	}
-	if toVer <= 0 {
-		return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: could not resolve rollback target version for %q", opts.AppName)
-	}
-	// Rolling back to the version already recorded as current is a no-op
-	// request for a manual rollback — executing it would restart the instance
-	// while claiming a version change that never happened. Recovery is the
-	// exception: a partial rolling rollout can leave the failed version
-	// serving replicas while versions.json still names the known-good
-	// version, and the recovery legitimately redeploys it.
-	if opts.Recovery == nil && fromVer > 0 && toVer == fromVer {
-		return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: already running v%d; nothing to roll back to", fromVer)
-	}
-
+	// All authoritative reads and validation happen under the same per-app lock
+	// as execution. Resolving current/previous before locking allowed a concurrent
+	// promotion to turn a validated rollback into the wrong transaction.
 	release, err := AcquireDeployLock(opts.AppName, "rollback")
 	if err != nil {
 		return err
 	}
 	defer release()
-
-	log := opts.Logger
-	if log == nil {
-		log = &nopLogger{}
-	}
 
 	state, err := Load(opts.AppName)
 	if err != nil {
@@ -162,6 +136,42 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 			)
 		}
 		return err
+	}
+	if state == nil || (state.Mode != ModeBlueGreen && state.Mode != ModeRolling) {
+		return phelixerr.Newf(phelixerr.CodeRollbackFailed,
+			"deploy: rollback unsupported for mode %q", state.Mode)
+	}
+
+	var fromVer int
+	if opts.Recovery != nil && opts.Recovery.FailedVersion > 0 {
+		fromVer = opts.Recovery.FailedVersion
+	} else {
+		fromVer, err = CurrentVersion(opts.AppName)
+		if err != nil {
+			return err
+		}
+		if opts.ExpectedCurrentVersion > 0 && fromVer != opts.ExpectedCurrentVersion {
+			return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound,
+				"deploy: current version changed from v%d to v%d while rollback waited for the deploy lock; resolve the target again",
+				opts.ExpectedCurrentVersion, fromVer)
+		}
+	}
+
+	src := opts.Source
+	if src == nil {
+		src = &ExistingVersionSource{AppName: opts.AppName, Version: opts.TargetVersion}
+	}
+	toVer, err := resolveRollbackTarget(opts.AppName, opts.TargetVersion, src)
+	if err != nil {
+		return err
+	}
+	if opts.Recovery == nil && fromVer > 0 && toVer == fromVer {
+		return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: already running v%d; nothing to roll back to", fromVer)
+	}
+
+	log := opts.Logger
+	if log == nil {
+		log = &nopLogger{}
 	}
 
 	// Instances from an aborted predecessor may still be recorded as running
@@ -252,16 +262,12 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	}
 	if deployErr != nil {
 		if opts.Recovery != nil {
-			// Recovery failure must not claim the active instance is
-			// untouched — the recovery deploy may already have switched or
-			// drained instances before failing.
-			return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, deployErr,
+			// Recovery failure must not claim the active instance is untouched —
+			// the recovery deploy may already have switched or drained instances.
+			return wrapRollbackError(deployErr,
 				"automatic recovery failed; application state may require manual intervention")
 		}
-		// "active instance untouched" is only claimed on this path because the
-		// blue-green/rolling rollback abort leaves the previous instance active
-		// (the deploy layer already guarantees that on failure).
-		return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, deployErr, "rollback failed; active instance untouched")
+		return wrapRollbackError(deployErr, "rollback failed")
 	}
 
 	// Record the successful rollback in state and audit log. The deploy path
@@ -272,16 +278,19 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	// status contradict the live instances and the proxy.
 	state, err = Load(opts.AppName)
 	if err != nil {
-		log.Warnf("failed to reload deploy state after rollback: %v", err)
-	} else {
-		state.LastRollback = &RollbackRecord{
-			FromVersion: fromVer,
-			ToVersion:   toVer,
-			At:          ev.Timestamp,
-		}
-		if err := Store(state); err != nil {
-			log.Warnf("failed to persist rollback record: %v", err)
-		}
+		deployErr = phelixerr.Wrap(phelixerr.CodeFilesystem,
+			"reload authoritative deploy state after rollback", err)
+		return deployErr
+	}
+	state.LastRollback = &RollbackRecord{
+		FromVersion: fromVer,
+		ToVersion:   toVer,
+		At:          ev.Timestamp,
+	}
+	if err := Store(state); err != nil {
+		deployErr = phelixerr.Wrap(phelixerr.CodeFilesystem,
+			"persist rollback record in deploy state", err)
+		return deployErr
 	}
 	if opts.Recovery == nil {
 		appendRollbackLog(opts.AppName, ev)
@@ -327,4 +336,44 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 		}
 	}
 	return nil
+}
+
+func wrapRollbackError(err error, message string) error {
+	if err == nil {
+		return nil
+	}
+	code := phelixerr.CodeOf(err)
+	if code == phelixerr.CodeUnknown || code == phelixerr.CodeDeployFailed {
+		code = phelixerr.CodeRollbackFailed
+	}
+	return phelixerr.Wrap(code, message, err)
+}
+
+func resolveRollbackTarget(appName string, requested int, src BuildSource) (int, error) {
+	toVer := requested
+	if ev, ok := src.(*ExistingVersionSource); ok {
+		if ev.Version > 0 {
+			toVer = ev.Version
+		} else {
+			var err error
+			toVer, err = PreviousVersion(appName)
+			if err != nil {
+				return 0, err
+			}
+		}
+	} else if va, ok := src.(VersionAwareSource); ok {
+		toVer = va.TargetVersion()
+	}
+	if toVer <= 0 {
+		return 0, phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound,
+			"deploy: could not resolve rollback target version for %q", appName)
+	}
+	// Validate the artifact now, under lock, rather than deferring discovery to
+	// Build after history setup. Preserve VERSION_NOT_FOUND for automation.
+	if _, ok := src.(*ExistingVersionSource); ok {
+		if _, _, err := VersionPaths(appName, toVer); err != nil {
+			return 0, err
+		}
+	}
+	return toVer, nil
 }

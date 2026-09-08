@@ -119,6 +119,9 @@ type DeployState struct {
 	// by another process — can be correlated with the events that deployment
 	// emitted. Absent for deployments made before telemetry existed.
 	LastDeploymentID string `json:"last_deployment_id,omitempty"`
+	// LastRequestID correlates the most recent deployment topology with the
+	// backend command that initiated it. Empty for local deployments.
+	LastRequestID string `json:"last_request_id,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }

@@ -75,6 +75,11 @@ type AutoRollbackOptions struct {
 	// FailureReason becomes the history reason, e.g.
 	// "Deployment v13 failed: ... <structured deploy error>".
 	FailureReason string
+	// Telemetry observes the recovery deploy as a deployment transition.
+	// Optional: a nil Tracker is silent. Manual rollbacks report their
+	// deployment transition through the CLI; recovery must report the same,
+	// or the dashboard shows a rollback with no resulting deployment state.
+	Telemetry *Tracker
 }
 
 // AutoRollbackTarget resolves the previous known-good version for a failed
@@ -136,6 +141,7 @@ func RunAutoRollback(ctx context.Context, opts AutoRollbackOptions) AutoRollback
 		Logger:         opts.Logger,
 		Notifier:       opts.Notifier,
 		InFlight:       opts.InFlight,
+		Telemetry:      opts.Telemetry,
 		Reason:         opts.FailureReason,
 		SourceTag:      RollbackSourceAutomatic,
 		// Recovery marks this as automatic post-deployment recovery: history

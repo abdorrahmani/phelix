@@ -2,7 +2,9 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -91,6 +93,10 @@ func VerifyRollbackStability(ctx context.Context, opts VerificationOptions) erro
 		log.Infof("verification tier selected: %s", tier)
 	} else {
 		targets = servingTargets(state)
+		if len(targets) == 0 {
+			return phelixerr.Newf(phelixerr.CodeHealthCheckFailed,
+				"deploy: no running instance recorded for %q; nothing to verify", opts.AppName)
+		}
 		// The tier recorded by the deploy is reused when present; otherwise it
 		// is resolved the same way the deploy resolves it (SelectTier against
 		// the first serving address).
@@ -125,7 +131,21 @@ func VerifyRollbackStability(ctx context.Context, opts VerificationOptions) erro
 		// to the end of the window so the operator sees how long (and that)
 		// the app stayed unhealthy.
 		for _, tgt := range targets {
-			if failErr == nil && !health.Check(ctx, tgt.tier, tierCfg, tgt.addr, tgt.pid, nil) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return failErr
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, remaining)
+			healthy := checkVerificationTarget(probeCtx, tgt, tierCfg)
+			probeErr := probeCtx.Err()
+			cancel()
+			if errors.Is(probeErr, context.Canceled) && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if failErr == nil && !healthy {
 				failErr = phelixerr.Newf(phelixerr.CodeHealthCheckFailed,
 					"instance %s (pid %d, %s) is unhealthy", tgt.label, tgt.pid, tgt.addr)
 			}
@@ -143,6 +163,22 @@ func VerifyRollbackStability(ctx context.Context, opts VerificationOptions) erro
 		case <-ticker.C:
 		}
 	}
+}
+
+// checkVerificationTarget keeps the package-internal TCP verification probe
+// bounded by the observation context. health.Check's deploy-time TCP primitive
+// uses DialTimeout without context, which can outlive a short verify window.
+func checkVerificationTarget(ctx context.Context, tgt verifyTarget, cfg *health.DeployTierConfig) bool {
+	if tgt.tier != health.Tier3TCP {
+		return health.Check(ctx, tgt.tier, cfg, tgt.addr, tgt.pid, nil)
+	}
+	d := net.Dialer{Timeout: health.DefaultProbeTimeout}
+	conn, err := d.DialContext(ctx, "tcp", tgt.addr)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // tierConfig resolves the deploy-tier health config for verification from the

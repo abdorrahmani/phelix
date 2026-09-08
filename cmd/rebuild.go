@@ -483,6 +483,14 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 		return deployErr
 	}
 
+	// The recovery is its own deployment operation: give it a fresh tracker
+	// (its own deployment_id) so its transitions never mix with the failed
+	// deploy's, matching how a manual rollback reports. Silent when the
+	// deploy state is unreadable — telemetry must never block recovery.
+	recoveryTracker := tracker
+	if st, serr := deploy.Load(name); serr == nil && st != nil && st.Mode != "" {
+		recoveryTracker = deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, string(st.Mode))
+	}
 	res := deploy.RunAutoRollback(context.Background(), deploy.AutoRollbackOptions{
 		AppName:        name,
 		AppID:          appInfo.ID,
@@ -494,24 +502,31 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 		Replicas:       rebuildReplicas,
 		FailedVersion:  failedVer,
 		FailureReason:  deploy.AutoRollbackReason(failedVer, deployErr),
+		Telemetry:      recoveryTracker,
 	})
 	reconcileAppWithDeploy(name)
 	if !res.Restored {
 		if phelixerr.IsCode(res.Err, phelixerr.CodeRollbackTargetNotFound) {
 			// No previous known-good version: report it, do not fabricate a
 			// rollback target.
+			emitAutoRollbackEvent(appInfo, name, "", failedVer, 0,
+				deploy.AutoRollbackReason(failedVer, deployErr), false, res.Err)
 			fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n",
 				color.RedString("✗"))
 			fmt.Printf("  %v\n", res.Err)
 			return deployErr
 		}
 		tracker.Failed(deployErr)
+		emitAutoRollbackEvent(appInfo, name, "", failedVer, res.ToVer,
+			deploy.AutoRollbackReason(failedVer, deployErr), false, res.Err)
 		fmt.Printf("%s Automatic rollback failed\n", color.RedString("✗"))
 		fmt.Printf("\nPrevious known-good version could not be restored safely.\n")
 		fmt.Printf("Application state may require manual intervention.\n")
 		return phelixerr.Wrapf(phelixerr.CodeAutoRollbackFailed, res.Err,
 			"deployment of v%d failed and automatic rollback did not succeed", failedVer)
 	}
+	emitAutoRollbackEvent(appInfo, name, "", failedVer, res.ToVer,
+		deploy.AutoRollbackReason(failedVer, deployErr), res.AlreadyServing, nil)
 	if res.AlreadyServing {
 		// The failure never reached traffic (blue-green pre-switch abort,
 		// rolling failure at the first replica): the known-good version kept
@@ -537,25 +552,35 @@ func runClassicAutoRollback(name string, appInfo *app.AppInfo, failedVer, port i
 	fmt.Printf("%s Automatic rollback enabled\n", color.BlueString("→"))
 	target, err := deploy.LastKnownGoodVersion(name)
 	if err != nil || target == failedVer {
+		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, 0,
+			deploy.AutoRollbackReason(failedVer, deployErr), false,
+			phelixerr.New(phelixerr.CodeRollbackTargetNotFound, "no previous known-good version available"))
 		fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n", color.RedString("✗"))
 		return
 	}
 	logger.Stepf("automatic rollback: restoring v%d", target)
 	binPath, _, err := deploy.VersionPaths(name, target)
 	if err != nil {
+		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
+			deploy.AutoRollbackReason(failedVer, deployErr), false, err)
 		fmt.Printf("%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
 		return
 	}
 	destBin := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
 	if err := copyFileForRollback(binPath, destBin); err != nil {
+		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
+			deploy.AutoRollbackReason(failedVer, deployErr), false, err)
 		fmt.Printf("%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
 		return
 	}
 	if err := app.Manager.StartApplication(appInfo.ID, port, name); err != nil {
 		fmt.Printf("%s Automatic rollback failed: could not start v%d: %v\n", color.RedString("✗"), target, err)
 		fmt.Printf("Application state may require manual intervention.\n")
+		startErr := phelixerr.Wrapf(phelixerr.CodeRollbackFailed, err, "could not start v%d", target)
 		deploy.RecordRollbackResultSource(name, failedVer, target, "classic",
 			deploy.AutoRollbackReason(failedVer, deployErr), nil, err, deploy.RollbackSourceAutomatic)
+		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
+			deploy.AutoRollbackReason(failedVer, deployErr), false, startErr)
 		return
 	}
 	// Promotion failed earlier only as a warning path — here the known-good
@@ -565,6 +590,8 @@ func runClassicAutoRollback(name string, appInfo *app.AppInfo, failedVer, port i
 	}
 	deploy.RecordRollbackResultSource(name, failedVer, target, "classic",
 		deploy.AutoRollbackReason(failedVer, deployErr), nil, nil, deploy.RollbackSourceAutomatic)
+	emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
+		deploy.AutoRollbackReason(failedVer, deployErr), false, nil)
 	logger.Successf("v%d started; previous version restored automatically", target)
 }
 

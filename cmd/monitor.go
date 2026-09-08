@@ -10,6 +10,7 @@ import (
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/spf13/cobra"
 )
@@ -94,6 +95,19 @@ func runMonitor() error {
 	// misses a health result. The reporter resolves the service client per-send,
 	// so it keeps working across reconnects.
 	healthDaemon.SetReporter(phelixgrpc.NewGrpcHealthReporter(c))
+
+	// Load the durable command ledger before any stream can accept rollback
+	// requests. Corrupt/unreadable state fails startup closed instead of losing
+	// idempotency across a daemon restart.
+	if err := phelixgrpc.InitializeRollbackLedger(); err != nil {
+		return err
+	}
+
+	// Register command execution before opening streams; otherwise a command can
+	// arrive in the Start race window and be rejected as unimplemented.
+	monitor.SetRollbackHandler(func(payload monitor.CommandPayload) error {
+		return RemoteRollback(payload)
+	})
 
 	// Start the client: connects, and runs the reconnect loop, monitor stream,
 	// agent stream and metadata/version syncs in the background.

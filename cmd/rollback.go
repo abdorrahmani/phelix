@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -130,38 +131,27 @@ var RollbackCmd = &cobra.Command{
 			return listRollbackVersions(name, policy, appInfo)
 		}
 
-		// Resolve target version.
-		target := 0
-		if rollbackTo != "" {
-			target, err = deploy.ResolveVersionOrTag(name, rollbackTo)
-			if err != nil {
-				return phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "could not resolve rollback target", err)
-			}
-		} else {
-			target, err = deploy.PreviousVersion(name)
-			if err != nil {
-				return phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "could not resolve previous version", err)
-			}
+		// Resolve target version through the shared helper (same path the
+		// remote rollback command uses).
+		target, targetTag, targetSource, err := resolveRollbackTarget(name, rollbackTo)
+		if err != nil {
+			return err
 		}
-
-		// Same guard ExecuteRollback and PlanRollback apply: rolling back to
-		// the version already serving is a no-op request, and executing it
-		// would restart the instance while claiming a version change that
-		// never happened (history would record vN -> vN).
-		if cur, _ := deploy.CurrentVersion(name); cur > 0 && target == cur {
-			return phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound,
-				"already running v%d; nothing to roll back to", target)
+		if fromPicker {
+			// The picker chose deliberately; the target came from a real
+			// version selection, not the --to flag.
+			targetSource = rollbackTargetInteractive
 		}
 
 		if rollbackDryRun {
-			return renderRollbackPreview(appInfo, name, target, reason, verifyDuration)
+			return renderRollbackPreview(appInfo, name, target, targetTag, targetSource, reason, verifyDuration)
 		}
 
 		// Interactive picker path: show the rollback preview and require an
 		// explicit confirmation before anything executes. Explicit --to and
 		// non-interactive invocations keep their immediate behavior.
 		if fromPicker {
-			if err := renderRollbackPreview(appInfo, name, target, reason, verifyDuration); err != nil {
+			if err := renderRollbackPreview(appInfo, name, target, targetTag, targetSource, reason, verifyDuration); err != nil {
 				return err
 			}
 			ok, err := PromptConfirm(fmt.Sprintf("Proceed with rollback to v%d?", target), false)
@@ -175,15 +165,117 @@ var RollbackCmd = &cobra.Command{
 			}
 		}
 
-		// Check whether a deploy state exists (blue-green / rolling).
-		state, deployErr := deploy.Load(name)
-		if deployErr != nil || state == nil || state.Mode == "" {
-			return rollbackClassic(appInfo, name, target, reason, verifyDuration)
+		state, deployErr := classifyRollbackDeployState(name)
+		if deployErr != nil {
+			return deployErr
+		}
+		if state == nil {
+			return rollbackClassic(appInfo, name, target, targetTag, targetSource, reason, verifyDuration, "")
 		}
 
 		// --- Zero-downtime rollback path (blue-green / rolling) ---
-		return rollbackZeroDowntime(appInfo, name, target, state, reason, verifyDuration)
+		return rollbackZeroDowntime(appInfo, name, target, targetTag, targetSource, state, reason, verifyDuration, "")
 	},
+}
+
+// Rollback target provenance values sent as target_source on execution events.
+const (
+	rollbackTargetExplicit    = "explicit"    // --to flag
+	rollbackTargetInteractive = "interactive" // picker selection
+	rollbackTargetPrevious    = "previous"    // no target given; CLI resolved current-1
+	rollbackTargetAutomatic   = "automatic"   // post-failed-deploy recovery (last known good)
+)
+
+// resolveRollbackTarget is the single target-resolution path shared by the
+// local CLI rollback and the remote (MonitorStream) rollback command: an
+// explicit selector ("v7", "7", or a tag name) resolves via
+// ResolveVersionOrTag; an empty one resolves to the previous version. The
+// rollback-to-current guard lives here too, so no caller can skip it.
+// targetSource reports how the selector arrived: "explicit" when one was
+// given, "previous" otherwise (interactive pickers set it themselves).
+func resolveRollbackTarget(appName, selector string) (target int, targetTag, targetSource string, err error) {
+	if selector != "" {
+		target, err = deploy.ResolveVersionOrTag(appName, selector)
+		if err != nil {
+			return 0, "", "", phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "could not resolve rollback target", err)
+		}
+		targetSource = rollbackTargetExplicit
+	} else {
+		target, err = deploy.PreviousVersion(appName)
+		if err != nil {
+			return 0, "", "", phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "could not resolve previous version", err)
+		}
+		targetSource = rollbackTargetPrevious
+	}
+	targetTag = deploy.TagForVersion(appName, target)
+	cur, currentErr := deploy.CurrentVersion(appName)
+	if currentErr != nil {
+		return 0, "", "", phelixerr.Wrap(phelixerr.CodeConfiguration, "could not resolve current version", currentErr)
+	}
+	if cur > 0 && target == cur {
+		return 0, "", "", phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound,
+			"already running v%d; nothing to roll back to", target)
+	}
+	return target, targetTag, targetSource, nil
+}
+
+// classifyRollbackDeployState is the shared local/remote rollback classifier.
+// Only an absent deploy.json selects classic. Existing state must be readable,
+// non-empty, and use a supported zero-downtime mode; otherwise rollback stops
+// rather than silently performing a destructive classic replacement.
+func classifyRollbackDeployState(appName string) (*deploy.DeployState, error) {
+	state, err := deploy.Load(appName)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, phelixerr.Wrap(phelixerr.CodeConfiguration, "could not load deploy state", err)
+	}
+	if state == nil || state.Mode == "" {
+		return nil, phelixerr.New(phelixerr.CodeConfiguration, "deploy state is empty or missing its mode")
+	}
+	switch state.Mode {
+	case deploy.ModeBlueGreen, deploy.ModeRolling:
+		return state, nil
+	default:
+		return nil, phelixerr.Newf(phelixerr.CodeRollbackFailed, "rollback unsupported for deploy mode %q", state.Mode)
+	}
+}
+
+// emitAutoRollbackEvent reports one terminal automatic-rollback outcome to
+// the backend. Automatic recoveries previously emitted no rollback telemetry
+// at all, so the dashboard never learned that a failed deploy had been
+// reverted. fromVer is the failed version, toVer the restored known-good
+// version (0 when no safe target was ever resolved); outcome nil means the
+// known-good version is serving again.
+func emitAutoRollbackEvent(appInfo *app.AppInfo, appName, mode string, fromVer, toVer int, reason string, alreadyServing bool, outcome error) {
+	buildAutoRollbackEvent(appInfo, appName, mode, fromVer, toVer, reason, alreadyServing, outcome)
+}
+
+// buildAutoRollbackEvent constructs and emits the terminal automatic-rollback
+// event, returning it for inspection in tests.
+func buildAutoRollbackEvent(appInfo *app.AppInfo, appName, mode string, fromVer, toVer int, reason string, alreadyServing bool, outcome error) *pb.RollbackLifecycleEvent {
+	targetVer := ""
+	targetTag := ""
+	if toVer > 0 {
+		targetVer = fmt.Sprintf("v%d", toVer)
+		targetTag = deploy.TagForVersion(appName, toVer)
+	}
+	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName,
+		mode, mode, fmt.Sprintf("v%d", fromVer), targetVer, targetTag)
+	r.SetReason(reason)
+	r.SetTargetSource(rollbackTargetAutomatic)
+	r.SetSource(deploy.RollbackSourceAutomatic)
+	if outcome == nil {
+		msg := fmt.Sprintf("automatic rollback of v%d restored v%d", fromVer, toVer)
+		if alreadyServing {
+			msg = fmt.Sprintf("v%d kept serving; deployment failure never reached traffic", toVer)
+		}
+		r.Emit(phelixgrpc.RollbackStepComplete, true, msg, 0, "")
+		return r.Event()
+	}
+	r.EmitError(phelixgrpc.RollbackStepFailed, "automatic rollback failed", 0, outcome)
+	return r.Event()
 }
 
 func init() {
@@ -270,7 +362,10 @@ func rollbackCandidates(appName string) ([]deploy.VersionMeta, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	cur, _ := deploy.CurrentVersion(appName)
+	cur, err := deploy.CurrentVersion(appName)
+	if err != nil {
+		return nil, 0, phelixerr.Wrap(phelixerr.CodeConfiguration, "could not resolve current version", err)
+	}
 
 	out := make([]deploy.VersionMeta, 0, len(vers))
 	for _, v := range vers {
@@ -316,17 +411,32 @@ func plural(n int) string {
 }
 
 // rollbackZeroDowntime handles rollback through the blue-green or rolling
-// deploy path with full lifecycle event reporting.
-func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, state *deploy.DeployState, reason string, verifyDuration time.Duration) error {
+// deploy path with full lifecycle event reporting. requestID, when set,
+// rides the event metadata as request_id so the backend can correlate the
+// event stream with the remote command that initiated it (empty for local
+// CLI rollbacks).
+func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, targetTag, targetSource string, state *deploy.DeployState, reason string, verifyDuration time.Duration, requestID string) error {
 	totalStart := time.Now()
 	strategy := string(state.Mode)
 
 	// Resolve current version for the reporter.
-	currentVer, _ := deploy.CurrentVersion(appName)
+	currentVer, currentErr := deploy.CurrentVersion(appName)
+	if currentErr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "could not resolve current version", currentErr)
+	}
 	currentVerStr := fmt.Sprintf("v%d", currentVer)
 	targetVerStr := fmt.Sprintf("v%d", target)
 
-	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, strategy, strategy, currentVerStr, targetVerStr, rollbackTo)
+	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, strategy, strategy, currentVerStr, targetVerStr, targetTag)
+	r.SetReason(reason)
+	r.SetTargetSource(targetSource)
+	r.SetSource(deploy.RollbackSourceManual)
+	if requestID != "" {
+		r.SetRequestID(requestID)
+	}
+	if verifyDuration > 0 {
+		r.SetVerification(verifyDuration)
+	}
 
 	// Populate metadata the backend needs for context.
 	r.SetMetadata("public_port", fmt.Sprintf("%d", state.PublicPort))
@@ -338,12 +448,6 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	r.SetMetadata("active_slot", state.ActiveSlot)
 	r.SetMetadata("replicas_count", fmt.Sprintf("%d", len(state.Replicas)))
 	r.SetMetadata("grace_seconds", fmt.Sprintf("%d", state.GraceSeconds))
-	if reason != "" {
-		r.SetMetadata("rollback_reason", reason)
-	}
-	if verifyDuration > 0 {
-		r.SetMetadata("verify_duration", verifyDuration.String())
-	}
 	if state.LastRollback != nil {
 		r.SetMetadata("last_rollback_from", fmt.Sprintf("v%d", state.LastRollback.FromVersion))
 		r.SetMetadata("last_rollback_to", fmt.Sprintf("v%d", state.LastRollback.ToVersion))
@@ -362,18 +466,20 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	stepStart = time.Now()
 	socket, err := proxy.DefaultSocketPath()
 	if err != nil {
-		r.Emit(phelixgrpc.RollbackStepProxyEnsuring, false, "failed to determine proxy socket path", time.Since(totalStart), err.Error())
-		return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
+		terminal := phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
+		r.EmitError(phelixgrpc.RollbackStepFailed, "failed to determine proxy socket path", time.Since(totalStart), terminal)
+		return terminal
 	}
 	fmt.Printf("  %s Ensuring proxy daemon is running...\n", color.BlueString("→"))
 	if err := proxy.EnsureDaemon(context.Background(), "", 5*time.Second); err != nil {
-		r.Emit(phelixgrpc.RollbackStepProxyEnsuring, false, "failed to start proxy daemon", time.Since(totalStart), err.Error())
-		return phelixerr.Wrapf(
+		terminal := phelixerr.Wrapf(
 			phelixerr.CodeProxy,
 			err,
 			"could not start proxy daemon\n  Start it manually with: %s",
 			color.CyanString("phelix proxy"),
 		)
+		r.EmitError(phelixgrpc.RollbackStepFailed, "failed to start proxy daemon", time.Since(totalStart), terminal)
+		return terminal
 	}
 	r.Emit(phelixgrpc.RollbackStepProxyEnsuring, true, "proxy daemon running", time.Since(stepStart), "")
 
@@ -381,13 +487,14 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	stepStart = time.Now()
 	proxyClient := proxy.NewClient(socket)
 	if err := proxyClient.Ping(context.Background()); err != nil {
-		r.Emit(phelixgrpc.RollbackStepProxyReady, false, "proxy not responding", time.Since(totalStart), err.Error())
-		return phelixerr.Wrapf(
+		terminal := phelixerr.Wrapf(
 			phelixerr.CodeConnection,
 			err,
 			"proxy daemon did not respond\n  Start it first with: %s",
 			color.CyanString("phelix proxy"),
 		)
+		r.EmitError(phelixgrpc.RollbackStepFailed, "proxy not responding", time.Since(totalStart), terminal)
+		return terminal
 	}
 	r.Emit(phelixgrpc.RollbackStepProxyReady, true, "proxy ping successful", time.Since(stepStart), "")
 
@@ -407,6 +514,9 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	// resulting deployment transition (slots/replicas/proxy/versions) in the
 	// same shape a forward deploy reports.
 	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, appName, strategy)
+	if requestID != "" {
+		tracker.SetRequestID(requestID)
+	}
 	// Signal cancellation is wired only when verification is requested: the
 	// observation window is interruptible (Ctrl+C cancels verification, the
 	// completed rollback stays active) while rollbacks without --verify keep
@@ -425,30 +535,41 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 		}
 	}
 	err = deploy.ExecuteRollback(ctx, deploy.RollbackOptions{
-		AppName:        appName,
-		AppID:          appInfo.ID,
-		PublicPort:     publicPort,
-		TargetVersion:  target,
-		Launcher:       deploy.DefaultLauncher,
-		ProxyClient:    proxyClient,
-		HealthProvider: deploy.DefaultHealthProvider(),
-		Logger:         &colorLogger{},
-		Telemetry:      tracker,
-		Reason:         reason,
-		Verify:         verifyReq,
+		AppName:                appName,
+		AppID:                  appInfo.ID,
+		PublicPort:             publicPort,
+		ExpectedCurrentVersion: currentVer,
+		TargetVersion:          target,
+		Launcher:               deploy.DefaultLauncher,
+		ProxyClient:            proxyClient,
+		HealthProvider:         deploy.DefaultHealthProvider(),
+		Logger:                 &colorLogger{},
+		Telemetry:              tracker,
+		Reason:                 reason,
+		Verify:                 verifyReq,
 	})
 	rollbackDuration := time.Since(stepStart)
 	r.SetMetadata("rollback_duration_ms", fmt.Sprintf("%d", rollbackDuration.Milliseconds()))
 	if err != nil {
 		// A verification failure/cancellation is NOT an execution failure: the
-		// rollback committed and the target is serving. Return the typed
+		// rollback committed and the target is serving. Report the commit
+		// (complete) and then the verification outcome as its own terminal
+		// event so the backend timeline ends truthfully; return the typed
 		// ROLLBACK_VERIFY_FAILED error untouched so exit code 23 and history
 		// keep execution SUCCESS distinct from execution FAILURE.
 		if phelixerr.IsCode(err, phelixerr.CodeRollbackVerifyFailed) {
+			r.Emit(phelixgrpc.RollbackStepComplete, true,
+				fmt.Sprintf("zero-downtime rollback %s -> %s committed", currentVerStr, targetVerStr),
+				time.Since(stepStart), "")
+			status := deploy.RollbackVerifyFailed
+			if ctx.Err() != nil {
+				status = deploy.RollbackVerifyCancelled
+			}
+			r.EmitVerifyOutcome(status, err.Error())
 			return err
 		}
-		r.Emit(phelixgrpc.RollbackStepFailed, false, "zero-downtime rollback failed", time.Since(totalStart), err.Error())
-		return phelixerr.Wrap(phelixerr.CodeRollbackFailed, "zero-downtime rollback failed", err)
+		r.EmitError(phelixgrpc.RollbackStepFailed, "zero-downtime rollback failed", time.Since(totalStart), err)
+		return err
 	}
 
 	// The rollback swapped slots; bring the lifecycle record in line with the
@@ -458,6 +579,11 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 	// Step: complete
 	fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", appName), target)
 	r.Emit(phelixgrpc.RollbackStepComplete, true, fmt.Sprintf("zero-downtime rollback %s -> %s complete", currentVerStr, targetVerStr), time.Since(totalStart), "")
+	if verifyDuration > 0 {
+		// ExecuteRollback returns nil only after the requested verification
+		// window passed, so reaching here means the window held.
+		r.EmitVerifyOutcome(deploy.RollbackVerifyPassed, "")
+	}
 	return nil
 }
 
@@ -469,12 +595,19 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, stat
 // Ordering guarantee: the version is only promoted (is_current set to true,
 // current symlink updated) after the start succeeds. If the start fails, the
 // version exists on disk but the active instance is untouched.
-func rollbackClassic(appInfo *app.AppInfo, appName string, target int, reason string, verifyDuration time.Duration) (err error) {
+//
+// requestID, when set, rides the event metadata as request_id so the backend
+// can correlate the event stream with the remote command that initiated it
+// (empty for local CLI rollbacks).
+func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag, targetSource, reason string, verifyDuration time.Duration, requestID string) (err error) {
 	totalStart := time.Now()
 	strategy := "classic"
 
 	// Resolve current version for the reporter.
-	currentVer, _ := deploy.CurrentVersion(appName)
+	currentVer, currentErr := deploy.CurrentVersion(appName)
+	if currentErr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "could not resolve current version", currentErr)
+	}
 	currentVerStr := fmt.Sprintf("v%d", currentVer)
 	targetVerStr := fmt.Sprintf("v%d", target)
 
@@ -486,18 +619,60 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, reason st
 	// failed or cancelled window must never rewrite the execution status.
 	var verification *deploy.RollbackVerification
 	var runErr error
+	// r is declared before the fail closure so the closure can stamp the
+	// machine-readable error code onto the terminal failure event.
+	var r *phelixgrpc.RollbackReporter
 	// fail records an EXECUTION failure for the history deferred-write and
 	// returns the error unchanged. Verification outcomes deliberately bypass
 	// this helper so they never contaminate the execution status.
 	fail := func(e error) error {
 		runErr = e
+		if r != nil {
+			r.SetErrorCode(string(phelixerr.CodeOf(e)))
+		}
 		return e
 	}
 	defer func() {
 		deploy.RecordRollbackResult(appName, currentVer, target, strategy, reason, verification, runErr)
 	}()
 
-	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, strategy, strategy, currentVerStr, targetVerStr, rollbackTo)
+	r = phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, strategy, strategy, currentVerStr, targetVerStr, targetTag)
+	r.SetReason(reason)
+	r.SetTargetSource(targetSource)
+	r.SetSource(deploy.RollbackSourceManual)
+	if requestID != "" {
+		r.SetRequestID(requestID)
+	}
+	if verifyDuration > 0 {
+		r.SetVerification(verifyDuration)
+	}
+
+	release, lockErr := deploy.AcquireDeployLock(appName, "rollback-classic")
+	if lockErr != nil {
+		terminal := phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lockErr)
+		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "classic rollback could not acquire deploy lock", time.Since(totalStart), terminal.Error())
+		return fail(terminal)
+	}
+	defer release()
+
+	// Revalidate both the serving version and target artifact while exclusion is
+	// held. A concurrent prune/promote before lock acquisition must not make the
+	// pre-lock resolution stale.
+	lockedCurrent, currentErr := deploy.CurrentVersion(appName)
+	if currentErr != nil {
+		terminal := phelixerr.Wrap(phelixerr.CodeConfiguration, "could not revalidate current version", currentErr)
+		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to revalidate current version", time.Since(totalStart), terminal.Error())
+		return fail(terminal)
+	}
+	if lockedCurrent != currentVer {
+		terminal := phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound,
+			"current version changed from v%d to v%d while rollback was waiting for the deploy lock; resolve the target again", currentVer, lockedCurrent)
+		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "current version changed before rollback execution", time.Since(totalStart), terminal.Error())
+		return fail(terminal)
+	}
 
 	// Populate metadata the backend needs for context.
 	r.SetMetadata("app_directory", appInfo.Directory)
@@ -513,8 +688,10 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, reason st
 	stepStart := time.Now()
 	binPath, _, err := deploy.VersionPaths(appName, target)
 	if err != nil {
-		r.Emit(phelixgrpc.RollbackStepVersionResolved, false, "failed to resolve version paths", time.Since(totalStart), err.Error())
-		return fail(phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "failed to resolve version paths", err))
+		terminal := phelixerr.Wrap(phelixerr.CodeRollbackTargetNotFound, "failed to resolve version paths", err)
+		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to resolve version paths", time.Since(totalStart), terminal.Error())
+		return fail(terminal)
 	}
 	r.SetMetadata("binary_path", binPath)
 	r.Emit(phelixgrpc.RollbackStepVersionResolved, true, fmt.Sprintf("binary path: %s", binPath), time.Since(stepStart), "")
@@ -536,15 +713,26 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, reason st
 		}
 	}
 
-	// Step: copying_binary
+	// Step: copying_binary. The destination is replaced atomically from a staged
+	// file in the same directory, while the prior binary is retained for
+	// compensation until start and promotion both succeed.
 	stepStart = time.Now()
 	destBin := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
 	fmt.Printf("  %s Copying v%d binary to %s...\n", color.BlueString("→"), target, destBin)
 	r.SetMetadata("dest_binary", destBin)
-	if err := copyFileForRollback(binPath, destBin); err != nil {
-		r.Emit(phelixgrpc.RollbackStepBinaryCopied, false, "failed to copy versioned binary", time.Since(totalStart), err.Error())
-		return fail(phelixerr.Wrap(phelixerr.CodeRollbackFailed, "failed to copy versioned binary", err))
+	backup, err := replaceBinaryForRollback(binPath, destBin)
+	if err != nil {
+		terminal := phelixerr.Wrap(phelixerr.CodeRollbackFailed, "failed to replace versioned binary", err)
+		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to replace versioned binary", time.Since(totalStart), terminal.Error())
+		return fail(terminal)
 	}
+	committed := false
+	defer func() {
+		if committed {
+			_ = backup.Discard()
+		}
+	}()
 	r.Emit(phelixgrpc.RollbackStepBinaryCopied, true, fmt.Sprintf("binary copied to %s", destBin), time.Since(stepStart), "")
 
 	// Determine the port.
@@ -558,25 +746,27 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, reason st
 	stepStart = time.Now()
 	fmt.Printf("  %s Starting rolled-back binary on port %d...\n", color.BlueString("→"), port)
 	if err := app.Manager.StartApplication(appInfo.ID, port, appName); err != nil {
-		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to start rolled-back application", time.Since(totalStart), err.Error())
-		return fail(phelixerr.Wrapf(
-			phelixerr.CodeRollbackFailed,
-			err,
-			"failed to start rolled-back application %q (ID: %s)",
-			appName,
-			appInfo.ID,
-		))
+		terminal := compensateClassicRollback(appInfo, appName, port, backup,
+			phelixerr.Wrapf(phelixerr.CodeRollbackFailed, err,
+				"failed to start rolled-back application %q (ID: %s)", appName, appInfo.ID))
+		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to start rolled-back application; prior binary restoration attempted", time.Since(totalStart), terminal.Error())
+		return fail(terminal)
 	}
 	r.Emit(phelixgrpc.RollbackStepNewStarted, true, fmt.Sprintf("started on port %d", port), time.Since(stepStart), "")
 
 	// Step: promoting_version
 	stepStart = time.Now()
 	if err := deploy.PromoteVersion(appName, target, "classic"); err != nil {
-		fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
-		r.Emit(phelixgrpc.RollbackStepVersionPromoted, false, "version promotion warning", time.Since(stepStart), err.Error())
-	} else {
-		r.Emit(phelixgrpc.RollbackStepVersionPromoted, true, fmt.Sprintf("version %s promoted", targetVerStr), time.Since(stepStart), "")
+		_ = app.Manager.StopApplication(appInfo.ID)
+		terminal := compensateClassicRollback(appInfo, appName, port, backup,
+			phelixerr.Wrap(phelixerr.CodeRollbackFailed, "failed to promote rolled-back version", err))
+		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
+		r.Emit(phelixgrpc.RollbackStepFailed, false, "version promotion failed; prior binary restoration attempted", time.Since(totalStart), terminal.Error())
+		return fail(terminal)
 	}
+	r.Emit(phelixgrpc.RollbackStepVersionPromoted, true, fmt.Sprintf("version %s promoted", targetVerStr), time.Since(stepStart), "")
+	committed = true
 
 	// Step: complete
 	fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", appName), target)
@@ -584,12 +774,16 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, reason st
 
 	// Stability verification runs only after the rollback is fully committed
 	// (start + promotion), so it observes the version actually serving.
-	// Verification failure/cancellation is returned as-is (exit 23,
-	// ROLLBACK_VERIFY_FAILED) but never flows into runErr — history keeps the
-	// execution SUCCESS with the verification block telling the rest.
+	// The wire reports the commit and the verification outcome as separate
+	// terminal events: a failed or cancelled window must never rewrite the
+	// execution success. Verification failure/cancellation is returned as-is
+	// (exit 23, ROLLBACK_VERIFY_FAILED) but never flows into runErr.
 	if verifyDuration > 0 {
 		var verr error
 		verification, verr = runStabilityVerification(appInfo, verifyDuration)
+		if verification != nil {
+			r.EmitVerifyOutcome(verification.Status, verification.Error)
+		}
 		if verr != nil {
 			return verr
 		}
@@ -597,7 +791,70 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, reason st
 	return nil
 }
 
-// copyFileForRollback copies src to dst, creating parent directories as needed.
+type rollbackBinaryBackup struct {
+	dest    string
+	path    string
+	existed bool
+}
+
+func replaceBinaryForRollback(src, dst string) (*rollbackBinaryBackup, error) {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return nil, err
+	}
+	backup := &rollbackBinaryBackup{dest: dst, path: dst + ".rollback-backup"}
+	if _, err := os.Stat(dst); err == nil {
+		backup.existed = true
+		_ = os.Remove(backup.path)
+		// Copying the old destination to a same-directory backup leaves the live
+		// path untouched. The target copy below then replaces it with one rename.
+		if err := copyFileForRollback(dst, backup.path); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := copyFileForRollback(src, dst); err != nil {
+		_ = backup.Discard()
+		return nil, err
+	}
+	return backup, nil
+}
+
+func (b *rollbackBinaryBackup) Restore() error {
+	if b == nil {
+		return nil
+	}
+	if !b.existed {
+		return os.Remove(b.dest)
+	}
+	// Same-directory rename atomically replaces the failed target binary.
+	return os.Rename(b.path, b.dest)
+}
+
+func (b *rollbackBinaryBackup) Discard() error {
+	if b == nil || !b.existed {
+		return nil
+	}
+	return os.Remove(b.path)
+}
+
+func compensateClassicRollback(appInfo *app.AppInfo, appName string, port int, backup *rollbackBinaryBackup, cause error) error {
+	if restoreErr := backup.Restore(); restoreErr != nil {
+		return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, cause,
+			"rollback failed and prior binary restore failed: %v", restoreErr)
+	}
+	if !backup.existed || appInfo.Status != "running" {
+		return cause
+	}
+	if restartErr := app.Manager.StartApplication(appInfo.ID, port, appName); restartErr != nil {
+		return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, cause,
+			"rollback failed; prior binary restored but restart failed: %v", restartErr)
+	}
+	return cause
+}
+
+// copyFileForRollback stages src in dst's directory, fsyncs it, and atomically
+// renames it over dst. A failed copy never truncates the live destination.
 func copyFileForRollback(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -608,36 +865,42 @@ func copyFileForRollback(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	out, err := os.CreateTemp(filepath.Dir(dst), ".phelix-rollback-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := in.Read(buf)
-		if n > 0 {
-			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-		}
-		if readErr != nil {
-			break
-		}
+	tmp := out.Name()
+	defer os.Remove(tmp)
+	if err := out.Chmod(0o755); err != nil {
+		_ = out.Close()
+		return err
 	}
-	return out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
-// renderRollbackPreview builds the read-only rollback plan and prints it.
-// It performs no mutations: no process, proxy, versions.json, deploy.json,
-// symlink or audit-log changes — the plan builder only reads state, and the
-// gRPC rollback reporters are deliberately not constructed here so no
-// rollback telemetry events are emitted for a preview. reason and
-// verifyDuration are display-only: shown in the plan, never persisted or
-// acted upon.
-func renderRollbackPreview(appInfo *app.AppInfo, appName string, target int, reason string, verifyDuration time.Duration) error {
+// renderRollbackPreview builds the read-only rollback plan, prints it, and
+// reports the preview to the backend as structured data. It performs no
+// mutations: no process, proxy, versions.json, deploy.json, symlink or
+// audit-log changes — the plan builder only reads state, and the only wire
+// event is a dry_run=true preview carrying the structured RollbackPreview,
+// never the terminal-rendered text. reason and verifyDuration are display-
+// only inputs to the plan; they are never persisted or acted upon.
+func renderRollbackPreview(appInfo *app.AppInfo, appName string, target int, targetTag, targetSource, reason string, verifyDuration time.Duration) error {
+	return renderRollbackPreviewWithRequestID(appInfo, appName, target, targetTag, targetSource, reason, verifyDuration, "")
+}
+
+func renderRollbackPreviewWithRequestID(appInfo *app.AppInfo, appName string, target int, targetTag, targetSource, reason string, verifyDuration time.Duration, requestID string) error {
 	// Classic-path context mirrors what rollbackClassic would use.
 	port := appInfo.Port
 	if port == 0 {
@@ -655,6 +918,8 @@ func renderRollbackPreview(appInfo *app.AppInfo, appName string, target int, rea
 	if err != nil {
 		return err
 	}
+
+	emitRollbackPreview(appInfo, appName, target, targetTag, targetSource, reason, verifyDuration, requestID, plan)
 
 	fmt.Printf("%s Rollback Preview\n\n", color.BlueString("→"))
 
@@ -736,6 +1001,65 @@ func renderRollbackPreview(appInfo *app.AppInfo, appName string, target int, rea
 	return nil
 }
 
+// emitRollbackPreview reports the dry-run plan to the backend as structured
+// data (one dry_run=true "preview" event). Read-only: the reporter only
+// queues a wire event and appends to the local rollback audit log.
+func emitRollbackPreview(appInfo *app.AppInfo, appName string, target int, targetTag, targetSource, reason string, verifyDuration time.Duration, requestID string, plan *deploy.RollbackPlan) {
+	r := phelixgrpc.NewRollbackReporter("",
+		appInfo.ID, appInfo.ID, appName,
+		plan.Strategy, plan.Strategy,
+		fmt.Sprintf("v%d", plan.CurrentVersion),
+		fmt.Sprintf("v%d", plan.TargetVersion),
+		plan.TargetTag,
+	)
+	r.SetDryRun(true)
+	r.DisableLocalLog() // a preview never mutates audit state — not even the local rollback.log
+	r.SetReason(reason)
+	r.SetTargetSource(targetSource)
+	r.SetSource(deploy.RollbackSourceManual)
+	if requestID != "" {
+		r.SetRequestID(requestID)
+	}
+	if verifyDuration > 0 {
+		r.SetVerification(verifyDuration)
+	}
+	r.SetPreview(buildRollbackPreview(appName, plan))
+	r.Emit(phelixgrpc.RollbackStepPreview, true, fmt.Sprintf("dry-run preview of rollback to v%d", target), 0, "")
+}
+
+// buildRollbackPreview maps the CLI plan struct onto the wire message. Local
+// filesystem paths are deliberately not serialized — the backend has no use
+// for agent-internal paths and they widen the exposure surface.
+func buildRollbackPreview(appName string, plan *deploy.RollbackPlan) *pb.RollbackPreview {
+	p := &pb.RollbackPreview{
+		AppName:              appName,
+		CurrentVersion:       int32(plan.CurrentVersion),
+		CurrentTag:           plan.CurrentTag,
+		CurrentCommit:        plan.CurrentCommit,
+		CurrentSize:          plan.CurrentSize,
+		TargetVersion:        int32(plan.TargetVersion),
+		TargetTag:            plan.TargetTag,
+		TargetCommit:         plan.TargetCommit,
+		TargetSize:           plan.TargetSize,
+		Strategy:             plan.Strategy,
+		Replicas:             int32(plan.Replicas),
+		PublicPort:           int32(plan.PublicPort),
+		CurrentSlot:          plan.CurrentSlot,
+		TargetSlot:           plan.TargetSlot,
+		CurrentPort:          int32(plan.CurrentPort),
+		HealthCheck:          plan.HealthCheck,
+		Downtime:             plan.Downtime,
+		EnvSnapshotAvailable: plan.EnvSnapshotAvailable,
+		EnvSummary:           plan.EnvSummary,
+		Steps:                plan.Steps,
+		Warnings:             plan.Warnings,
+	}
+	if !plan.TargetBuiltAt.IsZero() {
+		p.TargetBuiltAt = plan.TargetBuiltAt.UnixMilli()
+	}
+	return p
+}
+
 // versionLabel renders "v12" or "v12 (stable)".
 func versionLabel(ver int, tag string) string {
 	if tag == "" {
@@ -754,7 +1078,7 @@ func slotOrNone(slot string) string {
 func listRollbackVersions(appName string, policy deploy.RetentionPolicy, appInfo *app.AppInfo) error {
 	totalStart := time.Now()
 
-	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, "list", "list", "", "", rollbackTo)
+	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, "list", "list", "", "", "")
 	r.SetMetadata("app_directory", appInfo.Directory)
 	r.SetMetadata("app_status", appInfo.Status)
 	r.SetMetadata("app_language", appInfo.Language)
