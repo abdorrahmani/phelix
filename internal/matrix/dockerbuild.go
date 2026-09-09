@@ -160,7 +160,39 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 	result.Duration = time.Since(start)
 	result.Status = "success"
 	result.Artifact = imageName
+
+	// Resolve the image's content digest (Docker's own sha256 of the built
+	// image) so every matrix artifact — binary or image — carries a SHA-256.
+	// A digest that cannot be resolved is an artifact-integrity failure: the
+	// combination is failed rather than recorded with an unverifiable image.
+	digest, derr := d.imageDigest(ctx, imageName)
+	if derr != nil {
+		result.Status = "failed"
+		result.Artifact = imageName
+		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, derr,
+			"artifact integrity check failed for %s — could not resolve the digest of %s", c.ID(), imageName)
+		return result
+	}
+	result.SHA256 = digest
 	return result
+}
+
+// imageDigest resolves a local image's content digest via
+// `docker image inspect --format {{.Id}}`. The ID is Docker's sha256 content
+// address of the image ("sha256:<64 hex>"); the bare hex digest is returned so
+// it can live in the same sha256 field as binary checksums.
+func (d *DockerMatrixBuilder) imageDigest(ctx context.Context, image string) (string, error) {
+	cmd := d.command(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", phelixerr.Wrapf(phelixerr.CodeDocker, err, "docker image inspect %s", image)
+	}
+	digest := strings.TrimPrefix(strings.TrimSpace(string(out)), "sha256:")
+	if len(digest) != SHA256HexLen {
+		return "", phelixerr.Newf(phelixerr.CodeDocker,
+			"unexpected digest %q for image %s — expected a sha256 digest", digest, image)
+	}
+	return digest, nil
 }
 
 // redactCommand renders an exec command-line for a debug log, masking the

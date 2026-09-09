@@ -164,17 +164,24 @@ type RunAttempt struct {
 // "success", "failed", "skipped"; pending/running entries mean the
 // combination has not completed (yet) and make the run resumable.
 type RunCombination struct {
-	ID          string            `json:"id"`       // combination ID, e.g. "go1.26-linux-amd64"
-	Identity    string            `json:"identity"` // run-scoped identity: "<runID>/<combinationID>"
-	Toolchain   string            `json:"toolchain"`
-	Version     string            `json:"toolchain_version"`
-	OS          string            `json:"os"`
-	Arch        string            `json:"arch"`
-	Variant     string            `json:"variant,omitempty"`
-	Platform    string            `json:"platform"`
-	Status      string            `json:"status"`
-	Duration    string            `json:"duration"`
-	Artifact    string            `json:"artifact,omitempty"`
+	ID        string `json:"id"`       // combination ID, e.g. "go1.26-linux-amd64"
+	Identity  string `json:"identity"` // run-scoped identity: "<runID>/<combinationID>"
+	Toolchain string `json:"toolchain"`
+	Version   string `json:"toolchain_version"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+	Variant   string `json:"variant,omitempty"`
+	Platform  string `json:"platform"`
+	Status    string `json:"status"`
+	Duration  string `json:"duration"`
+	Artifact  string `json:"artifact,omitempty"`
+	// SHA256 is the checksum of the final artifact's bytes (hex), or the
+	// image digest for Docker image artifacts. Empty for failed/incomplete
+	// combinations — only a successful, verified artifact carries one.
+	SHA256 string `json:"sha256,omitempty"`
+	// StartedAt records when this combination's current attempt began
+	// executing (set while running; kept as history once completed).
+	StartedAt   time.Time         `json:"started_at,omitempty"`
 	Error       string            `json:"error,omitempty"`
 	CacheStatus string            `json:"cache_status,omitempty"`
 	Attempts    int               `json:"attempts,omitempty"` // attempt count; 1 when never retried
@@ -336,15 +343,53 @@ func (r *Run) RecordResult(res Result) {
 		r.uncountLocked(rc.Status)
 		outcome := r.combinationEntry(res)
 		// Only the outcome fields change; the entry keeps its recorded
-		// dimensions and identity.
+		// dimensions, identity, and attempt start time.
 		rc.Status = outcome.Status
 		rc.Duration = outcome.Duration
 		rc.Artifact = outcome.Artifact
+		rc.SHA256 = outcome.SHA256
 		rc.Error = outcome.Error
 		rc.CacheStatus = outcome.CacheStatus
 		rc.Attempts = outcome.Attempts
 		rc.AttemptLog = outcome.AttemptLog
 		r.countLocked(res.Status)
+		return
+	}
+}
+
+// MarkRunning records that one attempt of a combination started executing:
+// the entry flips to "running" (still counted as incomplete/resumable), the
+// in-flight attempt number and start time are stamped, and any previous
+// outcome of a re-executed combination is cleared — a retried or resumed
+// combination must never keep a stale artifact or checksum from an earlier
+// attempt. Recording an unknown combination ID is ignored (defensive).
+func (r *Run) MarkRunning(id string, attempt int, started time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.Combinations {
+		rc := &r.Combinations[i]
+		if rc.ID != id {
+			continue
+		}
+		switch rc.Status {
+		case "success", "failed", "skipped":
+			// Terminal entries are never re-executed by the engine (resume
+			// selects only incomplete combinations); ignore defensively so a
+			// stray mark cannot rewrite history.
+			return
+		}
+		r.uncountLocked(rc.Status)
+		rc.Status = "running"
+		rc.StartedAt = started
+		rc.Duration = ""
+		rc.Artifact = ""
+		rc.SHA256 = ""
+		rc.Error = ""
+		rc.CacheStatus = ""
+		if attempt > 0 {
+			rc.Attempts = attempt
+		}
+		r.countLocked(rc.Status)
 		return
 	}
 }
@@ -356,6 +401,7 @@ func (r *Run) combinationEntry(res Result) RunCombination {
 		Status:      res.Status,
 		Duration:    res.Duration.Round(time.Millisecond).String(),
 		Artifact:    res.Artifact,
+		SHA256:      res.SHA256,
 		CacheStatus: res.CacheStatus,
 		Attempts:    len(res.Attempts),
 	}
@@ -542,6 +588,7 @@ func (r *Run) Finish(results []Result, finished time.Time) {
 		rc.Status = outcome.Status
 		rc.Duration = outcome.Duration
 		rc.Artifact = outcome.Artifact
+		rc.SHA256 = outcome.SHA256
 		rc.Error = outcome.Error
 		rc.CacheStatus = outcome.CacheStatus
 		rc.Attempts = outcome.Attempts
@@ -551,4 +598,129 @@ func (r *Run) Finish(results []Result, finished time.Time) {
 
 	r.recountLocked()
 	r.computeStatusLocked()
+}
+
+// StatusCounters is an internally consistent per-status snapshot of a run's
+// combinations. It always satisfies Total == Succeeded+Failed+Skipped+Running+
+// Pending because it is computed from the combination entries in one pass
+// under the run's lock — never from separately-updated fields that could be
+// observed mid-transition.
+type StatusCounters struct {
+	Total     int `json:"total"`
+	Succeeded int `json:"succeeded"`
+	Failed    int `json:"failed"`
+	Skipped   int `json:"skipped"`
+	Running   int `json:"running"`
+	Pending   int `json:"pending"`
+}
+
+// Complete reports how many combinations have a final outcome (succeeded,
+// failed, or skipped).
+func (c StatusCounters) Complete() int {
+	return c.Succeeded + c.Failed + c.Skipped
+}
+
+// SnapshotCounters returns the per-status combination counts as one
+// consistent snapshot. It is the single source for aggregate counters in
+// `matrix status` and anywhere else that renders live state — there is no
+// second, separately-maintained counter system.
+func (r *Run) SnapshotCounters() StatusCounters {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.countersLocked()
+}
+
+// countersLocked computes the counters; caller holds mu.
+func (r *Run) countersLocked() StatusCounters {
+	c := StatusCounters{Total: len(r.Combinations)}
+	for _, rc := range r.Combinations {
+		switch rc.Status {
+		case "success":
+			c.Succeeded++
+		case "failed":
+			c.Failed++
+		case "skipped":
+			c.Skipped++
+		case "running":
+			c.Running++
+		default: // pending, empty
+			c.Pending++
+		}
+	}
+	return c
+}
+
+// Clone returns a deep copy of the run that is safe to read (and marshal)
+// while executor workers keep mutating the original: persistence paths must
+// never serialize a run that another goroutine is updating mid-field.
+// Unexported state (the mutex) is not copied — the clone is a value snapshot.
+func (r *Run) Clone() *Run {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := &Run{
+		ID:          r.ID,
+		AppName:     r.AppName,
+		ProjectDir:  r.ProjectDir,
+		Status:      r.Status,
+		Config:      cloneRunConfig(r.Config),
+		StartedAt:   r.StartedAt,
+		FinishedAt:  r.FinishedAt,
+		Duration:    r.Duration,
+		Total:       r.Total,
+		Succeeded:   r.Succeeded,
+		Failed:      r.Failed,
+		Skipped:     r.Skipped,
+		Incomplete:  r.Incomplete,
+		ParentRunID: r.ParentRunID,
+		ResumeCount: r.ResumeCount,
+	}
+	if r.Combinations != nil {
+		out.Combinations = make([]RunCombination, len(r.Combinations))
+		for i, rc := range r.Combinations {
+			rc.Metadata = copyStringMap(rc.Metadata)
+			rc.AttemptLog = append([]RunAttempt(nil), rc.AttemptLog...)
+			out.Combinations[i] = rc
+		}
+	}
+	return out
+}
+
+// cloneRunConfig deep-copies the configuration snapshot.
+func cloneRunConfig(cfg RunConfig) RunConfig {
+	cfg.Versions = append([]string(nil), cfg.Versions...)
+	cfg.Platforms = append([]string(nil), cfg.Platforms...)
+	cfg.BuildArgs = append([]string(nil), cfg.BuildArgs...)
+	cfg.Include = cloneRules(cfg.Include)
+	cfg.Exclude = cloneRules(cfg.Exclude)
+	return cfg
+}
+
+// cloneRules deep-copies rule slices (their dimension maps included).
+func cloneRules(rules []Rule) []Rule {
+	if rules == nil {
+		return nil
+	}
+	out := make([]Rule, len(rules))
+	for i, rule := range rules {
+		rule.Dimensions = Dimensions(copyStringMap(rule.Dimensions))
+		rule.Metadata = copyStringMap(rule.Metadata)
+		out[i] = rule
+	}
+	return out
+}
+
+// copyStringMap returns a copy of m (nil stays nil, so omitempty semantics
+// are preserved through a clone).
+func copyStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }

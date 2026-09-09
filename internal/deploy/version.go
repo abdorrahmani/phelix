@@ -66,6 +66,12 @@ type MatrixArtifact struct {
 	// before run IDs existed.
 	MatrixRunID string `json:"matrix_run_id,omitempty"`
 
+	// SHA256 is the checksum of the artifact's final bytes (lowercase hex),
+	// or the image digest for Docker image artifacts — the integrity
+	// identity carried into the release manifest. Additive: absent on
+	// versions recorded before checksums existed.
+	SHA256 string `json:"sha256,omitempty"`
+
 	// Report carries this combination's own build metrics so each matrix
 	// combination retains independent telemetry for regression analysis.
 	// Additive: absent on older artifacts. nil = no comparable metadata.

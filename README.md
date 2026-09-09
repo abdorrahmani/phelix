@@ -1610,7 +1610,7 @@ CLI explicit value  >  phelix.yaml matrix profile  >  command default
   `phelix.yaml`) with an error naming the YAML location, e.g.
   `configuration error: matrix.go.versions: ...`.
 
-#### Matrix runs: list, show, and the wizard
+#### Matrix runs: list, show, status, and the wizard
 
 Every matrix execution gets a **Matrix Run ID** (`mx_20260909_8f31`) — printed
 during the build, recorded in `builds/matrix/report.json` (`run_id`), attached
@@ -1624,6 +1624,9 @@ phelix matrix list                 # recorded runs, newest first
 phelix matrix list --json          # machine-readable summaries
 phelix matrix show mx_20260909_8f31        # config snapshot + per-combination results
 phelix matrix show mx_20260909_8f31 --json
+phelix matrix status               # live state of the active run (or "No active Matrix Run.")
+phelix matrix status mx_20260909_8f31      # a specific run's state
+phelix matrix status --json        # machine-readable current state
 phelix matrix retry mx_20260909_8f31 --failed   # retry a run's failures in a new linked run
 phelix matrix init                 # interactive wizard → writes phelix.yaml
 ```
@@ -1631,7 +1634,8 @@ phelix matrix init                 # interactive wizard → writes phelix.yaml
 `matrix show` displays the configuration snapshot (with each dimension's
 origin: `cli`, `phelix.yaml`, or `default`, plus the effective include/exclude
 rules and retry budget), every combination's status, duration, attempt
-history, and redacted error details for failures. An unknown run ID is a
+history, artifact, SHA-256, and redacted error details for failures. An
+unknown run ID is a
 clean `NOT_FOUND` error. Local run history can be relocated with
 `PHELIX_DATA_DIR` like all Phelix state.
 
@@ -1708,6 +1712,151 @@ unrelated `phelix.yaml` keys and comments, offers Edit / Keep / Disable /
 Cancel when a profile already exists, and refuses to run without an
 interactive terminal (so it never hangs in CI).
 
+#### Matrix status: live run state
+
+```bash
+phelix matrix status                       # the active run, or "No active Matrix Run."
+phelix matrix status mx_20260909_8f31      # one specific run
+phelix matrix status --json                # machine-readable current state
+```
+
+`matrix status` answers *"what is happening right now?"* — unlike `matrix
+list` (all recorded runs) and `matrix show` (full inspection of one run). With
+no argument it selects the **active run**: a run whose persisted status is
+`running` *and* whose execution lock is held by a live process. When several
+runs execute concurrently, the most recently started one is shown (with a
+note); name a run explicitly to inspect another. If nothing is executing it
+prints `No active Matrix Run.` and points at the most recent run — never a
+fabricated status.
+
+```text
+Matrix Run mx_20260910_4613 — myapp (go)
+Status:      running — executing (PID 3372540)
+Started:     2026-09-10 01:49:03
+
+4 combination(s)
+──────────────────────────────────────────────
+  ✓ go1.27-linux-amd64                  231ms
+      Binary: 5621907 B
+      SHA256: 3263d01d02d8…
+  ⟳ go1.27-darwin-arm64                 7.2s
+  ◌ go1.27-linux-arm64                  pending
+  ◌ go1.27-windows-amd64                pending
+──────────────────────────────────────────────
+Progress: 1/4 — success 1 · failed 0 · running 1 · pending 2
+```
+
+Semantics:
+
+- **Live state** comes from the same persisted run records the execution
+  engine writes — after every attempt start and every completed combination.
+  There is no second status system that could drift.
+- **Running combinations** show elapsed time (duration only — the build
+  engine has no percentage to report) and the in-flight attempt when
+  automatic retries are configured (`attempt 2/3`). Completed combinations
+  show their final attempt count.
+- **Counters are always internally consistent**: `success + failed + running
+  + pending + skipped = total`.
+- A persisted `running` run whose executing process is gone (crash, SIGKILL,
+  machine restart) is reported as **orphaned** — resumable, not executing;
+  its in-flight combinations show as `stale`. A completed run never reports
+  `running`.
+- Resume keeps the same run ID traceable (`Resumed: N time(s)`); a manual
+  retry stays a **distinct** run linked via `Parent Run`. While a retry run
+  executes, it is the active run.
+
+#### Artifact checksums and the release manifest
+
+Every successful matrix artifact carries a **SHA-256 checksum** computed from
+the final artifact bytes — streamed, never loaded into memory wholesale. For
+Docker image artifacts (matrix dockerize), the checksum is the image's
+content digest (`docker image inspect`), Docker's own SHA-256 of the image.
+
+Checksums appear:
+
+- in the build summary and `matrix show` / `matrix status` (shortened, e.g.
+  `SHA256: 3263d01d02d8…`),
+- in full, machine-readably, in `builds/matrix/report.json` (`sha256` per
+  combination), `matrix status --json`, each artifact row in `versions.json`
+  (`sha256`), and the release manifest below.
+
+A checksum that cannot be computed is an **artifact-integrity failure**: the
+combination is recorded as failed — an artifact whose bytes cannot be
+verified is never recorded as a valid release artifact (and integrity
+failures are never auto-retried). Retries and resume never reuse stale
+checksums: only the final successful attempt's artifact is checksummed and
+recorded; resumed runs keep the checksums of previously-succeeded
+combinations untouched.
+
+> SHA-256 here is an **integrity** mechanism — it answers "did the artifact
+> bytes change?". It does **not** provide authenticity ("who produced this
+> artifact?"); Phelix has no artifact signing.
+
+**One logical release, many artifacts.** A matrix build is one logical
+build/release of one application version that produces multiple artifacts.
+Matrix combinations are **artifacts of that release, never independent
+application versions**: `go1.27-linux-amd64`, `go1.27-linux-arm64`, … are
+artifact names (and filenames), while `versions.json` records exactly **one**
+version row (`vN`) carrying all of them:
+
+```text
+Application
+    └── Version vN (one versions.json row)
+            └── Matrix Run mx_…
+                    └── Artifacts: go1.27-linux-amd64, go1.27-linux-arm64, …
+```
+
+Each finished run with successful artifacts also writes a **release
+manifest** describing that artifact set, stored next to the run record as
+`<PHELIX_DATA_DIR>/matrix/runs/<run-id>.manifest.json`:
+
+```json
+{
+  "manifest_version": 1,
+  "app": "myapp",
+  "version": 11,
+  "matrix_run_id": "mx_20260910_3915",
+  "created_at": "2026-09-10T01:46:38+03:30",
+  "status": "complete",
+  "total_combinations": 4,
+  "language": "go",
+  "toolchain_versions": ["1.27"],
+  "platforms": ["linux/amd64", "darwin/arm64", "linux/arm64", "windows/amd64"],
+  "artifacts": [
+    {
+      "combination_id": "go1.27-linux-amd64",
+      "identity": "mx_20260910_3915/go1.27-linux-amd64",
+      "toolchain": "go",
+      "toolchain_version": "1.27",
+      "platform": "linux/amd64",
+      "os": "linux",
+      "arch": "amd64",
+      "artifact": "builds/matrix/go1.27-linux-amd64/myapp_amd64_go_1.27",
+      "size_bytes": 2433430,
+      "sha256": "dfef784b056f…"
+    }
+  ]
+}
+```
+
+Completeness is explicit and fail-closed:
+
+| Run outcome | Manifest |
+|-------------|----------|
+| all combinations succeeded | written, `status: "complete"` |
+| some succeeded, some failed | written, `status: "partial"` (only successful artifacts listed) |
+| nothing succeeded / interrupted / still running | **not written** |
+
+A partial matrix can therefore never masquerade as a complete release — the
+`status` field and the `total_combinations` count make the gap machine-checkable.
+Artifacts are sorted by combination ID, so the same run and artifact set
+always produce the same manifest. `matrix show <run-id>` renders the release
+summary (version, status, artifact count, manifest path). An interrupted run
+gains its manifest only once a `--resume` finishes it; a manual retry run
+gets its own manifest — runs are never merged. Docker matrix builds
+(`phelix dockerize --matrix`) record image digests per artifact in
+`versions.json` but produce no run manifest (they are not Matrix Runs).
+
 #### How matrix builds work
 
 **Cross-compilation strategy:**
@@ -1734,6 +1883,7 @@ combinations can never overwrite each other):
 | Docker per-combination tag | `{app}:{tag\|latest}-{lang}{version}-{arch}[-{variant}]` — e.g. `myapp:v1.2.3-go1.22-amd64`, `myapp:latest-go1.22.4-arm-v7` |
 | Docker multi-arch manifest | `{app}:{tag\|latest}` for a single combination, version-qualified (`{app}:{tag}-{version}`) when several combinations share the manifest |
 | JSON report | `builds/matrix/report.json` |
+| Release manifest | `<PHELIX_DATA_DIR>/matrix/runs/<run-id>.manifest.json` (one per finished run with artifacts; see [Artifact checksums and the release manifest](#artifact-checksums-and-the-release-manifest)) |
 
 **Docker matrix builds are linux-only:** Docker images cannot target
 `darwin/*` or `windows/*`, so those combinations fail fast with a pointer to
@@ -1754,7 +1904,7 @@ value, empty keys) are rejected up front instead of being silently dropped.
 - **Build phase**: fail-open — one failure doesn't stop the rest; full summary at the end. The CLI exits non-zero when any combination failed, so scripts can detect partial failures.
 - **Push phase**: fail-closed by default — if any combination failed, nothing is pushed. Use `--push-partial` to push only successful images.
 
-**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`, carrying the Matrix Run ID as `run_id`) listing each combination's status, duration, artifact path, cache status, attempt count and per-attempt log (automatic retries), and error (if failed — redacted, so compiler output with embedded credentials never lands in the report).
+**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`, carrying the Matrix Run ID as `run_id`) listing each combination's status, duration, artifact path, SHA-256 checksum, cache status, attempt count and per-attempt log (automatic retries), and error (if failed — redacted, so compiler output with embedded credentials never lands in the report).
 
 **Independent build reports per combination:** every combination retains its own build metrics — toolchain version, target platform, duration, cache status and binary size — recorded alongside the matrix version's artifacts in `versions.json` and mirrored in `builds/matrix/report.json` (`cache_status` per combination). Regression analysis is combination-aware: `Go 1.27 / linux-amd64` is only ever compared against previous `Go 1.27 / linux-amd64` builds, never against `Go 1.26 / linux-arm64` or a Rust build. After recording, each combination prints a compact summary of its own comparisons.
 
@@ -1822,6 +1972,10 @@ All state lives under `~/.phelix/`:
 │   ├── <app>.log            # per-app logs
 │   └── deploy_*.log         # deploy instance logs
 ├── registry/<slug>.enc      # encrypted registry credentials
+├── matrix/
+│   └── runs/                 # Matrix Run history: <id>.json records,
+│                             #   <id>.lock execution locks, <id>.manifest.json
+│                             #   release manifests (see Matrix builds)
 └── apps/<AppName>/          # per-app data
     ├── versions.json        # version metadata index (incl. per-version build reports + per-combo matrix reports)
     ├── deploy.json           # blue-green / rolling state

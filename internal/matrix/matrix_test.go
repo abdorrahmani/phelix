@@ -672,10 +672,15 @@ func TestDockerCommandDeterministicAndDoesNotMutateInputs(t *testing.T) {
 	original := map[string]string{"Z": "last", "A": "first"}
 	var gotName string
 	var gotArgs []string
+	// The digest of the built image, echoed back by the faked inspect call.
+	const fakeDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	builderUnderTest := &DockerMatrixBuilder{
 		ProjectRoot: root, AppName: "demo", Tag: "v1", BuildArgs: original,
 		Labels: map[string]string{"z": "2", "a": "1"},
 		CommandContext: func(_ context.Context, name string, args ...string) *exec.Cmd {
+			if len(args) >= 3 && args[0] == "image" && args[1] == "inspect" {
+				return exec.Command("echo", "sha256:"+fakeDigest)
+			}
 			gotName, gotArgs = name, append([]string(nil), args...)
 			return exec.Command("true")
 		},
@@ -684,6 +689,9 @@ func TestDockerCommandDeterministicAndDoesNotMutateInputs(t *testing.T) {
 	result := builderUnderTest.BuildDockerImage(context.Background(), c)
 	if result.Status != "success" || gotName != "docker" {
 		t.Fatalf("build result=%+v command=%s", result, gotName)
+	}
+	if result.SHA256 != fakeDigest {
+		t.Fatalf("image digest not attached: %q", result.SHA256)
 	}
 	if !reflect.DeepEqual(original, map[string]string{"Z": "last", "A": "first"}) {
 		t.Fatalf("BuildArgs mutated: %#v", original)
@@ -722,6 +730,14 @@ func TestGoDockerCommandUsesSafeArgv(t *testing.T) {
 	result := g.Build(context.Background(), c)
 	if result.Status != "success" {
 		t.Fatalf("Build failed: %+v", result)
+	}
+	// The final artifact bytes must carry their SHA-256 end to end.
+	wantSum, err := SHA256File(result.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SHA256 != wantSum {
+		t.Fatalf("builder checksum = %q, want %q", result.SHA256, wantSum)
 	}
 	joined := strings.Join(commands[len(commands)-1], " ")
 	for _, want := range []string{"golang:1.22.4 go build -v -trimpath -ldflags=-s -w", "GOARM=7"} {

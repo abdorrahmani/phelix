@@ -30,6 +30,7 @@ var MatrixCmd = &cobra.Command{
 Subcommands:
   list             Show recorded Matrix Runs (newest first)
   show <run-id>    Show one Matrix Run: configuration snapshot and per-combination results
+  status [run-id]  Show the current state of a Matrix Run (defaults to the active run)
   retry <run-id>   Retry a Run's failed combinations in a new, linked Run
   init             Interactive wizard that writes a matrix profile into phelix.yaml`,
 	SilenceUsage:  true,
@@ -211,6 +212,12 @@ func printMatrixRun(run *matrix.Run) {
 			attempts = dim.Sprintf(" (attempt %d)", c.Attempts)
 		}
 		fmt.Printf("  %s %-35s %s%s\n", icon, c.ID, dim.Sprint(c.Duration), attempts)
+		if c.Artifact != "" {
+			fmt.Printf("      %s %s\n", dim.Sprint("Artifact:"), dim.Sprint(c.Artifact))
+		}
+		if c.SHA256 != "" {
+			fmt.Printf("      %s %s\n", dim.Sprint("SHA256:"), dim.Sprint(matrix.ShortSHA256(c.SHA256)))
+		}
 		for _, a := range c.AttemptLog {
 			marker := color.RedString("✗")
 			if a.Status != "failed" {
@@ -223,6 +230,24 @@ func printMatrixRun(run *matrix.Run) {
 		}
 		if c.Error != "" && len(c.AttemptLog) == 0 {
 			fmt.Printf("      %s %s\n", color.RedString("error:"), c.Error)
+		}
+	}
+
+	if manifest, err := matrix.LoadManifest(run.ID); err == nil && manifest != nil {
+		fmt.Printf("\nRelease:\n")
+		version := fmt.Sprintf("v%d", manifest.Version)
+		if manifest.Tag != "" {
+			version += dim.Sprintf(" (tag %s)", manifest.Tag)
+		}
+		fmt.Printf("  Version:   %s\n", version)
+		fmt.Printf("  Status:    %s", manifest.Status)
+		if manifest.Status == matrix.ReleaseStatusPartial {
+			fmt.Print(dim.Sprint(" — some combinations failed; the manifest lists only successful artifacts"))
+		}
+		fmt.Println()
+		fmt.Printf("  Artifacts: %d of %d combinations\n", len(manifest.Artifacts), manifest.TotalCombinations)
+		if path, perr := matrix.ManifestPath(run.ID); perr == nil {
+			fmt.Printf("  Manifest:  %s\n", dim.Sprint(path))
 		}
 	}
 

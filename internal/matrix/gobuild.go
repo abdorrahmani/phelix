@@ -229,7 +229,13 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result.Status = "success"
 	result.Artifact = outPath
 	result.CacheStatus = string(builder.GoCacheStatusFromOutput(output.String()))
+	// Checksum the final artifact bytes; an unreadable/unhashable artifact is
+	// an integrity failure and fails the combination.
+	finalizeArtifactChecksum(result)
 	logLine("success in %s", result.Duration.Round(time.Millisecond))
+	if result.SHA256 != "" {
+		logLine("sha256:   %s", result.SHA256)
+	}
 	return result
 }
 
@@ -361,7 +367,12 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	// The persistent cache dir is mounted at /root/.cache/go-build; compiled
 	// package names on stderr mean real compilation happened (COLD).
 	result.CacheStatus = string(builder.GoCacheStatusFromOutput(stderr.String()))
+	// Checksum the final artifact bytes (integrity failure fails the combo).
+	finalizeArtifactChecksum(result)
 	logLine("success in %s", result.Duration.Round(time.Millisecond))
+	if result.SHA256 != "" {
+		logLine("sha256:   %s", result.SHA256)
+	}
 	return result
 }
 

@@ -127,6 +127,11 @@ func ListRuns() (runs []*Run, skipped int, err error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
+		// Per-run release manifests live in the same directory
+		// (<id>.manifest.json) but are not run records.
+		if strings.HasSuffix(entry.Name(), ".manifest.json") {
+			continue
+		}
 		data, rerr := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if rerr != nil {
 			skipped++
@@ -289,4 +294,49 @@ func resumableSuffix(appName string) string {
 		return ""
 	}
 	return " for application " + appName
+}
+
+// RunLockOwner reports whether a live process currently holds the run's
+// execution lock, and which PID owns it. A missing lock — or a stale one left
+// by a dead process — means the run is not being executed right now, even if
+// its persisted status still says "running" (an orphaned run: resumable, but
+// not active).
+func RunLockOwner(id RunID) (executing bool, pid int) {
+	if _, err := ParseRunID(string(id)); err != nil {
+		return false, 0
+	}
+	dir, err := RunsDir()
+	if err != nil {
+		return false, 0
+	}
+	raw, rerr := os.ReadFile(filepath.Join(dir, string(id)+".lock"))
+	if rerr != nil {
+		return false, 0
+	}
+	owner, perr := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if perr != nil || !processAlive(owner) {
+		return false, 0
+	}
+	return true, owner
+}
+
+// ActiveRuns returns the Matrix Runs currently being executed by a live
+// process: persisted status "running" and an execution lock held by a live
+// PID. Newest first (ListRuns order), so the deterministic "current" run of
+// several concurrent executions is the most recently started one.
+func ActiveRuns() ([]*Run, error) {
+	runs, _, err := ListRuns()
+	if err != nil {
+		return nil, err
+	}
+	active := make([]*Run, 0)
+	for _, r := range runs {
+		if r.Status != RunStatusRunning {
+			continue
+		}
+		if executing, _ := RunLockOwner(r.ID); executing {
+			active = append(active, r)
+		}
+	}
+	return active, nil
 }

@@ -37,7 +37,11 @@ type ComboReport struct {
 	Status      string `json:"status"` // "success", "failed", "skipped"
 	Duration    string `json:"duration"`
 	Artifact    string `json:"artifact,omitempty"` // binary path or image tag
-	Error       string `json:"error,omitempty"`
+	// SHA256 is the full checksum of the final artifact's bytes (image digest
+	// for Docker artifacts). The terminal summary shows a shortened form; the
+	// complete value is always available in the JSON report.
+	SHA256 string `json:"sha256,omitempty"`
+	Error  string `json:"error,omitempty"`
 	// CacheStatus is this combination's compiler-cache classification
 	// ("cold"/"hit", empty when unknown). Part of the build-report
 	// integration so every combination retains independent metrics.
@@ -82,6 +86,7 @@ func GenerateReport(appName string, results []Result, startTime time.Time) *Repo
 			Status:      res.Status,
 			Duration:    res.Duration.Round(time.Millisecond).String(),
 			Artifact:    res.Artifact,
+			SHA256:      res.SHA256,
 			CacheStatus: res.CacheStatus,
 			Attempts:    len(res.Attempts),
 		}
@@ -160,6 +165,11 @@ func (r *Report) PrintTerminal() {
 		}
 		if cr.Artifact != "" {
 			fmt.Printf("  %s", dim.Sprint(cr.Artifact))
+		}
+		if cr.SHA256 != "" {
+			// Compact form in the terminal; the full checksum lives in the
+			// JSON report and in `matrix show`.
+			fmt.Printf("\n      %s %s", dim.Sprint("SHA256:"), dim.Sprint(ShortSHA256(cr.SHA256)))
 		}
 		fmt.Println()
 

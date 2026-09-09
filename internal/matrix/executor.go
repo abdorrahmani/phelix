@@ -34,6 +34,11 @@ type Result struct {
 	Artifact    string
 	Error       error
 	Log         string
+	// SHA256 is the checksum of the final artifact's bytes (lowercase hex),
+	// set by the builders after the artifact is finalized. For Docker image
+	// artifacts it is the image's content digest. Empty on failure — failed
+	// attempts never produce a valid release artifact.
+	SHA256 string
 	// CacheStatus is the compiler-cache classification for this combination
 	// ("cold" / "hit"), derived from toolchain output by the builders. Empty
 	// means unknown. Consumed by the build-report integration.
@@ -68,6 +73,14 @@ type ExecutorConfig struct {
 	// goroutines, so implementations must be safe for concurrent use; it is
 	// never called for discarded (canceled mid-build) results.
 	OnResult func(Result)
+	// OnAttempt, when non-nil, is invoked when a combination attempt starts:
+	// attempt 1 is the original execution, 2+ are automatic retries. It lets
+	// the run record reflect the live "running" state (and the in-flight
+	// attempt number) while the build is in progress. Called from worker
+	// goroutines — implementations must be safe for concurrent use. Like
+	// in-flight results, a "running" mark left by a canceled attempt is
+	// simply a resumable incomplete combination.
+	OnAttempt func(c Combination, attempt int)
 }
 
 // DefaultConcurrency keeps resource-heavy Docker builds conservative.
@@ -174,7 +187,7 @@ func Execute(plan *MatrixPlan, fn BuildFunc, cfg ExecutorConfig) []Result {
 				progress.Update(comboID, "starting", 0, 0)
 				debugLog("START %s (GOOS=%s GOARCH=%s GOVERSION=%s)", comboID, c.OS, c.Arch, c.Version)
 
-				r := executeWithRetries(ctx, buildCtx, c, fn, cfg.Retries, classifier, progress, debugLog)
+				r := executeWithRetries(ctx, buildCtx, c, fn, cfg.Retries, classifier, cfg.OnAttempt, progress, debugLog)
 
 				// A canceled context invalidates in-flight results: the build
 				// was killed mid-way, not failed. Discard them so the
@@ -224,13 +237,16 @@ func Execute(plan *MatrixPlan, fn BuildFunc, cfg ExecutorConfig) []Result {
 // attempt 1 plus up to retries additional attempts, but only while the
 // failure is classified retryable. Successful combinations never retry. Each
 // attempt is recorded in the result's Attempts history.
-func executeWithRetries(ctx, buildCtx context.Context, c Combination, fn BuildFunc, retries int, classifier RetryClassifier, progress *MatrixProgress, debugLog func(string, ...any)) *Result {
+func executeWithRetries(ctx, buildCtx context.Context, c Combination, fn BuildFunc, retries int, classifier RetryClassifier, onAttempt func(Combination, int), progress *MatrixProgress, debugLog func(string, ...any)) *Result {
 	maxAttempts := 1 + retries
 	// runBuild returns a fresh Result per attempt, so the attempt history is
 	// accumulated here — never overwritten, never lost on the last attempt.
 	var history []Attempt
 	var r *Result
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if onAttempt != nil {
+			onAttempt(c, attempt)
+		}
 		start := time.Now()
 		r = runBuild(buildCtx, c, fn)
 		duration := time.Since(start)

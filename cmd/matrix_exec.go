@@ -75,17 +75,27 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 		}
 	}()
 
-	// Incremental persistence: one history update per completed combination.
-	// Failures are best-effort (warned once) — a history write error must
-	// never fail a successful build.
+	// Incremental persistence: one history update per completed combination
+	// (and per attempt start, so the live "running" state is visible to
+	// `phelix matrix status` from another process). Failures are best-effort
+	// (warned once) — a history write error must never fail a successful
+	// build. Every write marshals a clone taken under the run's lock: other
+	// workers keep mutating the run while this one serializes.
 	var warnOnce sync.Once
-	onResult := func(res matrix.Result) {
-		run.RecordResult(res)
-		if uerr := matrix.UpdateRun(run); uerr != nil {
+	persist := func() {
+		if uerr := matrix.UpdateRun(run.Clone()); uerr != nil {
 			warnOnce.Do(func() {
 				fmt.Printf("  %s Warning: could not update matrix run history: %v\n", color.YellowString("⚠"), uerr)
 			})
 		}
+	}
+	onAttempt := func(c matrix.Combination, attempt int) {
+		run.MarkRunning(c.ID(), attempt, time.Now())
+		persist()
+	}
+	onResult := func(res matrix.Result) {
+		run.RecordResult(res)
+		persist()
 	}
 
 	results := matrix.Execute(&matrix.MatrixPlan{Lang: run.Config.Profile().Lang, Combinations: combos}, buildFn, matrix.ExecutorConfig{
@@ -93,11 +103,12 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 		Debug:       debug,
 		Retries:     run.Config.Retries,
 		Context:     ctx,
+		OnAttempt:   onAttempt,
 		OnResult:    onResult,
 	})
 
 	run.Finalize(time.Now())
-	if uerr := matrix.UpdateRun(run); uerr != nil {
+	if uerr := matrix.UpdateRun(run.Clone()); uerr != nil {
 		fmt.Printf("  %s Warning: could not record matrix run history: %v\n", color.YellowString("⚠"), uerr)
 	}
 	signal.Stop(sigCh)
@@ -165,6 +176,8 @@ func completeMatrixSession(run *matrix.Run, executed []matrix.Result, tag string
 
 	// Record artifacts from the run record (not just this session's results)
 	// so a resumed run records its previously-succeeded combinations too.
+	// Each artifact carries its checksum — the integrity identity that flows
+	// into the release manifest below.
 	artifacts := make([]deploy.MatrixArtifact, 0, run.Succeeded)
 	successful := make([]matrix.RunCombination, 0, run.Succeeded)
 	for _, rc := range run.Combinations {
@@ -177,6 +190,7 @@ func completeMatrixSession(run *matrix.Run, executed []matrix.Result, tag string
 			Platform:    rc.Platform,
 			Version:     rc.Version,
 			Binary:      rc.Artifact,
+			SHA256:      rc.SHA256,
 			Status:      rc.Status,
 			SizeBytes:   fileSize(rc.Artifact),
 			Report:      newMatrixComboReportFromRun(rc),
@@ -193,7 +207,24 @@ func completeMatrixSession(run *matrix.Run, executed []matrix.Result, tag string
 		fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
 		return
 	}
-	fmt.Printf("  %s Matrix build recorded in version history\n", color.GreenString("✓"))
+	fmt.Printf("  %s Matrix build recorded in version history (v%d)\n", color.GreenString("✓"), rec.Version)
+
+	// The release manifest describes this run's artifact set under the
+	// logical version just recorded. Only finished runs with successful
+	// artifacts form a release: an interrupted run has none yet (its
+	// manifest appears once a resume finishes), and a partial run gets an
+	// explicitly partial manifest — never a silently complete one.
+	if run.Status == matrix.RunStatusSucceeded || run.Status == matrix.RunStatusPartial {
+		manifest, merr := matrix.BuildReleaseManifest(run, rec.Version, tag, time.Now())
+		if merr == nil {
+			if serr := matrix.SaveManifest(manifest); serr != nil {
+				fmt.Printf("  %s Warning: could not write release manifest: %v\n", color.YellowString("⚠"), serr)
+			} else {
+				fmt.Printf("  %s Release manifest: v%d (%s, %d artifact(s))\n",
+					color.GreenString("✓"), manifest.Version, manifest.Status, len(manifest.Artifacts))
+			}
+		}
+	}
 
 	history, herr := deploy.BuildReportHistory(run.AppName, rec.Version)
 	summaries := make([]buildreport.CompactSummary, 0, len(successful))

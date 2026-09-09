@@ -369,7 +369,10 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 				Platform: r.Combination.Platform,
 				Version:  r.Combination.Version,
 				ImageTag: r.Artifact,
-				Status:   r.Status,
+				// The builder resolves each image's content digest — the
+				// image-world equivalent of a binary's SHA-256.
+				SHA256: r.SHA256,
+				Status: r.Status,
 			})
 		}
 

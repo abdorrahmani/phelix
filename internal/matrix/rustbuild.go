@@ -192,6 +192,8 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result.Status = "success"
 	result.Artifact = outBin
 	result.CacheStatus = string(builder.RustCacheStatusFromOutput(output.String()))
+	// Checksum the final artifact bytes (integrity failure fails the combo).
+	finalizeArtifactChecksum(result)
 	return result
 }
 
