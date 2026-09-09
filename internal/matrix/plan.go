@@ -11,8 +11,9 @@ import (
 	"github.com/abdorrahmani/phelix/internal/builder"
 )
 
-// Combination represents a single build target in the matrix:
-// one toolchain version × one platform pair.
+// Combination represents a single build target in the matrix: one set of
+// dimension values (see dimensions.go for the generalized model). The typed
+// fields below are the dimensions the engine currently supports.
 type Combination struct {
 	Lang     builder.Language // "go" or "rust"
 	Version  string           // toolchain version, e.g. "1.22" or "1.22.4"
@@ -20,6 +21,9 @@ type Combination struct {
 	Arch     string           // e.g. "amd64" or "arm" (never contains "/")
 	Variant  string           // optional ARM variant ("v6"/"v7"); empty otherwise
 	Platform string           // combined "os/arch[/variant]", e.g. "linux/arm/v7"
+	// Metadata carries attributes attached by include rules (e.g. tag: latest).
+	// It never participates in the combination identity.
+	Metadata map[string]string
 }
 
 // ID returns a short stable identifier for this combination, suitable for
@@ -75,10 +79,16 @@ func sanitizeNamePart(s string) string {
 	return strings.ReplaceAll(s, "..", "")
 }
 
-// MatrixPlan is the fully-expanded list of build combinations.
+// MatrixPlan is the fully-expanded list of build combinations. The counts
+// explain how the final list came to be (base Cartesian product, combinations
+// added by include rules, combinations removed by exclude rules) — the wizard
+// preview and run inspection render them; execution only uses Combinations.
 type MatrixPlan struct {
-	Lang         builder.Language
-	Combinations []Combination
+	Lang          builder.Language
+	Combinations  []Combination
+	BaseCount     int
+	IncludedCount int
+	ExcludedCount int
 }
 
 // versionPattern accepts semantic toolchain versions with an optional patch
@@ -99,9 +109,30 @@ var knownPlatforms = map[string]bool{
 }
 
 // ParsePlan builds a MatrixPlan from the CLI-provided version lists and
-// platform list. It validates every entry and returns an error on the first
-// invalid one so the user can fix their flags before any builds start.
+// platform list, without include/exclude rules. It is the legacy entry point
+// (and the path the dockerize matrix uses); the profile path goes through
+// Expand with the effective RuleSet.
 func ParsePlan(lang builder.Language, versions []string, platforms []string) (*MatrixPlan, error) {
+	return Expand(lang, versions, platforms, RuleSet{})
+}
+
+// Expand is the single matrix expansion engine. Pipeline (deterministic,
+// documented, and identical for CLI, YAML, wizard, and future remote
+// execution):
+//
+//	Base Cartesian product  (versions × platforms, input order preserved)
+//	      ↓
+//	Include rules           (merge metadata into matches, or append new
+//	                         combinations; duplicates impossible by identity)
+//	      ↓
+//	Exclude rules           (partial matching; remove from the current list)
+//	      ↓
+//	Final combinations
+//
+// Every rule must match at least one combination at the point it is applied —
+// a rule that silently matches nothing is treated as a configuration error so
+// typos cannot quietly shrink or fail to shrink the matrix.
+func Expand(lang builder.Language, versions []string, platforms []string, rules RuleSet) (*MatrixPlan, error) {
 	if lang != builder.Go && lang != builder.Rust {
 		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: unsupported language %q — supported: go, rust", lang)
 	}
@@ -121,7 +152,19 @@ func ParsePlan(lang builder.Language, versions []string, platforms []string) (*M
 		return nil, err
 	}
 
-	// Expand into full cross product.
+	for _, rule := range rules.Include {
+		if err := ValidateRule("include", rule); err != nil {
+			return nil, err
+		}
+	}
+	for _, rule := range rules.Exclude {
+		if err := ValidateRule("exclude", rule); err != nil {
+			return nil, err
+		}
+	}
+
+	// Base cross product, in input order — deterministic for the same
+	// configuration.
 	combs := make([]Combination, 0, len(cleanVersions)*len(cleanPlatforms))
 	for _, ver := range cleanVersions {
 		for _, plat := range cleanPlatforms {
@@ -139,10 +182,83 @@ func ParsePlan(lang builder.Language, versions []string, platforms []string) (*M
 			combs = append(combs, comb)
 		}
 	}
+	baseCount := len(combs)
+
+	// Identity index — the dedupe and merge mechanism for include rules.
+	byIdentity := make(map[string]int, len(combs))
+	for i, c := range combs {
+		byIdentity[c.Identity()] = i
+	}
+
+	// --- Include rules, in order.
+	included := 0
+	for _, rule := range rules.Include {
+		if rule.isFullRule() {
+			// A full rule names one combination (ecosystem + version +
+			// platform): merge metadata into the existing combination, or
+			// append it when the Cartesian product does not contain it.
+			platform := rule.Dimensions[DimOS] + "/" + rule.Dimensions[DimArch]
+			if v, ok := rule.Dimensions[DimVariant]; ok {
+				platform += "/" + v
+			}
+			comb, cerr := NewCombination(builder.Language(rule.Dimensions[DimLang]), rule.Dimensions[DimVersion], platform)
+			if cerr != nil {
+				return nil, phelixerr.Wrapf(phelixerr.CodeInvalidArgument, cerr,
+					"matrix: include rule [%s] is invalid", rule.Describe())
+			}
+			if idx, ok := byIdentity[comb.Identity()]; ok {
+				combs[idx].MergeMetadata(rule.Metadata)
+				continue
+			}
+			comb.MergeMetadata(rule.Metadata)
+			byIdentity[comb.Identity()] = len(combs)
+			combs = append(combs, comb)
+			included++
+			continue
+		}
+		// A partial rule can only attach metadata to combinations the base
+		// matrix already contains; it must match at least one.
+		matched := 0
+		for i := range combs {
+			if rule.Matches(combs[i]) {
+				combs[i].MergeMetadata(rule.Metadata)
+				matched++
+			}
+		}
+		if matched == 0 {
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"matrix: include rule [%s] matches no combination — partial include rules can only add metadata to existing combinations",
+				rule.Describe())
+		}
+	}
+
+	// --- Exclude rules, in order. Each removes every current match; a rule
+	// that matches nothing at its point in the pipeline is an error.
+	excluded := 0
+	for _, rule := range rules.Exclude {
+		kept := combs[:0]
+		removed := 0
+		for _, c := range combs {
+			if rule.Matches(c) {
+				removed++
+				continue
+			}
+			kept = append(kept, c)
+		}
+		if removed == 0 {
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"matrix: exclude rule [%s] matches no combination (it may have been removed by an earlier rule)", rule.Describe())
+		}
+		combs = kept
+		excluded += removed
+	}
 
 	return &MatrixPlan{
-		Lang:         lang,
-		Combinations: combs,
+		Lang:          lang,
+		Combinations:  combs,
+		BaseCount:     baseCount,
+		IncludedCount: included,
+		ExcludedCount: excluded,
 	}, nil
 }
 

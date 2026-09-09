@@ -28,9 +28,10 @@ var MatrixCmd = &cobra.Command{
 	Long: `Inspect Matrix build runs and configure the Build Matrix.
 
 Subcommands:
-  list            Show recorded Matrix Runs (newest first)
-  show <run-id>   Show one Matrix Run: configuration snapshot and per-combination results
-  init            Interactive wizard that writes a matrix profile into phelix.yaml`,
+  list             Show recorded Matrix Runs (newest first)
+  show <run-id>    Show one Matrix Run: configuration snapshot and per-combination results
+  retry <run-id>   Retry a Run's failed combinations in a new, linked Run
+  init             Interactive wizard that writes a matrix profile into phelix.yaml`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -120,24 +121,28 @@ func init() {
 // array, never null, when there is no history).
 func printMatrixRunsJSON(runs []*matrix.Run) error {
 	type summary struct {
-		ID         matrix.RunID `json:"id"`
-		AppName    string       `json:"app_name"`
-		Status     string       `json:"status"`
-		Total      int          `json:"total"`
-		Succeeded  int          `json:"succeeded"`
-		Failed     int          `json:"failed"`
-		Skipped    int          `json:"skipped"`
-		StartedAt  string       `json:"started_at"`
-		FinishedAt string       `json:"finished_at,omitempty"`
-		Duration   string       `json:"duration,omitempty"`
+		ID          matrix.RunID `json:"id"`
+		AppName     string       `json:"app_name"`
+		Status      string       `json:"status"`
+		Total       int          `json:"total"`
+		Succeeded   int          `json:"succeeded"`
+		Failed      int          `json:"failed"`
+		Skipped     int          `json:"skipped"`
+		Incomplete  int          `json:"incomplete,omitempty"`
+		ParentRunID matrix.RunID `json:"parent_run_id,omitempty"`
+		StartedAt   string       `json:"started_at"`
+		FinishedAt  string       `json:"finished_at,omitempty"`
+		Duration    string       `json:"duration,omitempty"`
 	}
 	out := make([]summary, 0, len(runs))
 	for _, r := range runs {
 		s := summary{
 			ID: r.ID, AppName: r.AppName, Status: string(r.Status),
 			Total: r.Total, Succeeded: r.Succeeded, Failed: r.Failed, Skipped: r.Skipped,
-			StartedAt: r.StartedAt.Format("2006-01-02T15:04:05Z07:00"),
-			Duration:  r.Duration,
+			Incomplete:  r.Incomplete,
+			ParentRunID: r.ParentRunID,
+			StartedAt:   r.StartedAt.Format("2006-01-02T15:04:05Z07:00"),
+			Duration:    r.Duration,
 		}
 		if !r.FinishedAt.IsZero() {
 			s.FinishedAt = r.FinishedAt.Format("2006-01-02T15:04:05Z07:00")
@@ -150,14 +155,21 @@ func printMatrixRunsJSON(runs []*matrix.Run) error {
 }
 
 // printMatrixRun renders one run: identity, timing, the configuration
-// snapshot taken at execution time, per-combination results, and the summary.
-// Failed combinations show their (redacted, bounded) error — never full logs.
+// snapshot taken at execution time, per-combination results (with attempt
+// history), and the summary. Failed combinations show their (redacted,
+// bounded) error — never full logs.
 func printMatrixRun(run *matrix.Run) {
 	dim := color.New(color.Faint)
 
 	fmt.Printf("Matrix Run: %s\n\n", color.CyanString(string(run.ID)))
 	fmt.Printf("Status:      %s\n", colorizeRunStatus(string(run.Status)))
 	fmt.Printf("App:         %s\n", run.AppName)
+	if run.ParentRunID != "" {
+		fmt.Printf("Parent Run:  %s %s\n", run.ParentRunID, dim.Sprint("(manual retry of this run's source)"))
+	}
+	if run.ResumeCount > 0 {
+		fmt.Printf("Resumed:     %d time(s)\n", run.ResumeCount)
+	}
 	fmt.Printf("Started:     %s\n", run.StartedAt.Format("2006-01-02 15:04:05"))
 	if !run.FinishedAt.IsZero() {
 		fmt.Printf("Finished:    %s\n", run.FinishedAt.Format("2006-01-02 15:04:05"))
@@ -171,6 +183,15 @@ func printMatrixRun(run *matrix.Run) {
 	fmt.Printf("  Versions:   %s %s\n", strings.Join(run.Config.Versions, ", "), dim.Sprintf("(%s)", run.Config.Sources.Versions))
 	fmt.Printf("  Platforms:  %s %s\n", strings.Join(run.Config.Platforms, ", "), dim.Sprintf("(%s)", run.Config.Sources.Platforms))
 	fmt.Printf("  Concurrency: %d %s\n", run.Config.Concurrency, dim.Sprintf("(%s)", run.Config.Sources.Concurrency))
+	if run.Config.Retries > 0 {
+		fmt.Printf("  Retries:    %d %s\n", run.Config.Retries, dim.Sprintf("(%s)", run.Config.Sources.Retries))
+	}
+	for _, rule := range run.Config.Include {
+		fmt.Printf("  Include:    %s\n", rule.Describe())
+	}
+	for _, rule := range run.Config.Exclude {
+		fmt.Printf("  Exclude:    %s\n", rule.Describe())
+	}
 
 	fmt.Printf("\nCombinations:\n\n")
 	for _, c := range run.Combinations {
@@ -180,11 +201,27 @@ func printMatrixRun(run *matrix.Run) {
 			icon = color.GreenString("✓")
 		case "failed":
 			icon = color.RedString("✗")
+		case "pending", "running", "":
+			icon = color.BlueString("◌")
 		default:
 			icon = color.YellowString("○")
 		}
-		fmt.Printf("  %s %-35s %s\n", icon, c.ID, dim.Sprint(c.Duration))
-		if c.Error != "" {
+		attempts := ""
+		if c.Attempts > 1 {
+			attempts = dim.Sprintf(" (attempt %d)", c.Attempts)
+		}
+		fmt.Printf("  %s %-35s %s%s\n", icon, c.ID, dim.Sprint(c.Duration), attempts)
+		for _, a := range c.AttemptLog {
+			marker := color.RedString("✗")
+			if a.Status != "failed" {
+				marker = color.GreenString("✓")
+			}
+			fmt.Printf("      %s attempt %d: %s %s\n", marker, a.Number, a.Status, dim.Sprint(a.Duration))
+			if a.Error != "" {
+				fmt.Printf("        %s %s\n", color.RedString("error:"), a.Error)
+			}
+		}
+		if c.Error != "" && len(c.AttemptLog) == 0 {
 			fmt.Printf("      %s %s\n", color.RedString("error:"), c.Error)
 		}
 	}
@@ -196,6 +233,9 @@ func printMatrixRun(run *matrix.Run) {
 	if run.Skipped > 0 {
 		fmt.Printf("  Skipped:  %d\n", run.Skipped)
 	}
+	if run.Incomplete > 0 {
+		fmt.Printf("  Incomplete: %d %s\n", run.Incomplete, dim.Sprint("(resumable with 'phelix build --matrix --resume')"))
+	}
 	fmt.Println()
 }
 
@@ -203,7 +243,7 @@ func colorizeRunStatus(status string) string {
 	switch status {
 	case string(matrix.RunStatusSucceeded):
 		return color.GreenString(status)
-	case string(matrix.RunStatusPartial):
+	case string(matrix.RunStatusPartial), string(matrix.RunStatusInterrupted):
 		return color.YellowString(status)
 	case string(matrix.RunStatusFailed):
 		return color.RedString(status)
@@ -229,6 +269,11 @@ func matrixResolveInput(cmd *cobra.Command, projCfg *project.Config, detectedLan
 	}
 	if cmd.Flags().Changed("matrix-concurrency") {
 		in.CLI.Concurrency = matrixConcurrency
+	}
+	// Lookup (not Changed) so commands without the flag — e.g. test scratch
+	// commands — do not panic on the access.
+	if f := cmd.Flags().Lookup("matrix-retries"); f != nil && f.Changed {
+		in.CLI.Retries = matrixRetries
 	}
 	if projCfg != nil && projCfg.Matrix != nil {
 		in.YAML = projCfg.Matrix.MatrixProfile()

@@ -1506,6 +1506,8 @@ phelix dockerize myapp --matrix --go-versions 1.22,1.27 --platforms linux/amd64,
 | `--rust-versions` | Comma-separated Rust versions (same format) |
 | `--platforms` | Target platforms (e.g. `linux/amd64,linux/arm64,linux/arm/v7,darwin/arm64`; case-insensitive) |
 | `--matrix-concurrency` | Max parallel builds (default: 3) |
+| `--matrix-retries` | Retry failed combinations up to N *additional* times (default: 0; only transient failures — network, timeout, Docker daemon — are retried) |
+| `--resume` | Resume an interrupted matrix run (`--resume` picks the most recent, `--resume=mx_…` a specific run; implies matrix mode) |
 | `--matrix-dry-run` | Print the matrix plan without executing |
 | `--debug` | Verbose output: Docker commands, build logs, cache paths |
 | `--multi-arch-tag` | (dockerize) additionally assemble a multi-arch manifest list per toolchain version via `docker buildx` |
@@ -1526,17 +1528,70 @@ matrix:
   enabled: true
   go:                # or rust: — exactly one ecosystem
     versions:
+      - "1.25"
       - "1.26"
       - "1.27"
   platforms:
     - linux/amd64
     - linux/arm64
+    - windows/amd64
   concurrency: 4     # optional, default 3
+  retries: 2         # optional, automatic retries for transient failures
+  include:           # optional, extra combinations / metadata
+    - go: "1.28"
+      platform: linux/amd64
+      tag: latest
+  exclude:           # optional, drop matching combinations
+    - go: "1.25"
+      platform: windows/amd64
 ```
 
 With `matrix.enabled: true`, a plain `phelix build` runs the matrix — no flags
 needed. The profile goes through the exact same validation and expansion as
 CLI flags.
+
+#### Matrix dimensions, include, and exclude
+
+Internally the matrix is a set of **dimensions** (`lang`, `version`, `os`,
+`arch`, `variant`); the Cartesian product of the configured versions ×
+platforms is only the *base* of the expansion. The full pipeline is
+deterministic and identical for CLI flags, `phelix.yaml`, the wizard, and any
+future remote execution:
+
+```text
+Base Cartesian product  →  Include rules  →  Exclude rules  →  Final combinations
+```
+
+**Exclude** rules are partial matchers: a rule matches every combination that
+carries the constrained values, regardless of the other dimensions. Rule keys:
+`go`/`rust` (shorthand for ecosystem + version), `lang`, `version`,
+`platform`, `os`, `arch`, `variant`. So this drops *all* Windows combinations
+of Go 1.25 and nothing else:
+
+```yaml
+exclude:
+  - go: "1.25"
+    platform: windows/amd64
+```
+
+**Include** rules do two things:
+- a rule that names a full combination (ecosystem + version + platform)
+  **adds it** when the base product doesn't contain it — `go: "1.28"` above
+  builds 1.28 even though only 1.25–1.27 are configured;
+- any other keys on an include entry (like `tag: latest`) are **metadata**
+  merged into the matching combination(s) — recorded in the run and visible
+  in `matrix show`.
+
+A duplicate include (a combination already in the matrix) never schedules the
+job twice — it only merges its metadata. A well-formed rule that matches no
+combination at the point it is applied is a **configuration error**, so a typo
+cannot silently shrink (or fail to shrink) the matrix. Exclude rules reject
+unknown keys outright for the same reason. Excludes apply *after* includes,
+so an exclude can remove an included combination.
+
+The wizard (`phelix matrix init`) configures includes and excludes too, and
+its preview shows the real pipeline counts (`base 6 · included +1 ·
+excluded -1`) computed by the same expansion engine the build uses.
 
 **Configuration precedence** (per dimension, deterministic):
 
@@ -1569,18 +1624,85 @@ phelix matrix list                 # recorded runs, newest first
 phelix matrix list --json          # machine-readable summaries
 phelix matrix show mx_20260909_8f31        # config snapshot + per-combination results
 phelix matrix show mx_20260909_8f31 --json
+phelix matrix retry mx_20260909_8f31 --failed   # retry a run's failures in a new linked run
 phelix matrix init                 # interactive wizard → writes phelix.yaml
 ```
 
 `matrix show` displays the configuration snapshot (with each dimension's
-origin: `cli`, `phelix.yaml`, or `default`), every combination's status and
-duration, and redacted error details for failures. An unknown run ID is a
+origin: `cli`, `phelix.yaml`, or `default`, plus the effective include/exclude
+rules and retry budget), every combination's status, duration, attempt
+history, and redacted error details for failures. An unknown run ID is a
 clean `NOT_FOUND` error. Local run history can be relocated with
 `PHELIX_DATA_DIR` like all Phelix state.
 
+Run statuses: `succeeded` (everything passed), `partial` (some passed, some
+failed), `failed` (nothing passed), `interrupted` (stopped with incomplete
+combinations — resumable). A run with failures never reports `succeeded`.
+
+#### Automatic retries
+
+```bash
+phelix build myapp --matrix --matrix-retries 2
+```
+
+`--matrix-retries 2` means **two additional attempts** (at most 3 executions
+per combination), not two total. Only failed combinations are retried — a
+combination that succeeded is never re-executed. Retries happen inside the
+*same* Matrix Run: the run records every attempt (`Attempts: 3, final:
+succeeded`) in `matrix show` and `report.json`, so an eventual success is
+explainable. Only *transient* failures are retried (network, connection,
+timeout, Docker daemon unavailable); deterministic failures — compiler
+errors, invalid versions, configuration problems — fail on the first attempt
+and are not repeated.
+
+#### Resume
+
+```bash
+phelix build myapp --matrix --resume            # most recent interrupted run
+phelix build myapp --matrix --resume=mx_20260909_8f31
+```
+
+Resume continues an **existing** incomplete run instead of starting a new
+matrix. Runs persist incrementally (after every completed combination), so
+resume works after Ctrl-C, a crash, or a machine restart. Exact semantics:
+
+- `succeeded` combinations → **never rebuilt**
+- `failed` combinations → skipped (retry them explicitly with
+  `phelix matrix retry <run-id> --failed`)
+- `pending` combinations and `running` combinations whose worker is gone →
+  **executed**
+
+Resume uses the run's original configuration snapshot (dimensions, include/
+exclude rules, build args) — later `phelix.yaml` edits cannot change what the
+resumed run builds. A per-run lock file guards against two concurrent
+executions of the same run; a lock left by a dead process is reclaimed
+automatically after a restart. The first Ctrl-C stops the run cleanly
+(in-flight builds are killed and stay pending); a second one terminates
+immediately.
+
+#### Manual retry
+
+```bash
+phelix matrix retry mx_20260909_8f31 --failed
+```
+
+A manual retry **creates a new run** containing only the combinations whose
+final status in the source run is `failed`. The new run records its parent
+(`parent_run_id`), executes the source run's configuration snapshot, and the
+original run's history stays unchanged. The three recovery mechanisms are
+deliberately distinct:
+
+| Mechanism | Same run? | What executes |
+|-----------|-----------|---------------|
+| Automatic retry (`--matrix-retries`) | yes | failed combinations, extra attempts |
+| Resume (`--resume`) | yes | incomplete combinations only |
+| Manual retry (`matrix retry --failed`) | new linked run | failed combinations of the source run |
+
 **Interactive wizard:** `phelix matrix init` walks through ecosystem, versions
-(recent suggestions plus free-form entry), platforms, and concurrency, then
-previews the *actual* expanded combination list — never a naive
+(recent suggestions plus free-form entry), platforms, concurrency, optional
+include entries (combinations outside the base matrix) and exclusions
+(picked from the real expanded list), then previews the *actual* expanded
+combination list with base/included/excluded counts — never a naive
 versions × platforms count — before writing the profile. It preserves all
 unrelated `phelix.yaml` keys and comments, offers Edit / Keep / Disable /
 Cancel when a profile already exists, and refuses to run without an
@@ -1632,7 +1754,7 @@ value, empty keys) are rejected up front instead of being silently dropped.
 - **Build phase**: fail-open — one failure doesn't stop the rest; full summary at the end. The CLI exits non-zero when any combination failed, so scripts can detect partial failures.
 - **Push phase**: fail-closed by default — if any combination failed, nothing is pushed. Use `--push-partial` to push only successful images.
 
-**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`, carrying the Matrix Run ID as `run_id`) listing each combination's status, duration, artifact path, cache status, and error (if failed — redacted, so compiler output with embedded credentials never lands in the report).
+**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`, carrying the Matrix Run ID as `run_id`) listing each combination's status, duration, artifact path, cache status, attempt count and per-attempt log (automatic retries), and error (if failed — redacted, so compiler output with embedded credentials never lands in the report).
 
 **Independent build reports per combination:** every combination retains its own build metrics — toolchain version, target platform, duration, cache status and binary size — recorded alongside the matrix version's artifacts in `versions.json` and mirrored in `builds/matrix/report.json` (`cache_status` per combination). Regression analysis is combination-aware: `Go 1.27 / linux-amd64` is only ever compared against previous `Go 1.27 / linux-amd64` builds, never against `Go 1.26 / linux-arm64` or a Rust build. After recording, each combination prints a compact summary of its own comparisons.
 

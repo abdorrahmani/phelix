@@ -111,12 +111,21 @@ func runMatrixWizard() error {
 	if err != nil {
 		return err
 	}
+	include, err := promptMatrixInclude(lang)
+	if err != nil {
+		return err
+	}
+	exclude, err := promptMatrixExclude(lang, versions, platforms, include)
+	if err != nil {
+		return err
+	}
 
-	cfg := wizardMatrixConfig(lang, versions, platforms, concurrency)
+	cfg := wizardMatrixConfig(lang, versions, platforms, concurrency, include, exclude)
 
 	// Preview through the real expansion: the profile is converted exactly
 	// like phelix.yaml is at build time, and the plan comes from the same
-	// ParsePlan the engine uses. No second combination calculation.
+	// Expand engine (base product → include → exclude) the executor uses. No
+	// second combination calculation.
 	plan, err := cfg.MatrixProfile().Plan()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix configuration", err)
@@ -256,14 +265,129 @@ func promptMatrixPlatforms() ([]string, error) {
 	}
 }
 
+// promptMatrixInclude optionally collects include rules: extra combinations
+// outside the base Cartesian product. Each entry is an ecosystem version plus
+// a platform, validated with the engine's own helpers.
+func promptMatrixInclude(lang builder.Language) ([]project.MatrixRule, error) {
+	add, err := PromptConfirm("Add combinations outside the base matrix (include)?", false)
+	if err != nil {
+		return nil, err
+	}
+	if !add {
+		return nil, nil
+	}
+	var rules []project.MatrixRule
+	for {
+		version, err := promptMatrixVersionString(lang)
+		if err != nil {
+			return nil, err
+		}
+		platform, err := promptMatrixPlatformSelect()
+		if err != nil {
+			return nil, err
+		}
+		rules = append(rules, project.MatrixRuleFromFields(map[string]string{
+			string(lang): version,
+			"platform":   platform,
+		}))
+		another, err := PromptConfirm("Add another combination?", false)
+		if err != nil {
+			return nil, err
+		}
+		if !another {
+			return rules, nil
+		}
+	}
+}
+
+// promptMatrixExclude optionally collects exclude rules by letting the user
+// pick combinations from the real expansion of the configured dimensions —
+// so every generated rule is guaranteed to match.
+func promptMatrixExclude(lang builder.Language, versions, platforms []string, include []project.MatrixRule) ([]project.MatrixRule, error) {
+	configure, err := PromptConfirm("Configure exclusions?", false)
+	if err != nil || !configure {
+		return nil, err
+	}
+
+	// Expand the base + include dimensions with the real engine to offer the
+	// actual candidate list.
+	prof := &matrix.Profile{Lang: lang, Versions: versions, Platforms: platforms}
+	for _, rule := range include {
+		prof.Include = append(prof.Include, matrix.RuleFromFields(rule.Fields()))
+	}
+	plan, err := prof.Plan()
+	if err != nil {
+		return nil, phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix configuration", err)
+	}
+
+	options := make([]string, 0, len(plan.Combinations))
+	byID := make(map[string]matrix.Combination, len(plan.Combinations))
+	for _, c := range plan.Combinations {
+		options = append(options, c.ID())
+		byID[c.ID()] = c
+	}
+
+	var picked []string
+	prompt := &survey.MultiSelect{
+		Message: "Combinations to exclude:",
+		Options: options,
+	}
+	if err := survey.AskOne(prompt, &picked); err != nil {
+		return nil, phelixerr.Wrap(phelixerr.CodeInvalidArgument, "selection cancelled", err)
+	}
+
+	rules := make([]project.MatrixRule, 0, len(picked))
+	for _, id := range picked {
+		c := byID[id]
+		rules = append(rules, project.MatrixRuleFromFields(map[string]string{
+			string(c.Lang): c.Version,
+			"platform":     c.Platform,
+		}))
+	}
+	return rules, nil
+}
+
+// promptMatrixVersionString asks for one toolchain version, validating it
+// with the engine's ValidateVersions before accepting.
+func promptMatrixVersionString(lang builder.Language) (string, error) {
+	for {
+		v, err := PromptString(fmt.Sprintf("%s version (e.g. %s)", lang, wizardVersionSuggestions[lang][0]), "")
+		if err != nil {
+			return "", err
+		}
+		if _, verr := matrix.ValidateVersions(lang, []string{v}); verr != nil {
+			fmt.Printf("  %s %v\n", color.YellowString("⚠"), verr)
+			continue
+		}
+		return v, nil
+	}
+}
+
+// promptMatrixPlatformSelect asks for one platform from the supported list.
+func promptMatrixPlatformSelect() (string, error) {
+	for {
+		p, err := PromptSelect("Platform:", matrix.KnownPlatforms())
+		if err != nil {
+			return "", err
+		}
+		if _, verr := matrix.ValidatePlatforms([]string{p}); verr != nil {
+			fmt.Printf("  %s %v\n", color.YellowString("⚠"), verr)
+			continue
+		}
+		return p, nil
+	}
+}
+
 // wizardMatrixConfig builds the phelix.yaml matrix section from the wizard's
 // answers — the same project.MatrixConfig type the YAML parser produces, so
 // the wizard output is indistinguishable from a hand-written profile.
-func wizardMatrixConfig(lang builder.Language, versions, platforms []string, concurrency int) *project.MatrixConfig {
+func wizardMatrixConfig(lang builder.Language, versions, platforms []string, concurrency int, include, exclude []project.MatrixRule) *project.MatrixConfig {
 	cfg := &project.MatrixConfig{
 		Enabled:     true,
 		Platforms:   platforms,
 		Concurrency: concurrency,
+		Include:     include,
+		Exclude:     exclude,
 	}
 	if concurrency <= 0 {
 		cfg.Concurrency = matrix.DefaultConcurrency
@@ -281,16 +405,23 @@ func wizardMatrixConfig(lang builder.Language, versions, platforms []string, con
 	return cfg
 }
 
-// matrixWizardPreview renders the preview block. The combination list comes
-// from the actual expanded plan — never from a versions×platforms
-// multiplication.
+// matrixWizardPreview renders the preview block. The combination list and
+// the base/included/excluded counts come from the actual expanded plan —
+// never from a versions×platforms multiplication.
 func matrixWizardPreview(plan *matrix.MatrixPlan, concurrency int) string {
 	var b strings.Builder
 	b.WriteString("\nMatrix Preview\n\n")
 	fmt.Fprintf(&b, "  %s versions\n", strings.Join(planVersions(plan), ", "))
 	fmt.Fprintf(&b, "  Platforms:  %s\n", strings.Join(planPlatforms(plan), ", "))
 	fmt.Fprintf(&b, "  Concurrency: %d\n", concurrency)
-	fmt.Fprintf(&b, "\n  Total combinations: %d\n\n", len(plan.Combinations))
+	fmt.Fprintf(&b, "\n  Base combinations:  %d\n", plan.BaseCount)
+	if plan.IncludedCount > 0 {
+		fmt.Fprintf(&b, "  Included:           +%d\n", plan.IncludedCount)
+	}
+	if plan.ExcludedCount > 0 {
+		fmt.Fprintf(&b, "  Excluded:           -%d\n", plan.ExcludedCount)
+	}
+	fmt.Fprintf(&b, "  Final combinations: %d\n\n", len(plan.Combinations))
 	dim := color.New(color.Faint)
 	for _, c := range plan.Combinations {
 		fmt.Fprintf(&b, "    %s %s\n", dim.Sprint("•"), c.ID())
@@ -347,6 +478,15 @@ func describeMatrixConfig(m *project.MatrixConfig) string {
 	fmt.Fprintf(&b, "  Platforms:    %s\n", strings.Join(m.Platforms, ", "))
 	if m.Concurrency > 0 {
 		fmt.Fprintf(&b, "  Concurrency:  %d\n", m.Concurrency)
+	}
+	if m.Retries > 0 {
+		fmt.Fprintf(&b, "  Retries:      %d\n", m.Retries)
+	}
+	for _, rule := range m.Include {
+		fmt.Fprintf(&b, "  Include:      %s\n", matrix.RuleFromFields(rule.Fields()).Describe())
+	}
+	for _, rule := range m.Exclude {
+		fmt.Fprintf(&b, "  Exclude:      %s\n", matrix.RuleFromFields(rule.Fields()).Describe())
 	}
 	fmt.Fprintf(&b, "  Enabled:      %v\n", m.Enabled)
 	return b.String()

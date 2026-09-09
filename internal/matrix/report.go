@@ -42,6 +42,20 @@ type ComboReport struct {
 	// ("cold"/"hit", empty when unknown). Part of the build-report
 	// integration so every combination retains independent metrics.
 	CacheStatus string `json:"cache_status,omitempty"`
+	// Attempts is how many execution attempts the combination took (automatic
+	// retries included); 1 when it succeeded (or failed) on the first try.
+	Attempts int `json:"attempts,omitempty"`
+	// AttemptLog records each attempt's outcome so a combination that
+	// eventually succeeded after failures can be explained.
+	AttemptLog []AttemptReport `json:"attempt_log,omitempty"`
+}
+
+// AttemptReport is one attempt's entry in a ComboReport.
+type AttemptReport struct {
+	Number   int    `json:"number"`
+	Status   string `json:"status"`
+	Duration string `json:"duration"`
+	Error    string `json:"error,omitempty"`
 }
 
 // GenerateReport builds a Report from the execution results. An empty result
@@ -69,6 +83,21 @@ func GenerateReport(appName string, results []Result, startTime time.Time) *Repo
 			Duration:    res.Duration.Round(time.Millisecond).String(),
 			Artifact:    res.Artifact,
 			CacheStatus: res.CacheStatus,
+			Attempts:    len(res.Attempts),
+		}
+		if cr.Attempts == 0 && res.Status != "" {
+			cr.Attempts = 1
+		}
+		for _, a := range res.Attempts {
+			ar := AttemptReport{
+				Number:   a.Number,
+				Status:   a.Status,
+				Duration: a.Duration.Round(time.Millisecond).String(),
+			}
+			if a.Error != nil {
+				ar.Error = phelixerr.Redact(a.Error.Error())
+			}
+			cr.AttemptLog = append(cr.AttemptLog, ar)
 		}
 		if res.Error != nil {
 			cr.Error = phelixerr.Redact(res.Error.Error())
@@ -126,6 +155,9 @@ func (r *Report) PrintTerminal() {
 		}
 
 		fmt.Printf("    %s %-35s %s", statusIcon, cr.Combination, dim.Sprint(cr.Duration))
+		if cr.Attempts > 1 {
+			fmt.Printf("  %s", dim.Sprintf("attempt %d", cr.Attempts))
+		}
 		if cr.Artifact != "" {
 			fmt.Printf("  %s", dim.Sprint(cr.Artifact))
 		}

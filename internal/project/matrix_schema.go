@@ -21,6 +21,14 @@ import (
 //	    versions: ["1.26", "1.27"]
 //	  platforms: [linux/amd64, linux/arm64]
 //	  concurrency: 4
+//	  retries: 2
+//	  include:
+//	    - go: "1.27"
+//	      platform: linux/amd64
+//	      tag: latest
+//	  exclude:
+//	    - go: "1.25"
+//	      platform: windows/amd64
 //
 // The dimensions are exactly the ones the matrix engine supports (one
 // ecosystem's toolchain versions × platforms × concurrency); no invented
@@ -32,6 +40,78 @@ type MatrixConfig struct {
 	Rust        *MatrixToolchain `yaml:"rust,omitempty"`
 	Platforms   []string         `yaml:"platforms,omitempty"`
 	Concurrency int              `yaml:"concurrency,omitempty"`
+	// Retries is the automatic-retry budget for failed combinations
+	// (N additional attempts per combination).
+	Retries int          `yaml:"retries,omitempty"`
+	Include []MatrixRule `yaml:"include,omitempty"`
+	Exclude []MatrixRule `yaml:"exclude,omitempty"`
+}
+
+// MatrixRule is one include/exclude entry: a flat map whose keys are either
+// dimension selectors (go/rust, lang, version, platform, os, arch, variant)
+// or — for include rules only — metadata attributes attached to the matched
+// combinations. Conversion and validation live in the matrix package
+// (matrix.RuleFromFields / matrix.ValidateRule) so YAML rules and any future
+// rule source behave identically.
+type MatrixRule struct {
+	fields map[string]string
+}
+
+// InvalidMatrixRuleValue is the sentinel stored for a non-scalar entry value.
+// yaml v3 swallows custom-unmarshaler error messages, so a malformed value is
+// reported by validate() with the yaml path instead of degrading to an opaque
+// "malformed" error (same approach as MatrixVersion).
+const InvalidMatrixRuleValue = "<invalid>"
+
+// UnmarshalYAML implements yaml.Unmarshaler. It never fails; unparseable
+// values become InvalidMatrixRuleValue, which MatrixConfig.validate reports.
+func (r *MatrixRule) UnmarshalYAML(node *yaml.Node) error {
+	r.fields = map[string]string{}
+	if node.Kind != yaml.MappingNode {
+		r.fields[""] = InvalidMatrixRuleValue
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if value.Kind != yaml.ScalarNode {
+			r.fields[key.Value] = InvalidMatrixRuleValue
+			continue
+		}
+		r.fields[key.Value] = strings.TrimSpace(value.Value)
+	}
+	return nil
+}
+
+// MarshalYAML implements yaml.Marshaler, writing the flat mapping so a saved
+// file round-trips.
+func (r MatrixRule) MarshalYAML() (any, error) {
+	if r.fields == nil {
+		return map[string]string{}, nil
+	}
+	return r.fields, nil
+}
+
+// Fields returns the raw key/value pairs of the rule (structural view; the
+// matrix package decides which keys are dimensions).
+func (r MatrixRule) Fields() map[string]string {
+	if r.fields == nil {
+		return nil
+	}
+	out := make(map[string]string, len(r.fields))
+	for k, v := range r.fields {
+		out[k] = v
+	}
+	return out
+}
+
+// MatrixRuleFromFields builds a MatrixRule from a flat field map (used by the
+// wizard so its output is indistinguishable from a hand-written rule).
+func MatrixRuleFromFields(fields map[string]string) MatrixRule {
+	copied := make(map[string]string, len(fields))
+	for k, v := range fields {
+		copied[k] = v
+	}
+	return MatrixRule{fields: copied}
 }
 
 // MatrixToolchain is one ecosystem's version list.
@@ -75,6 +155,35 @@ func (m *MatrixConfig) validate() error {
 	if m.Concurrency < 0 {
 		return phelixerr.Newf(phelixerr.CodeConfiguration,
 			"configuration error: matrix.concurrency must be >= 1, got %d", m.Concurrency)
+	}
+	if m.Retries < 0 {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: matrix.retries must be >= 0, got %d", m.Retries)
+	}
+
+	for i, rule := range m.Include {
+		for k, v := range rule.Fields() {
+			if v == InvalidMatrixRuleValue {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: matrix.include[%d].%s is not a plain scalar value", i, k)
+			}
+		}
+		if err := matrix.ValidateRule("include", matrix.RuleFromFields(rule.Fields())); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeConfiguration, err,
+				"configuration error: matrix.include[%d]: %v", i, err)
+		}
+	}
+	for i, rule := range m.Exclude {
+		for k, v := range rule.Fields() {
+			if v == InvalidMatrixRuleValue {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: matrix.exclude[%d].%s is not a plain scalar value", i, k)
+			}
+		}
+		if err := matrix.ValidateRule("exclude", matrix.RuleFromFields(rule.Fields())); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeConfiguration, err,
+				"configuration error: matrix.exclude[%d]: %v", i, err)
+		}
 	}
 
 	goVersions := m.versionStrings(builder.Go)
@@ -159,6 +268,13 @@ func (m *MatrixConfig) MatrixProfile() *matrix.Profile {
 	p := &matrix.Profile{
 		Platforms:   append([]string(nil), m.Platforms...),
 		Concurrency: m.Concurrency,
+		Retries:     m.Retries,
+	}
+	for _, rule := range m.Include {
+		p.Include = append(p.Include, matrix.RuleFromFields(rule.Fields()))
+	}
+	for _, rule := range m.Exclude {
+		p.Exclude = append(p.Exclude, matrix.RuleFromFields(rule.Fields()))
 	}
 	if versions := m.versionStrings(builder.Go); len(versions) > 0 {
 		p.Lang = builder.Go

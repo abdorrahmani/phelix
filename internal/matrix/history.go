@@ -2,9 +2,14 @@ package matrix
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
@@ -142,4 +147,146 @@ func ListRuns() (runs []*Run, skipped int, err error) {
 		return runs[i].ID > runs[j].ID
 	})
 	return runs, skipped, nil
+}
+
+// historyMu serializes history writes within this process: incremental run
+// updates (one per completed combination) and finalizations must never
+// interleave mid-file.
+var historyMu sync.Mutex
+
+// UpdateRun rewrites an existing run record atomically (temp file + rename),
+// preserving the create-only guarantee of SaveRun for new runs. It refuses to
+// rewrite a run whose persisted status is terminal: finished runs are
+// immutable history — a manual retry must never modify its source run.
+func UpdateRun(run *Run) error {
+	if run == nil {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "matrix: cannot update a nil run")
+	}
+	if _, err := ParseRunID(string(run.ID)); err != nil {
+		return err
+	}
+	dir, err := RunsDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, string(run.ID)+".json")
+
+	data, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "encode matrix run", err)
+	}
+
+	historyMu.Lock()
+	defer historyMu.Unlock()
+
+	existing, err := LoadRun(run.ID)
+	if err != nil {
+		return err
+	}
+	if IsTerminalRunStatus(existing.Status) {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"matrix run %s is already %s and cannot be modified — retry it with 'phelix matrix retry %s --failed' instead",
+			run.ID, existing.Status, run.ID)
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "write matrix run %s", run.ID)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "replace matrix run %s", run.ID)
+	}
+	return nil
+}
+
+// AcquireRunLock takes the execution lock for a run: <runsdir>/<id>.lock
+// containing the owning PID. It fails when the lock is held by a live
+// process, which is what prevents two concurrent executions (two resumes, or
+// a resume next to a still-running build) from executing the same
+// combinations. A lock left behind by a dead process (crash, SIGKILL, machine
+// restart) is stale and gets reclaimed — that is what makes resume safe after
+// a restart. The returned release function removes the lock.
+func AcquireRunLock(id RunID) (release func(), err error) {
+	if _, err := ParseRunID(string(id)); err != nil {
+		return nil, err
+	}
+	dir, err := RunsDir()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "create matrix runs directory")
+	}
+	path := filepath.Join(dir, string(id)+".lock")
+
+	for i := 0; i < 3; i++ {
+		f, oerr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if oerr == nil {
+			_, _ = f.WriteString(strconv.Itoa(os.Getpid()))
+			_ = f.Close()
+			return func() { os.Remove(path) }, nil
+		}
+		if !os.IsExist(oerr) {
+			return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, oerr, "lock matrix run %s", id)
+		}
+
+		// Locked already: only a dead owner's lock may be reclaimed.
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, rerr, "read lock for matrix run %s", id)
+		}
+		pid, perr := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if perr != nil || !processAlive(pid) {
+			// Stale lock (unreadable or dead owner). Best-effort removal,
+			// then retry the acquisition.
+			os.Remove(path)
+			continue
+		}
+		return nil, phelixerr.Newf(phelixerr.CodeDeployLocked,
+			"matrix run %s is being executed by process %d — wait for it to finish or stop that process before resuming", id, pid)
+	}
+	return nil, phelixerr.Newf(phelixerr.CodeDeployLocked, "matrix run %s is locked by another execution", id)
+}
+
+// processAlive reports whether a PID belongs to a live process. Signal 0
+// probes without delivering anything; EPERM means alive but owned by another
+// user.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// LatestResumableRun returns the newest run that has incomplete combinations
+// (status running — orphaned — or interrupted). When appName is non-empty,
+// only runs of that application are considered.
+func LatestResumableRun(appName string) (*Run, error) {
+	runs, _, err := ListRuns()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range runs { // newest first
+		if appName != "" && r.AppName != appName {
+			continue
+		}
+		if r.Resumable() {
+			return r, nil
+		}
+	}
+	return nil, phelixerr.Newf(phelixerr.CodeNotFound,
+		"no resumable matrix run found%s — see 'phelix matrix list'", resumableSuffix(appName))
+}
+
+func resumableSuffix(appName string) string {
+	if appName == "" {
+		return ""
+	}
+	return " for application " + appName
 }

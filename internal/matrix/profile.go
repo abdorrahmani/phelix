@@ -24,6 +24,14 @@ type Profile struct {
 	Versions    []string
 	Platforms   []string
 	Concurrency int
+	// Include/Exclude are the effective matrix rules. They have no CLI flags
+	// (rules with partial matching are not flag-friendly); they come from the
+	// phelix.yaml profile or the wizard and are part of the run snapshot.
+	Include []Rule
+	Exclude []Rule
+	// Retries is the automatic-retry budget: how many additional times a
+	// failed combination is retried inside the same run (0 = no retry).
+	Retries int
 	// Source records the origin of each dimension ("cli", "phelix.yaml",
 	// "default", "detected") for run snapshots and `matrix show`.
 	Source ProfileSource
@@ -35,6 +43,9 @@ type ProfileSource struct {
 	Versions    string
 	Platforms   string
 	Concurrency string
+	Retries     string
+	Include     string
+	Exclude     string
 }
 
 // CLIOptions carries the matrix-related CLI flag values into Resolve. Nil/zero
@@ -46,6 +57,7 @@ type CLIOptions struct {
 	RustVersions []string
 	Platforms    []string
 	Concurrency  int
+	Retries      int
 }
 
 // ResolveInput bundles everything the convergence needs. MatrixFlagSet tells
@@ -97,7 +109,6 @@ func Resolve(in ResolveInput) (*Profile, bool, error) {
 	prof := &Profile{Concurrency: DefaultConcurrency, Source: ProfileSource{
 		Lang: SourceDetected, Versions: SourceDefault, Platforms: SourceDefault, Concurrency: SourceDefault,
 	}}
-
 	// --- Language: explicit version lists (CLI first, then YAML) override
 	// detection. Specifying both ecosystems is ambiguous and rejected.
 	goSrc, rustSrc := "", ""
@@ -178,13 +189,43 @@ func Resolve(in ResolveInput) (*Profile, bool, error) {
 		prof.Source.Concurrency = SourceDefault
 	}
 
+	// --- Retries: explicit CLI flag > YAML > no retry. Retries is execution
+	// policy (per-run automatic retry budget), not a build dimension, but it
+	// follows the same precedence so the run snapshot can record its origin.
+	if in.CLI.Retries > 0 {
+		prof.Retries = in.CLI.Retries
+		prof.Source.Retries = SourceCLI
+	} else if in.YAML != nil && in.YAML.Retries > 0 {
+		prof.Retries = in.YAML.Retries
+		prof.Source.Retries = SourceConfig
+	}
+	if prof.Retries < 0 {
+		prof.Retries = 0
+	}
+
+	// --- Include/Exclude: YAML (or wizard) only — there are no CLI flags for
+	// partial-matching rules. CLI versions/platforms still replace the YAML
+	// dimensions, but the rules always apply to whatever dimensions are
+	// effective, exactly like the documented pipeline.
+	if in.YAML != nil {
+		prof.Include = in.YAML.Include
+		prof.Exclude = in.YAML.Exclude
+		if len(prof.Include) > 0 {
+			prof.Source.Include = SourceConfig
+		}
+		if len(prof.Exclude) > 0 {
+			prof.Source.Exclude = SourceConfig
+		}
+	}
+
 	return prof, true, nil
 }
 
-// Plan validates the profile through the same ParsePlan used by pure-CLI
-// matrix builds and expands it into the executable combination list. This is
-// the single expansion path — YAML, CLI, and wizard profiles all produce
-// identical MatrixPlans for identical dimensions.
+// Plan validates the profile through the same Expand engine used by pure-CLI
+// matrix builds and expands it into the executable combination list (base
+// Cartesian product → include → exclude). This is the single expansion path —
+// YAML, CLI, and wizard profiles all produce identical MatrixPlans for
+// identical dimensions and rules.
 func (p *Profile) Plan() (*MatrixPlan, error) {
 	if p == nil {
 		return nil, phelixerr.New(phelixerr.CodeInvalidArgument, "matrix: no profile")
@@ -197,5 +238,5 @@ func (p *Profile) Plan() (*MatrixPlan, error) {
 		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"matrix: no platforms configured — pass --platforms or set matrix.platforms in phelix.yaml")
 	}
-	return ParsePlan(p.Lang, p.Versions, p.Platforms)
+	return Expand(p.Lang, p.Versions, p.Platforms, RuleSet{Include: p.Include, Exclude: p.Exclude})
 }
