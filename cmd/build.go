@@ -79,7 +79,8 @@ var BuildCmd = &cobra.Command{
 
 		// Precedence: CLI flag > phelix.yaml > default. When --port was not
 		// passed, a phelix.yaml in the current directory supplies the port.
-		if !cmd.Flags().Changed("port") && !matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms) {
+		isMatrix := matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms)
+		if !cmd.Flags().Changed("port") && !isMatrix {
 			if projCfg != nil && projCfg.Port != 0 {
 				buildPort = projCfg.Port
 			}
@@ -98,11 +99,16 @@ var BuildCmd = &cobra.Command{
 			}
 		}
 
-		if err := phelixport.Validate(buildPort); err != nil {
-			return err
-		}
-		if err := phelixport.EnsureAvailable(buildPort); err != nil {
-			return err
+		// Matrix builds compile artifacts for other platforms and never start
+		// a local instance — port validation/availability is irrelevant and
+		// must not block them (e.g. when the default port is already in use).
+		if !isMatrix {
+			if err := phelixport.Validate(buildPort); err != nil {
+				return err
+			}
+			if err := phelixport.EnsureAvailable(buildPort); err != nil {
+				return err
+			}
 		}
 
 		// Build/run works without a session. Dashboard upload (metrics, events)
@@ -472,15 +478,19 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 	var buildFn matrix.BuildFunc
 	switch lang {
 	case builder.Go:
+		// Multiple distinct Go versions cannot share the host toolchain —
+		// those combinations build in per-version golang:<ver> containers.
+		// (The builder also falls back to Docker when no host Go exists.)
 		gb := &matrix.GoMatrixBuilder{
 			ProjectRoot: projectRoot,
 			AppName:     name,
-			UseDocker:   len(versions) > 1, // use Docker when multiple versions
+			UseDocker:   distinctVersions(plan) > 1,
 			Debug:       buildDebug,
+			ExtraArgs:   extraArgs,
 		}
 		buildFn = gb.Build
 	case builder.Rust:
-		rb := &matrix.RustMatrixBuilder{ProjectRoot: projectRoot, AppName: name, Debug: buildDebug}
+		rb := &matrix.RustMatrixBuilder{ProjectRoot: projectRoot, AppName: name, Debug: buildDebug, ExtraArgs: extraArgs}
 		buildFn = rb.Build
 	default:
 		return phelixerr.Newf(
@@ -576,6 +586,17 @@ func fileSize(path string) int64 {
 		return 0
 	}
 	return info.Size()
+}
+
+// distinctVersions counts the unique toolchain versions in a plan (dedup
+// happens inside ParsePlan, so counting the raw flag slice would overcount
+// duplicated user input).
+func distinctVersions(plan *matrix.MatrixPlan) int {
+	seen := make(map[string]bool)
+	for _, c := range plan.Combinations {
+		seen[c.Version] = true
+	}
+	return len(seen)
 }
 
 // newMatrixComboReport assembles the per-combination build report recorded

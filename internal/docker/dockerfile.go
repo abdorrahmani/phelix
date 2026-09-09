@@ -65,7 +65,11 @@ func (g *DockerfileGenerator) generateGo() string {
 	// dependency download layer is cached as long as go.mod/go.sum don't change.
 	var b strings.Builder
 	b.WriteString("# Stage 1: Build\n")
-	b.WriteString("FROM golang:1.23-alpine AS builder\n\n")
+	// GO_VERSION is a build arg so `docker build --build-arg GO_VERSION=1.22`
+	// (e.g. from a matrix build) can pin a different toolchain without
+	// editing the generated file.
+	b.WriteString("ARG GO_VERSION=1.23\n")
+	b.WriteString("FROM golang:${GO_VERSION}-alpine AS builder\n\n")
 	b.WriteString("WORKDIR /app\n\n")
 	// Dependency layer — cached unless go.mod/go.sum change
 	b.WriteString("# Copy dependency manifests first for layer caching\n")
@@ -96,7 +100,10 @@ func (g *DockerfileGenerator) generateRust() string {
 	// caches. Next build: only the real source changes trigger recompilation
 	// of the application code, not the entire dependency tree.
 	b.WriteString("# Stage 1: Dependency cache\n")
-	b.WriteString("FROM rust:1.80-slim AS deps\n\n")
+	// RUST_VERSION is a build arg so the toolchain can be pinned per build
+	// without editing the generated file.
+	b.WriteString("ARG RUST_VERSION=1.80\n")
+	b.WriteString("FROM rust:${RUST_VERSION}-slim AS deps\n\n")
 	b.WriteString("WORKDIR /app\n\n")
 	// Copy dependency manifests
 	b.WriteString("# Copy only Cargo files for dependency caching\n")
@@ -109,7 +116,8 @@ func (g *DockerfileGenerator) generateRust() string {
 
 	// --- Stage 2: Real build ---
 	b.WriteString("# Stage 2: Build with real source\n")
-	b.WriteString("FROM rust:1.80-slim AS builder\n\n")
+	b.WriteString("ARG RUST_VERSION=1.80\n")
+	b.WriteString("FROM rust:${RUST_VERSION}-slim AS builder\n\n")
 	b.WriteString("WORKDIR /app\n\n")
 	b.WriteString("# Copy dependency manifests and pre-compiled deps\n")
 	b.WriteString("COPY Cargo.toml Cargo.lock ./\n")

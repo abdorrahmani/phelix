@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // BuildFunc is signature function builds one combination.
@@ -41,7 +43,14 @@ const DefaultConcurrency = 3
 // Execute runs all combinations through bounded worker pool. Results retain
 // plan order. Build failures do not stop unrelated combinations; callers that
 // publish artifacts decide whether a partial result set is acceptable.
+//
+// A build function that panics or returns nil is isolated: that combination
+// is recorded as failed and the remaining combinations still run to
+// completion — one broken combination must never take down the whole matrix.
 func Execute(plan *MatrixPlan, fn BuildFunc, cfg ExecutorConfig) []Result {
+	if plan == nil || len(plan.Combinations) == 0 {
+		return nil
+	}
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = DefaultConcurrency
 	}
@@ -89,7 +98,7 @@ func Execute(plan *MatrixPlan, fn BuildFunc, cfg ExecutorConfig) []Result {
 				debugLog("START %s (GOOS=%s GOARCH=%s GOVERSION=%s)", comboID, c.OS, c.Arch, c.Version)
 
 				start := time.Now()
-				r := fn(buildCtx, c)
+				r := runBuild(buildCtx, c, fn)
 				r.Duration = time.Since(start)
 				if r.Status == "failed" {
 					progress.Finish(comboID, "failed")
@@ -121,6 +130,35 @@ func Execute(plan *MatrixPlan, fn BuildFunc, cfg ExecutorConfig) []Result {
 		progress.Stop()
 	}
 	return results
+}
+
+// runBuild invokes fn with panic and nil-result isolation, always returning a
+// result attributed to the requested combination.
+func runBuild(ctx context.Context, c Combination, fn BuildFunc) (r *Result) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			r = &Result{
+				Combination: c,
+				Status:      "failed",
+				Error:       phelixerr.Newf(phelixerr.CodeBuildFailed, "matrix build panicked for %s: %v", c.ID(), rec),
+			}
+		}
+	}()
+	r = fn(ctx, c)
+	if r == nil {
+		r = &Result{
+			Combination: c,
+			Status:      "failed",
+			Error:       phelixerr.Newf(phelixerr.CodeBuildFailed, "matrix build returned no result for %s", c.ID()),
+		}
+		return r
+	}
+	// A build function that forgot to attribute its result must never
+	// pollute another combination's report entry.
+	if r.Combination == (Combination{}) {
+		r.Combination = c
+	}
+	return r
 }
 
 // HasFailures reports whether any result Status is "failed".

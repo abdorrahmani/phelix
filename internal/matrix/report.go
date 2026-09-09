@@ -43,15 +43,19 @@ type ComboReport struct {
 	CacheStatus string `json:"cache_status,omitempty"`
 }
 
-// GenerateReport builds a Report from the execution results.
+// GenerateReport builds a Report from the execution results. An empty result
+// set is valid (e.g. a dry-run plan) and never panics; error strings are
+// redacted because report.json may contain compiler output fragments.
 func GenerateReport(appName string, results []Result, startTime time.Time) *Report {
 	r := &Report{
 		AppName:      appName,
-		Lang:         string(results[0].Combination.Lang),
 		StartedAt:    startTime,
 		CompletedAt:  time.Now(),
 		Total:        len(results),
 		Combinations: make([]ComboReport, 0, len(results)),
+	}
+	if len(results) > 0 {
+		r.Lang = string(results[0].Combination.Lang)
 	}
 
 	for _, res := range results {
@@ -66,7 +70,7 @@ func GenerateReport(appName string, results []Result, startTime time.Time) *Repo
 			CacheStatus: res.CacheStatus,
 		}
 		if res.Error != nil {
-			cr.Error = res.Error.Error()
+			cr.Error = phelixerr.Redact(res.Error.Error())
 		}
 		r.Combinations = append(r.Combinations, cr)
 

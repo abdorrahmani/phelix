@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -154,13 +155,10 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			imageName = dockerizeRegistry + "/" + imageName
 		}
 
-		// Parse build args into a map
-		buildArgsMap := make(map[string]string)
-		for _, arg := range dockerizeBuildArgs {
-			parts := strings.SplitN(arg, "=", 2)
-			if len(parts) == 2 {
-				buildArgsMap[parts[0]] = parts[1]
-			}
+		// Parse build args into a map (malformed entries fail fast).
+		buildArgsMap, err := parseDockerBuildArgs(dockerizeBuildArgs)
+		if err != nil {
+			return err
 		}
 
 		// OCI-standard labels
@@ -265,10 +263,10 @@ func init() {
 }
 
 // runDockerizeMatrixMode builds Docker images for a matrix of version × platform
-// combinations. It supports two tagging strategies:
-//
-//  1. Per-combination tags (--matrix-tags): each combo gets its own tag.
-//  2. Multi-arch manifest list (--multi-arch-tag): a single unified tag via buildx.
+// combinations. Each combination gets its own image tag
+// ({app}:{tag|latest}-{lang}{version}-{arch}[-{variant}]); with
+// --multi-arch-tag, the per-version platform images are additionally assembled
+// into one multi-arch manifest list per toolchain version.
 //
 // Push semantics are fail-closed by default: if any combination failed to build,
 // we refuse to push any image. This prevents publishing a partial/inconsistent
@@ -293,6 +291,11 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 		return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix build plan", err)
 	}
 
+	buildArgs, err := parseDockerBuildArgs(dockerizeBuildArgs)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("%s Docker matrix build: %s (%d combinations)\n",
 		color.BlueString("→"), color.CyanString(name), len(plan.Combinations))
 	for _, c := range plan.Combinations {
@@ -307,8 +310,10 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 
 	dmb := &matrix.DockerMatrixBuilder{
 		ProjectRoot: projectRoot,
+		AppName:     name,
 		Registry:    registry,
 		Tag:         tag,
+		BuildArgs:   buildArgs,
 		Debug:       dockerizeDebug,
 	}
 
@@ -336,6 +341,23 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 		fmt.Printf("  %s All images pushed\n", color.GreenString("✓"))
 	}
 
+	// Assemble multi-arch manifest lists (one per toolchain version) when
+	// requested. This runs after the push so the source images already exist
+	// in the registry when the manifest is created.
+	var multiArchImages []string
+	if dockerizeMultiArchTag {
+		byVersion, order := groupSuccessByVersion(results)
+		for _, ver := range order {
+			manifestTag := matrixManifestTag(tag, ver, len(plan.Combinations))
+			manifest, err := dmb.BuildMultiArchManifest(context.Background(), byVersion[ver], manifestTag)
+			if err != nil {
+				return phelixerr.Wrap(phelixerr.CodeDocker, "failed to create multi-arch manifest", err)
+			}
+			multiArchImages = append(multiArchImages, manifest.Artifact)
+			fmt.Printf("  %s Multi-arch manifest created: %s\n", color.GreenString("✓"), manifest.Artifact)
+		}
+	}
+
 	// Record successful artifacts in the versioning system.
 	if report.Succeeded > 0 {
 		artifacts := make([]deploy.MatrixArtifact, 0, report.Succeeded)
@@ -354,7 +376,7 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 		gitCommit := deploy.DetectGitCommit(projectRoot)
 		logger := &colorLogger{}
 		_, verErr := deploy.RecordMatrixBuild(
-			name, tag, gitCommit, artifacts, "",
+			name, tag, gitCommit, artifacts, strings.Join(multiArchImages, ", "),
 			deploy.DefaultRetention{Max: 5}, logger,
 		)
 		if verErr != nil {
@@ -373,4 +395,53 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 	}
 
 	return nil
+}
+
+// parseDockerBuildArgs converts --build-arg KEY=VALUE flag values into a map,
+// rejecting malformed entries (missing "=" or empty key) instead of silently
+// dropping them.
+func parseDockerBuildArgs(args []string) (map[string]string, error) {
+	out := make(map[string]string, len(args))
+	for _, arg := range args {
+		key, value, ok := strings.Cut(arg, "=")
+		if !ok || key == "" {
+			return nil, phelixerr.Newf(
+				phelixerr.CodeInvalidArgument,
+				"invalid --build-arg %q (expected KEY=VALUE)", arg)
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+// matrixManifestTag derives the manifest-list tag from the user-supplied base
+// tag. A single combination keeps the base tag (or "latest"); multiple
+// combinations qualify it with the toolchain version so concurrent versions
+// never overwrite each other's manifest (e.g. "v2-1.23", "latest-1.23").
+func matrixManifestTag(base, version string, count int) string {
+	if base == "" {
+		base = "latest"
+	}
+	if count <= 1 {
+		return base
+	}
+	return base + "-" + strings.TrimPrefix(version, "go")
+}
+
+// groupSuccessByVersion buckets successful results by toolchain version,
+// preserving first-seen version order.
+func groupSuccessByVersion(results []matrix.Result) (map[string][]matrix.Result, []string) {
+	byVersion := make(map[string][]matrix.Result)
+	var order []string
+	for _, r := range results {
+		if r.Status != "success" || r.Artifact == "" {
+			continue
+		}
+		ver := r.Combination.Version
+		if _, seen := byVersion[ver]; !seen {
+			order = append(order, ver)
+		}
+		byVersion[ver] = append(byVersion[ver], r)
+	}
+	return byVersion, order
 }

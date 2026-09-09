@@ -53,14 +53,15 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// Compiler output is not dumped into the message. It is kept as a
-		// bounded tail on the ToolError for the CLI error reporter; the
-		// underlying *exec.ExitError stays reachable through the wraps.
+		// Compiler output never enters the message: it is kept as a bounded
+		// tail on the ToolError for the CLI error reporter (rendered only
+		// after redaction); the underlying *exec.ExitError stays reachable
+		// through the wraps.
 		return phelixerr.Wrapf(
 			phelixerr.CodeBuildFailed,
 			&ToolError{Tool: "cargo", Output: tailOutput(output), Err: err},
 			"%s",
-			cargoFailureMessage(err, output, config),
+			cargoFailureMessage(err, config),
 		)
 	}
 
@@ -74,52 +75,20 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 }
 
 // cargoFailureMessage renders the human-facing reason a cargo invocation
-// failed: the exit status plus the last few lines of its diagnostics (the
-// error itself is usually at the end of the output). Bounded so a runaway
-// build log cannot flood the terminal; redacted because the output is not
-// Phelix-authored.
-func cargoFailureMessage(err error, output []byte, config BuildConfig) string {
-	status := "unknown"
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		status = fmt.Sprintf("exit status %d", exitErr.ExitCode())
-	} else if !errors.Is(err, exec.ErrNotFound) && err != nil {
-		// cargo itself could not be started (missing toolchain, etc.)
-		return fmt.Sprintf("cargo build failed for %s: %v", config.Name, err)
-	}
-
-	msg := fmt.Sprintf("cargo build failed for %s (%s): %s", config.Name, config.Language, status)
-	if tail := cargoOutputTail(output); tail != "" {
-		msg += "\n" + tail
-	}
-	return msg
-}
-
-// cargoOutputTail returns the last few non-empty lines of cargo's combined
-// output, redacted and capped, for inclusion in the build error message.
-func cargoOutputTail(output []byte) string {
-	const maxLines = 8
-	const maxBytes = 1024
-
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	var keep []string
-	for _, line := range lines {
-		if strings.TrimSpace(line) != "" {
-			keep = append(keep, line)
+// failed. It names the build and the exit status; the tool's diagnostic tail
+// lives only on the ToolError (see Build) so raw compiler output is never
+// echoed into error messages unredacted.
+func cargoFailureMessage(err error, config BuildConfig) string {
+	if !errors.Is(err, exec.ErrNotFound) {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) && err != nil {
+			// cargo itself could not be started (missing toolchain, etc.)
+			return fmt.Sprintf("cargo build failed for %s: %v", config.Name, err)
 		}
+		return fmt.Sprintf("cargo build failed for %s (%s): exit status %d",
+			config.Name, config.Language, exitErr.ExitCode())
 	}
-	if len(keep) > maxLines {
-		keep = append([]string{fmt.Sprintf("… (%d more lines)", len(keep)-maxLines)}, keep[len(keep)-maxLines:]...)
-	}
-	joined := strings.Join(keep, "\n")
-	if len(joined) > maxBytes {
-		joined = joined[len(joined)-maxBytes:]
-		// Don't cut mid-line.
-		if idx := strings.IndexByte(joined, '\n'); idx >= 0 {
-			joined = joined[idx+1:]
-		}
-	}
-	return phelixerr.Redact(joined)
+	return fmt.Sprintf("cargo build failed for %s: %v", config.Name, err)
 }
 
 // GetBinaryPath returns the path to the built binary.
