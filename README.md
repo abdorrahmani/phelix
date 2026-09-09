@@ -603,7 +603,7 @@ without asking anything.
 | `--tag` | — | Human label stored with the version (e.g. `"hotfix-auth"`) |
 | `--no-upload` | `false` | Don't sync app info to the server |
 | `--debug` | `false` | Verbose build/tool output |
-| `--matrix` | `false` | Matrix mode: build versions × platforms (see [Matrix builds](#matrix-builds)) |
+| `--matrix` | `false` | Matrix mode: build versions × platforms (see [Matrix builds](#matrix-builds); also activates via the phelix.yaml matrix profile) |
 | `--go-versions` | — | Go versions, e.g. `1.22,1.23,1.27` |
 | `--rust-versions` | — | Rust versions, e.g. `1.77,1.78.2` |
 | `--platforms` | — | Targets, e.g. `linux/amd64,linux/arm64` |
@@ -1479,6 +1479,9 @@ with `PHELIX_DATA_DIR`.
 ### Matrix builds
 
 Build the cross-product of **toolchain version × platform** in one command.
+The matrix can be configured three ways — CLI flags, a `matrix:` profile in
+`phelix.yaml`, or the interactive wizard — all three converge into the same
+configuration and are validated identically.
 
 ```bash
 # Native binaries
@@ -1498,7 +1501,7 @@ phelix dockerize myapp --matrix --go-versions 1.22,1.27 --platforms linux/amd64,
 
 | Flag | Description |
 |------|-------------|
-| `--matrix` | Enable matrix mode (auto-enabled when `--go-versions`/`--rust-versions`/`--platforms` are set) |
+| `--matrix` | Enable matrix mode (auto-enabled when `--go-versions`/`--rust-versions`/`--platforms` are set, or when the phelix.yaml matrix profile is enabled; an explicit `--matrix=false` disables an enabled profile) |
 | `--go-versions` | Comma-separated Go versions (`1.21`, `1.22.4`, `go1.27`, `v1.27` all work; patch versions allowed) |
 | `--rust-versions` | Comma-separated Rust versions (same format) |
 | `--platforms` | Target platforms (e.g. `linux/amd64,linux/arm64,linux/arm/v7,darwin/arm64`; case-insensitive) |
@@ -1513,6 +1516,75 @@ future toolchain release works, including patch versions. Known platforms:
 `linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `windows/amd64`.
 Duplicates are removed, whitespace and version prefixes (`go`, `rust`, `v`) are
 normalized, and every combination is validated before the first build starts.
+
+#### Matrix profile in phelix.yaml
+
+The same matrix can be configured persistently in `phelix.yaml`:
+
+```yaml
+matrix:
+  enabled: true
+  go:                # or rust: — exactly one ecosystem
+    versions:
+      - "1.26"
+      - "1.27"
+  platforms:
+    - linux/amd64
+    - linux/arm64
+  concurrency: 4     # optional, default 3
+```
+
+With `matrix.enabled: true`, a plain `phelix build` runs the matrix — no flags
+needed. The profile goes through the exact same validation and expansion as
+CLI flags.
+
+**Configuration precedence** (per dimension, deterministic):
+
+```text
+CLI explicit value  >  phelix.yaml matrix profile  >  command default
+```
+
+- List dimensions are **replaced, never merged**: `phelix build --go-versions 1.28`
+  next to the profile above builds only `1.28` (the YAML version list is
+  overridden entirely), while unmentioned dimensions keep their configured
+  values (platforms and concurrency above stay from the profile).
+- `--matrix=false` explicitly disables an enabled profile; `--matrix` alone
+  uses the configured profile when one exists.
+- Versions and platforms are validated identically wherever they come from:
+  an invalid profile fails `phelix build` (and every command that reads
+  `phelix.yaml`) with an error naming the YAML location, e.g.
+  `configuration error: matrix.go.versions: ...`.
+
+#### Matrix runs: list, show, and the wizard
+
+Every matrix execution gets a **Matrix Run ID** (`mx_20260909_8f31`) — printed
+during the build, recorded in `builds/matrix/report.json` (`run_id`), attached
+to each artifact in `versions.json` (`matrix_run_id`), and persisted locally
+under `~/.phelix/matrix/runs/`. The run snapshots the effective configuration
+at execution time, so later `phelix.yaml` edits never rewrite what an old run
+says it built.
+
+```bash
+phelix matrix list                 # recorded runs, newest first
+phelix matrix list --json          # machine-readable summaries
+phelix matrix show mx_20260909_8f31        # config snapshot + per-combination results
+phelix matrix show mx_20260909_8f31 --json
+phelix matrix init                 # interactive wizard → writes phelix.yaml
+```
+
+`matrix show` displays the configuration snapshot (with each dimension's
+origin: `cli`, `phelix.yaml`, or `default`), every combination's status and
+duration, and redacted error details for failures. An unknown run ID is a
+clean `NOT_FOUND` error. Local run history can be relocated with
+`PHELIX_DATA_DIR` like all Phelix state.
+
+**Interactive wizard:** `phelix matrix init` walks through ecosystem, versions
+(recent suggestions plus free-form entry), platforms, and concurrency, then
+previews the *actual* expanded combination list — never a naive
+versions × platforms count — before writing the profile. It preserves all
+unrelated `phelix.yaml` keys and comments, offers Edit / Keep / Disable /
+Cancel when a profile already exists, and refuses to run without an
+interactive terminal (so it never hangs in CI).
 
 #### How matrix builds work
 
@@ -1560,7 +1632,7 @@ value, empty keys) are rejected up front instead of being silently dropped.
 - **Build phase**: fail-open — one failure doesn't stop the rest; full summary at the end. The CLI exits non-zero when any combination failed, so scripts can detect partial failures.
 - **Push phase**: fail-closed by default — if any combination failed, nothing is pushed. Use `--push-partial` to push only successful images.
 
-**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`) listing each combination's status, duration, artifact path, cache status, and error (if failed — redacted, so compiler output with embedded credentials never lands in the report).
+**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`, carrying the Matrix Run ID as `run_id`) listing each combination's status, duration, artifact path, cache status, and error (if failed — redacted, so compiler output with embedded credentials never lands in the report).
 
 **Independent build reports per combination:** every combination retains its own build metrics — toolchain version, target platform, duration, cache status and binary size — recorded alongside the matrix version's artifacts in `versions.json` and mirrored in `builds/matrix/report.json` (`cache_status` per combination). Regression analysis is combination-aware: `Go 1.27 / linux-amd64` is only ever compared against previous `Go 1.27 / linux-amd64` builds, never against `Go 1.26 / linux-arm64` or a Rust build. After recording, each combination prints a compact summary of its own comparisons.
 

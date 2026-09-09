@@ -112,46 +112,14 @@ func ParsePlan(lang builder.Language, versions []string, platforms []string) (*M
 		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one platform must be specified")
 	}
 
-	// Validate and normalize versions.
-	cleanVersions := make([]string, 0, len(versions))
-	for _, v := range versions {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			continue
-		}
-		// Accept "go1.22", "rust1.77" or "v1.22" — strip the prefix.
-		v = strings.TrimPrefix(v, "go")
-		v = strings.TrimPrefix(v, "rust")
-		v = strings.TrimPrefix(v, "v")
-		if !versionPattern.MatchString(v) {
-			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
-				"matrix: invalid %s version %q (expected major.minor or major.minor.patch, e.g. 1.22 or 1.22.4)", lang, v)
-		}
-		cleanVersions = append(cleanVersions, v)
+	cleanVersions, err := ValidateVersions(lang, versions)
+	if err != nil {
+		return nil, err
 	}
-	if len(cleanVersions) == 0 {
-		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one non-empty %s version must be specified", lang)
+	cleanPlatforms, err := ValidatePlatforms(platforms)
+	if err != nil {
+		return nil, err
 	}
-	// De-duplicate while preserving order.
-	cleanVersions = dedup(cleanVersions)
-
-	// Validate and normalize platforms.
-	cleanPlatforms := make([]string, 0, len(platforms))
-	for _, p := range platforms {
-		p = strings.ToLower(strings.TrimSpace(p))
-		if p == "" {
-			continue
-		}
-		if !knownPlatforms[p] {
-			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: unknown platform %q — known: %s",
-				p, formatKnownPlatforms())
-		}
-		cleanPlatforms = append(cleanPlatforms, p)
-	}
-	if len(cleanPlatforms) == 0 {
-		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one non-empty platform must be specified")
-	}
-	cleanPlatforms = dedup(cleanPlatforms)
 
 	// Expand into full cross product.
 	combs := make([]Combination, 0, len(cleanVersions)*len(cleanPlatforms))
@@ -178,6 +146,61 @@ func ParsePlan(lang builder.Language, versions []string, platforms []string) (*M
 	}, nil
 }
 
+// ValidateVersions normalizes and checks one language's version list using the
+// same rules ParsePlan applies to CLI flags. phelix.yaml matrix profiles route
+// through it so YAML and CLI configuration are validated identically — there
+// is no second validation path.
+func ValidateVersions(lang builder.Language, versions []string) ([]string, error) {
+	if len(versions) == 0 {
+		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one %s version must be specified", lang)
+	}
+	cleanVersions := make([]string, 0, len(versions))
+	for _, v := range versions {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		// Accept "go1.22", "rust1.77" or "v1.22" — strip the prefix.
+		v = strings.TrimPrefix(v, "go")
+		v = strings.TrimPrefix(v, "rust")
+		v = strings.TrimPrefix(v, "v")
+		if !versionPattern.MatchString(v) {
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"matrix: invalid %s version %q (expected major.minor or major.minor.patch, e.g. 1.22 or 1.22.4)", lang, v)
+		}
+		cleanVersions = append(cleanVersions, v)
+	}
+	if len(cleanVersions) == 0 {
+		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one non-empty %s version must be specified", lang)
+	}
+	// De-duplicate while preserving order.
+	return dedup(cleanVersions), nil
+}
+
+// ValidatePlatforms normalizes and checks the platform list using the same
+// rules ParsePlan applies to CLI flags (see ValidateVersions).
+func ValidatePlatforms(platforms []string) ([]string, error) {
+	if len(platforms) == 0 {
+		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one platform must be specified")
+	}
+	cleanPlatforms := make([]string, 0, len(platforms))
+	for _, p := range platforms {
+		p = strings.ToLower(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		if !knownPlatforms[p] {
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: unknown platform %q — known: %s",
+				p, formatKnownPlatforms())
+		}
+		cleanPlatforms = append(cleanPlatforms, p)
+	}
+	if len(cleanPlatforms) == 0 {
+		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix: at least one non-empty platform must be specified")
+	}
+	return dedup(cleanPlatforms), nil
+}
+
 // IsMatrixMode returns true when the user explicitly requested a matrix build.
 // The caller passes the --matrix flag value and the version/platform slices.
 func IsMatrixMode(matrixFlag bool, goVers, rustVers, platforms []string) bool {
@@ -193,12 +216,19 @@ func DetectLangForMatrix(projectRoot string) builder.Language {
 }
 
 func formatKnownPlatforms() string {
+	return strings.Join(KnownPlatforms(), ", ")
+}
+
+// KnownPlatforms returns the supported platform list, sorted. It is the
+// wizard's selectable platform menu and the documentation's answer to "which
+// platforms can I configure".
+func KnownPlatforms() []string {
 	keys := make([]string, 0, len(knownPlatforms))
 	for k := range knownPlatforms {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	return strings.Join(keys, ", ")
+	return keys
 }
 
 func dedup(ss []string) []string {

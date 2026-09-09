@@ -60,6 +60,12 @@ type MatrixArtifact struct {
 	Error     string `json:"error,omitempty"`     // error message if failed
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 
+	// MatrixRunID associates the artifact with its Matrix Run
+	// ("mx_YYYYMMDD_xxxx"), closing the Matrix Run → combination → artifact
+	// chain (`phelix matrix show`). Additive: absent on versions recorded
+	// before run IDs existed.
+	MatrixRunID string `json:"matrix_run_id,omitempty"`
+
 	// Report carries this combination's own build metrics so each matrix
 	// combination retains independent telemetry for regression analysis.
 	// Additive: absent on older artifacts. nil = no comparable metadata.

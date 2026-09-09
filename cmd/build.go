@@ -79,7 +79,9 @@ var BuildCmd = &cobra.Command{
 
 		// Precedence: CLI flag > phelix.yaml > default. When --port was not
 		// passed, a phelix.yaml in the current directory supplies the port.
-		isMatrix := matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms)
+		// Matrix activity includes the phelix.yaml matrix profile (enabled
+		// profiles activate the matrix without --matrix).
+		isMatrix := matrixActive(cmd, projCfg)
 		if !cmd.Flags().Changed("port") && !isMatrix {
 			if projCfg != nil && projCfg.Port != 0 {
 				buildPort = projCfg.Port
@@ -148,11 +150,16 @@ var BuildCmd = &cobra.Command{
 		}
 
 		// --- Matrix build path ---
-		// When --matrix is set (or --go-versions / --rust-versions / --platforms
-		// are provided), we expand the cross product of versions × platforms
-		// and build each combination concurrently via a bounded worker pool.
-		if matrix.IsMatrixMode(matrixFlag, goVersions, rustVersions, platforms) {
-			return runMatrixMode(name, lang, currentDir, buildArgs, noUpload, buildTag)
+		// Active when --matrix is set, version/platform flags are provided,
+		// or the phelix.yaml matrix profile is enabled. CLI flags, the YAML
+		// profile, and the wizard all converge into one normalized profile
+		// (matrix.Resolve) before the engine expands and executes it.
+		if isMatrix {
+			prof, rerr := resolveMatrixProfile(cmd, projCfg, lang)
+			if rerr != nil {
+				return rerr
+			}
+			return runMatrixMode(name, lang, currentDir, buildArgs, noUpload, buildTag, prof)
 		}
 
 		// --- Standard single-artifact build path ---
@@ -432,7 +439,13 @@ func startApplicationOnPort(id, name string, port int) error {
 	return nil
 }
 
-// runMatrixMode executes a matrix build: cross product of {toolchain version} × {platform}.
+// runMatrixMode executes a matrix build from a normalized profile (the same
+// representation CLI flags, the phelix.yaml matrix profile, and the wizard
+// converge into): cross product of {toolchain version} × {platform}.
+//
+// Every execution gets a Matrix Run ID; the run (configuration snapshot +
+// per-combination results) is persisted to the local run history so
+// `phelix matrix list` / `phelix matrix show` can inspect it afterwards.
 //
 // Build phase uses fail-open semantics: if one combination fails, we continue
 // building the rest. This is deliberate — a matrix build produces multiple
@@ -442,22 +455,10 @@ func startApplicationOnPort(id, name string, port int) error {
 //
 // After building, we record all successful artifacts in versions.json (additive
 // schema) and write a report (JSON + terminal summary).
-func runMatrixMode(name string, lang builder.Language, projectRoot string, extraArgs []string, noUpload bool, tag string) error {
-	// Determine which version lists to use based on the detected language.
-	versions := goVersions
-	if lang == builder.Rust {
-		versions = rustVersions
-	}
-	if len(versions) == 0 {
-		return phelixerr.Newf(
-			phelixerr.CodeInvalidArgument,
-			"matrix mode requires version flags: use --go-versions or --rust-versions for %s projects",
-			lang,
-		)
-	}
-
-	// Parse the build plan.
-	plan, err := matrix.ParsePlan(lang, versions, platforms)
+func runMatrixMode(name string, lang builder.Language, projectRoot string, extraArgs []string, noUpload bool, tag string, prof *matrix.Profile) error {
+	// Parse the build plan — the same ParsePlan validation and expansion the
+	// pure-CLI path always used.
+	plan, err := prof.Plan()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix build plan", err)
 	}
@@ -500,20 +501,36 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 		)
 	}
 
-	// Execute with bounded concurrency.
+	// Every matrix execution is identified by a Matrix Run; the run snapshot
+	// (effective configuration at execution time) is taken before building.
+	runID := matrix.NewUniqueRunID(time.Now())
+	fmt.Printf("%s Matrix Run: %s\n", color.BlueString("→"), color.CyanString(string(runID)))
+
 	startTime := time.Now()
+	run := matrix.NewRun(runID, name, projectRoot, prof, startTime)
+
+	// Execute with bounded concurrency.
 	results := matrix.Execute(plan, buildFn, matrix.ExecutorConfig{
-		Concurrency: matrixConcurrency,
+		Concurrency: prof.Concurrency,
 		Debug:       buildDebug,
 	})
 
 	// Generate and display the report.
 	report := matrix.GenerateReport(name, results, startTime)
+	report.RunID = string(runID)
 	report.PrintTerminal()
 
 	reportPath, _ := report.WriteJSON(projectRoot)
 	if reportPath != "" {
 		fmt.Printf("  %s Report written to %s\n", color.GreenString("✓"), reportPath)
+	}
+
+	// Persist the finished run (results + configuration snapshot) to the
+	// local history. Best-effort, like version recording: a history write
+	// error must never fail a successful build.
+	run.Finish(results, time.Now())
+	if serr := matrix.SaveRun(run); serr != nil {
+		fmt.Printf("  %s Warning: could not record matrix run history: %v\n", color.YellowString("⚠"), serr)
 	}
 
 	// Record successful artifacts in the versioning system.
@@ -526,12 +543,13 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 			}
 			successful = append(successful, r)
 			artifacts = append(artifacts, deploy.MatrixArtifact{
-				Platform:  r.Combination.Platform,
-				Version:   r.Combination.Version,
-				Binary:    r.Artifact,
-				Status:    r.Status,
-				SizeBytes: fileSize(r.Artifact),
-				Report:    newMatrixComboReport(r),
+				MatrixRunID: string(runID),
+				Platform:    r.Combination.Platform,
+				Version:     r.Combination.Version,
+				Binary:      r.Artifact,
+				Status:      r.Status,
+				SizeBytes:   fileSize(r.Artifact),
+				Report:      newMatrixComboReport(r),
 			})
 		}
 

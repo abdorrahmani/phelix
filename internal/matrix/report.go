@@ -15,6 +15,7 @@ import (
 // Report is the complete matrix build report, written as both a human-readable
 // terminal summary and a machine-readable JSON file.
 type Report struct {
+	RunID        string        `json:"run_id,omitempty"` // Matrix Run this report belongs to
 	AppName      string        `json:"app_name"`
 	Lang         string        `json:"language"`
 	StartedAt    time.Time     `json:"started_at"`
@@ -93,6 +94,9 @@ func (r *Report) PrintTerminal() {
 	fmt.Println()
 
 	// Header
+	if r.RunID != "" {
+		fmt.Printf("  Matrix Run: %s\n", color.CyanString(r.RunID))
+	}
 	if r.Failed > 0 {
 		color.Red("  Matrix build completed with %d failure(s)\n", r.Failed)
 	} else if r.Skipped > 0 {
