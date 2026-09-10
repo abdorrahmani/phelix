@@ -303,50 +303,101 @@ func ensureDockerfileAndIgnore(projectRoot string, lang docker.Language) error {
 	return nil
 }
 
-// runDockerizeMatrixMode builds Docker images for a matrix of version × platform
-// combinations. The matrix configuration converges exactly like `phelix build`
-// (CLI flags > phelix.yaml matrix profile > default; list replacement; an
-// explicit --matrix=false disables an enabled profile), so both commands
-// validate and expand the same way.
+// matrixDockerEvents observes docker-matrix execution progress. Started
+// fires once after every preflight check passes (plan expanded, daemon
+// available, Dockerfile ensured, buildx present) and before the first
+// combination executes; AttemptStarted/ResultRecorded fire per attempt start
+// and final result. The local CLI passes nil; the remote matrix_dockerize
+// handler passes an adapter over the gRPC MatrixReporter so the backend
+// receives per-combination events. Called from executor worker goroutines —
+// implementations must be safe for concurrent use.
+type matrixDockerEvents interface {
+	Started(plan *matrix.MatrixPlan)
+	AttemptStarted(c matrix.Combination, attempt int)
+	ResultRecorded(res matrix.Result)
+}
+
+// dockerizeMatrixParams carries everything one docker matrix build needs.
+// The CLI fills it from flags; the remote matrix_dockerize handler fills it
+// from the command payload — both execute the same core below.
+type dockerizeMatrixParams struct {
+	Name        string
+	ProjectRoot string
+	// Lang is the project's detected language — what the generated
+	// Dockerfile is templated for, exactly like the local command.
+	Lang builder.Language
+	// In is the matrix convergence input (CLI/payload dimensions vs the
+	// project's phelix.yaml profile), exactly like the native build path.
+	In matrix.ResolveInput
+	// RawBuildArgs are KEY=VALUE strings, validated by parseDockerBuildArgs.
+	RawBuildArgs []string
+	Registry     string
+	Tag          string
+	Push         bool
+	PushPartial  bool
+	MultiArch    bool
+	DryRun       bool
+	Debug        bool
+	// Context, when non-nil, cancels the execution (daemon shutdown for
+	// remote builds; the local CLI passes nil, preserving its behavior).
+	Context context.Context
+}
+
+// dockerizeMatrixOutcome reports what a docker matrix build produced. For a
+// dry run only Plan is set. Version is the recorded application version
+// (0 when nothing was recorded).
+type dockerizeMatrixOutcome struct {
+	Plan            *matrix.MatrixPlan
+	Results         []matrix.Result
+	Report          *matrix.Report
+	MultiArchImages []string
+	Version         int
+}
+
+// runDockerizeMatrixCore builds Docker images for a matrix of version ×
+// platform combinations. The matrix configuration converges exactly like
+// `phelix build` (CLI flags > phelix.yaml matrix profile > default; list
+// replacement; an explicit --matrix=false disables an enabled profile), so
+// both commands validate and expand the same way.
 //
 // Each combination gets its own image tag
-// ({app}:{tag|latest}-{lang}{version}-{arch}[-{variant}]); with
-// --multi-arch-tag, the per-version platform images are additionally assembled
-// into one multi-arch manifest list per toolchain version.
+// ({app}:{tag|latest}-{lang}{version}-{arch}[-{variant}]); with multi-arch
+// enabled, the per-version platform images are additionally assembled into
+// one multi-arch manifest list per toolchain version.
 //
-// Push semantics are fail-closed by default: if any combination failed to build,
-// we refuse to push any image. This prevents publishing a partial/inconsistent
-// release where some platforms work and others don't. The --push-partial flag
-// overrides this behavior.
-func runDockerizeMatrixMode(name string, lang builder.Language, projectRoot string, in matrix.ResolveInput) error {
-	prof, active, err := matrix.Resolve(in)
+// Push semantics are fail-closed by default: if any combination failed to
+// build, we refuse to push any image. This prevents publishing a
+// partial/inconsistent release where some platforms work and others don't.
+// The --push-partial flag overrides this behavior.
+func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*dockerizeMatrixOutcome, error) {
+	prof, active, err := matrix.Resolve(p.In)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !active || prof == nil {
-		return phelixerr.New(phelixerr.CodeInvalidArgument, "matrix mode is not active")
+		return nil, phelixerr.New(phelixerr.CodeInvalidArgument, "matrix mode is not active")
 	}
 	plan, err := prof.Plan()
 	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix build plan", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix build plan", err)
 	}
 
-	buildArgs, err := parseDockerBuildArgs(dockerizeBuildArgs)
+	buildArgs, err := parseDockerBuildArgs(p.RawBuildArgs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// A multi-arch manifest list is assembled from registry references by
 	// `docker buildx imagetools create` — the source images must already be
-	// pushed, so --multi-arch-tag without --push cannot work (it would fail
-	// after building everything, or worse, assemble from stale remote images).
-	if dockerizeMultiArchTag && !dockerizePush {
-		return phelixerr.New(phelixerr.CodeInvalidArgument,
-			"--multi-arch-tag assembles the manifest list from pushed registry images — pass --push (optionally with --push-partial)")
+	// pushed, so multi-arch without push cannot work (it would fail after
+	// building everything, or worse, assemble from stale remote images).
+	if p.MultiArch && !p.Push {
+		return nil, phelixerr.New(phelixerr.CodeInvalidArgument,
+			"multi-arch tags assemble the manifest list from pushed registry images — enable push (optionally with push_partial)")
 	}
 
 	fmt.Printf("%s Docker matrix build: %s (%d combinations)\n",
-		color.BlueString("→"), color.CyanString(name), len(plan.Combinations))
+		color.BlueString("→"), color.CyanString(p.Name), len(plan.Combinations))
 	if plan.IncludedCount > 0 || plan.ExcludedCount > 0 {
 		fmt.Printf("    %s base %d · included +%d · excluded -%d\n",
 			color.New(color.Faint).Sprint("•"), plan.BaseCount, plan.IncludedCount, plan.ExcludedCount)
@@ -356,59 +407,67 @@ func runDockerizeMatrixMode(name string, lang builder.Language, projectRoot stri
 	}
 	fmt.Println()
 
-	if dockerizeMatrixDryRun {
-		fmt.Printf("  %s Dry run — no images built\n", color.YellowString("Note:"))
-		return nil
+	if p.DryRun {
+		return &dockerizeMatrixOutcome{Plan: plan}, nil
 	}
 
 	// The daemon is required from here on (image builds); the dry-run exit
 	// above is deliberately daemon-free.
 	if err := docker.CheckDockerAvailable(); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available", err)
 	}
 
 	// A Dockerfile (and .dockerignore) must exist for `docker build` —
 	// generate them when absent, exactly like the single-image path.
-	if err := ensureDockerfileAndIgnore(projectRoot, docker.Language(string(lang))); err != nil {
-		return err
+	if err := ensureDockerfileAndIgnore(p.ProjectRoot, docker.Language(string(p.Lang))); err != nil {
+		return nil, err
 	}
 
 	// Ensure buildx is available for multi-arch builds.
 	if err := matrix.EnsureBuildx(); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeDocker, "docker buildx is required for this build", err)
+		return nil, phelixerr.Wrap(phelixerr.CodeDocker, "docker buildx is required for this build", err)
 	}
 
 	dmb := &matrix.DockerMatrixBuilder{
-		ProjectRoot: projectRoot,
-		AppName:     name,
-		Registry:    dockerizeRegistry,
-		Tag:         dockerizeTag,
+		ProjectRoot: p.ProjectRoot,
+		AppName:     p.Name,
+		Registry:    p.Registry,
+		Tag:         p.Tag,
 		BuildArgs:   buildArgs,
-		Debug:       dockerizeDebug,
+		Debug:       p.Debug,
 	}
 
 	// Build each combination (retry budget and concurrency come from the
 	// resolved profile, so CLI > phelix.yaml > default applies here too).
 	startTime := time.Now()
-	results := matrix.Execute(plan, dmb.BuildDockerImage, matrix.ExecutorConfig{
+	execCfg := matrix.ExecutorConfig{
 		Concurrency: prof.Concurrency,
-		Debug:       dockerizeDebug,
+		Debug:       p.Debug,
 		Retries:     prof.Retries,
-	})
+		Context:     p.Context,
+	}
+	if ev != nil {
+		ev.Started(plan)
+		execCfg.OnAttempt = ev.AttemptStarted
+		execCfg.OnResult = ev.ResultRecorded
+	}
+	results := matrix.Execute(plan, dmb.BuildDockerImage, execCfg)
 
 	// Generate report.
-	report := matrix.GenerateReport(name, results, startTime)
+	report := matrix.GenerateReport(p.Name, results, startTime)
 	report.PrintTerminal()
 
-	reportPath, _ := report.WriteJSON(projectRoot)
+	reportPath, _ := report.WriteJSON(p.ProjectRoot)
 	if reportPath != "" {
 		fmt.Printf("  %s Report written to %s\n", color.GreenString("✓"), reportPath)
 	}
 
+	outcome := &dockerizeMatrixOutcome{Plan: plan, Results: results, Report: report}
+
 	// Handle push with fail-closed semantics.
-	if dockerizePush {
-		if err := dmb.PushImages(results, dockerizePushPartial); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeDocker, "docker image push failed", err)
+	if p.Push {
+		if err := dmb.PushImages(results, p.PushPartial); err != nil {
+			return outcome, phelixerr.Wrap(phelixerr.CodeDocker, "docker image push failed", err)
 		}
 		pushed := len(matrix.Succeeded(results))
 		if report.Failed > 0 {
@@ -422,16 +481,15 @@ func runDockerizeMatrixMode(name string, lang builder.Language, projectRoot stri
 	// Assemble multi-arch manifest lists (one per toolchain version) when
 	// requested. This runs after the push so the source images already exist
 	// in the registry when the manifest is created.
-	var multiArchImages []string
-	if dockerizeMultiArchTag {
+	if p.MultiArch {
 		byVersion, order := groupSuccessByVersion(results)
 		for _, ver := range order {
-			manifestTag := matrixManifestTag(dockerizeTag, ver, len(plan.Combinations))
+			manifestTag := matrixManifestTag(p.Tag, ver, len(plan.Combinations))
 			manifest, err := dmb.BuildMultiArchManifest(context.Background(), byVersion[ver], manifestTag)
 			if err != nil {
-				return phelixerr.Wrap(phelixerr.CodeDocker, "failed to create multi-arch manifest", err)
+				return outcome, phelixerr.Wrap(phelixerr.CodeDocker, "failed to create multi-arch manifest", err)
 			}
-			multiArchImages = append(multiArchImages, manifest.Artifact)
+			outcome.MultiArchImages = append(outcome.MultiArchImages, manifest.Artifact)
 			fmt.Printf("  %s Multi-arch manifest created: %s\n", color.GreenString("✓"), manifest.Artifact)
 		}
 	}
@@ -454,28 +512,53 @@ func runDockerizeMatrixMode(name string, lang builder.Language, projectRoot stri
 			})
 		}
 
-		gitCommit := deploy.DetectGitCommit(projectRoot)
+		gitCommit := deploy.DetectGitCommit(p.ProjectRoot)
 		logger := &colorLogger{}
-		_, verErr := deploy.RecordMatrixBuild(
-			name, dockerizeTag, gitCommit, artifacts, strings.Join(multiArchImages, ", "),
+		rec, verErr := deploy.RecordMatrixBuild(
+			p.Name, p.Tag, gitCommit, artifacts, strings.Join(outcome.MultiArchImages, ", "),
 			deploy.DefaultRetention{Max: 5}, logger,
 		)
 		if verErr != nil {
 			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
 		} else {
+			outcome.Version = rec.Version
 			fmt.Printf("  %s Docker matrix build recorded in version history\n", color.GreenString("✓"))
 		}
 	}
 
 	if report.Failed > 0 {
-		return phelixerr.Newf(
+		return outcome, phelixerr.Newf(
 			phelixerr.CodeBuildFailed,
 			"matrix dockerize completed with %d failure(s) out of %d combinations",
 			report.Failed, report.Total,
 		)
 	}
 
-	return nil
+	return outcome, nil
+}
+
+// runDockerizeMatrixMode is the local CLI entry point: it forwards the
+// command's flags into the shared docker-matrix core. Output and semantics
+// are identical to a remote matrix_dockerize command.
+func runDockerizeMatrixMode(name string, lang builder.Language, projectRoot string, in matrix.ResolveInput) error {
+	outcome, err := runDockerizeMatrixCore(dockerizeMatrixParams{
+		Name:         name,
+		ProjectRoot:  projectRoot,
+		Lang:         lang,
+		In:           in,
+		RawBuildArgs: dockerizeBuildArgs,
+		Registry:     dockerizeRegistry,
+		Tag:          dockerizeTag,
+		Push:         dockerizePush,
+		PushPartial:  dockerizePushPartial,
+		MultiArch:    dockerizeMultiArchTag,
+		DryRun:       dockerizeMatrixDryRun,
+		Debug:        dockerizeDebug,
+	}, nil)
+	if outcome != nil && outcome.Plan != nil && dockerizeMatrixDryRun {
+		fmt.Printf("  %s Dry run — no images built\n", color.YellowString("Note:"))
+	}
+	return err
 }
 
 // parseDockerBuildArgs converts --build-arg KEY=VALUE flag values into a map,

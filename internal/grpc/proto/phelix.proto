@@ -11,6 +11,7 @@ import "internal/grpc/proto/envelope.proto";
 import "internal/grpc/proto/health.proto";
 import "internal/grpc/proto/monitoring.proto";
 import "internal/grpc/proto/deployment.proto";
+import "internal/grpc/proto/matrix.proto";
 
 // PhelixService is the main service for CLI-to-backend communication.
 service PhelixService {
@@ -79,6 +80,15 @@ service PhelixService {
   // UNIMPLEMENTED. The CLI treats that as "telemetry not consumed yet" and
   // continues the deployment unchanged.
   rpc ReportDeploymentEvent(DeploymentEvent) returns (EventResponse);
+
+  // ReportMatrixEvent sends one Build Matrix lifecycle event to the backend
+  // (run started/resumed/finished, per-combination progress). Events are
+  // best-effort telemetry: the durable outcome of a matrix command travels in
+  // its MonitorCommandResult (replayed after a reconnect), and current state
+  // can always be re-queried with a matrix_status command. A backend that
+  // does not implement this RPC answers UNIMPLEMENTED; the agent continues
+  // the matrix build unchanged.
+  rpc ReportMatrixEvent(MatrixEvent) returns (EventResponse);
 
   // MonitorStream is the persistent, bidirectional monitoring channel that
   // replaces the legacy WebSocket monitor. The CLI monitor daemon opens this

@@ -1657,7 +1657,14 @@ type MonitorCommandRequest struct {
 	// Read-only dry-run: uses the same planning path as the local --dry-run
 	// flag. Never mutates process/proxy/version/audit state; the structured
 	// RollbackPreview is delivered through the normal rollback event stream.
-	DryRun        bool `protobuf:"varint,9,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	DryRun bool `protobuf:"varint,9,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	// Remote Build Matrix options, carried by matrix_* commands only (additive;
+	// older agents ignore them). The agent executes the SAME matrix engine the
+	// local CLI uses — never a second implementation. dry-run semantics reuse
+	// the dry_run field above; run selection (matrix_resume / matrix_retry /
+	// matrix_status) reuses target ("latest" or "mx_…" run ID). See
+	// docs/matrix-backend-contract.md.
+	Matrix        *MatrixOptions `protobuf:"bytes,10,opt,name=matrix,proto3" json:"matrix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1755,6 +1762,13 @@ func (x *MonitorCommandRequest) GetDryRun() bool {
 	return false
 }
 
+func (x *MonitorCommandRequest) GetMatrix() *MatrixOptions {
+	if x != nil {
+		return x.Matrix
+	}
+	return nil
+}
+
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
 // sent back to the backend after a command finishes executing.
 type MonitorCommandResult struct {
@@ -1770,7 +1784,27 @@ type MonitorCommandResult struct {
 	// (e.g. ROLLBACK_TARGET_NOT_FOUND, DEPLOY_LOCKED). Empty on success and for
 	// unclassified errors — never parse `error` to derive it. Additive field:
 	// older backends see "" and ignore it.
-	ErrorCode     string `protobuf:"bytes,7,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	ErrorCode string `protobuf:"bytes,7,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	// Remote Build Matrix fields (additive; set on matrix_* command results,
+	// empty/absent otherwise — older backends ignore them).
+	//
+	// matrix_run_id identifies the Matrix Run a mutating matrix command
+	// executed (or the run a status answer describes).
+	MatrixRunId string `protobuf:"bytes,8,opt,name=matrix_run_id,json=matrixRunId,proto3" json:"matrix_run_id,omitempty"`
+	// matrix_run is the run's complete state: the terminal outcome of
+	// matrix_build / matrix_resume / matrix_retry (including failures — a
+	// partial run reports status "error" AND carries its full state here) and
+	// the answer of matrix_status for a specific run.
+	MatrixRun *MatrixRunState `protobuf:"bytes,9,opt,name=matrix_run,json=matrixRun,proto3" json:"matrix_run,omitempty"`
+	// matrix_runs is the matrix_list answer (run summaries, newest first). Also
+	// used by matrix_status with no active run: empty matrix_run plus the most
+	// recent summary (or an empty list when there is no history).
+	MatrixRuns []*MatrixRunSummary `protobuf:"bytes,10,rep,name=matrix_runs,json=matrixRuns,proto3" json:"matrix_runs,omitempty"`
+	// matrix_preview is the structured answer of a dry-run command.
+	MatrixPreview *MatrixPlanPreview `protobuf:"bytes,11,opt,name=matrix_preview,json=matrixPreview,proto3" json:"matrix_preview,omitempty"`
+	// matrix_docker is the terminal outcome of matrix_dockerize (image builds
+	// have no Matrix Run).
+	MatrixDocker  *MatrixDockerResult `protobuf:"bytes,12,opt,name=matrix_docker,json=matrixDocker,proto3" json:"matrix_docker,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1854,6 +1888,41 @@ func (x *MonitorCommandResult) GetErrorCode() string {
 	return ""
 }
 
+func (x *MonitorCommandResult) GetMatrixRunId() string {
+	if x != nil {
+		return x.MatrixRunId
+	}
+	return ""
+}
+
+func (x *MonitorCommandResult) GetMatrixRun() *MatrixRunState {
+	if x != nil {
+		return x.MatrixRun
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetMatrixRuns() []*MatrixRunSummary {
+	if x != nil {
+		return x.MatrixRuns
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetMatrixPreview() *MatrixPlanPreview {
+	if x != nil {
+		return x.MatrixPreview
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetMatrixDocker() *MatrixDockerResult {
+	if x != nil {
+		return x.MatrixDocker
+	}
+	return nil
+}
+
 // MonitorEvent is a single message sent from the CLI monitor daemon to the
 // backend over the long-lived MonitorStream. Exactly one payload is set per
 // event, mirroring the "type"/"payload" envelope used by the old WebSocket
@@ -1877,6 +1946,7 @@ type MonitorEvent struct {
 	//	*MonitorEvent_Pong
 	//	*MonitorEvent_DeploymentSnapshot
 	//	*MonitorEvent_AppHealth
+	//	*MonitorEvent_MatrixRun
 	Payload       isMonitorEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2014,6 +2084,15 @@ func (x *MonitorEvent) GetAppHealth() *AppHealthSnapshot {
 	return nil
 }
 
+func (x *MonitorEvent) GetMatrixRun() *MatrixRunState {
+	if x != nil {
+		if x, ok := x.Payload.(*MonitorEvent_MatrixRun); ok {
+			return x.MatrixRun
+		}
+	}
+	return nil
+}
+
 type isMonitorEvent_Payload interface {
 	isMonitorEvent_Payload()
 }
@@ -2069,6 +2148,16 @@ type MonitorEvent_AppHealth struct {
 	AppHealth *AppHealthSnapshot `protobuf:"bytes,18,opt,name=app_health,json=appHealth,proto3,oneof"`
 }
 
+type MonitorEvent_MatrixRun struct {
+	// matrix_run resyncs the current state of one ACTIVE Matrix Run (a run
+	// whose execution lock is held by a live process). Pushed on every
+	// (re)connection and periodically while the run executes, so a backend
+	// that missed lifecycle events converges on the real run state. Runs that
+	// are not executing are not resynced — query them with a matrix_status
+	// command.
+	MatrixRun *MatrixRunState `protobuf:"bytes,19,opt,name=matrix_run,json=matrixRun,proto3,oneof"`
+}
+
 func (*MonitorEvent_ServerInfo) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_ServerMetrics) isMonitorEvent_Payload() {}
@@ -2086,6 +2175,8 @@ func (*MonitorEvent_Pong) isMonitorEvent_Payload() {}
 func (*MonitorEvent_DeploymentSnapshot) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_AppHealth) isMonitorEvent_Payload() {}
+
+func (*MonitorEvent_MatrixRun) isMonitorEvent_Payload() {}
 
 // MonitorControl is a single message sent from the backend to the CLI
 // monitor daemon over the same long-lived MonitorStream. It mirrors the old
@@ -2176,7 +2267,7 @@ var File_internal_grpc_proto_monitoring_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
-	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\"\xd1\x05\n" +
+	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\x1a internal/grpc/proto/matrix.proto\"\xd1\x05\n" +
 	"\n" +
 	"ServerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
@@ -2349,7 +2440,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05level\x18\x06 \x01(\tR\x05level\x12)\n" +
 	"\x06source\x18\a \x01(\x0e2\x11.phelix.LogSourceR\x06source\x12)\n" +
 	"\x06stream\x18\b \x01(\x0e2\x11.phelix.LogStreamR\x06stream\x12\x1c\n" +
-	"\tcomponent\x18\t \x01(\tR\tcomponent\"\x94\x02\n" +
+	"\tcomponent\x18\t \x01(\tR\tcomponent\"\xc3\x02\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -2360,7 +2451,9 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x06target\x18\x06 \x01(\tR\x06target\x12\x16\n" +
 	"\x06reason\x18\a \x01(\tR\x06reason\x12,\n" +
 	"\x12verify_duration_ms\x18\b \x01(\x03R\x10verifyDurationMs\x12\x17\n" +
-	"\adry_run\x18\t \x01(\bR\x06dryRun\"\xd5\x01\n" +
+	"\adry_run\x18\t \x01(\bR\x06dryRun\x12-\n" +
+	"\x06matrix\x18\n" +
+	" \x01(\v2\x15.phelix.MatrixOptionsR\x06matrix\"\xee\x03\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -2370,7 +2463,15 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05error\x18\x05 \x01(\tR\x05error\x12\x1c\n" +
 	"\ttimestamp\x18\x06 \x01(\x03R\ttimestamp\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\a \x01(\tR\terrorCode\"\xee\x04\n" +
+	"error_code\x18\a \x01(\tR\terrorCode\x12\"\n" +
+	"\rmatrix_run_id\x18\b \x01(\tR\vmatrixRunId\x125\n" +
+	"\n" +
+	"matrix_run\x18\t \x01(\v2\x16.phelix.MatrixRunStateR\tmatrixRun\x129\n" +
+	"\vmatrix_runs\x18\n" +
+	" \x03(\v2\x18.phelix.MatrixRunSummaryR\n" +
+	"matrixRuns\x12@\n" +
+	"\x0ematrix_preview\x18\v \x01(\v2\x19.phelix.MatrixPlanPreviewR\rmatrixPreview\x12?\n" +
+	"\rmatrix_docker\x18\f \x01(\v2\x1a.phelix.MatrixDockerResultR\fmatrixDocker\"\xa7\x05\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
@@ -2386,7 +2487,9 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x04pong\x18\x10 \x01(\v2\f.phelix.PongH\x00R\x04pong\x12M\n" +
 	"\x13deployment_snapshot\x18\x11 \x01(\v2\x1a.phelix.DeploymentSnapshotH\x00R\x12deploymentSnapshot\x12:\n" +
 	"\n" +
-	"app_health\x18\x12 \x01(\v2\x19.phelix.AppHealthSnapshotH\x00R\tappHealthB\t\n" +
+	"app_health\x18\x12 \x01(\v2\x19.phelix.AppHealthSnapshotH\x00R\tappHealth\x127\n" +
+	"\n" +
+	"matrix_run\x18\x13 \x01(\v2\x16.phelix.MatrixRunStateH\x00R\tmatrixRunB\t\n" +
 	"\apayload\"z\n" +
 	"\x0eMonitorControl\x129\n" +
 	"\acommand\x18\x01 \x01(\v2\x1d.phelix.MonitorCommandRequestH\x00R\acommand\x12\"\n" +
@@ -2434,10 +2537,15 @@ var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(*MonitorCommandResult)(nil),  // 15: phelix.MonitorCommandResult
 	(*MonitorEvent)(nil),          // 16: phelix.MonitorEvent
 	(*MonitorControl)(nil),        // 17: phelix.MonitorControl
-	(*Pong)(nil),                  // 18: phelix.Pong
-	(*DeploymentSnapshot)(nil),    // 19: phelix.DeploymentSnapshot
-	(*AppHealthSnapshot)(nil),     // 20: phelix.AppHealthSnapshot
-	(*Ping)(nil),                  // 21: phelix.Ping
+	(*MatrixOptions)(nil),         // 18: phelix.MatrixOptions
+	(*MatrixRunState)(nil),        // 19: phelix.MatrixRunState
+	(*MatrixRunSummary)(nil),      // 20: phelix.MatrixRunSummary
+	(*MatrixPlanPreview)(nil),     // 21: phelix.MatrixPlanPreview
+	(*MatrixDockerResult)(nil),    // 22: phelix.MatrixDockerResult
+	(*Pong)(nil),                  // 23: phelix.Pong
+	(*DeploymentSnapshot)(nil),    // 24: phelix.DeploymentSnapshot
+	(*AppHealthSnapshot)(nil),     // 25: phelix.AppHealthSnapshot
+	(*Ping)(nil),                  // 26: phelix.Ping
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	3,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -2449,22 +2557,28 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	12, // 6: phelix.ApplicationInfo.storage:type_name -> phelix.AppStorage
 	0,  // 7: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
 	1,  // 8: phelix.MonitorLogEntry.stream:type_name -> phelix.LogStream
-	2,  // 9: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	6,  // 10: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	7,  // 11: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	8,  // 12: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	13, // 13: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	15, // 14: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	18, // 15: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	19, // 16: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
-	20, // 17: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
-	14, // 18: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	21, // 19: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	18, // 9: phelix.MonitorCommandRequest.matrix:type_name -> phelix.MatrixOptions
+	19, // 10: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
+	20, // 11: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
+	21, // 12: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
+	22, // 13: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
+	2,  // 14: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	6,  // 15: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	7,  // 16: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	8,  // 17: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	13, // 18: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	15, // 19: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	23, // 20: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	24, // 21: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
+	25, // 22: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
+	19, // 23: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
+	14, // 24: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	26, // 25: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	26, // [26:26] is the sub-list for method output_type
+	26, // [26:26] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -2475,6 +2589,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 	file_internal_grpc_proto_ping_proto_init()
 	file_internal_grpc_proto_deployment_proto_init()
 	file_internal_grpc_proto_health_proto_init()
+	file_internal_grpc_proto_matrix_proto_init()
 	file_internal_grpc_proto_monitoring_proto_msgTypes[14].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
@@ -2485,6 +2600,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_Pong)(nil),
 		(*MonitorEvent_DeploymentSnapshot)(nil),
 		(*MonitorEvent_AppHealth)(nil),
+		(*MonitorEvent_MatrixRun)(nil),
 	}
 	file_internal_grpc_proto_monitoring_proto_msgTypes[15].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),

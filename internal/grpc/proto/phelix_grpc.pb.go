@@ -30,6 +30,7 @@ const (
 	PhelixService_ReportAutoRestart_FullMethodName     = "/phelix.PhelixService/ReportAutoRestart"
 	PhelixService_ReportRollbackEvent_FullMethodName   = "/phelix.PhelixService/ReportRollbackEvent"
 	PhelixService_ReportDeploymentEvent_FullMethodName = "/phelix.PhelixService/ReportDeploymentEvent"
+	PhelixService_ReportMatrixEvent_FullMethodName     = "/phelix.PhelixService/ReportMatrixEvent"
 	PhelixService_MonitorStream_FullMethodName         = "/phelix.PhelixService/MonitorStream"
 	PhelixService_AgentLogout_FullMethodName           = "/phelix.PhelixService/AgentLogout"
 )
@@ -91,6 +92,14 @@ type PhelixServiceClient interface {
 	// UNIMPLEMENTED. The CLI treats that as "telemetry not consumed yet" and
 	// continues the deployment unchanged.
 	ReportDeploymentEvent(ctx context.Context, in *DeploymentEvent, opts ...grpc.CallOption) (*EventResponse, error)
+	// ReportMatrixEvent sends one Build Matrix lifecycle event to the backend
+	// (run started/resumed/finished, per-combination progress). Events are
+	// best-effort telemetry: the durable outcome of a matrix command travels in
+	// its MonitorCommandResult (replayed after a reconnect), and current state
+	// can always be re-queried with a matrix_status command. A backend that
+	// does not implement this RPC answers UNIMPLEMENTED; the agent continues
+	// the matrix build unchanged.
+	ReportMatrixEvent(ctx context.Context, in *MatrixEvent, opts ...grpc.CallOption) (*EventResponse, error)
 	// MonitorStream is the persistent, bidirectional monitoring channel that
 	// replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
 	// stream once and keeps it open for the lifetime of the process, pushing a
@@ -236,6 +245,16 @@ func (c *phelixServiceClient) ReportDeploymentEvent(ctx context.Context, in *Dep
 	return out, nil
 }
 
+func (c *phelixServiceClient) ReportMatrixEvent(ctx context.Context, in *MatrixEvent, opts ...grpc.CallOption) (*EventResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EventResponse)
+	err := c.cc.Invoke(ctx, PhelixService_ReportMatrixEvent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *phelixServiceClient) MonitorStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MonitorEvent, MonitorControl], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &PhelixService_ServiceDesc.Streams[2], PhelixService_MonitorStream_FullMethodName, cOpts...)
@@ -316,6 +335,14 @@ type PhelixServiceServer interface {
 	// UNIMPLEMENTED. The CLI treats that as "telemetry not consumed yet" and
 	// continues the deployment unchanged.
 	ReportDeploymentEvent(context.Context, *DeploymentEvent) (*EventResponse, error)
+	// ReportMatrixEvent sends one Build Matrix lifecycle event to the backend
+	// (run started/resumed/finished, per-combination progress). Events are
+	// best-effort telemetry: the durable outcome of a matrix command travels in
+	// its MonitorCommandResult (replayed after a reconnect), and current state
+	// can always be re-queried with a matrix_status command. A backend that
+	// does not implement this RPC answers UNIMPLEMENTED; the agent continues
+	// the matrix build unchanged.
+	ReportMatrixEvent(context.Context, *MatrixEvent) (*EventResponse, error)
 	// MonitorStream is the persistent, bidirectional monitoring channel that
 	// replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
 	// stream once and keeps it open for the lifetime of the process, pushing a
@@ -373,6 +400,9 @@ func (UnimplementedPhelixServiceServer) ReportRollbackEvent(context.Context, *Ro
 }
 func (UnimplementedPhelixServiceServer) ReportDeploymentEvent(context.Context, *DeploymentEvent) (*EventResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportDeploymentEvent not implemented")
+}
+func (UnimplementedPhelixServiceServer) ReportMatrixEvent(context.Context, *MatrixEvent) (*EventResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportMatrixEvent not implemented")
 }
 func (UnimplementedPhelixServiceServer) MonitorStream(grpc.BidiStreamingServer[MonitorEvent, MonitorControl]) error {
 	return status.Error(codes.Unimplemented, "method MonitorStream not implemented")
@@ -577,6 +607,24 @@ func _PhelixService_ReportDeploymentEvent_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PhelixService_ReportMatrixEvent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MatrixEvent)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).ReportMatrixEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_ReportMatrixEvent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).ReportMatrixEvent(ctx, req.(*MatrixEvent))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _PhelixService_MonitorStream_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(PhelixServiceServer).MonitorStream(&grpc.GenericServerStream[MonitorEvent, MonitorControl]{ServerStream: stream})
 }
@@ -644,6 +692,10 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportDeploymentEvent",
 			Handler:    _PhelixService_ReportDeploymentEvent_Handler,
+		},
+		{
+			MethodName: "ReportMatrixEvent",
+			Handler:    _PhelixService_ReportMatrixEvent_Handler,
 		},
 		{
 			MethodName: "AgentLogout",

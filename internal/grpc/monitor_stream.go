@@ -9,6 +9,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"google.golang.org/protobuf/proto"
@@ -180,11 +181,17 @@ func (c *Client) runMonitorStream() error {
 	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream connected (agent_id=%s)", server.GetAgentID())
 
 	ledger := rollbackResults
+	matrixLedger := matrixResults
 	executor := monitorStream.commandExecutor
 	if err := ledger.initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote rollback ledger unavailable; rollback commands will fail closed: %v", err)
 	} else {
 		c.replayPendingRollbackResults(ledger)
+	}
+	if err := matrixLedger.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote matrix ledger unavailable; matrix commands will fail closed: %v", err)
+	} else {
+		c.replayPendingMatrixResults(matrixLedger)
 	}
 
 	// Send server identity once per (re)connection, mirroring the legacy
@@ -205,9 +212,15 @@ func (c *Client) runMonitorStream() error {
 	// must run on every stream open, not just the first.
 	c.sendHealthSnapshots()
 
+	// Matrix resync: the full state of every ACTIVE run (execution lock held),
+	// so a backend that missed a run's lifecycle events converges on the real
+	// state. Runs that are not executing are not resynced — they are durable
+	// history, queryable with a matrix_status command.
+	c.sendMatrixSnapshots()
+
 	recvErrCh := make(chan error, 1)
 	go func() {
-		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger)
+		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger, matrixLedger)
 	}()
 
 	ticker := time.NewTicker(monitorMetricsInterval)
@@ -215,7 +228,9 @@ func (c *Client) runMonitorStream() error {
 
 	// Deployment topology changes only during a deploy, which reports its own
 	// events; the periodic snapshot is a slow safety net against divergence,
-	// not a metrics feed.
+	// not a metrics feed. Active matrix runs ride the same cadence: their
+	// per-combination state changes through events, and this snapshot is the
+	// reconnect-independent safety net.
 	deployTicker := time.NewTicker(deploymentResyncInterval)
 	defer deployTicker.Stop()
 
@@ -241,6 +256,7 @@ func (c *Client) runMonitorStream() error {
 				continue
 			}
 			c.sendDeploymentSnapshots()
+			c.sendMatrixSnapshots()
 		case <-healthTicker.C:
 			if monitorStream.isPaused() {
 				continue
@@ -250,9 +266,9 @@ func (c *Client) runMonitorStream() error {
 	}
 }
 
-// monitorRevLoop reads MonitorControl messages pushed by the backend
+// monitorRecvLoop reads MonitorControl messages pushed by the backend
 // (remote commands, keepalive pings) until the stream ends.
-func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger) error {
+func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger, matrixLedger *rollbackLedger) error {
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -265,6 +281,13 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 		switch p := msg.Payload.(type) {
 		case *pb.MonitorControl_Command:
+			// Matrix commands have their own dispatch: async execution, a
+			// separate ledger, and structured results. They never reach the
+			// lifecycle executor.
+			if isMatrixCommand(p.Command.GetType()) {
+				c.handleMatrixCommand(p.Command, matrixLedger)
+				continue
+			}
 			c.handleMonitorCommand(p.Command, executor, ledger)
 		case *pb.MonitorControl_Ping:
 			c.handleMonitorPing(p.Ping)
@@ -540,6 +563,34 @@ func (c *Client) sendMonitorTick() {
 				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send self log: %v", err)
 				return
 			}
+		}
+	}
+}
+
+// sendMatrixSnapshots pushes the full state of every ACTIVE matrix run (a
+// run whose execution lock is held by a live process) as MonitorEvent
+// matrix_run payloads. Pushed on every (re)connection and on the deployment
+// resync cadence, this is the convergence surface for a backend that missed
+// a run's lifecycle events. Runs that are not executing — finished history,
+// or "running" records orphaned by a crash — are NOT resynced; the backend
+// learns about them from command results and matrix_status queries.
+func (c *Client) sendMatrixSnapshots() {
+	runs, err := matrix.ActiveRuns()
+	if err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect active matrix runs: %v", err)
+		return
+	}
+	for _, run := range runs {
+		event := &pb.MonitorEvent{
+			ServerId:  server.GetServerID(),
+			Timestamp: time.Now().UnixMilli(),
+			Payload: &pb.MonitorEvent_MatrixRun{
+				MatrixRun: ToProtoMatrixRunState(run),
+			},
+		}
+		if err := monitorStream.send(event); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send matrix run snapshot %s: %v", run.ID, err)
+			return
 		}
 	}
 }

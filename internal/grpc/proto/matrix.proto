@@ -1,0 +1,300 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// ============================================================================
+// Remote Build Matrix contract
+//
+// These messages expose the agent's existing Build Matrix engine (the same
+// engine `phelix build --matrix`, `phelix dockerize --matrix`, `phelix matrix
+// retry` and `--resume` run) to the backend:
+//
+//   - Backend → agent:  matrix_* commands over MonitorStream
+//     (MonitorCommandRequest.type + MonitorCommandRequest.matrix).
+//   - Agent → backend:  asynchronous lifecycle events via ReportMatrixEvent
+//     (per-combination progress, run milestones, terminal state).
+//   - Agent → backend:  terminal command results over MonitorStream
+//     (MonitorCommandResult matrix_* fields — durable, replayed on reconnect).
+//   - Agent → backend:  MatrixRunState resync snapshots on MonitorEvent
+//     (reconnect/periodic convergence, like deployment_snapshot).
+//
+// Source of truth for backend implementation:
+// docs/matrix-backend-contract.md. State/status vocabularies are the agent's
+// own (string-valued, never re-invented here): run status is one of
+// running|succeeded|partial|failed|interrupted, combination status one of
+// pending|running|success|failed|skipped.
+// ============================================================================
+
+// MatrixOptions carries the matrix build options of a matrix_* command. It
+// mirrors the local CLI flags: every field is optional, and empty/zero means
+// "not specified" so the agent's own convergence applies (payload > the
+// project's phelix.yaml matrix profile > engine default; lists replace, never
+// merge — identical to matrix.Resolve). Include/exclude rules have no payload
+// representation: like the CLI, they come from the phelix.yaml profile on the
+// agent and are reported back in the run's configuration snapshot.
+message MatrixOptions {
+  // Dimension flags. go_versions and rust_versions are mutually exclusive.
+  repeated string go_versions = 1;
+  repeated string rust_versions = 2;
+  repeated string platforms = 3;
+
+  // Execution policy. concurrency 0 = engine default (3); retries 0 = no
+  // automatic retries. Negative values are rejected.
+  int32 concurrency = 4;
+  int32 retries = 5;
+
+  // build_args are passed to the underlying build tool, exactly like the
+  // local --build-arg flag. For matrix_dockerize they must be KEY=VALUE
+  // pairs (docker build --build-arg semantics); for native builds they are
+  // passed through verbatim.
+  repeated string build_args = 6;
+
+  // tag is the optional version tag: the local --tag for matrix_build (stored
+  // with the recorded version), the image tag for matrix_dockerize.
+  string tag = 7;
+
+  // Docker-matrix options (matrix_dockerize only; ignored otherwise).
+  string registry = 8;       // image registry prefix for tags/pushes
+  bool push = 9;             // push images after building (fail-closed)
+  bool push_partial = 10;    // push even when some combinations failed
+  bool multi_arch_tag = 11;  // assemble per-version multi-arch manifest lists
+
+  // matrix_list only: maximum number of run summaries to return
+  // (0 = default 20, negative rejected, hard cap 100).
+  int32 list_limit = 12;
+}
+
+// MatrixRule is one include/exclude rule of a run's configuration snapshot —
+// the agent-side matrix.Rule. dimensions is a partial constraint set over the
+// dimension names lang/version/os/arch/variant; metadata (include rules only)
+// carries attributes merged into matched combinations.
+message MatrixRule {
+  map<string, string> dimensions = 1;
+  map<string, string> metadata = 2;
+}
+
+// MatrixRunConfig is the configuration snapshot a run executed with — captured
+// at run start, never re-read from phelix.yaml (the agent's matrix.RunConfig).
+message MatrixRunConfig {
+  string language = 1;              // "go" | "rust"
+  repeated string versions = 2;     // toolchain versions
+  repeated string platforms = 3;    // "os/arch[/variant]" entries
+  int32 concurrency = 4;
+  repeated MatrixRule include = 5;
+  repeated MatrixRule exclude = 6;
+  int32 retries = 7;
+  repeated string build_args = 8;
+  MatrixRunConfigSources sources = 9;
+}
+
+// MatrixRunConfigSources records where each dimension came from when the run
+// started: "cli", "phelix.yaml", "default", or "detected". For remote runs the
+// payload counts as "cli".
+message MatrixRunConfigSources {
+  string language = 1;
+  string versions = 2;
+  string platforms = 3;
+  string concurrency = 4;
+  string retries = 5;
+  string include = 6;
+  string exclude = 7;
+}
+
+// MatrixAttemptState is one recorded execution attempt of one combination
+// (attempt 1 = original execution; 2+ = automatic retries).
+message MatrixAttemptState {
+  int32 number = 1;
+  string status = 2;    // "success" | "failed" | "skipped"
+  int64 duration_ms = 3;
+  string error = 4;     // redacted; empty on success
+}
+
+// MatrixCombinationState is one combination's outcome inside a run — the
+// agent's matrix.RunCombination. For docker-matrix results (no run) the
+// run-scoped fields (identity) are empty.
+message MatrixCombinationState {
+  string id = 1;         // path-safe combination ID, e.g. "go1.26-linux-amd64"
+  string identity = 2;   // run-scoped "<runID>/<combinationID>" (native runs only)
+  string toolchain = 3;  // "go" | "rust"
+  string toolchain_version = 4;
+  string os = 5;
+  string arch = 6;
+  string variant = 7;    // ARM variant ("v6"/"v7"); empty otherwise
+  string platform = 8;   // "os/arch[/variant]"
+  string status = 9;     // pending|running|success|failed|skipped
+  int64 duration_ms = 10;
+  string artifact = 11;  // binary path (native) or image reference (docker)
+  // sha256 is the SHA-256 of the artifact's bytes as lowercase hex (native
+  // builds), or the image's content digest (docker builds). Empty for
+  // failed/incomplete combinations — only a verified artifact carries one.
+  string sha256 = 12;
+  // size_bytes is the artifact's size on disk (0 for image references and
+  // missing files — for images the digest is the identity).
+  int64 size_bytes = 13;
+  // started_at is when the current/last attempt began (unix ms; 0 = never).
+  int64 started_at = 14;
+  string error = 15;      // redacted final error; empty on success
+  string cache_status = 16; // compiler-cache classification: "cold"|"hit"|""
+  int32 attempts = 17;    // attempt count; 1 when never retried
+  repeated MatrixAttemptState attempt_log = 18;
+  map<string, string> metadata = 19; // include-rule attributes
+}
+
+// MatrixCounters is the per-status combination count snapshot of a run. It is
+// computed in one pass under the run's lock, so total == succeeded + failed +
+// skipped + running + pending always holds.
+message MatrixCounters {
+  int32 total = 1;
+  int32 succeeded = 2;
+  int32 failed = 3;
+  int32 skipped = 4;
+  int32 running = 5;
+  int32 pending = 6;
+}
+
+// MatrixReleaseInfo is the release view of a terminal run: the summary of its
+// release manifest (one manifest file per run, generated when a terminal run
+// has successful artifacts). Present only when a manifest exists.
+message MatrixReleaseInfo {
+  int32 version = 1;    // logical application version (versions.json vN)
+  string tag = 2;
+  string status = 3;    // "complete" (every combination succeeded) | "partial"
+  int32 artifacts = 4;  // successful artifacts listed in the manifest
+  int32 total_combinations = 5;
+}
+
+// MatrixRunState is the complete state of one Matrix Run — the same entity the
+// agent persists in its local run history (matrix.Run). It is carried by
+// terminal command results (matrix_status answers, matrix_build/resume/retry
+// outcomes), by terminal lifecycle events, and by the MonitorEvent resync
+// snapshot after a reconnect.
+message MatrixRunState {
+  string matrix_run_id = 1; // "mx_YYYYMMDD_xxxx"
+  string app_name = 2;
+  string project_dir = 3;
+  string status = 4;        // running|succeeded|partial|failed|interrupted
+  MatrixRunConfig config = 5;
+  int64 started_at = 6;     // unix ms
+  int64 finished_at = 7;    // unix ms; 0 while running
+  int64 duration_ms = 8;    // 0 while running
+  MatrixCounters counters = 9;
+  repeated MatrixCombinationState combinations = 10;
+  string parent_run_id = 11; // manual retry runs: the source run
+  int32 resume_count = 12;   // how many times the run was resumed
+  // active/lock_pid report live execution (the run's lock is held by a live
+  // process). Populated in status answers and resync snapshots; a "running"
+  // run with active=false is orphaned (crashed agent) and resumable.
+  bool active = 13;
+  int32 lock_pid = 14;
+  MatrixReleaseInfo release = 15;
+}
+
+// MatrixRunSummary is one entry of a matrix_list answer (the remote form of
+// `phelix matrix list`).
+message MatrixRunSummary {
+  string matrix_run_id = 1;
+  string app_name = 2;
+  string status = 3;
+  MatrixCounters counters = 4;
+  string parent_run_id = 5;
+  int32 resume_count = 6;
+  int64 started_at = 7;   // unix ms
+  int64 finished_at = 8;  // unix ms; 0 when not finished
+  int64 duration_ms = 9;
+}
+
+// MatrixPlanPreview is the structured answer of a dry-run command
+// (matrix_build / matrix_dockerize / matrix_resume with dry_run=true). It
+// describes exactly what the command would execute — no run is created, no
+// lock taken, no build started, no state mutated.
+message MatrixPlanPreview {
+  string language = 1;
+  // combinations lists the combination IDs of the effective plan, in plan
+  // order (base Cartesian product → include → exclude).
+  repeated string combinations = 2;
+  int32 base_count = 3;     // combinations from the Cartesian product
+  int32 included_count = 4; // combinations added by include rules
+  int32 excluded_count = 5; // combinations removed by exclude rules
+  // Resume dry-run only (empty for build/dockerize previews):
+  string resume_run_id = 6; // the run the resume would continue
+  int32 run_total = 7;      // the run's total combinations
+  // execute_ids lists the subset a resume would execute (the run's pending
+  // and orphaned-running combinations).
+  repeated string execute_ids = 8;
+}
+
+// MatrixDockerResult is the terminal outcome of a matrix_dockerize command.
+// Docker matrix builds produce images, not binaries: there is no Matrix Run,
+// no run history, no resume and no release manifest (identical to the local
+// `phelix dockerize --matrix`). Successful images are recorded as a version
+// (versions.json) with per-artifact digests.
+message MatrixDockerResult {
+  string app_name = 1;
+  string registry = 2;
+  string tag = 3;
+  int32 version = 4; // recorded application version; 0 when not recorded
+  bool pushed = 5;
+  bool push_partial = 6;
+  repeated string multi_arch_images = 7;
+  MatrixCounters counters = 8;
+  repeated MatrixCombinationState combinations = 9;
+}
+
+// MatrixEvent is one lifecycle event of a remote matrix execution, sent via
+// ReportMatrixEvent. Events are best-effort (they may be dropped when the
+// agent cannot reach the backend); durable state always travels in the
+// terminal MonitorCommandResult and can be re-queried with matrix_status.
+//
+// Event types (event field):
+//   matrix.started              run began executing (native mode)
+//   matrix.resumed              a resume session began on an existing run
+//   matrix.combination_started  one attempt of one combination began
+//   matrix.combination_completed one combination reached a final outcome
+//   matrix.completed            run reached a terminal status
+//                               (succeeded|partial|failed)
+//   matrix.interrupted          run stopped early; resumable (status
+//                               "interrupted")
+//
+// Docker matrix builds use the same event types minus matrix.resumed and
+// matrix.interrupted (there is no run to resume; mode="docker" and
+// matrix_run_id are empty, and events correlate by request_id).
+message MatrixEvent {
+  string server_id = 1;
+  string request_id = 2;     // correlation with the originating command
+  string matrix_run_id = 3;  // native mode only; empty for docker builds
+  string app_name = 4;
+  string event = 5;
+  int64 timestamp = 6;       // unix ms
+  // seq is the per-run (native) / per-request (docker) monotonic sequence
+  // number, starting at 1. Strictly increasing within that scope; gaps mean
+  // dropped events. Never comparable across runs or requests.
+  int64 seq = 7;
+  string mode = 8;           // "native" | "docker"
+  // status is the run status as of this event (run-level events only).
+  string status = 9;
+  string message = 10;       // human-readable detail
+  // counters is the consistent per-status snapshot (run-level events only).
+  MatrixCounters counters = 11;
+  // combination identifies the combination this event is about
+  // (combination_started / combination_completed). For
+  // combination_completed it carries the full final outcome (artifact,
+  // sha256, size, attempts, attempt_log, error).
+  MatrixCombinationState combination = 12;
+  // attempt is the attempt number that began (combination_started only);
+  // values >= 2 are automatic retries.
+  int32 attempt = 13;
+  // error/error_code are set on terminal events of failed executions
+  // (error is redacted; error_code is a phelix error code, e.g. BUILD_FAILED).
+  string error = 14;
+  string error_code = 15;
+  // run carries the full MatrixRunState on matrix.started, matrix.resumed,
+  // matrix.completed and matrix.interrupted. Empty for combination events —
+  // the backend aggregates those from counters and per-combination updates,
+  // or re-queries with matrix_status.
+  MatrixRunState run = 16;
+  // metadata carries mode-specific details (docker matrix.started: registry,
+  // tag, push flags).
+  map<string, string> metadata = 17;
+}
