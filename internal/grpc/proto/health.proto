@@ -87,11 +87,22 @@ message HealthCheckCommand {
 }
 
 // ============================================================================
-// CLI-Initiated Health Config RPCs
+// CLI-Initiated Health Config RPCs  (DEPRECATED — no longer sent)
+//
+// These three unary RPCs were the old agent -> backend configuration path. Each
+// was fire-and-forget from a short-lived CLI process, so a mutation made while
+// the backend was unreachable was lost permanently and a deleted endpoint could
+// survive on the backend forever. They are superseded by AppHealthSnapshot (see
+// below), which the monitor daemon pushes over MonitorStream.
+//
+// The agent no longer calls them. The declarations remain so an existing backend
+// keeps compiling; Phase 2 removes the server-side handlers and then these.
 // ============================================================================
 
 // HealthSetConfigRequest is sent by the CLI to initialize health checks for an app.
 message HealthSetConfigRequest {
+  option deprecated = true;
+
   string app_id = 1;
   string app_name = 2;
   string path = 3;
@@ -104,6 +115,7 @@ message HealthSetConfigRequest {
 
 // HealthAddEndpointRequest is sent by the CLI to add a health check endpoint.
 message HealthAddEndpointRequest {
+  option deprecated = true;
   string app_id = 1;
   string app_name = 2;
   string name = 3;
@@ -116,6 +128,7 @@ message HealthAddEndpointRequest {
 
 // HealthRemoveEndpointRequest is sent by the CLI to remove a health check endpoint.
 message HealthRemoveEndpointRequest {
+  option deprecated = true;
   string app_id = 1;
   string app_name = 2;
   string name = 3;
@@ -123,6 +136,7 @@ message HealthRemoveEndpointRequest {
 
 // HealthConfigResponse is the response to a CLI-initiated health config RPC.
 message HealthConfigResponse {
+  option deprecated = true;
   bool success = 1;
   string error = 2;
   string message = 3;
@@ -133,7 +147,14 @@ message HealthConfigResponse {
 // ============================================================================
 
 // ReportHealthResultRequest is sent by the daemon to report a health check result.
+//
+// DEPRECATED: one unary RPC per endpoint per check interval, identifying the
+// endpoint by name and re-sending its configured url alongside the observation.
+// Superseded by AppHealthSnapshot over MonitorStream, which carries every
+// endpoint's identity, configuration and observation in one ordered message.
+// The agent no longer calls this RPC.
 message ReportHealthResultRequest {
+  option deprecated = true;
   string app_id = 1;
   string app_name = 2;
   string endpoint_name = 3;
@@ -147,11 +168,21 @@ message ReportHealthResultRequest {
 
 // ReportHealthResultResponse is the response to a health result report.
 message ReportHealthResultResponse {
+  option deprecated = true;
   bool success = 1;
   string error = 2;
 }
 
 // ReportAutoRestartRequest is sent by the daemon to report an auto-restart event.
+//
+// This is an EVENT, not state: it records that the agent restarted an app at a
+// point in time because a health endpoint kept failing. Unlike configuration and
+// runtime status (both carried by AppHealthSnapshot), an auto-restart cannot be
+// re-derived from a later snapshot, so it keeps its own RPC.
+//
+// exit_code is the outcome of the restart attempt: 0 = the app was restarted
+// successfully, non-zero = the restart was attempted and failed, or was skipped
+// because crash_count_24h exceeded the crash-loop ceiling.
 message ReportAutoRestartRequest {
   string app_id = 1;
   string app_name = 2;
@@ -160,6 +191,12 @@ message ReportAutoRestartRequest {
   int32 backoff_next_seconds = 5;
   int64 restarted_at = 6;
   int32 crash_count_24h = 7;
+  // Identity of the endpoint whose failures triggered the restart. endpoint_id
+  // is the stable identifier also used by AppHealthEndpoint; endpoint_name is
+  // the display name at the time of the restart. Both are empty when the
+  // restart was not attributable to a single endpoint.
+  string endpoint_id = 8;
+  string endpoint_name = 9;
 }
 
 // ReportAutoRestartResponse is the response to an auto-restart report.
@@ -234,6 +271,8 @@ message HealthResultCheckResult {
 // ============================================================================
 
 // EndpointConfig represents a single health check endpoint configuration.
+// Returned by the remote `health list` command (backend -> CLI -> backend), not
+// part of the synchronization contract — AppHealthEndpoint carries that.
 message EndpointConfig {
   string name = 1;
   string url = 2;
@@ -241,6 +280,9 @@ message EndpointConfig {
   int32 retries = 4;
   string expected_codes = 5;
   string timeout = 6;
+  // endpoint_id is the same stable identifier AppHealthEndpoint reports, so a
+  // remote list can be joined against synchronized state.
+  string endpoint_id = 7;
 }
 
 // DeployTierConfigProto represents deploy-tier health configuration.
@@ -253,6 +295,8 @@ message DeployTierConfigProto {
 }
 
 // EndpointHealthStatus represents the health status of a single endpoint.
+// Returned by the remote `health status` command; see AppHealthEndpoint for the
+// synchronization contract.
 message EndpointHealthStatus {
   string name = 1;
   string url = 2;
@@ -261,9 +305,14 @@ message EndpointHealthStatus {
   int64 latency_ms = 5;
   int64 checked_at = 6;
   string error = 7;
+  string endpoint_id = 8;
 }
 
 // HealthStatusUpdate is streamed during HealthWatch operations.
+//
+// This is a live view for one interactive `health watch` session, addressed by
+// request_id — it is NOT the synchronization channel. A backend must never
+// persist endpoint state from these messages; AppHealthSnapshot is authoritative.
 message HealthStatusUpdate {
   string request_id = 1;
   string server_id = 2;
@@ -276,5 +325,135 @@ message HealthStatusUpdate {
   int64 latency_ms = 9;
   int64 checked_at = 10;
   string error = 11;
-  bool is_healthy = 12;
+  // is_healthy is exactly (status == "UP"); it cannot distinguish DOWN from
+  // TIMEOUT. Read status instead.
+  bool is_healthy = 12 [deprecated = true];
+  string endpoint_id = 13;
+}
+
+// ============================================================================
+// Canonical agent -> backend health synchronization
+//
+// AppHealthSnapshot is the ONE shape that carries health from the agent to the
+// backend. It is pushed as a MonitorEvent payload (monitoring.proto) by the
+// monitor daemon, and is a COMPLETE statement of one application's health at one
+// instant.
+//
+// Configuration and observation are kept in separate sub-messages so neither can
+// be mistaken for the other:
+//
+//   AppHealthEndpoint.config -> HealthEndpointConfig  (what the operator asked for)
+//   AppHealthEndpoint.status -> HealthEndpointStatus  (what the agent observed)
+//
+// The backend reconciles by REPLACEMENT: the endpoints listed in a snapshot are
+// exactly the endpoints that exist for that app on that agent. An endpoint absent
+// from a snapshot has been deleted. This makes create, update, delete and
+// reconnect-recovery the same operation — idempotent by construction, with no
+// ordering requirement between configuration and status, and nothing that can be
+// lost while the connection is down.
+//
+// See docs/health-backend-contract.md for the full contract.
+// ============================================================================
+
+// HealthEndpointConfig is the operator-declared configuration of one endpoint.
+// It changes only when someone edits it (`phelix health set/add/remove`, a
+// phelix.yaml health block, or a backend-issued health command).
+message HealthEndpointConfig {
+  // name is the display name and the map key inside the agent's health.json. It
+  // is unique per application but is NOT the identity — see
+  // AppHealthEndpoint.endpoint_id.
+  string name = 1;
+  // url is what the agent probes: an http(s) URL, a host:port for a TCP check,
+  // or a bare port. Never empty.
+  string url = 2;
+  // interval is a Go duration ("10s"). Empty means the agent's default (10s).
+  string interval = 3;
+  // retries is the number of consecutive failures before an auto-restart is
+  // considered. 0 means the agent's default (3).
+  int32 retries = 4;
+  // expected_codes is a range ("200-299") or a comma list ("200,204"). Empty
+  // means the agent's default (200-299).
+  string expected_codes = 5;
+  // timeout is a Go duration ("10s") for one probe. Empty means 10s.
+  string timeout = 6;
+}
+
+// HealthEndpointStatus is what the agent OBSERVED for one endpoint. It is absent
+// from AppHealthEndpoint until the first probe completes: absent means "not
+// probed yet", never "down".
+message HealthEndpointStatus {
+  // status is the last probe outcome: "UP" | "DOWN" | "TIMEOUT".
+  string status = 1;
+  // status_code is the HTTP status of the last probe. 0 means no HTTP response
+  // was obtained (connection error, timeout, or a TCP/PID check).
+  int32 status_code = 2;
+  // latency_ms is meaningful only when latency_measured is true.
+  int64 latency_ms = 3;
+  bool latency_measured = 4;
+  // checked_at is unix millis of the last probe.
+  int64 checked_at = 5;
+  // error is the probe failure, redacted. Empty when the probe succeeded.
+  string error = 6;
+  // consecutive_failures resets to 0 on every success. When it reaches
+  // config.retries the agent considers an auto-restart.
+  int32 consecutive_failures = 7;
+  // last_success_at / last_failure_at are unix millis; 0 means "never".
+  int64 last_success_at = 8;
+  int64 last_failure_at = 9;
+  // backoff_level is the agent's auto-restart backoff step (0 = none).
+  int32 backoff_level = 10;
+  // next_restart_at is unix millis before which no further auto-restart is
+  // attempted; 0 means no backoff is in effect.
+  int64 next_restart_at = 11;
+  // crash_count_24h is how many auto-restarts this endpoint caused in the last
+  // 24h. Above 10 the agent stops restarting and only reports.
+  int32 crash_count_24h = 12;
+}
+
+// AppHealthEndpoint pairs one endpoint's stable identity with its configuration
+// and its last observation.
+message AppHealthEndpoint {
+  // endpoint_id is the STABLE identity of this endpoint. It is minted by the
+  // agent when the endpoint is first persisted and preserved across
+  // configuration edits, agent restarts, reconnects and status changes. The
+  // backend must key its own endpoint records on (app_id, endpoint_id) and must
+  // NOT treat name or url as identity. Never empty.
+  string endpoint_id = 1;
+  HealthEndpointConfig config = 2;
+  // status is absent until the endpoint has been probed at least once.
+  HealthEndpointStatus status = 3;
+}
+
+// AppHealthSnapshot is the complete health state of one application at one
+// instant, as observed by one agent.
+message AppHealthSnapshot {
+  string server_id = 1;
+  // app_id is the application UUID from the agent's apps.json — the same
+  // identity every other agent -> backend message uses.
+  string app_id = 2;
+  string app_name = 3;
+  // enabled is the agent's health-config enable flag. The agent always reports
+  // true today (no command toggles it); the backend must not present it as a
+  // user-facing switch.
+  bool enabled = 4;
+  // status is the application-level rollup over endpoints that have been probed:
+  //   "UP"      — every probed endpoint is UP
+  //   "DOWN"    — no probed endpoint is UP (and at least one was probed)
+  //   "DEGRADED"— some but not all probed endpoints are UP
+  //   "UNKNOWN" — no endpoint has been probed yet
+  string status = 5;
+  // updated_at is unix millis when the agent built this snapshot.
+  int64 updated_at = 6;
+  // endpoints_total is len(endpoints); endpoints_up counts endpoints whose
+  // status is UP. Both are derivable from endpoints and are sent for
+  // convenience only.
+  int32 endpoints_total = 7;
+  int32 endpoints_up = 8;
+  // deploy_tier is the zero-downtime-deploy health probe configuration. Absent
+  // when the agent has none to report.
+  DeployTierConfigProto deploy_tier = 9;
+  // endpoints is the COMPLETE set of endpoints configured for this app. An empty
+  // list means the app has a health configuration with zero endpoints, and the
+  // backend must delete every endpoint it holds for this app.
+  repeated AppHealthEndpoint endpoints = 10;
 }

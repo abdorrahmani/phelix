@@ -82,6 +82,9 @@ type BlueGreen struct {
 	// binding the port. Returning an error aborts the deploy with the
 	// candidate killed and the classic instance untouched.
 	PortHandoff func(ctx context.Context, appName string, publicPort int) error
+	// stateStore is a test seam for deterministic persistence-failure coverage.
+	// Production leaves it nil and uses Store.
+	stateStore func(*DeployState) error
 	// Telemetry observes the deployment lifecycle for the backend. Optional:
 	// a nil Tracker is silent and changes no deployment behaviour.
 	Telemetry *Tracker
@@ -165,8 +168,10 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 1b. Recover leftovers from a previously interrupted deploy before we
 	// touch anything else: stale non-active instances would otherwise be
-	// orphaned when this deploy overwrites their slot records.
-	bg.recoverStaleSlots(ctx, state, grace)
+	// orphaned when this deploy overwrites their slot records. (The active
+	// slot is intentionally not rewritten here — a failed deploy must leave
+	// it byte-identical; a dead active PID is cleared after the switch.)
+	recoverStaleSlots(ctx, state, bg.AppName, grace, bg.inFlight(bg.AppName), log)
 	if state.Slots[inactive] == nil {
 		state.Slots[inactive] = &Instance{Slot: inactive, Status: "stopped"}
 	}
@@ -345,28 +350,93 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		switched = true
 	}
 
-	// 8. Promote the new slot and gracefully stop the old instance. Version and
-	// "current" symlink are updated only after the proxy switch succeeds — same
-	// rule as forward deploy (never point current at an unhealthy instance).
+	// Persist the post-switch serving state before any old process is drained.
+	// A failure is real: compensate the proxy back to the old target when one
+	// exists, stop the candidate, and return without touching the old process.
 	oldActive := active
+	oldVersion := state.ActiveVersion
 	state.ActiveSlot = inactive
-	// Traffic is on the new slot: only now may telemetry report the target
-	// version as the one actually serving.
-	bg.Telemetry.PromoteCurrentVersion()
-	// Retired instances from a previous strategy (rolling → blue-green): the
-	// proxy no longer routes to them, so drain and stop them here alongside
-	// the previous active slot.
-	stopRetiredInstances(ctx, legacy, grace, bg.inFlight(bg.AppName), log)
-	legacy = nil
+	state.ActiveVersion = targetVer
+	if err := bg.persist(state); err != nil {
+		compensated := false
+		if oldActive != "" && bg.ProxyClient != nil {
+			if old := state.Slots[oldActive]; old != nil && old.Port > 0 {
+				oldTarget := proxy.Target{Host: hostPort(old.Port), Label: oldActive}
+				if compErr := bg.ProxyClient.Switch(ctx, bg.AppName, oldTarget); compErr != nil {
+					return bg.failf(phelixerr.Wrapf(phelixerr.CodeProxy, compErr,
+						"persist post-switch state failed and proxy compensation failed"))
+				}
+				switched = false
+				compensated = true
+				state.ActiveSlot = oldActive
+				state.ActiveVersion = oldVersion
+				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
+				newInst.Status = "failed"
+				newInst.PID = 0
+				_ = Store(state)
+			}
+		} else if oldActive == "" && bg.ProxyClient != nil {
+			if compErr := bg.ProxyClient.Remove(ctx, bg.AppName); compErr == nil {
+				switched = false
+				compensated = true
+				state.ActiveSlot = ""
+				state.ActiveVersion = oldVersion
+				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
+				newInst.Status = "failed"
+				newInst.PID = 0
+				_ = Store(state)
+			}
+		}
+		if !compensated {
+			// The proxy may still route to the candidate. Keep it alive and leave
+			// switched=true so migration cleanup cannot claim the old mode again.
+			return bg.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+				"persist blue-green state after proxy switch; compensation unavailable"))
+		}
+		return bg.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+			"persist blue-green state after proxy switch"))
+	}
 	if targetVer > 0 {
-		state.ActiveVersion = targetVer
 		if err := PromoteVersion(bg.AppName, targetVer, string(ModeBlueGreen)); err != nil {
-			log.Warnf("failed to promote version v%d: %v (traffic already routed)", targetVer, err)
+			// Promotion is part of the authoritative commit. The old slot is still
+			// alive here, so compensate traffic/state instead of leaving the target
+			// serving while versions.json still names the previous release.
+			state.ActiveSlot = oldActive
+			state.ActiveVersion = oldVersion
+			var compErr error
+			if oldActive != "" && bg.ProxyClient != nil {
+				if old := state.Slots[oldActive]; old != nil && old.Port > 0 {
+					compErr = bg.ProxyClient.Switch(ctx, bg.AppName,
+						proxy.Target{Host: hostPort(old.Port), Label: oldActive})
+				}
+			} else if oldActive == "" && bg.ProxyClient != nil {
+				compErr = bg.ProxyClient.Remove(ctx, bg.AppName)
+			}
+			if compErr == nil {
+				switched = false
+				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
+				newInst.Status = "failed"
+				newInst.PID = 0
+				if stateErr := bg.persist(state); stateErr != nil {
+					return bg.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+						"promote target failed; traffic restored but state restoration failed: %v", stateErr))
+				}
+				return bg.failf(err)
+			}
+			// Traffic may still reach the candidate; keep it alive and persist the
+			// best-known serving truth rather than causing an outage.
+			state.ActiveSlot = inactive
+			state.ActiveVersion = targetVer
+			_ = bg.persist(state)
+			return bg.failf(phelixerr.Wrapf(phelixerr.CodeProxy, compErr,
+				"promote target failed and proxy compensation failed: %v", err))
 		}
 	}
-	if err := Store(state); err != nil {
-		log.Warnf("failed to persist state after switch: %v (traffic already routed)", err)
-	}
+	bg.Telemetry.PromoteCurrentVersion()
+	// Retired instances from a previous strategy are now excluded by a durable
+	// proxy/state commit and may be drained safely.
+	stopRetiredInstances(ctx, legacy, grace, bg.inFlight(bg.AppName), log)
+	legacy = nil
 
 	if oldActive != "" {
 		if old := state.Slots[oldActive]; old != nil && old.PID > 0 {
@@ -388,7 +458,10 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		}
 	}
 
-	bg.storeState(state)
+	if err := bg.persist(state); err != nil {
+		return bg.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+			"persist blue-green drained old-slot state"))
+	}
 	log.Successf("blue-green deploy of %s complete: active slot %s (pid %d, port %d)",
 		bg.AppName, inactive, newInst.PID, newInst.Port)
 	bg.Telemetry.Completed(fmt.Sprintf("active slot %s on port %d", inactive, newInst.Port))
@@ -437,11 +510,18 @@ func (bg *BlueGreen) inFlight(appName string) int64 {
 	return bg.InFlight(appName)
 }
 
+func (bg *BlueGreen) persist(state *DeployState) error {
+	if bg.stateStore != nil {
+		return bg.stateStore(state)
+	}
+	return Store(state)
+}
+
 // storeState persists deploy state, surfacing persistence failures through the
 // Logger instead of discarding them silently: an unpersisted slot/pid update
 // is exactly how stale-instance records appear after a crash.
 func (bg *BlueGreen) storeState(state *DeployState) {
-	if err := Store(state); err != nil {
+	if err := bg.persist(state); err != nil {
 		bg.logger().Warnf("failed to persist deploy state for %s: %v", bg.AppName, err)
 	}
 }
@@ -452,7 +532,11 @@ func (bg *BlueGreen) storeState(state *DeployState) {
 // leftover that would otherwise run forever while its record gets overwritten
 // by the next deploy. Processes are verified by executable path before being
 // signalled so PID recycling can never make Phelix kill an unrelated victim.
-func (bg *BlueGreen) recoverStaleSlots(ctx context.Context, state *DeployState, grace time.Duration) {
+// Shared by the blue-green and canary-rollout engines.
+func recoverStaleSlots(ctx context.Context, state *DeployState, appName string, grace time.Duration, inFlight int64, log Logger) {
+	if log == nil {
+		log = &nopLogger{}
+	}
 	for name, inst := range state.Slots {
 		if name == state.ActiveSlot || inst == nil || inst.PID <= 0 {
 			continue
@@ -465,10 +549,10 @@ func (bg *BlueGreen) recoverStaleSlots(ctx context.Context, state *DeployState, 
 			}
 			continue // genuinely gone — nothing to reclaim
 		}
-		bg.logger().Stepf("recovering stale %s instance from previous deploy (slot %s, pid %d)", bg.AppName, name, inst.PID)
-		report := stopByPID(ctx, inst.PID, grace, bg.inFlight(bg.AppName), inst.BinaryPath)
+		log.Stepf("recovering stale %s instance from previous deploy (slot %s, pid %d)", appName, name, inst.PID)
+		report := stopByPID(ctx, inst.PID, grace, inFlight, inst.BinaryPath)
 		if report.ForceKilled {
-			bg.logger().Warnf("stale slot %s ignored SIGTERM; SIGKILL applied", name)
+			log.Warnf("stale slot %s ignored SIGTERM; SIGKILL applied", name)
 		}
 		inst.Status = "stopped"
 		inst.PID = 0

@@ -11,6 +11,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"google.golang.org/protobuf/proto"
 )
 
 // monitorMetricsInterval controls how often the monitor daemon sends a
@@ -19,12 +20,16 @@ import (
 // tests can shorten it instead of waiting on the real interval.
 var monitorMetricsInterval = 2 * time.Second
 
+const monitorCommandSettleDelay = 2 * time.Second
+
 // monitorStreamRetryDelay is how long to wait before re-opening the
 // monitor stream after it ends (the underlying gRPC connection's own
 // reconnect/backoff logic — see reconnect.go — governs connection-level
 // retries; this is just the inter-stream-attempt pause on an otherwise
 // healthy connection).
 const monitorStreamRetryDelay = 2 * time.Second
+
+const maxRemoteVerifyDurationMS = int64((30 * time.Minute) / time.Millisecond)
 
 // monitorStreamManager owns the single, long-lived MonitorStream and
 // serializes writes to it (gRPC streams do not support concurrent Send
@@ -46,15 +51,35 @@ var monitorStream = &monitorStreamManager{
 	commandExecutor:  monitor.NewCommandExecutor(),
 }
 
+// sendCommandResult wraps a MonitorCommandResult in a MonitorEvent. Delivery
+// errors are returned so durable rollback results remain pending for replay on
+// the next MonitorStream connection.
+func (s *monitorStreamManager) sendCommandResult(result *pb.MonitorCommandResult) error {
+	event := &pb.MonitorEvent{
+		ServerId:  server.GetServerID(),
+		Timestamp: time.Now().UnixMilli(),
+		Payload: &pb.MonitorEvent_CommandResult{
+			CommandResult: result,
+		},
+	}
+	return s.send(event)
+}
+
+// cloneMonitorCommandResult deep-copies a cached result so a replay never
+// aliases (and never reuses) the stored message. proto.Clone is required:
+// plain struct copy would duplicate the embedded protoimpl.MessageState
+// (which holds a noCopy mutex) and alias the map/slice fields.
+func cloneMonitorCommandResult(r *pb.MonitorCommandResult) *pb.MonitorCommandResult {
+	return proto.Clone(r).(*pb.MonitorCommandResult)
+}
+
 func (s *monitorStreamManager) send(event *pb.MonitorEvent) error {
 	s.mu.Lock()
-	stream := s.stream
-	s.mu.Unlock()
-
-	if stream == nil {
+	defer s.mu.Unlock()
+	if s.stream == nil {
 		return phelixerr.New(phelixerr.CodeConnection, "monitor stream is not connected")
 	}
-	if err := stream.Send(event); err != nil {
+	if err := s.stream.Send(event); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeConnection, "failed to send monitor event", err)
 	}
 	return nil
@@ -145,12 +170,22 @@ func (c *Client) runMonitorStream() error {
 
 	defer func() {
 		monitorStream.mu.Lock()
-		monitorStream.stream = nil
-		monitorStream.cancel = nil
+		if monitorStream.stream == stream {
+			monitorStream.stream = nil
+			monitorStream.cancel = nil
+		}
 		monitorStream.mu.Unlock()
 	}()
 
 	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream connected (agent_id=%s)", server.GetAgentID())
+
+	ledger := rollbackResults
+	executor := monitorStream.commandExecutor
+	if err := ledger.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote rollback ledger unavailable; rollback commands will fail closed: %v", err)
+	} else {
+		c.replayPendingRollbackResults(ledger)
+	}
 
 	// Send server identity once per (re)connection, mirroring the legacy
 	// WebSocket "servers" message sent on connect/reconnect.
@@ -164,9 +199,15 @@ func (c *Client) runMonitorStream() error {
 	// for the next deploy.
 	c.sendDeploymentSnapshots()
 
+	// Health resync, same reason and same shape: a full snapshot per app on
+	// every (re)connection is what makes health configuration changes and
+	// deletions durable across a disconnect. Nothing else carries them, so this
+	// must run on every stream open, not just the first.
+	c.sendHealthSnapshots()
+
 	recvErrCh := make(chan error, 1)
 	go func() {
-		recvErrCh <- c.monitorRecvLoop(stream)
+		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger)
 	}()
 
 	ticker := time.NewTicker(monitorMetricsInterval)
@@ -177,6 +218,12 @@ func (c *Client) runMonitorStream() error {
 	// not a metrics feed.
 	deployTicker := time.NewTicker(deploymentResyncInterval)
 	defer deployTicker.Stop()
+
+	// Health, by contrast, changes on its own as endpoints are probed, so its
+	// snapshot IS the update channel — at the endpoint check cadence, not the
+	// metrics cadence.
+	healthTicker := time.NewTicker(healthSnapshotInterval)
+	defer healthTicker.Stop()
 
 	for {
 		select {
@@ -194,13 +241,18 @@ func (c *Client) runMonitorStream() error {
 				continue
 			}
 			c.sendDeploymentSnapshots()
+		case <-healthTicker.C:
+			if monitorStream.isPaused() {
+				continue
+			}
+			c.sendHealthSnapshots()
 		}
 	}
 }
 
 // monitorRevLoop reads MonitorControl messages pushed by the backend
 // (remote commands, keepalive pings) until the stream ends.
-func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient) error {
+func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger) error {
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -213,7 +265,7 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient) er
 
 		switch p := msg.Payload.(type) {
 		case *pb.MonitorControl_Command:
-			c.handleMonitorCommand(p.Command)
+			c.handleMonitorCommand(p.Command, executor, ledger)
 		case *pb.MonitorControl_Ping:
 			c.handleMonitorPing(p.Ping)
 		}
@@ -240,30 +292,110 @@ func (c *Client) handleMonitorPing(ping *pb.Ping) {
 	}
 }
 
+func (c *Client) replayPendingRollbackResults(ledger *rollbackLedger) {
+	results, err := ledger.pendingResults()
+	if err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] cannot load pending rollback results: %v", err)
+		return
+	}
+	for _, result := range results {
+		if err := monitorStream.sendCommandResult(result); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to replay rollback result request_id=%s: %v", result.GetRequestId(), err)
+			return
+		}
+		if err := ledger.markDelivered(result.GetRequestId()); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to mark rollback result delivered request_id=%s: %v", result.GetRequestId(), err)
+			return
+		}
+	}
+}
+
+func commandErrorResult(req *pb.MonitorCommandRequest, err error) *pb.MonitorCommandResult {
+	result := &pb.MonitorCommandResult{
+		RequestId: req.GetRequestId(),
+		Command:   req.GetType(),
+		AppName:   req.GetAppName(),
+		Status:    "error",
+		Error:     err.Error(),
+		Timestamp: time.Now().UnixMilli(),
+	}
+	if structured := phelixerr.AsError(err); structured != nil {
+		result.ErrorCode = string(structured.Code)
+	} else {
+		result.ErrorCode = string(phelixerr.CodeUnknown)
+	}
+	return result
+}
+
+func sendCommandResultLogged(result *pb.MonitorCommandResult) error {
+	if err := monitorStream.sendCommandResult(result); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send command result request_id=%s: %v", result.GetRequestId(), err)
+		return err
+	}
+	return nil
+}
+
 // handleMonitorCommand executes a backend-issued remote command against a
 // managed application, exactly like the legacy WebSocket "command" message
 // handling: metrics are paused during execution, a result is sent back, then
 // metrics resume and an immediate refreshed snapshot is pushed.
-func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
+func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor monitor.CommandExecutor, ledger *rollbackLedger) {
+	if req == nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] received nil command")
+		return
+	}
 	logs.InfoFile("grpc", "[gRPC Monitor] received command: type=%s app=%s", req.GetType(), req.GetAppName())
+
+	isRollback := req.GetType() == monitor.CommandRollback
+	if isRollback {
+		if req.GetRequestId() == "" {
+			_ = sendCommandResultLogged(commandErrorResult(req,
+				phelixerr.New(phelixerr.CodeInvalidArgument, "rollback command requires a request_id")))
+			return
+		}
+		rawMS := req.GetVerifyDurationMs()
+		if rawMS < 0 || rawMS > maxRemoteVerifyDurationMS {
+			_ = sendCommandResultLogged(commandErrorResult(req, phelixerr.Newf(
+				phelixerr.CodeInvalidArgument,
+				"invalid verify_duration_ms %d: must be between 0 and %d",
+				rawMS, maxRemoteVerifyDurationMS)))
+			return
+		}
+		outcome, replay, err := ledger.begin(req)
+		if err != nil {
+			_ = sendCommandResultLogged(commandErrorResult(req, err))
+			return
+		}
+		if outcome == rollbackBeginReplay {
+			if sendCommandResultLogged(replay) == nil {
+				if err := ledger.markDelivered(req.GetRequestId()); err != nil {
+					logs.ErrorFile("grpc", "[gRPC Monitor] failed to mark replay delivered: %v", err)
+				}
+			}
+			return
+		}
+	}
+
 	if req.GetStrategy() != "" || req.GetReplicas() != 0 {
 		logs.InfoFile("grpc", "[gRPC Monitor] one-off deployment override: strategy=%s replicas=%d",
 			req.GetStrategy(), req.GetReplicas())
 	}
 
 	monitorStream.pause()
+	defer monitorStream.resume()
 
 	cmd := monitor.Command{
 		Type: req.GetType(),
 		Payload: monitor.CommandPayload{
-			Type:    req.GetType(),
-			AppName: req.GetAppName(),
-			// Unset means "no override" — the executor then resolves the
-			// strategy from the app's phelix.yaml, as before these fields
-			// existed. An override the CLI cannot honor is rejected by the
-			// executor and surfaces as an error MonitorCommandResult below.
-			Strategy: req.GetStrategy(),
-			Replicas: int(req.GetReplicas()),
+			Type:           req.GetType(),
+			AppName:        req.GetAppName(),
+			RequestID:      req.GetRequestId(),
+			Strategy:       req.GetStrategy(),
+			Replicas:       int(req.GetReplicas()),
+			Target:         req.GetTarget(),
+			Reason:         req.GetReason(),
+			VerifyDuration: time.Duration(req.GetVerifyDurationMs()) * time.Millisecond,
+			DryRun:         req.GetDryRun(),
 		},
 	}
 
@@ -274,32 +406,37 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest) {
 		Status:    "success",
 		Timestamp: time.Now().UnixMilli(),
 	}
-
-	if err := monitorStream.commandExecutor.Execute(cmd); err != nil {
-		result.Status = "error"
-		result.Error = err.Error()
+	if err := executor.Execute(cmd); err != nil {
+		result = commandErrorResult(req, err)
 		logs.ErrorFile("grpc", "[gRPC Monitor] command execution failed: %v", err)
 	}
 
-	event := &pb.MonitorEvent{
-		ServerId:  server.GetServerID(),
-		Timestamp: time.Now().UnixMilli(),
-		Payload: &pb.MonitorEvent_CommandResult{
-			CommandResult: result,
-		},
-	}
-	if err := monitorStream.send(event); err != nil {
-		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send command result: %v", err)
+	if isRollback {
+		if err := ledger.complete(req.GetRequestId(), result); err != nil {
+			result = commandErrorResult(req, phelixerr.Wrap(phelixerr.CodeUnavailable,
+				"rollback completed but its durable result could not be recorded", err))
+			logs.ErrorFile("grpc", "[gRPC Monitor] rollback result persistence failed: %v", err)
+		} else if sendCommandResultLogged(result) == nil {
+			if err := ledger.markDelivered(req.GetRequestId()); err != nil {
+				logs.ErrorFile("grpc", "[gRPC Monitor] failed to mark rollback result delivered: %v", err)
+			}
+		}
+	} else {
+		_ = sendCommandResultLogged(result)
 	}
 
 	// Give the command a moment to fully settle before resuming metrics,
-	// mirroring the legacy WebSocket behavior.
-	time.Sleep(2 * time.Second)
-	monitorStream.resume()
+	// mirroring the legacy WebSocket behavior. Stream shutdown cancels the wait
+	// so an old receive loop cannot retain mutable command dependencies.
+	timer := time.NewTimer(monitorCommandSettleDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-c.done:
+		return
+	}
 	logs.InfoFile("grpc", "[gRPC Monitor] metrics resumed after command execution")
-
-	// Force an immediate refreshed snapshot after the command completes.
-	go c.sendMonitorTick()
+	c.sendMonitorTick()
 }
 
 // sendMonitorServerInfo sends the ServerInfo snapshot once per stream

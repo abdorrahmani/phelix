@@ -187,8 +187,12 @@ var healthSetCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
 		}
 
-		// Sync to backend via gRPC
-		grpcClient.SendHealthSetConfig(appID, appInfo.Name, healthPath, interval, timeout, expectedCodes, string(mode), retries)
+		// No gRPC call here: persisting the config IS the sync. The monitor
+		// daemon reconciles health.json every 15s and pushes a complete
+		// AppHealthSnapshot, so this change reaches the backend even if the
+		// backend is down right now — unlike the fire-and-forget RPC this
+		// replaced, which lost the mutation permanently.
+		// See docs/health-backend-contract.md.
 
 		fmt.Printf("✓ Health checks configured for '%s' (ID: %s)\n", appInfo.Name, appID)
 		fmt.Println("Use 'phelix health add' to add more endpoints")
@@ -308,13 +312,12 @@ var healthAddCmd = &cobra.Command{
 			Timeout:       timeout,
 		}
 
-		// Save config locally
+		// Save config locally. The monitor daemon picks the new endpoint up on
+		// its next reconcile and reports it to the backend inside the app's
+		// health snapshot; see the note in `health set`.
 		if err := configMgr.SaveConfig(appID, config); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
 		}
-
-		// Sync to backend via gRPC
-		grpcClient.SendHealthAddEndpoint(appID, appInfo.Name, config.Endpoints[healthName])
 
 		fmt.Printf("✓ Endpoint '%s' added to '%s'\n", healthName, appInfo.Name)
 		fmt.Printf("  URL: %s\n", healthURL)
@@ -379,8 +382,9 @@ var healthRemoveCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
 		}
 
-		// Sync to backend via gRPC
-		grpcClient.SendHealthRemoveEndpoint(appID, appInfo.Name, healthName)
+		// The deletion propagates because the next health snapshot simply does
+		// not list this endpoint — the backend reconciles by replacement, so a
+		// removal cannot be lost while the backend is unreachable.
 
 		fmt.Printf("✓ Endpoint '%s' removed from '%s'\n", healthName, appInfo.Name)
 		return nil

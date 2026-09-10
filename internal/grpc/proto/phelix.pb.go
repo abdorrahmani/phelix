@@ -83,16 +83,16 @@ const file_internal_grpc_proto_phelix_proto_rawDesc = "" +
 	" internal/grpc/proto/phelix.proto\x12\x06phelix\x1a internal/grpc/proto/events.proto\x1a\"internal/grpc/proto/rollback.proto\x1a\"internal/grpc/proto/metadata.proto\x1a\"internal/grpc/proto/envelope.proto\x1a internal/grpc/proto/health.proto\x1a$internal/grpc/proto/monitoring.proto\x1a$internal/grpc/proto/deployment.proto\"G\n" +
 	"\x12AgentLogoutRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason2\xe8\a\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason2\xfc\a\n" +
 	"\rPhelixService\x12>\n" +
 	"\vReportEvent\x12\x18.phelix.ApplicationEvent\x1a\x15.phelix.EventResponse\x12=\n" +
 	"\fSyncMetadata\x12\x13.phelix.CLIMetadata\x1a\x18.phelix.MetadataResponse\x12>\n" +
 	"\fStreamEvents\x12\x18.phelix.ApplicationEvent\x1a\x10.phelix.EventAck(\x010\x01\x12A\n" +
-	"\vAgentStream\x12\x16.phelix.ClientToServer\x1a\x16.phelix.ServerToClient(\x010\x01\x12O\n" +
-	"\x0fHealthSetConfig\x12\x1e.phelix.HealthSetConfigRequest\x1a\x1c.phelix.HealthConfigResponse\x12S\n" +
-	"\x11HealthAddEndpoint\x12 .phelix.HealthAddEndpointRequest\x1a\x1c.phelix.HealthConfigResponse\x12Y\n" +
-	"\x14HealthRemoveEndpoint\x12#.phelix.HealthRemoveEndpointRequest\x1a\x1c.phelix.HealthConfigResponse\x12[\n" +
-	"\x12ReportHealthResult\x12!.phelix.ReportHealthResultRequest\x1a\".phelix.ReportHealthResultResponse\x12X\n" +
+	"\vAgentStream\x12\x16.phelix.ClientToServer\x1a\x16.phelix.ServerToClient(\x010\x01\x12T\n" +
+	"\x0fHealthSetConfig\x12\x1e.phelix.HealthSetConfigRequest\x1a\x1c.phelix.HealthConfigResponse\"\x03\x88\x02\x01\x12X\n" +
+	"\x11HealthAddEndpoint\x12 .phelix.HealthAddEndpointRequest\x1a\x1c.phelix.HealthConfigResponse\"\x03\x88\x02\x01\x12^\n" +
+	"\x14HealthRemoveEndpoint\x12#.phelix.HealthRemoveEndpointRequest\x1a\x1c.phelix.HealthConfigResponse\"\x03\x88\x02\x01\x12`\n" +
+	"\x12ReportHealthResult\x12!.phelix.ReportHealthResultRequest\x1a\".phelix.ReportHealthResultResponse\"\x03\x88\x02\x01\x12X\n" +
 	"\x11ReportAutoRestart\x12 .phelix.ReportAutoRestartRequest\x1a!.phelix.ReportAutoRestartResponse\x12L\n" +
 	"\x13ReportRollbackEvent\x12\x1e.phelix.RollbackLifecycleEvent\x1a\x15.phelix.EventResponse\x12G\n" +
 	"\x15ReportDeploymentEvent\x12\x17.phelix.DeploymentEvent\x1a\x15.phelix.EventResponse\x12A\n" +

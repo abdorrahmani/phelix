@@ -131,9 +131,12 @@ func TestRebuildOverrideArgs(t *testing.T) {
 		{name: "blue-green", payload: CommandPayload{Type: "rebuild", Strategy: "blue-green"}, want: []string{"--strategy", "blue-green"}},
 		{name: "rolling without replicas", payload: CommandPayload{Type: "rebuild", Strategy: "rolling"}, want: []string{"--strategy", "rolling"}},
 		{name: "rolling with replicas", payload: CommandPayload{Type: "rebuild", Strategy: "rolling", Replicas: 3}, want: []string{"--strategy", "rolling", "--replicas", "3"}},
+		{name: "canary", payload: CommandPayload{Type: "rebuild", Strategy: "canary"}, want: []string{"--strategy", "canary"}},
+		{name: "progressive", payload: CommandPayload{Type: "rebuild", Strategy: "progressive"}, want: []string{"--strategy", "progressive"}},
 
-		{name: "unknown strategy", payload: CommandPayload{Type: "rebuild", Strategy: "canary"}, wantErr: true},
+		{name: "unknown strategy", payload: CommandPayload{Type: "rebuild", Strategy: "surge"}, wantErr: true},
 		{name: "replicas on blue-green", payload: CommandPayload{Type: "rebuild", Strategy: "blue-green", Replicas: 2}, wantErr: true},
+		{name: "replicas on canary", payload: CommandPayload{Type: "rebuild", Strategy: "canary", Replicas: 2}, wantErr: true},
 		{name: "replicas without a strategy", payload: CommandPayload{Type: "rebuild", Replicas: 2}, wantErr: true},
 		{name: "negative replicas", payload: CommandPayload{Type: "rebuild", Strategy: "rolling", Replicas: -1}, wantErr: true},
 		{name: "override on restart", payload: CommandPayload{Type: "restart", Strategy: "rolling", Replicas: 2}, wantErr: true},

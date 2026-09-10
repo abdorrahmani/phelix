@@ -753,6 +753,8 @@ func (x *HealthCheckCommand) GetExpectedCodes() string {
 }
 
 // HealthSetConfigRequest is sent by the CLI to initialize health checks for an app.
+//
+// Deprecated: Marked as deprecated in internal/grpc/proto/health.proto.
 type HealthSetConfigRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
@@ -854,6 +856,8 @@ func (x *HealthSetConfigRequest) GetMode() string {
 }
 
 // HealthAddEndpointRequest is sent by the CLI to add a health check endpoint.
+//
+// Deprecated: Marked as deprecated in internal/grpc/proto/health.proto.
 type HealthAddEndpointRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
@@ -955,6 +959,8 @@ func (x *HealthAddEndpointRequest) GetTimeout() string {
 }
 
 // HealthRemoveEndpointRequest is sent by the CLI to remove a health check endpoint.
+//
+// Deprecated: Marked as deprecated in internal/grpc/proto/health.proto.
 type HealthRemoveEndpointRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
@@ -1016,6 +1022,8 @@ func (x *HealthRemoveEndpointRequest) GetName() string {
 }
 
 // HealthConfigResponse is the response to a CLI-initiated health config RPC.
+//
+// Deprecated: Marked as deprecated in internal/grpc/proto/health.proto.
 type HealthConfigResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
@@ -1077,6 +1085,14 @@ func (x *HealthConfigResponse) GetMessage() string {
 }
 
 // ReportHealthResultRequest is sent by the daemon to report a health check result.
+//
+// DEPRECATED: one unary RPC per endpoint per check interval, identifying the
+// endpoint by name and re-sending its configured url alongside the observation.
+// Superseded by AppHealthSnapshot over MonitorStream, which carries every
+// endpoint's identity, configuration and observation in one ordered message.
+// The agent no longer calls this RPC.
+//
+// Deprecated: Marked as deprecated in internal/grpc/proto/health.proto.
 type ReportHealthResultRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
@@ -1186,6 +1202,8 @@ func (x *ReportHealthResultRequest) GetError() string {
 }
 
 // ReportHealthResultResponse is the response to a health result report.
+//
+// Deprecated: Marked as deprecated in internal/grpc/proto/health.proto.
 type ReportHealthResultResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
@@ -1239,6 +1257,15 @@ func (x *ReportHealthResultResponse) GetError() string {
 }
 
 // ReportAutoRestartRequest is sent by the daemon to report an auto-restart event.
+//
+// This is an EVENT, not state: it records that the agent restarted an app at a
+// point in time because a health endpoint kept failing. Unlike configuration and
+// runtime status (both carried by AppHealthSnapshot), an auto-restart cannot be
+// re-derived from a later snapshot, so it keeps its own RPC.
+//
+// exit_code is the outcome of the restart attempt: 0 = the app was restarted
+// successfully, non-zero = the restart was attempted and failed, or was skipped
+// because crash_count_24h exceeded the crash-loop ceiling.
 type ReportAutoRestartRequest struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	AppId              string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
@@ -1248,8 +1275,14 @@ type ReportAutoRestartRequest struct {
 	BackoffNextSeconds int32                  `protobuf:"varint,5,opt,name=backoff_next_seconds,json=backoffNextSeconds,proto3" json:"backoff_next_seconds,omitempty"`
 	RestartedAt        int64                  `protobuf:"varint,6,opt,name=restarted_at,json=restartedAt,proto3" json:"restarted_at,omitempty"`
 	CrashCount_24H     int32                  `protobuf:"varint,7,opt,name=crash_count_24h,json=crashCount24h,proto3" json:"crash_count_24h,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Identity of the endpoint whose failures triggered the restart. endpoint_id
+	// is the stable identifier also used by AppHealthEndpoint; endpoint_name is
+	// the display name at the time of the restart. Both are empty when the
+	// restart was not attributable to a single endpoint.
+	EndpointId    string `protobuf:"bytes,8,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
+	EndpointName  string `protobuf:"bytes,9,opt,name=endpoint_name,json=endpointName,proto3" json:"endpoint_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReportAutoRestartRequest) Reset() {
@@ -1329,6 +1362,20 @@ func (x *ReportAutoRestartRequest) GetCrashCount_24H() int32 {
 		return x.CrashCount_24H
 	}
 	return 0
+}
+
+func (x *ReportAutoRestartRequest) GetEndpointId() string {
+	if x != nil {
+		return x.EndpointId
+	}
+	return ""
+}
+
+func (x *ReportAutoRestartRequest) GetEndpointName() string {
+	if x != nil {
+		return x.EndpointName
+	}
+	return ""
 }
 
 // ReportAutoRestartResponse is the response to an auto-restart report.
@@ -1903,6 +1950,8 @@ func (x *HealthResultCheckResult) GetRawOutput() string {
 }
 
 // EndpointConfig represents a single health check endpoint configuration.
+// Returned by the remote `health list` command (backend -> CLI -> backend), not
+// part of the synchronization contract — AppHealthEndpoint carries that.
 type EndpointConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -1911,6 +1960,9 @@ type EndpointConfig struct {
 	Retries       int32                  `protobuf:"varint,4,opt,name=retries,proto3" json:"retries,omitempty"`
 	ExpectedCodes string                 `protobuf:"bytes,5,opt,name=expected_codes,json=expectedCodes,proto3" json:"expected_codes,omitempty"`
 	Timeout       string                 `protobuf:"bytes,6,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	// endpoint_id is the same stable identifier AppHealthEndpoint reports, so a
+	// remote list can be joined against synchronized state.
+	EndpointId    string `protobuf:"bytes,7,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1983,6 +2035,13 @@ func (x *EndpointConfig) GetExpectedCodes() string {
 func (x *EndpointConfig) GetTimeout() string {
 	if x != nil {
 		return x.Timeout
+	}
+	return ""
+}
+
+func (x *EndpointConfig) GetEndpointId() string {
+	if x != nil {
+		return x.EndpointId
 	}
 	return ""
 }
@@ -2065,6 +2124,8 @@ func (x *DeployTierConfigProto) GetTimeout() string {
 }
 
 // EndpointHealthStatus represents the health status of a single endpoint.
+// Returned by the remote `health status` command; see AppHealthEndpoint for the
+// synchronization contract.
 type EndpointHealthStatus struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -2074,6 +2135,7 @@ type EndpointHealthStatus struct {
 	LatencyMs     int64                  `protobuf:"varint,5,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
 	CheckedAt     int64                  `protobuf:"varint,6,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
 	Error         string                 `protobuf:"bytes,7,opt,name=error,proto3" json:"error,omitempty"`
+	EndpointId    string                 `protobuf:"bytes,8,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2157,21 +2219,37 @@ func (x *EndpointHealthStatus) GetError() string {
 	return ""
 }
 
+func (x *EndpointHealthStatus) GetEndpointId() string {
+	if x != nil {
+		return x.EndpointId
+	}
+	return ""
+}
+
 // HealthStatusUpdate is streamed during HealthWatch operations.
+//
+// This is a live view for one interactive `health watch` session, addressed by
+// request_id — it is NOT the synchronization channel. A backend must never
+// persist endpoint state from these messages; AppHealthSnapshot is authoritative.
 type HealthStatusUpdate struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	ServerId      string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
-	AppId         string                 `protobuf:"bytes,3,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	AppName       string                 `protobuf:"bytes,4,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	EndpointName  string                 `protobuf:"bytes,5,opt,name=endpoint_name,json=endpointName,proto3" json:"endpoint_name,omitempty"`
-	Url           string                 `protobuf:"bytes,6,opt,name=url,proto3" json:"url,omitempty"`
-	Status        string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
-	StatusCode    int32                  `protobuf:"varint,8,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
-	LatencyMs     int64                  `protobuf:"varint,9,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
-	CheckedAt     int64                  `protobuf:"varint,10,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
-	Error         string                 `protobuf:"bytes,11,opt,name=error,proto3" json:"error,omitempty"`
-	IsHealthy     bool                   `protobuf:"varint,12,opt,name=is_healthy,json=isHealthy,proto3" json:"is_healthy,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	RequestId    string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ServerId     string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	AppId        string                 `protobuf:"bytes,3,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	AppName      string                 `protobuf:"bytes,4,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	EndpointName string                 `protobuf:"bytes,5,opt,name=endpoint_name,json=endpointName,proto3" json:"endpoint_name,omitempty"`
+	Url          string                 `protobuf:"bytes,6,opt,name=url,proto3" json:"url,omitempty"`
+	Status       string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
+	StatusCode   int32                  `protobuf:"varint,8,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
+	LatencyMs    int64                  `protobuf:"varint,9,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
+	CheckedAt    int64                  `protobuf:"varint,10,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
+	Error        string                 `protobuf:"bytes,11,opt,name=error,proto3" json:"error,omitempty"`
+	// is_healthy is exactly (status == "UP"); it cannot distinguish DOWN from
+	// TIMEOUT. Read status instead.
+	//
+	// Deprecated: Marked as deprecated in internal/grpc/proto/health.proto.
+	IsHealthy     bool   `protobuf:"varint,12,opt,name=is_healthy,json=isHealthy,proto3" json:"is_healthy,omitempty"`
+	EndpointId    string `protobuf:"bytes,13,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2283,11 +2361,471 @@ func (x *HealthStatusUpdate) GetError() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in internal/grpc/proto/health.proto.
 func (x *HealthStatusUpdate) GetIsHealthy() bool {
 	if x != nil {
 		return x.IsHealthy
 	}
 	return false
+}
+
+func (x *HealthStatusUpdate) GetEndpointId() string {
+	if x != nil {
+		return x.EndpointId
+	}
+	return ""
+}
+
+// HealthEndpointConfig is the operator-declared configuration of one endpoint.
+// It changes only when someone edits it (`phelix health set/add/remove`, a
+// phelix.yaml health block, or a backend-issued health command).
+type HealthEndpointConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// name is the display name and the map key inside the agent's health.json. It
+	// is unique per application but is NOT the identity — see
+	// AppHealthEndpoint.endpoint_id.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// url is what the agent probes: an http(s) URL, a host:port for a TCP check,
+	// or a bare port. Never empty.
+	Url string `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
+	// interval is a Go duration ("10s"). Empty means the agent's default (10s).
+	Interval string `protobuf:"bytes,3,opt,name=interval,proto3" json:"interval,omitempty"`
+	// retries is the number of consecutive failures before an auto-restart is
+	// considered. 0 means the agent's default (3).
+	Retries int32 `protobuf:"varint,4,opt,name=retries,proto3" json:"retries,omitempty"`
+	// expected_codes is a range ("200-299") or a comma list ("200,204"). Empty
+	// means the agent's default (200-299).
+	ExpectedCodes string `protobuf:"bytes,5,opt,name=expected_codes,json=expectedCodes,proto3" json:"expected_codes,omitempty"`
+	// timeout is a Go duration ("10s") for one probe. Empty means 10s.
+	Timeout       string `protobuf:"bytes,6,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HealthEndpointConfig) Reset() {
+	*x = HealthEndpointConfig{}
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HealthEndpointConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HealthEndpointConfig) ProtoMessage() {}
+
+func (x *HealthEndpointConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HealthEndpointConfig.ProtoReflect.Descriptor instead.
+func (*HealthEndpointConfig) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *HealthEndpointConfig) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *HealthEndpointConfig) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *HealthEndpointConfig) GetInterval() string {
+	if x != nil {
+		return x.Interval
+	}
+	return ""
+}
+
+func (x *HealthEndpointConfig) GetRetries() int32 {
+	if x != nil {
+		return x.Retries
+	}
+	return 0
+}
+
+func (x *HealthEndpointConfig) GetExpectedCodes() string {
+	if x != nil {
+		return x.ExpectedCodes
+	}
+	return ""
+}
+
+func (x *HealthEndpointConfig) GetTimeout() string {
+	if x != nil {
+		return x.Timeout
+	}
+	return ""
+}
+
+// HealthEndpointStatus is what the agent OBSERVED for one endpoint. It is absent
+// from AppHealthEndpoint until the first probe completes: absent means "not
+// probed yet", never "down".
+type HealthEndpointStatus struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// status is the last probe outcome: "UP" | "DOWN" | "TIMEOUT".
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	// status_code is the HTTP status of the last probe. 0 means no HTTP response
+	// was obtained (connection error, timeout, or a TCP/PID check).
+	StatusCode int32 `protobuf:"varint,2,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
+	// latency_ms is meaningful only when latency_measured is true.
+	LatencyMs       int64 `protobuf:"varint,3,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
+	LatencyMeasured bool  `protobuf:"varint,4,opt,name=latency_measured,json=latencyMeasured,proto3" json:"latency_measured,omitempty"`
+	// checked_at is unix millis of the last probe.
+	CheckedAt int64 `protobuf:"varint,5,opt,name=checked_at,json=checkedAt,proto3" json:"checked_at,omitempty"`
+	// error is the probe failure, redacted. Empty when the probe succeeded.
+	Error string `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	// consecutive_failures resets to 0 on every success. When it reaches
+	// config.retries the agent considers an auto-restart.
+	ConsecutiveFailures int32 `protobuf:"varint,7,opt,name=consecutive_failures,json=consecutiveFailures,proto3" json:"consecutive_failures,omitempty"`
+	// last_success_at / last_failure_at are unix millis; 0 means "never".
+	LastSuccessAt int64 `protobuf:"varint,8,opt,name=last_success_at,json=lastSuccessAt,proto3" json:"last_success_at,omitempty"`
+	LastFailureAt int64 `protobuf:"varint,9,opt,name=last_failure_at,json=lastFailureAt,proto3" json:"last_failure_at,omitempty"`
+	// backoff_level is the agent's auto-restart backoff step (0 = none).
+	BackoffLevel int32 `protobuf:"varint,10,opt,name=backoff_level,json=backoffLevel,proto3" json:"backoff_level,omitempty"`
+	// next_restart_at is unix millis before which no further auto-restart is
+	// attempted; 0 means no backoff is in effect.
+	NextRestartAt int64 `protobuf:"varint,11,opt,name=next_restart_at,json=nextRestartAt,proto3" json:"next_restart_at,omitempty"`
+	// crash_count_24h is how many auto-restarts this endpoint caused in the last
+	// 24h. Above 10 the agent stops restarting and only reports.
+	CrashCount_24H int32 `protobuf:"varint,12,opt,name=crash_count_24h,json=crashCount24h,proto3" json:"crash_count_24h,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *HealthEndpointStatus) Reset() {
+	*x = HealthEndpointStatus{}
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HealthEndpointStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HealthEndpointStatus) ProtoMessage() {}
+
+func (x *HealthEndpointStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HealthEndpointStatus.ProtoReflect.Descriptor instead.
+func (*HealthEndpointStatus) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *HealthEndpointStatus) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *HealthEndpointStatus) GetStatusCode() int32 {
+	if x != nil {
+		return x.StatusCode
+	}
+	return 0
+}
+
+func (x *HealthEndpointStatus) GetLatencyMs() int64 {
+	if x != nil {
+		return x.LatencyMs
+	}
+	return 0
+}
+
+func (x *HealthEndpointStatus) GetLatencyMeasured() bool {
+	if x != nil {
+		return x.LatencyMeasured
+	}
+	return false
+}
+
+func (x *HealthEndpointStatus) GetCheckedAt() int64 {
+	if x != nil {
+		return x.CheckedAt
+	}
+	return 0
+}
+
+func (x *HealthEndpointStatus) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *HealthEndpointStatus) GetConsecutiveFailures() int32 {
+	if x != nil {
+		return x.ConsecutiveFailures
+	}
+	return 0
+}
+
+func (x *HealthEndpointStatus) GetLastSuccessAt() int64 {
+	if x != nil {
+		return x.LastSuccessAt
+	}
+	return 0
+}
+
+func (x *HealthEndpointStatus) GetLastFailureAt() int64 {
+	if x != nil {
+		return x.LastFailureAt
+	}
+	return 0
+}
+
+func (x *HealthEndpointStatus) GetBackoffLevel() int32 {
+	if x != nil {
+		return x.BackoffLevel
+	}
+	return 0
+}
+
+func (x *HealthEndpointStatus) GetNextRestartAt() int64 {
+	if x != nil {
+		return x.NextRestartAt
+	}
+	return 0
+}
+
+func (x *HealthEndpointStatus) GetCrashCount_24H() int32 {
+	if x != nil {
+		return x.CrashCount_24H
+	}
+	return 0
+}
+
+// AppHealthEndpoint pairs one endpoint's stable identity with its configuration
+// and its last observation.
+type AppHealthEndpoint struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// endpoint_id is the STABLE identity of this endpoint. It is minted by the
+	// agent when the endpoint is first persisted and preserved across
+	// configuration edits, agent restarts, reconnects and status changes. The
+	// backend must key its own endpoint records on (app_id, endpoint_id) and must
+	// NOT treat name or url as identity. Never empty.
+	EndpointId string                `protobuf:"bytes,1,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
+	Config     *HealthEndpointConfig `protobuf:"bytes,2,opt,name=config,proto3" json:"config,omitempty"`
+	// status is absent until the endpoint has been probed at least once.
+	Status        *HealthEndpointStatus `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AppHealthEndpoint) Reset() {
+	*x = AppHealthEndpoint{}
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppHealthEndpoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppHealthEndpoint) ProtoMessage() {}
+
+func (x *AppHealthEndpoint) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppHealthEndpoint.ProtoReflect.Descriptor instead.
+func (*AppHealthEndpoint) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *AppHealthEndpoint) GetEndpointId() string {
+	if x != nil {
+		return x.EndpointId
+	}
+	return ""
+}
+
+func (x *AppHealthEndpoint) GetConfig() *HealthEndpointConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+func (x *AppHealthEndpoint) GetStatus() *HealthEndpointStatus {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+// AppHealthSnapshot is the complete health state of one application at one
+// instant, as observed by one agent.
+type AppHealthSnapshot struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	ServerId string                 `protobuf:"bytes,1,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	// app_id is the application UUID from the agent's apps.json — the same
+	// identity every other agent -> backend message uses.
+	AppId   string `protobuf:"bytes,2,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	AppName string `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	// enabled is the agent's health-config enable flag. The agent always reports
+	// true today (no command toggles it); the backend must not present it as a
+	// user-facing switch.
+	Enabled bool `protobuf:"varint,4,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// status is the application-level rollup over endpoints that have been probed:
+	//   "UP"      — every probed endpoint is UP
+	//   "DOWN"    — no probed endpoint is UP (and at least one was probed)
+	//   "DEGRADED"— some but not all probed endpoints are UP
+	//   "UNKNOWN" — no endpoint has been probed yet
+	Status string `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	// updated_at is unix millis when the agent built this snapshot.
+	UpdatedAt int64 `protobuf:"varint,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// endpoints_total is len(endpoints); endpoints_up counts endpoints whose
+	// status is UP. Both are derivable from endpoints and are sent for
+	// convenience only.
+	EndpointsTotal int32 `protobuf:"varint,7,opt,name=endpoints_total,json=endpointsTotal,proto3" json:"endpoints_total,omitempty"`
+	EndpointsUp    int32 `protobuf:"varint,8,opt,name=endpoints_up,json=endpointsUp,proto3" json:"endpoints_up,omitempty"`
+	// deploy_tier is the zero-downtime-deploy health probe configuration. Absent
+	// when the agent has none to report.
+	DeployTier *DeployTierConfigProto `protobuf:"bytes,9,opt,name=deploy_tier,json=deployTier,proto3" json:"deploy_tier,omitempty"`
+	// endpoints is the COMPLETE set of endpoints configured for this app. An empty
+	// list means the app has a health configuration with zero endpoints, and the
+	// backend must delete every endpoint it holds for this app.
+	Endpoints     []*AppHealthEndpoint `protobuf:"bytes,10,rep,name=endpoints,proto3" json:"endpoints,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AppHealthSnapshot) Reset() {
+	*x = AppHealthSnapshot{}
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppHealthSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppHealthSnapshot) ProtoMessage() {}
+
+func (x *AppHealthSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_health_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppHealthSnapshot.ProtoReflect.Descriptor instead.
+func (*AppHealthSnapshot) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_health_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *AppHealthSnapshot) GetServerId() string {
+	if x != nil {
+		return x.ServerId
+	}
+	return ""
+}
+
+func (x *AppHealthSnapshot) GetAppId() string {
+	if x != nil {
+		return x.AppId
+	}
+	return ""
+}
+
+func (x *AppHealthSnapshot) GetAppName() string {
+	if x != nil {
+		return x.AppName
+	}
+	return ""
+}
+
+func (x *AppHealthSnapshot) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *AppHealthSnapshot) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *AppHealthSnapshot) GetUpdatedAt() int64 {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return 0
+}
+
+func (x *AppHealthSnapshot) GetEndpointsTotal() int32 {
+	if x != nil {
+		return x.EndpointsTotal
+	}
+	return 0
+}
+
+func (x *AppHealthSnapshot) GetEndpointsUp() int32 {
+	if x != nil {
+		return x.EndpointsUp
+	}
+	return 0
+}
+
+func (x *AppHealthSnapshot) GetDeployTier() *DeployTierConfigProto {
+	if x != nil {
+		return x.DeployTier
+	}
+	return nil
+}
+
+func (x *AppHealthSnapshot) GetEndpoints() []*AppHealthEndpoint {
+	if x != nil {
+		return x.Endpoints
+	}
+	return nil
 }
 
 var File_internal_grpc_proto_health_proto protoreflect.FileDescriptor
@@ -2346,7 +2884,7 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12\x10\n" +
 	"\x03url\x18\x03 \x01(\tR\x03url\x12\x18\n" +
 	"\atimeout\x18\x04 \x01(\tR\atimeout\x12%\n" +
-	"\x0eexpected_codes\x18\x05 \x01(\tR\rexpectedCodes\"\xe9\x01\n" +
+	"\x0eexpected_codes\x18\x05 \x01(\tR\rexpectedCodes\"\xed\x01\n" +
 	"\x16HealthSetConfigRequest\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12\x12\n" +
@@ -2355,7 +2893,7 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"\aretries\x18\x05 \x01(\x05R\aretries\x12%\n" +
 	"\x0eexpected_codes\x18\x06 \x01(\tR\rexpectedCodes\x12\x18\n" +
 	"\atimeout\x18\a \x01(\tR\atimeout\x12\x12\n" +
-	"\x04mode\x18\b \x01(\tR\x04mode\"\xe9\x01\n" +
+	"\x04mode\x18\b \x01(\tR\x04mode:\x02\x18\x01\"\xed\x01\n" +
 	"\x18HealthAddEndpointRequest\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12\x12\n" +
@@ -2364,15 +2902,15 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"\binterval\x18\x05 \x01(\tR\binterval\x12\x18\n" +
 	"\aretries\x18\x06 \x01(\x05R\aretries\x12%\n" +
 	"\x0eexpected_codes\x18\a \x01(\tR\rexpectedCodes\x12\x18\n" +
-	"\atimeout\x18\b \x01(\tR\atimeout\"c\n" +
+	"\atimeout\x18\b \x01(\tR\atimeout:\x02\x18\x01\"g\n" +
 	"\x1bHealthRemoveEndpointRequest\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12\x12\n" +
-	"\x04name\x18\x03 \x01(\tR\x04name\"`\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name:\x02\x18\x01\"d\n" +
 	"\x14HealthConfigResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\x91\x02\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage:\x02\x18\x01\"\x95\x02\n" +
 	"\x19ReportHealthResultRequest\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12#\n" +
@@ -2385,10 +2923,10 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"latency_ms\x18\a \x01(\x03R\tlatencyMs\x12\x1d\n" +
 	"\n" +
 	"checked_at\x18\b \x01(\x03R\tcheckedAt\x12\x14\n" +
-	"\x05error\x18\t \x01(\tR\x05error\"L\n" +
+	"\x05error\x18\t \x01(\tR\x05error:\x02\x18\x01\"P\n" +
 	"\x1aReportHealthResultResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"\xfe\x01\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error:\x02\x18\x01\"\xc4\x02\n" +
 	"\x18ReportAutoRestartRequest\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12\x16\n" +
@@ -2396,7 +2934,10 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"\texit_code\x18\x04 \x01(\x05R\bexitCode\x120\n" +
 	"\x14backoff_next_seconds\x18\x05 \x01(\x05R\x12backoffNextSeconds\x12!\n" +
 	"\frestarted_at\x18\x06 \x01(\x03R\vrestartedAt\x12&\n" +
-	"\x0fcrash_count_24h\x18\a \x01(\x05R\rcrashCount24h\"K\n" +
+	"\x0fcrash_count_24h\x18\a \x01(\x05R\rcrashCount24h\x12\x1f\n" +
+	"\vendpoint_id\x18\b \x01(\tR\n" +
+	"endpointId\x12#\n" +
+	"\rendpoint_name\x18\t \x01(\tR\fendpointName\"K\n" +
 	"\x19ReportAutoRestartResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"\xbf\x05\n" +
@@ -2445,20 +2986,22 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"latency_ms\x18\x04 \x01(\x03R\tlatencyMs\x12\x14\n" +
 	"\x05error\x18\x05 \x01(\tR\x05error\x12\x1d\n" +
 	"\n" +
-	"raw_output\x18\x06 \x01(\tR\trawOutput\"\xad\x01\n" +
+	"raw_output\x18\x06 \x01(\tR\trawOutput\"\xce\x01\n" +
 	"\x0eEndpointConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x1a\n" +
 	"\binterval\x18\x03 \x01(\tR\binterval\x12\x18\n" +
 	"\aretries\x18\x04 \x01(\x05R\aretries\x12%\n" +
 	"\x0eexpected_codes\x18\x05 \x01(\tR\rexpectedCodes\x12\x18\n" +
-	"\atimeout\x18\x06 \x01(\tR\atimeout\"\x8f\x01\n" +
+	"\atimeout\x18\x06 \x01(\tR\atimeout\x12\x1f\n" +
+	"\vendpoint_id\x18\a \x01(\tR\n" +
+	"endpointId\"\x8f\x01\n" +
 	"\x15DeployTierConfigProto\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x1a\n" +
 	"\binterval\x18\x03 \x01(\tR\binterval\x12\x18\n" +
 	"\aretries\x18\x04 \x01(\x05R\aretries\x12\x18\n" +
-	"\atimeout\x18\x05 \x01(\tR\atimeout\"\xc9\x01\n" +
+	"\atimeout\x18\x05 \x01(\tR\atimeout\"\xea\x01\n" +
 	"\x14EndpointHealthStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x16\n" +
@@ -2469,7 +3012,9 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"latency_ms\x18\x05 \x01(\x03R\tlatencyMs\x12\x1d\n" +
 	"\n" +
 	"checked_at\x18\x06 \x01(\x03R\tcheckedAt\x12\x14\n" +
-	"\x05error\x18\a \x01(\tR\x05error\"\xe5\x02\n" +
+	"\x05error\x18\a \x01(\tR\x05error\x12\x1f\n" +
+	"\vendpoint_id\x18\b \x01(\tR\n" +
+	"endpointId\"\x8a\x03\n" +
 	"\x12HealthStatusUpdate\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1b\n" +
@@ -2486,9 +3031,54 @@ const file_internal_grpc_proto_health_proto_rawDesc = "" +
 	"\n" +
 	"checked_at\x18\n" +
 	" \x01(\x03R\tcheckedAt\x12\x14\n" +
-	"\x05error\x18\v \x01(\tR\x05error\x12\x1d\n" +
+	"\x05error\x18\v \x01(\tR\x05error\x12!\n" +
 	"\n" +
-	"is_healthy\x18\f \x01(\bR\tisHealthyB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
+	"is_healthy\x18\f \x01(\bB\x02\x18\x01R\tisHealthy\x12\x1f\n" +
+	"\vendpoint_id\x18\r \x01(\tR\n" +
+	"endpointId\"\xb3\x01\n" +
+	"\x14HealthEndpointConfig\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\x12\x1a\n" +
+	"\binterval\x18\x03 \x01(\tR\binterval\x12\x18\n" +
+	"\aretries\x18\x04 \x01(\x05R\aretries\x12%\n" +
+	"\x0eexpected_codes\x18\x05 \x01(\tR\rexpectedCodes\x12\x18\n" +
+	"\atimeout\x18\x06 \x01(\tR\atimeout\"\xc6\x03\n" +
+	"\x14HealthEndpointStatus\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1f\n" +
+	"\vstatus_code\x18\x02 \x01(\x05R\n" +
+	"statusCode\x12\x1d\n" +
+	"\n" +
+	"latency_ms\x18\x03 \x01(\x03R\tlatencyMs\x12)\n" +
+	"\x10latency_measured\x18\x04 \x01(\bR\x0flatencyMeasured\x12\x1d\n" +
+	"\n" +
+	"checked_at\x18\x05 \x01(\x03R\tcheckedAt\x12\x14\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\x121\n" +
+	"\x14consecutive_failures\x18\a \x01(\x05R\x13consecutiveFailures\x12&\n" +
+	"\x0flast_success_at\x18\b \x01(\x03R\rlastSuccessAt\x12&\n" +
+	"\x0flast_failure_at\x18\t \x01(\x03R\rlastFailureAt\x12#\n" +
+	"\rbackoff_level\x18\n" +
+	" \x01(\x05R\fbackoffLevel\x12&\n" +
+	"\x0fnext_restart_at\x18\v \x01(\x03R\rnextRestartAt\x12&\n" +
+	"\x0fcrash_count_24h\x18\f \x01(\x05R\rcrashCount24h\"\xa0\x01\n" +
+	"\x11AppHealthEndpoint\x12\x1f\n" +
+	"\vendpoint_id\x18\x01 \x01(\tR\n" +
+	"endpointId\x124\n" +
+	"\x06config\x18\x02 \x01(\v2\x1c.phelix.HealthEndpointConfigR\x06config\x124\n" +
+	"\x06status\x18\x03 \x01(\v2\x1c.phelix.HealthEndpointStatusR\x06status\"\xf8\x02\n" +
+	"\x11AppHealthSnapshot\x12\x1b\n" +
+	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x15\n" +
+	"\x06app_id\x18\x02 \x01(\tR\x05appId\x12\x19\n" +
+	"\bapp_name\x18\x03 \x01(\tR\aappName\x12\x18\n" +
+	"\aenabled\x18\x04 \x01(\bR\aenabled\x12\x16\n" +
+	"\x06status\x18\x05 \x01(\tR\x06status\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\x12'\n" +
+	"\x0fendpoints_total\x18\a \x01(\x05R\x0eendpointsTotal\x12!\n" +
+	"\fendpoints_up\x18\b \x01(\x05R\vendpointsUp\x12>\n" +
+	"\vdeploy_tier\x18\t \x01(\v2\x1d.phelix.DeployTierConfigProtoR\n" +
+	"deployTier\x127\n" +
+	"\tendpoints\x18\n" +
+	" \x03(\v2\x19.phelix.AppHealthEndpointR\tendpointsB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
 
 var (
 	file_internal_grpc_proto_health_proto_rawDescOnce sync.Once
@@ -2502,7 +3092,7 @@ func file_internal_grpc_proto_health_proto_rawDescGZIP() []byte {
 	return file_internal_grpc_proto_health_proto_rawDescData
 }
 
-var file_internal_grpc_proto_health_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_internal_grpc_proto_health_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_internal_grpc_proto_health_proto_goTypes = []any{
 	(*HealthCommand)(nil),                  // 0: phelix.HealthCommand
 	(*HealthSetCommand)(nil),               // 1: phelix.HealthSetCommand
@@ -2531,6 +3121,10 @@ var file_internal_grpc_proto_health_proto_goTypes = []any{
 	(*DeployTierConfigProto)(nil),          // 24: phelix.DeployTierConfigProto
 	(*EndpointHealthStatus)(nil),           // 25: phelix.EndpointHealthStatus
 	(*HealthStatusUpdate)(nil),             // 26: phelix.HealthStatusUpdate
+	(*HealthEndpointConfig)(nil),           // 27: phelix.HealthEndpointConfig
+	(*HealthEndpointStatus)(nil),           // 28: phelix.HealthEndpointStatus
+	(*AppHealthEndpoint)(nil),              // 29: phelix.AppHealthEndpoint
+	(*AppHealthSnapshot)(nil),              // 30: phelix.AppHealthSnapshot
 }
 var file_internal_grpc_proto_health_proto_depIdxs = []int32{
 	1,  // 0: phelix.HealthCommand.set:type_name -> phelix.HealthSetCommand
@@ -2549,11 +3143,15 @@ var file_internal_grpc_proto_health_proto_depIdxs = []int32{
 	23, // 13: phelix.HealthResultListResult.endpoints:type_name -> phelix.EndpointConfig
 	24, // 14: phelix.HealthResultListResult.deploy_tier:type_name -> phelix.DeployTierConfigProto
 	25, // 15: phelix.HealthResultStatusResult.endpoints:type_name -> phelix.EndpointHealthStatus
-	16, // [16:16] is the sub-list for method output_type
-	16, // [16:16] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	27, // 16: phelix.AppHealthEndpoint.config:type_name -> phelix.HealthEndpointConfig
+	28, // 17: phelix.AppHealthEndpoint.status:type_name -> phelix.HealthEndpointStatus
+	24, // 18: phelix.AppHealthSnapshot.deploy_tier:type_name -> phelix.DeployTierConfigProto
+	29, // 19: phelix.AppHealthSnapshot.endpoints:type_name -> phelix.AppHealthEndpoint
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_health_proto_init() }
@@ -2584,7 +3182,7 @@ func file_internal_grpc_proto_health_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_health_proto_rawDesc), len(file_internal_grpc_proto_health_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   27,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

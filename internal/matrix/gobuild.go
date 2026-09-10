@@ -25,20 +25,21 @@ import (
 //     fast and requires no Docker.
 //
 //  2. Per-version Docker container builds — when the user specifies
-//     multiple Go versions (e.g. --go-versions 1.21,1.22,1.23).
+//     multiple Go versions (e.g. --go-versions 1.21,1.22,1.23), or when
+//     no host Go toolchain is available.
 //     We cannot install multiple Go versions side-by-side on the host
 //     (they share GOPATH/bin and interfere), so each version runs inside
 //     its own Docker container (golang:1.21, golang:1.22, etc.). The
-//     project source is mounted in and the binary is extracted afterward.
+//     project source is mounted in and the binary is written to a mounted
+//     output directory.
 //
 // CGO detection:
 // If the project uses `import "C"` (cgo), cross-compilation breaks
 // because CGO requires a C cross-compiler for each target architecture
 // (e.g. gcc-aarch64-linux-gnu for linux/arm64 on an amd64 host).
 // Rather than silently producing a broken binary, we detect cgo usage
-// and either:
-//   - Fail with a clear error when cross-compiling with CGO enabled, or
-//   - Allow builds for the host's native architecture only.
+// and fail with a clear error when cross-compiling natively; Docker
+// builds are preferred for cgo projects.
 type GoMatrixBuilder struct {
 	// ProjectRoot is the absolute path to the project directory.
 	ProjectRoot string
@@ -50,6 +51,27 @@ type GoMatrixBuilder struct {
 	UseDocker bool
 	// Debug enables verbose logging of commands and their output.
 	Debug bool
+	// ExtraArgs are appended verbatim to `go build` in both the native and
+	// the Docker path (e.g. -trimpath, -ldflags=-s -w).
+	ExtraArgs []string
+	// LookPath resolves executables on the host. Overridable for tests.
+	LookPath func(string) (string, error)
+	// CommandContext creates executed commands. Overridable for tests.
+	CommandContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+}
+
+func (g *GoMatrixBuilder) lookPath(name string) (string, error) {
+	if g.LookPath != nil {
+		return g.LookPath(name)
+	}
+	return exec.LookPath(name)
+}
+
+func (g *GoMatrixBuilder) command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if g.CommandContext != nil {
+		return g.CommandContext(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...)
 }
 
 // DetectCgo returns true if the project uses cgo (has import "C" directives).
@@ -86,17 +108,18 @@ var cgoPattern = regexp.MustCompile(`(?m)^\s*import\s+"C"`)
 //
 // Native cross-compilation (CGO_ENABLED=0):
 //
-//	GOOS=<os> GOARCH=<arch> CGO_ENABLED=0 go build -o <output> .
+//	GOOS=<os> GOARCH=<arch> [GOARM=<n>] CGO_ENABLED=0 go build -o <output> .
 //
 // This works because Go's standard library is self-contained. The binary
 // is statically linked and runs on the target without any runtime deps.
 //
-// Docker-based builds (per-version):
+// Docker-based builds (per-version) pass the build command as separate argv
+// entries (never through a shell), with the toolchain environment injected
+// via `docker run -e` flags:
 //
-//	docker run --rm -v $PWD:/src -w /src golang:<ver> \
-//	  GOOS=<os> GOARCH=<arch> CGO_ENABLED=0 go build -o /out/<name> .
-//
-// The binary is extracted via docker cp or a volume mount.
+//	docker run --rm --platform <platform> -v <src>:/src:ro -v <out>:/out \
+//	  -e GOOS=<os> -e GOARCH=<arch> -e CGO_ENABLED=0 golang:<ver> \
+//	  go build -v -o /out/<name> .
 func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result := &Result{Combination: c}
 
@@ -106,10 +129,25 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		}
 	}
 
-	// Detect CGO — abort early if cross-compiling with CGO.
-	if g.UseDocker {
-		// Docker builds don't need CGO detection on the host — the container
-		// has the full Go toolchain. But we still warn.
+	// Docker is used when explicitly requested, or when no host Go toolchain
+	// exists (the version-specific golang:<ver> images carry the toolchain).
+	if _, hostGoErr := g.lookPath("go"); hostGoErr != nil {
+		if !g.UseDocker {
+			logLine("host go toolchain not found (%v) — falling back to Docker build", hostGoErr)
+		}
+		if cgo, _ := DetectCgo(g.ProjectRoot); cgo {
+			logLine("cgo detected in source, using Docker build with full toolchain")
+		}
+		return g.buildInDocker(ctx, c, result)
+	}
+	if g.UseDocker || !g.hostGoProvides(ctx, c.Version) {
+		// The native path compiles with whatever `go` is on the PATH: a host
+		// toolchain of a different version would silently produce an artifact
+		// labeled with a toolchain it was not built with. The version-pinned
+		// Docker image keeps the label honest.
+		if !g.UseDocker {
+			logLine("host go toolchain is not version %s — using the version-pinned Docker image", c.Version)
+		}
 		if cgo, _ := DetectCgo(g.ProjectRoot); cgo {
 			logLine("cgo detected in source, using Docker build with full toolchain")
 		}
@@ -162,13 +200,18 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 
 	// `-v` makes go print every compiled package, letting us distinguish a
 	// cache COLD run from a cache HIT for the per-combination build report.
-	cmd := exec.CommandContext(ctx, "go", "build", "-v", "-o", outPath, mainPkg)
+	args := append([]string{"build", "-v"}, g.ExtraArgs...)
+	args = append(args, "-o", outPath, mainPkg)
+	cmd := g.command(ctx, "go", args...)
 	cmd.Dir = g.ProjectRoot
 	cmd.Env = append(os.Environ(),
 		"GOOS="+c.OS,
 		"GOARCH="+c.Arch,
-		"CGO_ENABLED=0",
 	)
+	if c.Variant != "" {
+		cmd.Env = append(cmd.Env, "GOARM="+goarmFromVariant(c.Variant))
+	}
+	cmd.Env = append(cmd.Env, "CGO_ENABLED=0")
 
 	output := &bytes.Buffer{}
 	commandOutput := &progressOutputWriter{ctx: ctx, key: c.ID(), debug: g.Debug, log: output}
@@ -179,7 +222,7 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		result.Status = "failed"
 		// The underlying *exec.ExitError (with exit code) stays reachable via
 		// errors.As; the full compiler output is captured only in the debug log.
-		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "go build failed for %s (%s/%s)", g.AppName, c.OS, c.Arch)
+		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "go build failed for %s (%s)", g.AppName, c.Platform)
 		logLine("error: %v", err)
 		if s := output.String(); s != "" {
 			logLine("stderr: %s", s)
@@ -191,8 +234,52 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result.Status = "success"
 	result.Artifact = outPath
 	result.CacheStatus = string(builder.GoCacheStatusFromOutput(output.String()))
+	// Checksum the final artifact bytes; an unreadable/unhashable artifact is
+	// an integrity failure and fails the combination.
+	finalizeArtifactChecksum(result)
 	logLine("success in %s", result.Duration.Round(time.Millisecond))
+	if result.SHA256 != "" {
+		logLine("sha256:   %s", result.SHA256)
+	}
 	return result
+}
+
+// goarmFromVariant converts an ARM variant ("v7") to the GOARM value ("7").
+func goarmFromVariant(variant string) string {
+	return strings.TrimPrefix(variant, "v")
+}
+
+// hostGoProvides reports whether the host Go toolchain can build the requested
+// version. "1.22" matches any host 1.22.x patch (the golang:1.22 Docker tag
+// resolves the same way); an exact patch request needs the exact host patch.
+// A host version that cannot be determined is treated as a mismatch —
+// correctness over convenience.
+func (g *GoMatrixBuilder) hostGoProvides(ctx context.Context, requested string) bool {
+	cmd := g.command(ctx, "go", "env", "GOVERSION")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return goVersionProvides(requested, strings.TrimSpace(string(out)))
+}
+
+// goVersionProvides is the pure comparison behind hostGoProvides: the
+// requested version's components must be a prefix of the host version's
+// components ("1.22" ⊑ "1.22.4", "1.22.4" ⊑ "1.22.4", "1.22" ⋢ "1.24.0").
+func goVersionProvides(requested, host string) bool {
+	requested = normalizeVersionValue(requested)
+	host = normalizeVersionValue(host)
+	reqParts := strings.Split(requested, ".")
+	hostParts := strings.Split(host, ".")
+	if len(reqParts) == 0 || len(reqParts) > len(hostParts) {
+		return false
+	}
+	for i := range reqParts {
+		if reqParts[i] != hostParts[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // buildInDocker runs the Go build inside a version-specific Docker container.
@@ -206,8 +293,10 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 //   - No host pollution
 //   - Reproducible builds (same Docker image = same behavior)
 //
-// The project source is bind-mounted read-only, and the binary is written
-// to a temp directory that we extract after the container exits.
+// The project source is bind-mounted read-only, and the binary is written to
+// a mounted output directory. The build command is passed as separate argv
+// entries — no shell is involved, so no interpolation or injection surface
+// exists.
 func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, result *Result) *Result {
 	start := time.Now()
 
@@ -217,7 +306,7 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 		}
 	}
 
-	image := fmt.Sprintf("golang:%s", c.Version)
+	image := "golang:" + c.Version
 	mainPkg, err := g.findMainPackage()
 	if err != nil {
 		result.Status = "failed"
@@ -235,7 +324,7 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	outPath := filepath.Join(outDir, c.BinaryName(g.AppName))
 
 	// Docker cache directory — keyed per combination so different versions
-	// don't invalidate each other's Go module/build caches.
+	// don't invalidate each other's Go build caches.
 	cacheDir := filepath.Join(g.ProjectRoot, ".phelix", "cache", "go", c.ID())
 	os.MkdirAll(cacheDir, 0o755)
 
@@ -245,9 +334,10 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	logLine("output:   %s", outPath)
 	logLine("cache:    %s", cacheDir)
 
-	// Pull the image if not present (best-effort, non-fatal).
+	// Pull the image if not present (best-effort, non-fatal — docker run
+	// surfaces a real error if the image is unavailable).
 	logLine("pulling image %s...", image)
-	pullCmd := exec.CommandContext(ctx, "docker", "pull", image)
+	pullCmd := g.command(ctx, "docker", "pull", image)
 	if g.Debug {
 		pullOutput, _ := pullCmd.CombinedOutput()
 		logLine("pull: %s", strings.TrimSpace(string(pullOutput)))
@@ -255,31 +345,36 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 		_ = pullCmd.Run()
 	}
 
-	// Run the build inside the container.
-	// Mount:
+	// Run the build inside the container. Mounts:
 	//   - project source → /src (read-only)
 	//   - output dir → /out (writable)
 	//   - cache dir → /root/.cache/go-build (writable, persists across runs)
+	// The toolchain environment and the build command travel as separate
+	// argv entries (`-e` flags, no `sh -c`), so no string interpolation of
+	// project-controlled values ever happens.
 	binName := c.BinaryName(g.AppName)
+	args := []string{
+		"run", "--rm",
+		"--platform", c.Platform,
+		"-v", g.ProjectRoot + ":/src:ro",
+		"-v", outDir + ":/out",
+		"-v", cacheDir + ":/root/.cache/go-build",
+		"-w", "/src",
+		"-e", "GOOS=" + c.OS,
+		"-e", "GOARCH=" + c.Arch,
+	}
+	if c.Variant != "" {
+		args = append(args, "-e", "GOARM="+goarmFromVariant(c.Variant))
+	}
+	args = append(args, "-e", "CGO_ENABLED=0", image, "go", "build", "-v")
 	// `-v` prints compiled package names, enabling cache COLD/HIT detection
 	// for the per-combination build report from the captured stderr.
-	buildCmd := fmt.Sprintf(
-		"GOOS=%s GOARCH=%s CGO_ENABLED=0 go build -v -o /out/%s %s",
-		c.OS, c.Arch, binName, mainPkg)
+	args = append(args, g.ExtraArgs...)
+	args = append(args, "-o", "/out/"+binName, mainPkg)
 
-	logLine("command:  docker run --rm --platform linux/%s -v %s:/src:ro -v %s:/out -v %s:/root/.cache/go-build -w /src %s sh -c '%s'",
-		c.Arch, g.ProjectRoot, outDir, cacheDir, image, buildCmd)
+	logLine("command:  docker %s (argv form, no shell)", strings.Join(args, " "))
 
-	cmd := exec.CommandContext(ctx,
-		"docker", "run", "--rm",
-		"--platform", "linux/"+c.Arch,
-		"-v", g.ProjectRoot+":/src:ro",
-		"-v", outDir+":/out",
-		"-v", cacheDir+":/root/.cache/go-build",
-		"-w", "/src",
-		image,
-		"sh", "-c", buildCmd,
-	)
+	cmd := g.command(ctx, "docker", args...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -287,11 +382,20 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 		result.Status = "failed"
 		// Keep the *exec.ExitError (and its exit code) reachable; the container
 		// output goes to the debug log only.
-		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "docker go build failed for %s (%s/%s)", g.AppName, c.OS, c.Arch)
+		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "docker go build failed for %s (%s)", g.AppName, c.Platform)
 		logLine("error: %v", err)
 		if s := stderr.String(); s != "" {
 			logLine("stderr: %s", s)
 		}
+		return result
+	}
+
+	// The container exited 0 — verify the artifact actually landed in the
+	// mounted output directory before reporting success.
+	if _, err := os.Stat(outPath); err != nil {
+		result.Status = "failed"
+		result.Error = phelixerr.Newf(phelixerr.CodeNotFound,
+			"docker build for %s exited successfully but the artifact %s was not produced", c.ID(), outPath)
 		return result
 	}
 
@@ -301,7 +405,12 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	// The persistent cache dir is mounted at /root/.cache/go-build; compiled
 	// package names on stderr mean real compilation happened (COLD).
 	result.CacheStatus = string(builder.GoCacheStatusFromOutput(stderr.String()))
+	// Checksum the final artifact bytes (integrity failure fails the combo).
+	finalizeArtifactChecksum(result)
 	logLine("success in %s", result.Duration.Round(time.Millisecond))
+	if result.SHA256 != "" {
+		logLine("sha256:   %s", result.SHA256)
+	}
 	return result
 }
 

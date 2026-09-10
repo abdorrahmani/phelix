@@ -19,6 +19,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - gRPC-based monitoring service (persistent, TLS-secured, auto-reconnecting)
 - **Encrypted environment variable management** (AES-256-GCM)
 - **Zero-downtime blue-green and rolling deploys** (via `phelix proxy`)
+- **Canary & progressive rollouts** (route a percentage of traffic to the new version, verify health and metrics against the stable baseline, promote step by step — automatic rollback to the stable version on any regression)
 - **Versioned builds with zero-downtime rollback** (all builds create versioned artifacts; `--tag` for meaningful labels)
 - **Build Reports + Regression Alerts** (every successful build automatically records metrics — compiler, duration, cache status, binary size — and compares them against previous comparable builds to detect meaningful regressions, fully offline)
 - **Docker image building** (auto-generated multi-stage Dockerfiles for Go/Rust with optimized layer caching)
@@ -56,7 +57,10 @@ phelix init
 phelix build myapp --port 8080
 
 # Rebuild after a code change — zero downtime via blue-green
-phelix rebuild myapp --blue-green
+phelix rebuild
+
+# Ship a change to 5% of traffic first, verify, then promote
+phelix rebuild --canary 5 myapp --blue-green
 
 # Diagnose project compatibility (PORT usage, config, toolchain)
 phelix doctor
@@ -366,8 +370,12 @@ deploy:
 | `health.endpoints[].interval` | no | Monitoring check interval (e.g. `10s`, `1m`). Default `10s`. |
 | `health.endpoints[].retries` | no | Consecutive failures before marking DOWN. Default `3`. |
 | `health.endpoints[].mode` | no | Deploy health tier: `auto` (default), `http`, `tcp-only`, `none`. |
-| `deploy.strategy` | no | `classic` (default), `blue-green`, or `rolling`. |
+| `deploy.strategy` | no | `classic` (default), `blue-green`, `rolling`, `canary`, or `progressive`. |
 | `deploy.replicas` | no | Replica count for `rolling` (requires `deploy.strategy: rolling`). |
+| `deploy.rollout.canary` | no | Traffic share (percent) for `canary` before promotion. Default `10`. |
+| `deploy.rollout.duration` | no | Verification window for `canary` (e.g. `2m`). Default `30s`. |
+| `deploy.rollout.steps[]` | no | Progressive steps: `traffic` (percent) and optional `duration` per step; must strictly increase and end at `100`. |
+| `deploy.rollout.verification` | no | Regression thresholds: `interval`, `max_error_rate`, `max_error_delta`, `max_p95_factor` (see [Canary & progressive rollouts](#canary--progressive-rollouts)). |
 
 The configuration file is fully optional. Projects without `phelix.yaml`
 keep working exactly as before — every existing flag and prompt is unchanged.
@@ -438,17 +446,111 @@ deploy:
   replicas: 3
 ```
 
+```yaml
+deploy:
+  strategy: canary           # one-shot canary share, then promotion
+  rollout:
+    canary: 5%               # traffic share for the canary (default 10%)
+    duration: 2m             # verification window before promotion (default 30s)
+```
+
+```yaml
+deploy:
+  strategy: progressive      # step-by-step traffic increase
+  rollout:
+    steps:
+      - traffic: 5%
+        duration: 2m
+      - traffic: 25%
+        duration: 5m
+      - traffic: 50%
+        duration: 5m
+      - traffic: 100%        # the final promotion step (required)
+    verification:
+      interval: 5s           # health/metrics poll cadence (default 5s)
+      max_error_rate: 5      # absolute canary error-rate cap, percent (default 5)
+      max_error_delta: 2     # canary minus baseline, percentage points (default 2)
+      max_p95_factor: 3      # canary p95 at most N × baseline p95 (default 3)
+```
+
 Explicit flags still override the config (`--blue-green`, `--replicas`,
-`--port`), and `--strategy` overrides it for a single rebuild without editing
-the file — the same one-off override the dashboard sends for a remote rebuild.
-When nothing names a strategy, a rebuild keeps the one the app is already
-deployed with (from `deploy.json`) instead of falling back to classic:
-demoting a live blue-green/rolling app tears its instances down and drops its
-deployment state, so it has to be asked for — `strategy: classic` here, or
-`--strategy classic` for one rebuild. `phelix rollback` needs no
-configuration: it inspects the recorded deploy state and automatically uses
-classic or zero-downtime rollback to match how the app was actually deployed.
-`phelix proxy` is required for blue-green/rolling, exactly as with the flags.
+`--canary`, `--port`), and `--strategy` overrides it for a single rebuild
+without editing the file — the same one-off override the dashboard sends for a
+remote rebuild. When nothing names a strategy, a rebuild keeps the one the app
+is already deployed with (from `deploy.json`) instead of falling back to
+classic: demoting a live blue-green/rolling app tears its instances down and
+drops its deployment state, so it has to be asked for — `strategy: classic`
+here, or `--strategy classic` for one rebuild. A rollout runs on the
+blue-green topology, so an app whose last deploy was canary/progressive
+inherits blue-green when nothing names a strategy; put `strategy: canary` or
+`progressive` in `phelix.yaml` to make rollouts the app's default.
+`phelix rollback` needs no configuration: it inspects the recorded deploy
+state and automatically uses classic or zero-downtime rollback to match how
+the app was actually deployed. `phelix proxy` is required for
+blue-green/rolling/canary, exactly as with the flags.
+
+#### Canary & progressive rollouts
+
+A rollout deploys the new version *alongside* the stable one instead of
+replacing it: the stable version keeps serving while the new version (the
+canary) receives a share of live traffic through the proxy's weighted
+routing. Every step of the plan is verified before the next share is applied,
+and the final `100%` step is the promotion.
+
+```bash
+# One-shot canary: 5% of traffic for the verification window, then promote
+phelix rebuild myapp --canary 5
+
+# Same thing, resolved from phelix.yaml (deploy.strategy: canary)
+phelix rebuild myapp
+
+# Multi-step progressive rollout from phelix.yaml
+phelix rebuild myapp --strategy progressive
+```
+
+`--canary` requires an existing deployment to serve as the stable baseline —
+deploy with `--blue-green` (or `--replicas N`) first. A rollout over a
+rolling fleet consolidates it to a single stable instance (its first replica)
+for the comparison and promotion.
+
+```text
+→ step 1/4: routing 5% of traffic to the canary for 2m
+    v12  ███████████████████  95%
+    v13  █                     5%
+  → monitoring canary for 2m (health and metrics every 5s)
+    v13: 1,284 requests, 0.23% errors, p95 81ms
+    v12: 24,391 requests, 0.31% errors, p95 74ms
+  ✓ step 1/4 verified at 5% traffic
+...
+✓ traffic switched fully to slot green (zero downtime)
+✓ progressive rollout of myapp complete: v13 serves 100% of traffic on slot green
+```
+
+Safety behavior:
+
+* **Never route to an unhealthy canary.** The canary must pass the same
+  deploy-tier health gate blue-green uses before it receives any traffic, and
+  every step keeps probing it for the whole window.
+* **Metric comparison.** The proxy counts requests, 5xx/failed responses and
+  latency per backend, so each window compares the canary's error rate and
+  p95 latency against the stable baseline using the `verification` thresholds
+  above. With no per-backend metrics available the rollout degrades to
+  health-only verification instead of guessing.
+* **Automatic rollback to stable.** Any regression (health failure, error
+  rate, latency) aborts the rollout: traffic switches back to the stable
+  version at 100% atomically, the canary instance is stopped, and the failure
+  is reported (`CANARY_REGRESSION`). This restore is built into the rollout —
+  it does not need `--auto-rollback`, which still covers the cases where the
+  restore itself fails.
+* **Cancellation.** Ctrl-C aborts the rollout through the same restore path
+  (the stable version keeps 100% of traffic); the cleanup runs even though
+  the deploy was interrupted.
+* **Crash recovery.** A rollout interrupted by a crash leaves the stable
+  version serving; the next deploy restores stable routing and reclaims the
+  leftover canary before doing anything else.
+* **Success is durable.** The rollout is only reported successful after the
+  final promotion is complete: state persisted, version promoted in
+  `versions.json`, old instance drained.
 
 #### Validation
 
@@ -458,12 +560,16 @@ ignored:
 
 ```text
 Configuration error: invalid deploy.strategy "foobar"
-Hint: expected one of: classic, blue-green, rolling
+Hint: expected one of: classic, blue-green, rolling, canary, progressive
 ```
 
 Validated: YAML syntax, port range, strategy name, `replicas` (≥ 1, rolling
 only), endpoint names (required, unique), paths (must start with `/`),
-durations (`10s`, `1m`, …), modes (`auto`, `http`, `tcp-only`, `none`).
+durations (`10s`, `1m`, …), modes (`auto`, `http`, `tcp-only`, `none`), and
+the rollout plan: traffic percentages (whole numbers, `25` or `"25%"`), each
+step within `1-100`, strictly increasing shares ending at the `100%`
+promotion, non-negative durations, `canary` within `1-99`, and verification
+thresholds (positive interval, error rates within `0-100`, p95 factor ≥ 1).
 
 #### Related commands
 
@@ -492,16 +598,16 @@ without asking anything.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port, -p` | `8080` | Port to run the app on |
-| `--build-arg, -a` | — | Extra args passed to the build tool (repeatable) |
+| `--port, -p` | `8080` | Port to run the app on (not required for matrix builds — they never start an instance) |
+| `--build-arg, -a` | — | Extra args passed to the build tool (repeatable); in matrix mode they are passed to every `go build` / `cross build` |
 | `--tag` | — | Human label stored with the version (e.g. `"hotfix-auth"`) |
 | `--no-upload` | `false` | Don't sync app info to the server |
 | `--debug` | `false` | Verbose build/tool output |
-| `--matrix` | `false` | Matrix mode: build versions × platforms (see [Matrix builds](#matrix-builds)) |
-| `--go-versions` | — | Go versions, e.g. `1.22,1.23` |
-| `--rust-versions` | — | Rust versions, e.g. `1.77,1.78` |
+| `--matrix` | `false` | Matrix mode: build versions × platforms (see [Matrix builds](#matrix-builds); also activates via the phelix.yaml matrix profile) |
+| `--go-versions` | — | Go versions, e.g. `1.22,1.23,1.27` |
+| `--rust-versions` | — | Rust versions, e.g. `1.77,1.78.2` |
 | `--platforms` | — | Targets, e.g. `linux/amd64,linux/arm64` |
-| `--matrix-concurrency` | 4 | Max parallel matrix builds |
+| `--matrix-concurrency` | 3 | Max parallel matrix builds |
 | `--matrix-dry-run` | `false` | Print the plan without building |
 
 ```bash
@@ -563,13 +669,18 @@ app is running at.
 | `--build-arg, -a` | — | Extra build args (repeatable) |
 | `--tag` | — | Version label |
 | `--no-upload` | `false` | Skip server sync |
-| `--strategy` | — | Strategy for this rebuild only: `classic`, `blue-green`, or `rolling`. Overrides `phelix.yaml`; never written back to it |
+| `--strategy` | — | Strategy for this rebuild only: `classic`, `blue-green`, `rolling`, `canary`, or `progressive`. Overrides `phelix.yaml`; never written back to it |
 | `--blue-green` | `false` | Zero-downtime blue-green deploy (needs `phelix proxy`) |
 | `--replicas` | `0` | Zero-downtime rolling deploy over N replicas |
+| `--canary` | `0` | Canary deploy: route N percent (1-99) of traffic to the new version, verify health and metrics, then promote. Verification window/thresholds come from `phelix.yaml` `deploy.rollout` (needs `phelix proxy` and an existing deployment) |
+| `--auto-rollback` | `false` | On a deploy-phase failure (instance start, health check, traffic switch), automatically restore the previous known-good version. Build/compile failures never trigger it |
 
 ```bash
 phelix rebuild myapp --blue-green
 phelix rebuild myapp --replicas 3
+
+# Canary: 5% of traffic, verified, then promoted
+phelix rebuild myapp --canary 5
 
 # One-off override: deploy classic once, even though phelix.yaml says rolling
 phelix rebuild myapp --strategy classic
@@ -578,10 +689,15 @@ phelix rebuild myapp --strategy classic
 phelix rebuild myapp --strategy rolling
 ```
 
-`--strategy rolling` combined with `--replicas N` uses N replicas. An
-unrecognized value fails with `INVALID_ARGUMENT` (exit code `2`) before
-anything is built. This is the same override the dashboard sends for a remote
-rebuild — see [gRPC monitoring](docs/grpc-monitoring.md#24-one-off-deployment-overrides).
+`--strategy rolling` combined with `--replicas N` uses N replicas. `--canary`
+cannot be combined with `--strategy`, `--blue-green` or `--replicas` — it
+already names a strategy. An unrecognized value fails with
+`INVALID_ARGUMENT` (exit code `2`) before anything is built. This is the same
+override the dashboard sends for a remote rebuild — see
+[gRPC monitoring](docs/grpc-monitoring.md#24-one-off-deployment-overrides)
+(`canary`/`progressive` overrides resolve their plan from the app's
+`phelix.yaml`). See [Canary & progressive
+rollouts](#canary--progressive-rollouts) for the rollout behavior.
 
 #### Automatic Build Reports
 
@@ -659,14 +775,240 @@ blue-green/rolling.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--to` | — | Target: `v3`, `3`, or a tag name (default: previous version) |
-| `--list` | `false` | List all retained versions with metadata |
+| `--to` | — | Target: `v3`, `3`, or a tag name (bypasses the interactive picker) |
+| `--list` | `false` | List all retained versions with metadata (non-interactive) |
+| `--dry-run` | `false` | Preview the rollback plan without changing application, process, proxy, or deployment state |
+| `--reason` | — | Record why the rollback was performed (stored in rollback history; max 500 characters) |
+| `--verify` | — | Observe rollback stability for a Go duration (e.g. `30s`, `1m`, `2m30s`) after the rollback completes |
+
+**Interactive picker:** in a TTY, `phelix rollback <App>` without `--to` opens an
+interactive picker instead of silently choosing the previous version. It lists
+valid rollback targets newest → oldest (current version and versions whose
+binary is missing are excluded), shows built-time metadata per entry, and after
+you press Enter displays the rollback preview and asks for confirmation before
+executing. `Esc`/`Ctrl-C` cancels cleanly without touching the deployment.
+
+**Explicit mode:** `--to v7` resolves and executes the requested target exactly
+as before — no picker, no confirmation prompt — keeping scripts and automation
+deterministic. In non-interactive environments (CI, redirected stdin) the
+picker is skipped and rollback falls back to the previous-version default.
 
 ```bash
-phelix rollback myapp              # previous version
+phelix rollback myapp              # interactive picker (TTY), else previous version
 phelix rollback myapp --to v3
 phelix rollback myapp --to "hotfix-auth"
 phelix rollback myapp --list
+phelix rollback myapp --to v3 --dry-run   # preview only — no changes
+```
+
+#### Rollback reason (`--reason`)
+The reason becomes part of the rollback history/audit record, so `phelix
+rollback history` explains *why* each rollback happened:
+
+```bash
+phelix rollback myapp --to v7 --reason "Login endpoint returning 500"
+```
+
+The reason is optional; `--dry-run` displays it in the plan but persists
+nothing. Explicitly supplied-but-empty reasons are rejected
+(`rollback reason cannot be empty`), whitespace is collapsed, and the text is
+capped at 500 characters. It is serialized through `encoding/json` — never
+concatenated — so it cannot corrupt the structured history or inject log
+lines. In the interactive picker the reason is requested after the target
+version is chosen (Enter skips it); an explicit `--reason` never re-prompts.
+
+#### Rollback verification (`--verify`)
+A rollback should not count as successful merely because the process started.
+With `--verify <duration>`, Phelix observes the application for the requested
+period **after** the rollback reaches its committed, traffic-serving state
+(target loaded, environment restored, instance healthy, proxy switched,
+deployment state persisted) and fails if it does not remain healthy:
+
+```bash
+phelix rollback myapp --to v7 --verify 30s
+```
+
+```text
+→ Verifying rollback stability...
+  5s    ✓ healthy
+  10s   ✓ healthy
+  ...
+✓ Rollback remained healthy for 30s
+```
+
+Semantics:
+
+* Verification observes the instances **actually serving traffic** — the
+  active blue-green slot, all rolling replicas, or the classic process — never
+  a drained slot.
+* It reuses the existing tiered health checks and the per-app health
+  configuration (`phelix health set`); the duration is the observation
+  window, not a request timeout, and it is parsed as a real Go duration
+  (`30` is rejected — use `30s`).
+* **Verification failure is distinct from rollback execution failure.** The
+  CLI prints `Rollback execution: SUCCESS / Verification: FAILED` and exits
+  **23** (`ROLLBACK_VERIFY_FAILED`), while an execution failure exits **22**
+  (`ROLLBACK_FAILED`). History records the execution as `SUCCESS` with a
+  verification block (`passed` / `failed` / `cancelled`).
+* `Ctrl+C` during the window cancels the observation (history: `cancelled`);
+  the completed rollback stays active. Phelix never rolls forward/backward on
+  its own — recovery is your call.
+* Omitting `--verify` preserves the existing rollback behavior exactly; no
+  extra delay is added.
+* `--dry-run --verify 30s` shows the planned window and performs nothing.
+
+Combined:
+
+```bash
+phelix rollback myapp \
+  --to v7 \
+  --reason "Login endpoint returning 500" \
+  --verify 30s
+```
+
+#### Automatic rollback on failed deployment (`phelix rebuild --auto-rollback`)
+Add `--auto-rollback` to `phelix rebuild` and a deploy-phase failure restores
+the previous known-good version automatically — the same path a manual
+rollback takes, so locks, health checks, proxy switching, state reconciliation
+and history are shared, not duplicated:
+
+```bash
+phelix rebuild myapp --blue-green --auto-rollback
+phelix rebuild myapp --replicas 4 --auto-rollback
+```
+
+```text
+✗ v13 failed health checks
+→ Automatic rollback enabled
+  → automatic rollback: restoring v12
+  ✓ v12 started, healthy and serving traffic
+✓ Deployment rolled back automatically
+```
+
+Behavior:
+
+* **Failure boundaries.** Build/compile failures never trigger a rollback
+  (no new version was recorded, nothing was displaced). Deployment-phase
+  failures do: instance start failure, failed health checks, proxy switch
+  failure, and a partially-completed rolling rollout.
+* **Canary/progressive.** A regression during a rollout is handled by the
+  rollout itself: the stable version is restored to 100% of traffic before
+  the command returns (`CANARY_REGRESSION`), so there is normally nothing
+  left for `--auto-rollback` to do — it reports "kept serving" instead of
+  faking a rollback. It still covers the corner cases where the rollout's
+  own restore fails.
+* **Blue-green.** A failed candidate is killed *before* the traffic switch,
+  so the previous version usually kept serving the whole time — Phelix reports
+  that ("kept serving") instead of faking a rollback. No history entry is
+  written for a rollback that did not happen.
+* **Rolling.** If the rollout failed after some replicas switched to the new
+  version, recovery redeploys the known-good version over the fleet one
+  replica at a time, preserving availability. If it failed at the first
+  replica, the old fleet is still intact and nothing is redeployed.
+* **Classic.** The known-good binary is copied back and restarted (brief
+  downtime is inherent to classic — Phelix does not claim zero downtime).
+* **Last known good is authoritative.** The restore target is the version
+  versions.json currently promotes (a failed deploy never promotes itself),
+  restricted to versions whose binary still exists — never "current - 1".
+  With no known-good version, Phelix says so instead of fabricating a target.
+* **History.** Automatic recoveries appear in `phelix rollback history` with
+  the `SOURCE` column set to `automatic` and a reason derived from the
+  deployment failure ("Deployment v13 failed: …"). Manual rollbacks show
+  `manual`.
+* **Recovery can fail too.** If the previous version cannot be restored
+  safely, Phelix prints the degraded state explicitly and exits **24**
+  (`AUTO_ROLLBACK_FAILED`) — it never claims success. A recovered deployment
+  still exits **21** (the deployment itself failed; the output and history
+  say recovery succeeded).
+* The rollback is triggered exactly once per failed deployment and cannot
+  recurse: recovery failures are terminal, never new rollback triggers.
+
+Interactive picker example (actual versions and metadata depend on the application):
+
+```text
+Rollback 'myapp'
+
+Current: v12
+
+Select version to rollback to:
+
+❯ v11   hotfix-auth           2 min ago
+  v10   release-2.4.0         1 hour ago
+  v9    stable                yesterday
+  v8    —                     3 days ago
+
+↑/↓ select   Enter continue   Esc cancel
+```
+
+Moving the cursor updates a details footer for the focused version, rendered
+from stored build metadata only (no process is started, no network check runs
+while navigating; values that are not stored show `—`):
+
+```text
+❯ v11   hotfix-auth           2 min ago
+  v10   release-2.4.0         1 hour ago
+
+v11
+├── Tag: hotfix-auth
+├── Commit: 8f31c2a
+├── Built: 2 min ago
+├── Binary: 14.8 MB
+├── Health: —
+└── Deploy: blue-green
+```
+
+Pressing Enter shows the same rollback preview as `--dry-run` followed by a
+`Proceed with rollback?` confirmation before anything executes.
+
+For interactive inspection use the picker; for deterministic automation always
+pass an explicit `--to`.
+
+#### `phelix rollback history <AppName> [--limit N]`
+Shows the recorded rollback outcomes for one application, newest first. Every
+rollback attempt that reaches execution is recorded — successes and failures —
+at the moment the rollback transaction completes, together with the deployment
+mode actually used for that rollback (`classic`, `blue-green`, `rolling`). The
+mode is a historical fact: later re-deploys of the app never rewrite old
+records. `FROM`/`TO` are the versions of that transition, not the app's
+current version.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--limit` | `20` | Maximum number of entries to show (must be a positive number) |
+
+```text
+Rollback History — myapp
+
+TIME                  FROM   TO     STATUS   MODE         REASON
+2026-09-06 14:20:31   v12    v7     SUCCESS  blue-green   Login endpoint returning 500
+2026-09-06 13:11:02   v13    v12    SUCCESS  rolling      API regression
+2026-09-02 09:13:12   v9     v8     FAILED   rolling      Database migration issue
+2026-08-28 18:42:09   v8     v6     SUCCESS  classic      —
+```
+
+Notes:
+
+* An app with no rollbacks shows `No rollback history found.` — normal state,
+  not an error.
+* `--dry-run` previews never record history; cancelling the interactive
+  picker (`Esc`) never records history either, and is not a failure.
+* Malformed legacy lines in the history file are skipped with a short
+  warning; they are never silently rewritten.
+* `REASON` shows the recorded `--reason`, or `—` for reason-free and
+  pre-reason records (old history entries load unchanged and are never
+  rewritten to add an empty reason).
+* When `--verify` was requested, each record also carries a verification
+  block on disk (`"verification": {"requested": true, "duration": "30s",
+  "status": "passed"}` with status `passed` / `failed` / `cancelled`). A
+  failed window renders as `VERIFY_FAILED` while `STATUS` stays `SUCCESS` —
+  execution outcome and verification outcome are kept separate so history
+  always tells the truth about what happened.
+* History is stored per app as JSON Lines at
+  `~/.phelix/apps/<AppName>/rollback_history.jsonl`.
+
+```bash
+phelix rollback history myapp
+phelix rollback history myapp --limit 50
 ```
 
 ### Lifecycle
@@ -831,13 +1173,32 @@ Roll back to a previous version. The rollback path depends on how the app was de
 - **Classic apps** (built with plain `phelix build` / `phelix rebuild`): rollback stops the current instance, copies the versioned binary into place, and starts it. This is a brief downtime rollback (stop → start).
 
 ```bash
-phelix rollback myapp              # roll back to the previous version
-phelix rollback myapp --to v2      # roll back to a specific version
+phelix rollback myapp              # interactive picker (TTY), else previous version
+phelix rollback myapp --to v2      # roll back to a specific version (no picker, no prompt)
 phelix rollback myapp --to 3       # version number without 'v' prefix also works
 phelix rollback myapp --to hotfix-auth-bug   # roll back by tag name
 ```
 
 The `--to` flag accepts either a version ID (`v3`, `3`) or a unique tag name. If a tag matches exactly one version, it resolves automatically. If a tag matches zero or more than one version, an error is returned — use a version ID to disambiguate.
+
+**Interactive rollback:** when run in a terminal without `--to`, `phelix rollback myapp` opens an interactive picker listing valid rollback targets (newest → oldest; the current version and versions whose binary is missing are excluded). After you select a version, the rollback preview is shown and a confirmation prompt gates execution:
+
+```text
+Rollback 'myapp'
+
+Current: v12
+
+Select version to rollback to:
+
+❯ v11   hotfix-auth           2 min ago
+  v10   release-2.4.0         1 hour ago
+  v9    stable                yesterday
+  v8    —                     3 days ago
+
+↑/↓ select   Enter continue   Esc cancel
+```
+
+`Esc` (or `Ctrl-C`) cancels cleanly — `Rollback cancelled.` is printed, nothing is deployed, and this is not reported as a rollback failure. Without a TTY (CI, scripts, redirected stdin) the picker never opens and rollback falls back to the previous-version default, so automation never hangs waiting for input. Prefer the picker for interactive inspection and an explicit `--to` for deterministic automation.
 
 #### `phelix rollback <AppName> --list`
 Show all retained versions with metadata.
@@ -853,7 +1214,78 @@ Output table columns:
 - **Current** — whether this version is actively serving traffic
 - **Prune soon** — whether this version would be removed after the next build (based on retention policy)
 
+#### `phelix rollback <AppName> --dry-run`
+Preview exactly what a rollback **would** do — target resolution, strategy,
+traffic transition, health checks, and the step-by-step plan — without making
+any changes. Nothing is started, stopped, switched, promoted, or written: no
+process, proxy, `versions.json`, `deploy.json`, `current` symlink, or
+`rollback.log` mutation, and no rollback audit entry is recorded. It is safe to
+run any number of times, including while the app serves traffic.
+
+The preview is a **plan and validation preview**, not a guarantee: it reads the
+same metadata the real rollback resolves (current/target version, deploy mode,
+env snapshot presence, health-tier configuration), validates that the target
+artifact exists, and reports warnings — but it does not start instances,
+perform live health checks, or predict ports that are only assigned at startup.
+
+The same target resolution as a real rollback applies (`--to` with `vN`, `N`,
+or a tag; default previous version), so `--dry-run` fails on an invalid or
+missing target with the same error codes a real rollback would return. (Output
+below is illustrative — actual values come from your app's state.)
+
+```bash
+phelix rollback myapp --to v7 --dry-run
+```
+```text
+→ Rollback Preview
+
+  Application    myapp
+  Current        v12
+  Target         v7
+  Built          2026-08-31 14:22:10
+  Commit         8f31c2a
+  Deploy Mode    blue-green
+  Health Check   Tier 1 (/health, 2xx required)
+  Environment    v7 snapshot available
+
+Changes:
+  Version        v12 → v7
+  Binary         15.2 MB → 14.8 MB
+  Environment    v7 snapshot available
+
+Traffic:
+  Public         :3000
+  Current        green
+  Target         blue
+
+Rollback Plan:
+   1. Ensure the proxy daemon is running
+   2. Load the v7 artifact (.../builds/v7/binary)
+   3. Restore the v7 environment snapshot (env/v7.enc)
+   4. Start the new instance on the inactive slot blue (internal port assigned at startup)
+   5. Run health checks against the new instance
+   6. Switch proxy traffic on public port 3000 from slot green to slot blue
+   7. Promote v7 as current (versions.json + current symlink)
+   8. Drain and stop the old slot green instance (grace 30s)
+
+✓ No changes will be made.
+```
+
+For **classic** apps the preview shows the stop→start plan and an explicit
+`Downtime: Expected yes` line; for **rolling** apps it lists one replacement
+step per replica, in the order the real rollback replaces them. If validation
+fails (missing binary, unknown version, tag ambiguity, target == current), the
+preview reports the same structured error a real rollback would return — with
+nothing modified. Warnings (e.g. a missing env snapshot, a large rollback
+distance, a deploy lock held by another operation) are shown in a `Warnings:`
+section without blocking the preview.
+
 #### How rollback works
+
+Rollback is split into two phases: **resolve + plan**, then **execute**. The
+CLI first resolves the target version and deployment strategy and validates
+the target artifact (shared by both the preview and the real path); a real
+rollback then executes the plan, `--dry-run` renders it and exits.
 
 **Zero-downtime path** (blue-green / rolling apps):
 1. `ResolveVersionOrTag` resolves the `--to` argument to a concrete version ID
@@ -876,6 +1308,7 @@ If the rollback target fails its health check, the rollback **aborts** and the a
 If the start fails, the version exists on disk but `is_current` stays false — you can retry without a broken "current" pointer.
 
 #### Rollback safety
+- **Dry-run preview**: `--dry-run` shows the full plan with zero mutations — verify before you commit (see above)
 - **Concurrent protection**: A deploy lock prevents rollback from racing with another deploy or rollback on the same app
 - **Versioned env**: Binary and env are paired per version; rollback always restores both
 - **Audit log**: Every rollback attempt (success or failure) is recorded in `~/.phelix/apps/<AppName>/rollback.log`
@@ -901,23 +1334,27 @@ phelix dockerize myapp --tag v1.0.0 --with-compose --depends-on redis,postgres
 | `--tag` | Version tag for the Docker image (e.g. `v1.2.3`, default `latest`) |
 | `--push` | Push the image to the registry after building |
 | `--registry` | Registry prefix (e.g. `ghcr.io/user`, `docker.io/myorg`, `harbor.example.com/project`) |
-| `-a, --build-arg` | Extra build argument `KEY=value` (repeatable) |
+| `-a, --build-arg` | Extra build argument `KEY=VALUE` (repeatable; malformed entries are rejected with `INVALID_ARGUMENT`) |
 | `--with-compose` | Generate a `docker-compose.yml` with the app service |
 | `--depends-on` | Sidecar services for compose (`redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`) |
-| `--matrix` + family | Matrix Docker builds (see [Matrix builds](#matrix-builds)) |
+| `--matrix` + family | Matrix Docker builds — `--go-versions`/`--rust-versions`/`--platforms`, `--multi-arch-tag` (requires `--push`), `--push-partial`, `--matrix-concurrency`, `--matrix-retries`, `--matrix-dry-run` (see [Matrix builds](#matrix-builds)); a `matrix:` profile in `phelix.yaml` activates the Docker matrix too |
 
 #### How it works
 
 **Language detection:** checks for `go.mod` (Go) or `Cargo.toml` (Rust); fails with a clear error if neither or both are found.
 
-**Dockerfile generation (if none exists):** multi-stage builds optimized for Docker layer caching — dependency-heavy layers are cached separately from source code.
+**Dockerfile generation (if none exists):** multi-stage builds optimized for Docker layer caching — dependency-heavy layers are cached separately from source code. The toolchain images are parameterized (`ARG GO_VERSION=1.23` / `ARG RUST_VERSION=1.80`), so you can pin a different toolchain per build without editing the file:
+
+```bash
+phelix dockerize myapp --build-arg GO_VERSION=1.27
+```
 
 *Go:*
-1. **Builder stage** — `COPY go.mod go.sum` → `go mod download` → `COPY . .` → `go build`. Dependencies are cached before source is copied; `CGO_ENABLED=0` for a fully static binary.
+1. **Builder stage** — `FROM golang:${GO_VERSION}-alpine` → `COPY go.mod go.sum` → `go mod download` → `COPY . .` → `go build`. Dependencies are cached before source is copied; `CGO_ENABLED=0` for a fully static binary.
 2. **Runtime stage** — `FROM scratch` with just the binary. Smallest possible image.
 
 *Rust:*
-1. **Dependency cache stage** — copies `Cargo.toml`/`Cargo.lock`, builds a dummy `main.rs` to compile and cache all dependencies.
+1. **Dependency cache stage** — `FROM rust:${RUST_VERSION}-slim`, copies `Cargo.toml`/`Cargo.lock`, builds a dummy `main.rs` to compile and cache all dependencies.
 2. **Real build stage** — copies real source; only the app's own code recompiles.
 3. **Runtime stage** — `debian:bookworm-slim` with `ca-certificates`.
 
@@ -1042,59 +1479,445 @@ with `PHELIX_DATA_DIR`.
 ### Matrix builds
 
 Build the cross-product of **toolchain version × platform** in one command.
+The matrix can be configured three ways — CLI flags, a `matrix:` profile in
+`phelix.yaml`, or the interactive wizard — all three converge into the same
+configuration and are validated identically.
 
 ```bash
 # Native binaries
-phelix build myapp --matrix --go-versions 1.21,1.22,1.23 --platforms linux/amd64,linux/arm64
+phelix build myapp --matrix --go-versions 1.22,1.23,1.27 --platforms linux/amd64,linux/arm64
 phelix build myapp --matrix --rust-versions 1.77,1.78 --platforms linux/amd64,linux/arm64
+phelix build myapp --matrix --go-versions 1.27 --platforms linux/arm/v7,linux/arm64
 
 # Dry run / debug
 phelix build myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64 --matrix-dry-run
 phelix build myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --debug
 
-# Docker images (multi-arch or per-combo tags)
-phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --matrix-tags
-phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --multi-arch-tag --push
-phelix dockerize myapp --matrix --go-versions 1.22,1.23 --platforms linux/amd64,linux/arm64 --push --push-partial
+# Docker images (per-combination tags, optional multi-arch manifest)
+phelix dockerize myapp --matrix --go-versions 1.22,1.27 --platforms linux/amd64,linux/arm64
+phelix dockerize myapp --matrix --go-versions 1.27 --platforms linux/amd64,linux/arm64 --multi-arch-tag --push
+phelix dockerize myapp --matrix --go-versions 1.22,1.27 --platforms linux/amd64,linux/arm64 --push --push-partial
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--matrix` | Enable matrix mode (auto-enabled when `--go-versions`/`--rust-versions`/`--platforms` are set) |
-| `--go-versions` | Comma-separated Go versions (e.g. `1.21,1.22,1.23`) |
-| `--rust-versions` | Comma-separated Rust versions (e.g. `1.77,1.78`) |
-| `--platforms` | Target platforms (e.g. `linux/amd64,linux/arm64,darwin/arm64`) |
-| `--matrix-concurrency` | Max parallel builds (default: 3–4) |
+| `--matrix` | Enable matrix mode (auto-enabled when `--go-versions`/`--rust-versions`/`--platforms` are set, or when the phelix.yaml matrix profile is enabled; an explicit `--matrix=false` disables an enabled profile — combining it with dimension flags is rejected) |
+| `--go-versions` | Comma-separated Go versions (`1.21`, `1.22.4`, `go1.27`, `v1.27` all work; patch versions allowed) |
+| `--rust-versions` | Comma-separated Rust versions (same format) |
+| `--platforms` | Target platforms (e.g. `linux/amd64,linux/arm64,linux/arm/v7,darwin/arm64`; case-insensitive) |
+| `--matrix-concurrency` | Max parallel builds (default: 3) |
+| `--matrix-retries` | Retry failed combinations up to N *additional* times (default: 0; only transient failures — network, timeout, Docker daemon — are retried) |
+| `--resume` | Resume an interrupted matrix run (`--resume` picks the most recent, `--resume=mx_…` a specific run; implies matrix mode) |
 | `--matrix-dry-run` | Print the matrix plan without executing |
 | `--debug` | Verbose output: Docker commands, build logs, cache paths |
+| `--multi-arch-tag` | (dockerize) additionally assemble a multi-arch manifest list per toolchain version via `docker buildx` |
+| `--push-partial` | (dockerize) push only the successful images even if some combinations failed |
 
-Known Go versions: `1.20`–`1.26`. Known Rust versions: `1.75`–`1.97`.
-Known platforms: `linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `windows/amd64`.
+Versions are validated as `major.minor` or `major.minor.patch` — any current or
+future toolchain release works, including patch versions. Known platforms:
+`linux/{amd64,arm64,arm/v7,arm/v6}`, `darwin/{amd64,arm64}`, `windows/amd64`.
+Duplicates are removed, whitespace and version prefixes (`go`, `rust`, `v`) are
+normalized, and every combination is validated before the first build starts.
+
+#### Matrix profile in phelix.yaml
+
+The same matrix can be configured persistently in `phelix.yaml`:
+
+```yaml
+matrix:
+  enabled: true
+  go:                # or rust: — exactly one ecosystem
+    versions:
+      - "1.25"
+      - "1.26"
+      - "1.27"
+  platforms:
+    - linux/amd64
+    - linux/arm64
+    - windows/amd64
+  concurrency: 4     # optional, default 3
+  retries: 2         # optional, automatic retries for transient failures
+  include:           # optional, extra combinations / metadata
+    - go: "1.28"
+      platform: linux/amd64
+      tag: latest
+  exclude:           # optional, drop matching combinations
+    - go: "1.25"
+      platform: windows/amd64
+```
+
+With `matrix.enabled: true`, a plain `phelix build` runs the matrix — no flags
+needed — and so does a plain `phelix dockerize` (its Linux combinations build
+images; other platforms fail fast with a pointer to `phelix build --matrix`).
+The profile goes through the exact same validation and expansion as
+CLI flags.
+
+#### Matrix dimensions, include, and exclude
+
+Internally the matrix is a set of **dimensions** (`lang`, `version`, `os`,
+`arch`, `variant`); the Cartesian product of the configured versions ×
+platforms is only the *base* of the expansion. The full pipeline is
+deterministic and identical for CLI flags, `phelix.yaml`, the wizard, and any
+future remote execution:
+
+```text
+Base Cartesian product  →  Include rules  →  Exclude rules  →  Final combinations
+```
+
+**Exclude** rules are partial matchers: a rule matches every combination that
+carries the constrained values, regardless of the other dimensions. Rule keys:
+`go`/`rust` (shorthand for ecosystem + version), `lang`, `version`,
+`platform`, `os`, `arch`, `variant`. So this drops *all* Windows combinations
+of Go 1.25 and nothing else:
+
+```yaml
+exclude:
+  - go: "1.25"
+    platform: windows/amd64
+```
+
+**Include** rules do two things:
+- a rule that names a full combination (ecosystem + version + platform)
+  **adds it** when the base product doesn't contain it — `go: "1.28"` above
+  builds 1.28 even though only 1.25–1.27 are configured;
+- any other keys on an include entry (like `tag: latest`) are **metadata**
+  merged into the matching combination(s) — recorded in the run and visible
+  in `matrix show`.
+
+A duplicate include (a combination already in the matrix) never schedules the
+job twice — it only merges its metadata. A well-formed rule that matches no
+combination at the point it is applied is a **configuration error**, so a typo
+cannot silently shrink (or fail to shrink) the matrix. Exclude rules reject
+unknown keys outright for the same reason. Excludes apply *after* includes,
+so an exclude can remove an included combination.
+
+The wizard (`phelix matrix init`) configures includes and excludes too, and
+its preview shows the real pipeline counts (`base 6 · included +1 ·
+excluded -1`) computed by the same expansion engine the build uses.
+
+**Configuration precedence** (per dimension, deterministic):
+
+```text
+CLI explicit value  >  phelix.yaml matrix profile  >  command default
+```
+
+- List dimensions are **replaced, never merged**: `phelix build --go-versions 1.28`
+  next to the profile above builds only `1.28` (the YAML version list is
+  overridden entirely), while unmentioned dimensions keep their configured
+  values (platforms and concurrency above stay from the profile).
+- `--matrix=false` explicitly disables an enabled profile; `--matrix` alone
+  uses the configured profile when one exists.
+- Versions and platforms are validated identically wherever they come from:
+  an invalid profile fails `phelix build` (and every command that reads
+  `phelix.yaml`) with an error naming the YAML location, e.g.
+  `configuration error: matrix.go.versions: ...`.
+
+#### Matrix runs: list, show, status, and the wizard
+
+Every matrix execution gets a **Matrix Run ID** (`mx_20260909_8f31`) — printed
+during the build, recorded in `builds/matrix/report.json` (`run_id`), attached
+to each artifact in `versions.json` (`matrix_run_id`), and persisted locally
+under `~/.phelix/matrix/runs/`. The run snapshots the effective configuration
+at execution time, so later `phelix.yaml` edits never rewrite what an old run
+says it built.
+
+```bash
+phelix matrix list                 # recorded runs, newest first (--limit N caps the list; default 20, 0 = all)
+phelix matrix list --json          # machine-readable summaries
+phelix matrix show mx_20260909_8f31        # config snapshot + per-combination results
+phelix matrix show mx_20260909_8f31 --json
+phelix matrix status               # live state of the active run (or "No active Matrix Run.")
+phelix matrix status mx_20260909_8f31      # a specific run's state
+phelix matrix status --json        # machine-readable current state
+phelix matrix retry mx_20260909_8f31 --failed   # retry a run's failures in a new linked run
+phelix matrix init                 # interactive wizard → writes phelix.yaml
+```
+
+`matrix show` displays the configuration snapshot (with each dimension's
+origin: `cli`, `phelix.yaml`, or `default`, plus the effective include/exclude
+rules and retry budget), every combination's status, duration, attempt
+history, artifact, SHA-256, and redacted error details for failures. An
+unknown run ID is a
+clean `NOT_FOUND` error. Local run history can be relocated with
+`PHELIX_DATA_DIR` like all Phelix state.
+
+Run statuses: `succeeded` (everything passed), `partial` (some passed, some
+failed), `failed` (nothing passed), `interrupted` (stopped with incomplete
+combinations — resumable). A run with failures never reports `succeeded`.
+
+#### Automatic retries
+
+```bash
+phelix build myapp --matrix --matrix-retries 2
+```
+
+`--matrix-retries 2` means **two additional attempts** (at most 3 executions
+per combination), not two total. Only failed combinations are retried — a
+combination that succeeded is never re-executed. Retries happen inside the
+*same* Matrix Run: the run records every attempt (`Attempts: 3, final:
+succeeded`) in `matrix show` and `report.json`, so an eventual success is
+explainable. Only *transient* failures are retried (network, connection,
+timeout, Docker daemon unavailable); deterministic failures — compiler
+errors, invalid versions, configuration problems — fail on the first attempt
+and are not repeated.
+
+#### Resume
+
+```bash
+phelix build myapp --matrix --resume            # most recent interrupted run
+phelix build myapp --matrix --resume=mx_20260909_8f31
+```
+
+Resume continues an **existing** incomplete run instead of starting a new
+matrix. Runs persist incrementally (after every completed combination), so
+resume works after Ctrl-C, a crash, or a machine restart. Exact semantics:
+
+- `succeeded` combinations → **never rebuilt**
+- `failed` combinations → skipped (retry them explicitly with
+  `phelix matrix retry <run-id> --failed`)
+- `pending` combinations and `running` combinations whose worker is gone →
+  **executed**
+
+Resume uses the run's original configuration snapshot (dimensions, include/
+exclude rules, build args) — later `phelix.yaml` edits cannot change what the
+resumed run builds. Explicit `--build-arg` flags on the resume invocation are
+the one exception: they replace the snapshot's build args (and the run record
+reflects the args actually used). A per-run lock file guards against two
+concurrent executions of the same run; a lock left by a dead process is
+reclaimed automatically after a restart. The first Ctrl-C stops the run cleanly
+(in-flight builds are killed and stay pending); a second one terminates
+immediately. `--matrix-dry-run` alongside `--resume` previews the combinations
+a resume would execute without touching the run.
+
+#### Manual retry
+
+```bash
+phelix matrix retry mx_20260909_8f31 --failed
+```
+
+A manual retry **creates a new run** containing only the combinations whose
+final status in the source run is `failed`. The new run records its parent
+(`parent_run_id`), executes the source run's configuration snapshot, and the
+original run's history stays unchanged. The three recovery mechanisms are
+deliberately distinct:
+
+| Mechanism | Same run? | What executes |
+|-----------|-----------|---------------|
+| Automatic retry (`--matrix-retries`) | yes | failed combinations, extra attempts |
+| Resume (`--resume`) | yes | incomplete combinations only |
+| Manual retry (`matrix retry --failed`) | new linked run | failed combinations of the source run |
+
+**Interactive wizard:** `phelix matrix init` walks through ecosystem, versions
+(recent suggestions plus free-form entry), platforms, concurrency, optional
+include entries (combinations outside the base matrix) and exclusions
+(picked from the real expanded list), then previews the *actual* expanded
+combination list with base/included/excluded counts — never a naive
+versions × platforms count — before writing the profile. It preserves all
+unrelated `phelix.yaml` keys and comments, offers Edit / Keep / Disable /
+Cancel when a profile already exists, and refuses to run without an
+interactive terminal (so it never hangs in CI).
+
+#### Matrix status: live run state
+
+```bash
+phelix matrix status                       # the active run, or "No active Matrix Run."
+phelix matrix status mx_20260909_8f31      # one specific run
+phelix matrix status --json                # machine-readable current state
+```
+
+`matrix status` answers *"what is happening right now?"* — unlike `matrix
+list` (all recorded runs) and `matrix show` (full inspection of one run). With
+no argument it selects the **active run**: a run whose persisted status is
+`running` *and* whose execution lock is held by a live process. When several
+runs execute concurrently, the most recently started one is shown (with a
+note); name a run explicitly to inspect another. If nothing is executing it
+prints `No active Matrix Run.` and points at the most recent run — never a
+fabricated status.
+
+```text
+Matrix Run mx_20260910_4613 — myapp (go)
+Status:      running — executing (PID 3372540)
+Started:     2026-09-10 01:49:03
+
+4 combination(s)
+──────────────────────────────────────────────
+  ✓ go1.27-linux-amd64                  231ms
+      Binary: 5621907 B
+      SHA256: 3263d01d02d8…
+  ⟳ go1.27-darwin-arm64                 7.2s
+  ◌ go1.27-linux-arm64                  pending
+  ◌ go1.27-windows-amd64                pending
+──────────────────────────────────────────────
+Progress: 1/4 — success 1 · failed 0 · running 1 · pending 2
+```
+
+Semantics:
+
+- **Live state** comes from the same persisted run records the execution
+  engine writes — after every attempt start and every completed combination.
+  There is no second status system that could drift.
+- `--json` always emits JSON: `{"active": false}` (plus `most_recent_run`
+  when any history exists) when nothing is executing — never human text on
+  the JSON stream.
+- **Running combinations** show elapsed time (duration only — the build
+  engine has no percentage to report) and the in-flight attempt when
+  automatic retries are configured (`attempt 2/3`). Completed combinations
+  show their final attempt count.
+- **Counters are always internally consistent**: `success + failed + running
+  + pending + skipped = total`.
+- A persisted `running` run whose executing process is gone (crash, SIGKILL,
+  machine restart) is reported as **orphaned** — resumable, not executing;
+  its in-flight combinations show as `stale`. A completed run never reports
+  `running`.
+- Resume keeps the same run ID traceable (`Resumed: N time(s)`); a manual
+  retry stays a **distinct** run linked via `Parent Run`. While a retry run
+  executes, it is the active run.
+
+#### Artifact checksums and the release manifest
+
+Every successful matrix artifact carries a **SHA-256 checksum** computed from
+the final artifact bytes — streamed, never loaded into memory wholesale. For
+Docker image artifacts (matrix dockerize), the checksum is the image's
+content digest (`docker image inspect`), Docker's own SHA-256 of the image.
+
+Checksums appear:
+
+- in the build summary and `matrix show` / `matrix status` (shortened, e.g.
+  `SHA256: 3263d01d02d8…`),
+- in full, machine-readably, in `builds/matrix/report.json` (`sha256` per
+  combination), `matrix status --json`, each artifact row in `versions.json`
+  (`sha256`), and the release manifest below.
+
+A checksum that cannot be computed is an **artifact-integrity failure**: the
+combination is recorded as failed — an artifact whose bytes cannot be
+verified is never recorded as a valid release artifact (and integrity
+failures are never auto-retried). Retries and resume never reuse stale
+checksums: only the final successful attempt's artifact is checksummed and
+recorded; resumed runs keep the checksums of previously-succeeded
+combinations untouched.
+
+> SHA-256 here is an **integrity** mechanism — it answers "did the artifact
+> bytes change?". It does **not** provide authenticity ("who produced this
+> artifact?"); Phelix has no artifact signing.
+
+**One logical release, many artifacts.** A matrix build is one logical
+build/release of one application version that produces multiple artifacts.
+Matrix combinations are **artifacts of that release, never independent
+application versions**: `go1.27-linux-amd64`, `go1.27-linux-arm64`, … are
+artifact names (and filenames), while `versions.json` records exactly **one**
+version row (`vN`) carrying all of them:
+
+```text
+Application
+    └── Version vN (one versions.json row)
+            └── Matrix Run mx_…
+                    └── Artifacts: go1.27-linux-amd64, go1.27-linux-arm64, …
+```
+
+Each finished run with successful artifacts also writes a **release
+manifest** describing that artifact set, stored next to the run record as
+`<PHELIX_DATA_DIR>/matrix/runs/<run-id>.manifest.json`:
+
+```json
+{
+  "manifest_version": 1,
+  "app": "myapp",
+  "version": 11,
+  "matrix_run_id": "mx_20260910_3915",
+  "created_at": "2026-09-10T01:46:38+03:30",
+  "status": "complete",
+  "total_combinations": 4,
+  "language": "go",
+  "toolchain_versions": ["1.27"],
+  "platforms": ["linux/amd64", "darwin/arm64", "linux/arm64", "windows/amd64"],
+  "artifacts": [
+    {
+      "combination_id": "go1.27-linux-amd64",
+      "identity": "mx_20260910_3915/go1.27-linux-amd64",
+      "toolchain": "go",
+      "toolchain_version": "1.27",
+      "platform": "linux/amd64",
+      "os": "linux",
+      "arch": "amd64",
+      "artifact": "builds/matrix/go1.27-linux-amd64/myapp_amd64_go_1.27",
+      "size_bytes": 2433430,
+      "sha256": "dfef784b056f…"
+    }
+  ]
+}
+```
+
+Completeness is explicit and fail-closed:
+
+| Run outcome | Manifest |
+|-------------|----------|
+| all combinations succeeded | written, `status: "complete"` |
+| some succeeded, some failed | written, `status: "partial"` (only successful artifacts listed) |
+| nothing succeeded / interrupted / still running | **not written** |
+
+A partial matrix can therefore never masquerade as a complete release — the
+`status` field and the `total_combinations` count make the gap machine-checkable.
+Artifacts are sorted by combination ID, so the same run and artifact set
+always produce the same manifest. `matrix show <run-id>` renders the release
+summary (version, status, artifact count, manifest path). An interrupted run
+gains its manifest only once a `--resume` finishes it; a manual retry run
+gets its own manifest — runs are never merged. Docker matrix builds
+(`phelix dockerize --matrix`) record image digests per artifact in
+`versions.json` but produce no run manifest (they are not Matrix Runs).
 
 #### How matrix builds work
 
 **Cross-compilation strategy:**
-- **Go**: native cross-compilation via `GOOS`/`GOARCH` (no extra toolchain needed with `CGO_ENABLED=0`). CGO projects fail with a clear error suggesting Docker-based builds or a C cross-compiler.
-- **Rust**: uses the [`cross`](https://github.com/cross-rs/cross) tool (not raw `rustup target add`), building inside a Docker container with the correct linker/C libraries pre-configured.
+- **Go**: native cross-compilation via `GOOS`/`GOARCH` (plus `GOARM=6`/`7` for the ARM variant platforms) with `CGO_ENABLED=0` — no extra toolchain needed. CGO projects fail with a clear error suggesting Docker-based builds or a C cross-compiler. If no host Go toolchain is installed — or the host toolchain is a different Go version than the requested one — the build automatically falls back to the Docker path below, so an artifact is never labeled with a toolchain it was not built with.
+- **Rust**: uses the [`cross`](https://github.com/cross-rs/cross) tool (not raw `rustup target add`), building inside a Docker container with the correct linker/C libraries pre-configured. The requested version is pinned via `cross +<version>`, so each combination really builds with its own toolchain (rustup auto-installs missing ones).
 
-**Multi-version builds:** each toolchain version runs inside its own Docker container (`golang:1.21`, `golang:1.22`, etc.) — no need for multiple toolchains on the host, and clean cache isolation.
+**Multi-version builds:** with more than one Go version (or no host Go
+toolchain), each version runs inside its own Docker container (`golang:1.22`,
+`golang:1.22.4`, …) — no need for multiple toolchains on the host, and clean
+cache isolation. The build command is passed as separate arguments (never
+through a shell), with `GOOS`/`GOARCH`/`GOARM`/`CGO_ENABLED` injected via
+`docker run -e`.
 
-**Output naming:**
+**Matrix builds don't need a port:** they compile artifacts for other platforms
+and never start a local instance, so port validation and availability checks are
+skipped — a busy default port cannot block a cross-compilation run.
+
+**Output naming** (every combination produces a unique, path-safe artifact —
+combinations can never overwrite each other):
 
 | Artifact | Naming |
 |----------|--------|
-| Binary (matrix) | `builds/matrix/go1.22-linux-amd64/binary` |
-| Docker per-combo tag | `myapp:go1.22-linux-amd64` |
-| Docker multi-arch tag | `myapp:latest` (manifest list via `docker buildx`) |
+| Binary | `builds/matrix/{lang}{version}-{os}-{arch}[-{variant}]/{app}_{arch}_{lang}_{version}[_{variant}]` — e.g. `builds/matrix/go1.22.4-linux-arm-v7/myapp_arm_go_1.22.4_v7` |
+| Docker per-combination tag | `{app}:{tag\|latest}-{lang}{version}-{arch}[-{variant}]` — e.g. `myapp:v1.2.3-go1.22-amd64`, `myapp:latest-go1.22.4-arm-v7` |
+| Docker multi-arch manifest | `{app}:{tag\|latest}` for a single combination, version-qualified (`{app}:{tag}-{version}`) whenever the run produced more than one combination (so concurrent versions never overwrite each other's manifest) |
 | JSON report | `builds/matrix/report.json` |
+| Release manifest | `<PHELIX_DATA_DIR>/matrix/runs/<run-id>.manifest.json` (one per finished run with artifacts; see [Artifact checksums and the release manifest](#artifact-checksums-and-the-release-manifest)) |
 
-**Concurrency and caching:** worker pool runs combinations in parallel (default: 3); each combination gets its own cache directory (`.phelix/cache/go/{combo-id}/` or `target/{combo-id}/`); live progress display shows running/completed/failed combinations.
+**Docker matrix builds are linux-only:** Docker images cannot target
+`darwin/*` or `windows/*`, so those combinations fail fast with a pointer to
+`phelix build --matrix` for native binaries. Per-combination `TARGET*` build
+args (`TARGETPLATFORM`, `TARGETOS`, `TARGETARCH`, `TARGETVARIANT`,
+`TARGETVERSION`) are passed to every image build, so generated Dockerfiles can
+react to the target, and the requested toolchain version is additionally
+passed as `GO_VERSION`/`RUST_VERSION` — the build args the generated
+Dockerfiles pin their toolchain images on (see the `ARG GO_VERSION`/
+`ARG RUST_VERSION` notes in
+[Docker image building](#docker-image-building)). A Dockerfile is generated
+when the project has none, exactly like a single-image dockerize. Your own
+`--build-arg KEY=VALUE` flags are forwarded too, and malformed entries (`KEY`
+without a value, empty keys) are rejected up front instead of being silently
+dropped.
+
+> **Note:** `--matrix-tags` is kept for compatibility but is a no-op —
+> per-combination tagging is the default behavior of every matrix dockerize.
+
+**Concurrency and caching:** worker pool runs combinations in parallel (default: 3); each combination gets its own cache directory (`.phelix/cache/go/{combo-id}/` or `target/{combo-id}/`); live progress display shows running/completed/failed combinations. A combination whose build panics or returns no result is recorded as failed and never takes down the rest of the matrix.
 
 **Failure handling:**
-- **Build phase**: fail-open — one failure doesn't stop the rest; full summary at the end.
+- **Build phase**: fail-open — one failure doesn't stop the rest; full summary at the end. The CLI exits non-zero when any combination failed, so scripts can detect partial failures.
 - **Push phase**: fail-closed by default — if any combination failed, nothing is pushed. Use `--push-partial` to push only successful images.
 
-**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`) listing each combination's status, duration, artifact path, cache status, and error (if failed).
+**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`, carrying the Matrix Run ID as `run_id`) listing each combination's status, duration, artifact path, SHA-256 checksum, cache status, attempt count and per-attempt log (automatic retries), and error (if failed — redacted, so compiler output with embedded credentials never lands in the report). The report describes the whole run: a resumed run's report covers every combination (earlier sessions included), and combinations that never ran appear as `pending`.
 
 **Independent build reports per combination:** every combination retains its own build metrics — toolchain version, target platform, duration, cache status and binary size — recorded alongside the matrix version's artifacts in `versions.json` and mirrored in `builds/matrix/report.json` (`cache_status` per combination). Regression analysis is combination-aware: `Go 1.27 / linux-amd64` is only ever compared against previous `Go 1.27 / linux-amd64` builds, never against `Go 1.26 / linux-arm64` or a Rust build. After recording, each combination prints a compact summary of its own comparisons.
 
@@ -1162,6 +1985,10 @@ All state lives under `~/.phelix/`:
 │   ├── <app>.log            # per-app logs
 │   └── deploy_*.log         # deploy instance logs
 ├── registry/<slug>.enc      # encrypted registry credentials
+├── matrix/
+│   └── runs/                 # Matrix Run history: <id>.json records,
+│                             #   <id>.lock execution locks, <id>.manifest.json
+│                             #   release manifests (see Matrix builds)
 └── apps/<AppName>/          # per-app data
     ├── versions.json        # version metadata index (incl. per-version build reports + per-combo matrix reports)
     ├── deploy.json           # blue-green / rolling state
@@ -1259,6 +2086,8 @@ exit code**, so automation can rely on them:
 | 20 | build | `BUILD_FAILED`, `BUILD_TIMEOUT`, `TOOLCHAIN_NOT_FOUND`, `UNSUPPORTED_PROJECT` |
 | 21 | deploy | `DEPLOY_FAILED`, `INSTANCE_START_FAILED`, `HEALTH_CHECK_FAILED`, `DEPLOY_LOCKED` |
 | 22 | rollback | `ROLLBACK_FAILED` |
+| 23 | rollback verification failed/cancelled | `ROLLBACK_VERIFY_FAILED` |
+| 24 | deployment failed AND automatic rollback failed (state degraded — manual intervention required) | `AUTO_ROLLBACK_FAILED` |
 | 30 | network | `CONNECTION_ERROR`, `PORT_UNAVAILABLE` |
 | 40 | configuration | `CONFIGURATION_ERROR` |
 | 50 | docker | `DOCKER_ERROR` |
@@ -1286,12 +2115,17 @@ guidelines.
 11. **Regularly rotate sensitive credentials.**
 12. **Use descriptive variable names** (e.g., `DATABASE_CONNECTION_URL` instead of `DB`).
 13. **Use `phelix rollback --list`** to review available versions before rolling back.
-14. **Keep the proxy daemon running** (`phelix proxy`) for zero-downtime rollbacks.
-15. **Use `--tag`** to label important builds (e.g. `--tag "v2.1-release"`) for easier rollback identification.
-16. **Check `phelix status <app>`** for version history before deciding to roll back.
-17. **Use `phelix dockerize`** to containerize apps with optimized, cached Dockerfiles.
-18. **Watch the automatic Build Report after every build** — it is the fastest way to detect unexpected binary growth, compilation regressions, or toolchain changes (the compiler version in the report makes accidental toolchain bumps visible).
-19. **Treat repeated duration regressions in the same cache mode as a signal**: if cold builds keep getting slower across versions, the codebase — not the cache — is the problem.
+14. **Preview destructive rollbacks with `--dry-run`** before executing — especially for production rollbacks, large rollback distances (many versions behind), tagged-release rollbacks, rollbacks after a failed deployment, and blue-green/rolling apps where the traffic transition matters:
+    ```bash
+    phelix rollback myapp --to stable --dry-run   # inspect the plan
+    phelix rollback myapp --to stable             # then execute
+    ```
+15. **Keep the proxy daemon running** (`phelix proxy`) for zero-downtime rollbacks.
+16. **Use `--tag`** to label important builds (e.g. `--tag "v2.1-release"`) for easier rollback identification.
+17. **Check `phelix status <app>`** for version history before deciding to roll back.
+18. **Use `phelix dockerize`** to containerize apps with optimized, cached Dockerfiles.
+19. **Watch the automatic Build Report after every build** — it is the fastest way to detect unexpected binary growth, compilation regressions, or toolchain changes (the compiler version in the report makes accidental toolchain bumps visible).
+20. **Treat repeated duration regressions in the same cache mode as a signal**: if cold builds keep getting slower across versions, the codebase — not the cache — is the problem.
 20. **Use `phelix build-report <AppName>`** to review stored build history before investigating a performance or size issue; it is read-only and works offline.
 21. **After a matrix build, check each combination's summary** — a size regression in one platform/toolchain combination won't show up in the others.
 

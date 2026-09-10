@@ -60,6 +60,18 @@ type MatrixArtifact struct {
 	Error     string `json:"error,omitempty"`     // error message if failed
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 
+	// MatrixRunID associates the artifact with its Matrix Run
+	// ("mx_YYYYMMDD_xxxx"), closing the Matrix Run → combination → artifact
+	// chain (`phelix matrix show`). Additive: absent on versions recorded
+	// before run IDs existed.
+	MatrixRunID string `json:"matrix_run_id,omitempty"`
+
+	// SHA256 is the checksum of the artifact's final bytes (lowercase hex),
+	// or the image digest for Docker image artifacts — the integrity
+	// identity carried into the release manifest. Additive: absent on
+	// versions recorded before checksums existed.
+	SHA256 string `json:"sha256,omitempty"`
+
 	// Report carries this combination's own build metrics so each matrix
 	// combination retains independent telemetry for regression analysis.
 	// Additive: absent on older artifacts. nil = no comparable metadata.
@@ -224,6 +236,39 @@ func CurrentVersion(appName string) (int, error) {
 	return 0, nil
 }
 
+// LastKnownGoodVersion returns the version automatic rollback should restore:
+// the version versions.json currently marks, when it was successfully
+// promoted and its binary still exists. A failed deploy never promotes
+// itself, so the current pointer still names the version that was serving
+// before the failed rollout — even when the failed version already reached
+// some replicas. When the current record was never promoted (or its binary is
+// gone), the newest other promoted version with an existing binary wins, so a
+// chain of bad deploys (v11, v12 bad, v13 current-failed) resolves to the
+// last genuinely good one, never to "current - 1".
+func LastKnownGoodVersion(appName string) (int, error) {
+	vf, err := LoadVersions(appName)
+	if err != nil {
+		return 0, err
+	}
+	promoted := func(v VersionMeta) bool { return v.DeployedAt != nil }
+	usable := func(ver int) bool {
+		_, _, err := VersionPaths(appName, ver)
+		return err == nil
+	}
+	best := 0
+	for _, v := range vf.Versions {
+		if v.Version > best && promoted(v) && usable(v.Version) {
+			best = v.Version
+		}
+	}
+	if best == 0 {
+		list := formatAvailableVersions(vf)
+		return 0, phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound,
+			"deploy: no previous known-good version to roll back to for %q (available: %s)", appName, list)
+	}
+	return best, nil
+}
+
 // PreviousVersion returns the version before the current one in build order.
 func PreviousVersion(appName string) (int, error) {
 	vf, err := LoadVersions(appName)
@@ -247,6 +292,21 @@ func PreviousVersion(appName string) (int, error) {
 		return 0, phelixerr.Newf(phelixerr.CodeRollbackTargetNotFound, "deploy: version v%d is not available for %q; available: %s", prev, appName, list)
 	}
 	return prev, nil
+}
+
+// TagForVersion returns the tag recorded for the given version, or "" when
+// the version is untagged or unknown.
+func TagForVersion(appName string, version int) string {
+	vf, err := LoadVersions(appName)
+	if err != nil {
+		return ""
+	}
+	for _, v := range vf.Versions {
+		if v.Version == version {
+			return v.Tag
+		}
+	}
+	return ""
 }
 
 func versionExists(vf *VersionsFile, ver int) bool {
@@ -400,57 +460,108 @@ func RecordDockerBuild(appName, dockerImage, tag, gitCommit string, policy Reten
 	return &RecordResult{Version: ver}, nil
 }
 
-// PromoteVersion marks ver as current after a successful deploy: updates
-// versions.json, deployed_at, and the current → builds/vN symlink.
+// PromoteVersion marks ver as current after a successful deploy. Both durable
+// representations are staged before either changes. If activating the symlink
+// fails after versions.json commits, the previous metadata is restored, so a
+// caller never observes a half-promotion caused by an ordinary write failure.
 func PromoteVersion(appName string, ver int, deployMode string) error {
 	if ver <= 0 {
 		return nil
 	}
-	vf, err := LoadVersions(appName)
+	before, err := LoadVersions(appName)
 	if err != nil {
 		return err
 	}
+	after := cloneVersionsFile(before)
 	now := time.Now()
 	found := false
-	for i := range vf.Versions {
-		vf.Versions[i].IsCurrent = vf.Versions[i].Version == ver
-		if vf.Versions[i].Version == ver {
+	for i := range after.Versions {
+		after.Versions[i].IsCurrent = after.Versions[i].Version == ver
+		if after.Versions[i].Version == ver {
 			found = true
-			vf.Versions[i].DeployedAt = &now
-			vf.Versions[i].DeployMode = deployMode
+			after.Versions[i].DeployedAt = &now
+			after.Versions[i].DeployMode = deployMode
 		}
 	}
 	if !found {
 		return phelixerr.Newf(phelixerr.CodeVersionNotFound, "deploy: cannot promote unknown version v%d for %q", ver, appName)
 	}
-	if err := saveVersions(appName, vf); err != nil {
-		return err
-	}
-	return updateCurrentSymlink(appName, ver)
-}
 
-func updateCurrentSymlink(appName string, ver int) error {
-	dir, err := appDataDir(appName)
+	metadataTmp, err := stageVersions(appName, after)
 	if err != nil {
 		return err
 	}
-	target := filepath.Join("builds", fmt.Sprintf("v%d", ver))
-	link := filepath.Join(dir, "current")
-
-	// Atomic swap: build the replacement symlink under a temp name in the
-	// same directory, then rename over the old link. rename(2) replaces the
-	// existing symlink atomically, so there is never an instant where
-	// "current" is missing or half-created (the previous Remove+Symlink pair
-	// left exactly such a window and destroyed the link entirely if the
-	// create failed after the remove).
-	tmp := filepath.Join(dir, fmt.Sprintf(".current.tmp.%d", os.Getpid()))
-	_ = os.Remove(tmp)
-	if err := os.Symlink(target, tmp); err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: stage current -> %s", target)
+	defer os.Remove(metadataTmp)
+	linkTmp, link, err := stageCurrentSymlink(appName, ver)
+	if err != nil {
+		return err
 	}
+	defer os.Remove(linkTmp)
+
+	path, _ := versionsPath(appName)
+	if err := os.Rename(metadataTmp, path); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: activate versions metadata for v%d", ver)
+	}
+	if err := os.Rename(linkTmp, link); err != nil {
+		if restoreErr := saveVersions(appName, before); restoreErr != nil {
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+				"deploy: activate current for v%d (metadata rollback also failed: %v)", ver, restoreErr)
+		}
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: activate current for v%d", ver)
+	}
+	return nil
+}
+
+func cloneVersionsFile(vf *VersionsFile) *VersionsFile {
+	if vf == nil {
+		return &VersionsFile{}
+	}
+	out := &VersionsFile{Versions: make([]VersionMeta, len(vf.Versions))}
+	copy(out.Versions, vf.Versions)
+	return out
+}
+
+func stageVersions(appName string, vf *VersionsFile) (string, error) {
+	path, err := versionsPath(appName)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: create versions directory")
+	}
+	data, err := json.MarshalIndent(vf, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".versions.tmp.%d.%d", os.Getpid(), time.Now().UnixNano()))
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: stage versions metadata")
+	}
+	return tmp, nil
+}
+
+func stageCurrentSymlink(appName string, ver int) (tmp, link string, err error) {
+	dir, err := appDataDir(appName)
+	if err != nil {
+		return "", "", err
+	}
+	target := filepath.Join("builds", fmt.Sprintf("v%d", ver))
+	link = filepath.Join(dir, "current")
+	tmp = filepath.Join(dir, fmt.Sprintf(".current.tmp.%d.%d", os.Getpid(), time.Now().UnixNano()))
+	if err := os.Symlink(target, tmp); err != nil {
+		return "", "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: stage current -> %s", target)
+	}
+	return tmp, link, nil
+}
+
+func updateCurrentSymlink(appName string, ver int) error {
+	tmp, link, err := stageCurrentSymlink(appName, ver)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
 	if err := os.Rename(tmp, link); err != nil {
-		_ = os.Remove(tmp) // keep the tree clean if replace fails
-		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: activate current -> %s", target)
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: activate current for v%d", ver)
 	}
 	return nil
 }

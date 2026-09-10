@@ -34,6 +34,7 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 		AppID:          appID,
 		AppName:        appName,
 		DeploymentID:   state.LastDeploymentID,
+		RequestID:      state.LastRequestID,
 		Strategy:       string(state.Mode),
 		CurrentVersion: versionLabel(state.ActiveVersion),
 		TargetVersion:  versionLabel(state.ActiveVersion),
@@ -128,10 +129,13 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 		s.ReplicasDesired = len(state.Replicas)
 	}
 
-	// Lifecycle: an operation holding the deploy lock is in flight; otherwise
-	// the deployment has settled and its phase follows whether it serves.
+	// Lifecycle comes from the live OS lock, not the advisory OpLock mirror in
+	// deploy.json. A process crash releases flock but cannot run the deferred
+	// mirror cleanup, so trusting the persisted field would report in_progress
+	// forever after restart.
+	holder, lockErr := TryLoadLock(appName)
 	switch {
-	case state.OpLock != nil:
+	case lockErr == nil && holder != nil:
 		s.Phase = PhaseIdle
 		s.Status = StatusInProgress
 	case InstanceAlive(state.ServingInstance()):

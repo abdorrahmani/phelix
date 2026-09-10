@@ -616,6 +616,23 @@ func TestTelemetry_Classic_StartCompleteAndFail(t *testing.T) {
 	}
 }
 
+func TestTelemetry_RequestIDFlowsThroughStateEventsAndSnapshot(t *testing.T) {
+	sink := &recordingSink{}
+	tracker := NewTracker(sink, "42", "shop", string(ModeBlueGreen))
+	tracker.SetRequestID("req-42")
+	state := &DeployState{AppName: "shop", Mode: ModeBlueGreen}
+	tracker.Bind(state)
+	tracker.Started(1, 2, "remote deploy")
+
+	if state.LastRequestID != "req-42" {
+		t.Fatalf("state request id = %q", state.LastRequestID)
+	}
+	event := sink.last(t)
+	if event.RequestID != "req-42" || event.Snapshot.RequestID != "req-42" {
+		t.Fatalf("correlation event=%q snapshot=%q", event.RequestID, event.Snapshot.RequestID)
+	}
+}
+
 // --- nil tracker (telemetry disabled) --------------------------------------
 
 func TestTelemetry_NilTracker_IsSilentAndSafe(t *testing.T) {

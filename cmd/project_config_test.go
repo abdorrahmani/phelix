@@ -122,12 +122,15 @@ func TestSyncProjectHealthNoBlockNoOp(t *testing.T) {
 
 // TestApplyConfigDeployStrategy verifies the strategy → deploy flags mapping:
 // explicit CLI flags win over --strategy, --strategy wins over phelix.yaml,
-// classic/no-config changes nothing, rolling without replicas defaults to 1.
+// classic/no-config changes nothing, rolling without replicas defaults to 1,
+// and canary/progressive resolve into a rollout plan.
 func TestApplyConfigDeployStrategy(t *testing.T) {
 	reset := func() {
 		rebuildBlueGreen = false
 		rebuildReplicas = 0
 		rebuildStrategy = ""
+		rebuildCanary = 0
+		rolloutPlan = nil
 	}
 	t.Cleanup(reset)
 	reset()
@@ -136,6 +139,7 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 		c := &cobra.Command{Use: "rebuild"}
 		c.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "")
 		c.Flags().IntVar(&rebuildReplicas, "replicas", 0, "")
+		c.Flags().IntVar(&rebuildCanary, "canary", 0, "")
 		c.Flags().StringVar(&rebuildStrategy, "strategy", "", "")
 		for _, f := range changed {
 			_ = c.Flags().Set(f, "1")
@@ -144,6 +148,13 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 	}
 
 	rollingCfg := &project.Config{Deploy: &project.DeployConfig{Strategy: "rolling", Replicas: 3}}
+	canaryPct := project.Percent(5)
+	canaryCfg := &project.Config{Deploy: &project.DeployConfig{Strategy: "canary",
+		Rollout: &project.RolloutConfig{Canary: &canaryPct, Duration: "1m"}}}
+	progressiveCfg := &project.Config{Deploy: &project.DeployConfig{Strategy: "progressive",
+		Rollout: &project.RolloutConfig{Steps: []project.RolloutStepConfig{
+			{Traffic: 5, Duration: "10s"}, {Traffic: 25}, {Traffic: 100},
+		}}}}
 
 	// Deployed state lives under $HOME/.phelix/apps/<name>/deploy.json.
 	t.Setenv("HOME", t.TempDir())
@@ -164,7 +175,12 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 		changed  []string
 		wantBG   bool
 		wantRep  int
-		wantErr  bool
+		// wantRollout asserts a rollout plan was resolved with this strategy
+		// ("" asserts none was); wantSteps/wantFirstPct refine the check.
+		wantRollout  string
+		wantSteps    int
+		wantFirstPct int
+		wantErr      bool
 	}{
 		{name: "classic changes nothing", cfg: &project.Config{Deploy: &project.DeployConfig{Strategy: "classic"}}},
 		{name: "no deploy block changes nothing", cfg: &project.Config{}},
@@ -180,7 +196,17 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 		{name: "override rolling takes replicas from config", cfg: rollingCfg, override: "rolling", wantRep: 3},
 		{name: "override rolling without config defaults 1", override: "rolling", wantRep: 1},
 		{name: "explicit --replicas wins over override blue-green", cfg: rollingCfg, override: "blue-green", changed: []string{"replicas"}, wantRep: 1},
-		{name: "unknown override is an error", override: "canary", wantErr: true},
+		{name: "unknown override is an error", override: "surge", wantErr: true},
+
+		// canary/progressive resolve into a rollout plan.
+		{name: "canary from config", cfg: canaryCfg, wantRollout: "canary", wantSteps: 2, wantFirstPct: 5},
+		{name: "progressive from config", cfg: progressiveCfg, wantRollout: "progressive", wantSteps: 3, wantFirstPct: 5},
+		{name: "override canary uses config rollout", cfg: canaryCfg, override: "canary", wantRollout: "canary", wantSteps: 2, wantFirstPct: 5},
+		{name: "override canary without config uses defaults", override: "canary", wantRollout: "canary", wantSteps: 2, wantFirstPct: deploy.DefaultCanaryPercent},
+		{name: "override progressive without steps errors", override: "progressive", wantErr: true},
+		{name: "explicit --canary builds a plan", cfg: canaryCfg, changed: []string{"canary"}, wantRollout: "canary", wantSteps: 2, wantFirstPct: 1},
+		{name: "--canary with --blue-green errors", changed: []string{"canary", "blue-green"}, wantErr: true},
+		{name: "--canary with --strategy errors", changed: []string{"canary"}, override: "canary", wantErr: true},
 
 		// deploy.json: the strategy the app is actually running. Inherited only
 		// when nothing else names one — a rebuild that names no strategy must
@@ -208,7 +234,7 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 			err := applyConfigDeployStrategy(cmd, tc.cfg, appName)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatal("expected an error for an unsupported strategy")
+					t.Fatal("expected an error for an invalid strategy combination")
 				}
 				return
 			}
@@ -217,6 +243,23 @@ func TestApplyConfigDeployStrategy(t *testing.T) {
 			}
 			if rebuildBlueGreen != tc.wantBG || rebuildReplicas != tc.wantRep {
 				t.Errorf("blue-green=%v replicas=%d, want %v/%d", rebuildBlueGreen, rebuildReplicas, tc.wantBG, tc.wantRep)
+			}
+			if (rolloutPlan != nil) != (tc.wantRollout != "") {
+				t.Fatalf("rolloutPlan = %+v, want strategy %q", rolloutPlan, tc.wantRollout)
+			}
+			if rolloutPlan != nil {
+				if rolloutPlan.Strategy != tc.wantRollout {
+					t.Errorf("rollout strategy = %q, want %q", rolloutPlan.Strategy, tc.wantRollout)
+				}
+				if tc.wantSteps > 0 && len(rolloutPlan.Steps) != tc.wantSteps {
+					t.Errorf("rollout steps = %d, want %d", len(rolloutPlan.Steps), tc.wantSteps)
+				}
+				if tc.wantFirstPct > 0 && rolloutPlan.Steps[0].TrafficPercent != tc.wantFirstPct {
+					t.Errorf("first step traffic = %d%%, want %d%%", rolloutPlan.Steps[0].TrafficPercent, tc.wantFirstPct)
+				}
+				if err := rolloutPlan.Validate(); err != nil {
+					t.Errorf("resolved plan is invalid: %v", err)
+				}
 			}
 		})
 	}

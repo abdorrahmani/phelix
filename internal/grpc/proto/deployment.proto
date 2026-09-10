@@ -121,6 +121,8 @@ message DeploymentSnapshot {
   DeploymentFailure failure = 19; // last failure of this deployment, if any
   int64 started_at = 20;          // unix millis the deployment started
   int64 updated_at = 21;          // unix millis this snapshot was produced
+  // Backend command correlation id that initiated the topology change.
+  string request_id = 22;
 }
 
 // DeploymentEvent is one lifecycle transition of a deployment. All events of
@@ -167,4 +169,6 @@ message DeploymentEvent {
   // The raw session token is never carried in the body — the RPC is
   // authenticated via gRPC metadata.
   string user_id = 21;
+  // Backend command correlation id that initiated this deployment.
+  string request_id = 22;
 }

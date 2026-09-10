@@ -36,10 +36,30 @@ const (
 	CodeHealthCheckFailed   Code = "HEALTH_CHECK_FAILED"
 	CodeDeployLocked        Code = "DEPLOY_LOCKED"
 	CodeVersionNotFound     Code = "VERSION_NOT_FOUND"
+	// CodeCanaryRegression: a canary/progressive rollout was aborted because
+	// the new version degraded traffic it served (failed health probes or a
+	// metrics comparison against the stable baseline). Distinct from
+	// HEALTH_CHECK_FAILED so automation can tell "candidate never became
+	// healthy" from "candidate was healthy but regressed under real traffic".
+	// The rollout engine restores the stable version before returning this.
+	CodeCanaryRegression Code = "CANARY_REGRESSION"
 
 	// Rollback.
 	CodeRollbackFailed         Code = "ROLLBACK_FAILED"
 	CodeRollbackTargetNotFound Code = "ROLLBACK_TARGET_NOT_FOUND"
+	// CodeRollbackVerifyFailed: the rollback execution itself succeeded (the
+	// target version is serving), but stability verification failed or was
+	// cancelled. Distinct from ROLLBACK_FAILED so automation can tell "the
+	// switch never happened" from "the switch happened and the target proved
+	// unstable".
+	CodeRollbackVerifyFailed Code = "ROLLBACK_VERIFY_FAILED"
+
+	// CodeAutoRollbackFailed: the deployment failed and the automatic
+	// rollback ALSO failed — the previous known-good version could not be
+	// restored safely and the app may need manual intervention. Distinct from
+	// DEPLOY_FAILED so automation can tell "deploy failed, previous version
+	// serving again" from "deploy failed AND recovery failed; state degraded".
+	CodeAutoRollbackFailed Code = "AUTO_ROLLBACK_FAILED"
 
 	// Process / OS.
 	CodeProcessFailed Code = "PROCESS_FAILED"
@@ -65,6 +85,12 @@ const (
 	CodeGRPC       Code = "GRPC_ERROR"
 	CodeServer     Code = "SERVER_ERROR"
 	CodeEncryption Code = "ENCRYPTION_ERROR"
+
+	// Remote command channel (MonitorStream). CodeUnimplemented marks a
+	// command type the agent cannot execute (e.g. rollback before a handler
+	// is wired); CodeUnavailable a capability temporarily not usable.
+	CodeUnimplemented Code = "UNIMPLEMENTED"
+	CodeUnavailable   Code = "UNAVAILABLE"
 )
 
 // String returns the stable code string.

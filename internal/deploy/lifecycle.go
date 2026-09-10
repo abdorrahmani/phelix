@@ -66,7 +66,7 @@ func (s *DeployState) ServingInstance() *Instance {
 	case ModeRolling:
 		keys := sortedReplicaKeys(s.Replicas)
 		for _, k := range keys {
-			if inst := s.Replicas[k]; inst != nil && inst.PID > 0 {
+			if inst := s.Replicas[k]; inst != nil && InstanceAlive(inst) {
 				return inst
 			}
 		}
@@ -93,16 +93,47 @@ func sortedReplicaKeys(m map[string]*Instance) []string {
 // LifecycleDecision is the application lifecycle status derived from
 // deployment reality rather than from what deploy.json claims.
 type LifecycleDecision struct {
-	// Running is true only when the instance that should be serving traffic
-	// is alive and identity-verified. A state file naming an active slot is
-	// never sufficient on its own.
-	Running bool
-	// PID is the serving process id (0 when not running).
+	// Status is "running" when every instance deploy.json claims to serve
+	// traffic is alive, and "degraded" when at least one claimed instance is
+	// alive but at least one is dead. Only "degraded" is persisted over the
+	// stored record: a "stopped" reading is almost always this process's own
+	// stale view (state written before this deploy swapped instances), and
+	// stamping it would corrupt a concurrent deploy's fresh state — the exact
+	// mechanism behind the "list says stopped while replicas run" bug.
+	Status string
+	// Alive / Desired count the instances the state claims to serve.
+	Alive   int
+	Desired int
+	// PID is the serving process id (first alive instance; 0 when none).
 	PID int
 	// StartedAt is when the serving instance was launched (zero when unknown).
 	StartedAt time.Time
 	// PublicPort is the proxy-owned public port (0 when unknown).
 	PublicPort int
+}
+
+// instancesServing returns the instance records that the state claims are
+// serving traffic right now: the active slot for blue-green, or every recorded
+// replica for rolling. Their liveness decides the lifecycle status.
+func instancesServing(s *DeployState) []*Instance {
+	if s == nil {
+		return nil
+	}
+	switch s.Mode {
+	case ModeBlueGreen:
+		if inst := s.ActiveInstance(); inst != nil && inst.PID > 0 {
+			return []*Instance{inst}
+		}
+	case ModeRolling:
+		var out []*Instance
+		for _, k := range sortedReplicaKeys(s.Replicas) {
+			if inst := s.Replicas[k]; inst != nil && inst.PID > 0 {
+				out = append(out, inst)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // DecideLifecycle derives LifecycleDecision from a DeployState. Callers use
@@ -112,19 +143,104 @@ func DecideLifecycle(state *DeployState) LifecycleDecision {
 	if state == nil {
 		return LifecycleDecision{}
 	}
-	inst := state.ServingInstance()
-	if !InstanceAlive(inst) {
-		return LifecycleDecision{PublicPort: state.PublicPort}
+	serving := instancesServing(state)
+	d := LifecycleDecision{Desired: len(serving), PublicPort: state.PublicPort}
+	for _, inst := range serving {
+		if !InstanceAlive(inst) {
+			continue
+		}
+		if d.PID == 0 {
+			d.PID = inst.PID
+			d.StartedAt = inst.StartedAt
+		}
+		d.Alive++
 	}
-	d := LifecycleDecision{
-		Running:    true,
-		PID:        inst.PID,
-		PublicPort: state.PublicPort,
-	}
-	if !inst.StartedAt.IsZero() {
-		d.StartedAt = inst.StartedAt
+	switch {
+	case d.Desired == 0 || d.Alive == 0:
+		d.Status = "stopped"
+	case d.Alive < d.Desired:
+		d.Status = "degraded"
+	default:
+		d.Status = "running"
 	}
 	return d
+}
+
+// Reconcile rewrites the persisted runtime state so it describes reality, and
+// reports what the lifecycle record should say:
+//
+//   - replicas/slots whose recorded process is gone or was recycled get their
+//     PID cleared and status "stopped" — deploy.json can then never name a
+//     PID that is not Phelix's (Step 9: stale-PID reconciliation).
+//   - instance Status strings are corrected against liveness ("running" with
+//     a dead PID is a lie; "stopped" with a live PID is a lie).
+//   - the state file is re-persisted only when something changed.
+//
+// It never fabricates a running status: an app whose serving instances are
+// all dead is reported stopped, but the persisted record is repaired rather
+// than blindly trusted the other way either.
+func (s *DeployState) Reconcile() (LifecycleDecision, error) {
+	d := DecideLifecycle(s)
+	changed := false
+	fix := func(inst *Instance) {
+		if inst == nil {
+			return
+		}
+		alive := InstanceAlive(inst)
+		switch {
+		case !alive && inst.PID > 0:
+			inst.PID = 0
+			inst.Status = "stopped"
+			changed = true
+		case alive && inst.Status != "running":
+			inst.Status = "running"
+			changed = true
+		}
+	}
+	if s.Mode == ModeBlueGreen {
+		for _, inst := range s.Slots {
+			fix(inst)
+		}
+	} else {
+		for _, inst := range s.Replicas {
+			fix(inst)
+		}
+	}
+	if !changed {
+		return d, nil
+	}
+	if err := Store(s); err != nil {
+		return d, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: persist reconciled state for %s", s.AppName)
+	}
+	return d, nil
+}
+
+// ReapStaleInstances clears instance records whose recorded process is
+// definitely gone, without touching the state file (the caller persists). It
+// is the deploy-flow counterpart of Reconcile: a deploy or rollback that
+// loads state must not inherit dead PIDs from an aborted predecessor.
+//
+// Conservative by design: a live PID whose binary cannot be verified is left
+// alone here — it may still be serving traffic (e.g. the recorded binary was
+// replaced on disk); read-side Reconcile and InstanceAlive-based derivation
+// handle that ambiguity without dropping a possibly-live record mid-deploy.
+func ReapStaleInstances(state *DeployState) {
+	if state == nil {
+		return
+	}
+	reap := func(instances map[string]*Instance) {
+		for _, inst := range instances {
+			if inst == nil || inst.PID <= 0 {
+				continue
+			}
+			if !pidAlive(inst.PID) {
+				inst.PID = 0
+				inst.Status = "stopped"
+			}
+		}
+	}
+	reap(state.Slots)
+	reap(state.Replicas)
 }
 
 // TeardownDeployment stops a proxy-managed deployment: every recorded

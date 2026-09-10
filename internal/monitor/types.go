@@ -9,6 +9,14 @@ import (
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
+// Command types the backend can send over MonitorStream.
+const (
+	// CommandRollback remotely triggers the existing local rollback engine.
+	// Executed through the cmd package's rollback handler (the same service
+	// layer the CLI uses), never by shelling out to the CLI binary.
+	CommandRollback = "rollback"
+)
+
 // MetricsCollector collects the data the monitoring daemon reports to the
 // backend. Implementations are transport-agnostic — they know nothing about
 // how the data is sent (previously WebSocket, now gRPC).
@@ -31,12 +39,28 @@ type CommandPayload struct {
 	Type    string `json:"type"`
 	AppName string `json:"appName"`
 
+	// RequestID is the backend's command correlation id (MonitorCommandRequest
+	// request_id). Executors that report async telemetry use it to tag their
+	// event stream so the backend can tie events to the originating command.
+	RequestID string `json:"requestId,omitempty"`
+
 	// Strategy/Replicas are one-off deployment overrides carried by a
 	// "rebuild" command. Empty/zero means the rebuild resolves its strategy
 	// the way a local rebuild does — from the app's phelix.yaml — and the
 	// override is never written back to that file.
 	Strategy string `json:"strategy,omitempty"`
 	Replicas int    `json:"replicas,omitempty"`
+
+	// Target/Reason/VerifyDuration/DryRun are remote rollback options carried
+	// by a "rollback" command. They mirror the local `phelix rollback` flags:
+	// Target uses the same "vN" / "N" / tag vocabulary as --to (empty =
+	// previous version), Reason is validated at the rollback boundary,
+	// VerifyDuration is a whole observation window in milliseconds, and
+	// DryRun routes to the read-only plan path.
+	Target         string        `json:"target,omitempty"`
+	Reason         string        `json:"reason,omitempty"`
+	VerifyDuration time.Duration `json:"verifyDuration,omitempty"`
+	DryRun         bool          `json:"dryRun,omitempty"`
 }
 
 // Command is a remote-control command received from the backend.

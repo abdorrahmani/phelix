@@ -8,25 +8,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/builder"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // DockerMatrixBuilder handles Docker image matrix builds.
 //
-// Two tagging strategies:
+// Tagging: each {toolchain version} × {platform} combination gets its own
+// image tag, derived from the app name and the user-supplied tag:
 //
-//  1. Per-combination tags (--matrix-tags):
-//     Each {toolchain version} × {platform} gets its own image tag:
-//     myapp:go1.22-linux-amd64
-//     myapp:go1.23-linux-arm64
-//     These are useful for debugging, testing, and pinning specific combinations.
-//
-//  2. Multi-arch manifest list (--multi-arch-tag):
-//     A single tag that points to a manifest list containing all platform variants:
-//     myapp:latest  →  manifest list [linux/amd64, linux/arm64]
-//     Built via `docker buildx build --platform linux/amd64,linux/arm64`.
-//     This is what production deployments typically use — Docker automatically
-//     pulls the correct architecture at runtime.
+//	myapp:v1.2.3-go1.22-amd64       (tag given)
+//	myapp:latest-go1.22-amd64       (no tag)
+//	myapp:v1.2.3-go1.22.4-arm-v7    (ARM variant)
 //
 // Push semantics (fail-closed by default):
 //   - If ANY combination failed to build, we refuse to push any image.
@@ -38,11 +31,41 @@ import (
 //     successfully-built images.
 type DockerMatrixBuilder struct {
 	ProjectRoot string
-	Registry    string // optional registry prefix (e.g. ghcr.io/user)
-	Tag         string // version tag for the multi-arch manifest (e.g. "v1.2.3")
-	BuildArgs   map[string]string
-	Labels      map[string]string
-	Debug       bool
+	// AppName is the image repository name for per-combination tags.
+	AppName  string
+	Registry string // optional registry prefix (e.g. ghcr.io/user)
+	Tag      string // version tag for images (e.g. "v1.2.3"); empty → "latest"
+	// BuildArgs are extra docker build arguments. Read-only during builds:
+	// per-combination values (TARGETPLATFORM etc.) are merged into a local
+	// copy so concurrent builds never mutate shared state.
+	BuildArgs map[string]string
+	Labels    map[string]string
+	Debug     bool
+	// CommandContext creates executed commands. Overridable for tests.
+	CommandContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+}
+
+func (d *DockerMatrixBuilder) command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if d.CommandContext != nil {
+		return d.CommandContext(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, name, args...)
+}
+
+// repoName returns the image repository, sanitized for Docker references.
+func (d *DockerMatrixBuilder) repoName() string {
+	if d.AppName != "" {
+		return sanitizeNamePart(d.AppName)
+	}
+	return "phelix-build"
+}
+
+// tagOrDefault returns the user tag, or "latest" when unset.
+func (d *DockerMatrixBuilder) tagOrDefault() string {
+	if d.Tag != "" {
+		return d.Tag
+	}
+	return "latest"
 }
 
 // DockerBuildConfig controls what the matrix Docker builder produces.
@@ -53,15 +76,11 @@ type DockerBuildConfig struct {
 	PushPartial  bool // push only successful images even if some failed
 }
 
-// BuildDockerImage builds a Docker image for one combination.
-//
-// For per-combination tags, we use plain `docker build -t <tag>` for each
-// platform. The image is single-platform (the host platform unless buildx
-// is used with --platform).
-//
-// For multi-arch manifest lists, we build once with `docker buildx build
-// --platform <all-platforms>` which creates a manifest list. This is only
-// done once (for the "latest" or version tag), not per-combination.
+// BuildDockerImage builds a Docker image for one combination. Each platform
+// is built with `docker build --platform <platform>`; build-arg iteration is
+// sorted so the command line is deterministic, and the per-combination
+// TARGET* build args are merged into a copy — never written back into the
+// builder's shared maps (which would race under concurrent builds).
 func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combination) *Result {
 	result := &Result{Combination: c}
 	start := time.Now()
@@ -72,30 +91,56 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 		}
 	}
 
+	// Docker containers only exist for linux — darwin/windows combinations
+	// are binary-matrix territory, not image builds.
+	if c.OS != "linux" {
+		result.Status = "failed"
+		result.Error = phelixerr.Newf(
+			phelixerr.CodeInvalidArgument,
+			"docker images cannot target %s — Docker supports linux platforms only; "+
+				"use `phelix build --matrix` for native %s binaries", c.Platform, c.Platform)
+		return result
+	}
+
 	// Build the per-combination image tag.
-	imageName := c.ImageTag("phelix-build") // temporary local tag
+	imageName := fmt.Sprintf("%s:%s-%s", d.repoName(), d.tagOrDefault(), c.DockerTagSuffix())
 	if d.Registry != "" {
 		imageName = d.Registry + "/" + imageName
 	}
 
 	args := []string{"build", "-t", imageName}
 
-	// Add platform-specific build arg so the Dockerfile can detect the target.
-	if d.BuildArgs == nil {
-		d.BuildArgs = make(map[string]string)
-	}
-	d.BuildArgs["TARGETPLATFORM"] = c.Platform
-	d.BuildArgs["TARGETOS"] = c.OS
-	d.BuildArgs["TARGETARCH"] = c.Arch
-
+	// Merge user build args with the per-combination TARGET* args into a
+	// local copy. The builder's maps stay untouched (concurrency-safe).
+	merged := make(map[string]string, len(d.BuildArgs)+6)
 	for k, v := range d.BuildArgs {
-		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, v))
+		merged[k] = v
 	}
-	for k, v := range d.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", k, v))
+	merged["TARGETPLATFORM"] = c.Platform
+	merged["TARGETOS"] = c.OS
+	merged["TARGETARCH"] = c.Arch
+	if c.Variant != "" {
+		merged["TARGETVARIANT"] = c.Variant
+	}
+	merged["TARGETVERSION"] = c.Version
+	// The ecosystem build args the generated Dockerfiles parameterize on
+	// (ARG GO_VERSION / ARG RUST_VERSION). Without them, every combination of
+	// a matrix dockerize would silently build with the Dockerfile's default
+	// toolchain while being tagged with the requested version.
+	switch c.Lang {
+	case builder.Go:
+		merged["GO_VERSION"] = c.Version
+	case builder.Rust:
+		merged["RUST_VERSION"] = c.Version
 	}
 
-	// For non-host platforms, use buildx with --platform.
+	for _, k := range sortedKeys(merged) {
+		args = append(args, "--build-arg", k+"="+merged[k])
+	}
+	for _, k := range sortedKeys(d.Labels) {
+		args = append(args, "--label", k+"="+d.Labels[k])
+	}
+
 	args = append(args, "--platform", c.Platform)
 	args = append(args, d.ProjectRoot)
 
@@ -103,7 +148,7 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 	logLine("platform: %s", c.Platform)
 	logLine("command:  docker %s", redactCommand(args))
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := d.command(ctx, "docker", args...)
 
 	output := &bytes.Buffer{}
 	commandOutput := &progressOutputWriter{ctx: ctx, key: c.ID(), debug: d.Debug, log: output}
@@ -126,7 +171,39 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 	result.Duration = time.Since(start)
 	result.Status = "success"
 	result.Artifact = imageName
+
+	// Resolve the image's content digest (Docker's own sha256 of the built
+	// image) so every matrix artifact — binary or image — carries a SHA-256.
+	// A digest that cannot be resolved is an artifact-integrity failure: the
+	// combination is failed rather than recorded with an unverifiable image.
+	digest, derr := d.imageDigest(ctx, imageName)
+	if derr != nil {
+		result.Status = "failed"
+		result.Artifact = imageName
+		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, derr,
+			"artifact integrity check failed for %s — could not resolve the digest of %s", c.ID(), imageName)
+		return result
+	}
+	result.SHA256 = digest
 	return result
+}
+
+// imageDigest resolves a local image's content digest via
+// `docker image inspect --format {{.Id}}`. The ID is Docker's sha256 content
+// address of the image ("sha256:<64 hex>"); the bare hex digest is returned so
+// it can live in the same sha256 field as binary checksums.
+func (d *DockerMatrixBuilder) imageDigest(ctx context.Context, image string) (string, error) {
+	cmd := d.command(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", phelixerr.Wrapf(phelixerr.CodeDocker, err, "docker image inspect %s", image)
+	}
+	digest := strings.TrimPrefix(strings.TrimSpace(string(out)), "sha256:")
+	if len(digest) != SHA256HexLen {
+		return "", phelixerr.Newf(phelixerr.CodeDocker,
+			"unexpected digest %q for image %s — expected a sha256 digest", digest, image)
+	}
+	return digest, nil
 }
 
 // redactCommand renders an exec command-line for a debug log, masking the
@@ -205,19 +282,15 @@ func (d *DockerMatrixBuilder) PushImages(results []Result, pushPartial bool) err
 	return nil
 }
 
-// BuildMultiArchManifest builds a single multi-arch manifest list using
-// docker buildx. This creates a unified tag that Docker automatically
-// resolves to the correct platform at pull time.
-//
-// The manifest list is built from all the per-combination images that
-// were already built and tagged locally. We use `docker buildx imagetools
-// create` to assemble the manifest without re-building.
+// BuildMultiArchManifest assembles a single multi-arch manifest list from the
+// successfully-built per-combination images using `docker buildx imagetools
+// create`, so one tag resolves to the correct platform at pull time.
 func (d *DockerMatrixBuilder) BuildMultiArchManifest(ctx context.Context, results []Result, tag string) (*Result, error) {
 	if len(results) == 0 {
 		return nil, phelixerr.New(phelixerr.CodeDocker, "no images to create manifest from")
 	}
 
-	manifestTag := fmt.Sprintf("%s:%s", "phelix-build", tag)
+	manifestTag := fmt.Sprintf("%s:%s", d.repoName(), tag)
 	if d.Registry != "" {
 		manifestTag = d.Registry + "/" + manifestTag
 	}
@@ -235,7 +308,7 @@ func (d *DockerMatrixBuilder) BuildMultiArchManifest(ctx context.Context, result
 	}
 
 	args := append([]string{"buildx", "imagetools", "create", "-t", manifestTag}, refs...)
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := d.command(ctx, "docker", args...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -264,7 +337,11 @@ func (d *DockerMatrixBuilder) pushOne(imageRef string) error {
 func formatFailedList(results []Result) string {
 	var b strings.Builder
 	for _, r := range results {
-		fmt.Fprintf(&b, "  - %s: %v\n", r.Combination.ID(), phelixerr.Redact(r.Error.Error()))
+		msg := "build failed"
+		if r.Error != nil {
+			msg = phelixerr.Redact(r.Error.Error())
+		}
+		fmt.Fprintf(&b, "  - %s: %s\n", r.Combination.ID(), msg)
 	}
 	return b.String()
 }
@@ -275,8 +352,8 @@ func BuildImageSimple(ctx context.Context, projectRoot, imageName string, buildA
 	start := time.Now()
 
 	args := []string{"build", "-t", imageName}
-	for k, v := range buildArgs {
-		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, v))
+	for _, k := range sortedKeys(buildArgs) {
+		args = append(args, "--build-arg", k+"="+buildArgs[k])
 	}
 	args = append(args, projectRoot)
 

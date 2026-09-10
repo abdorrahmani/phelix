@@ -179,8 +179,12 @@ func TestMonitorStream_SendsServerInfoAndMetrics(t *testing.T) {
 	if si.GetConnection() == nil || si.GetAlert() == nil || si.GetSecurity() == nil {
 		t.Fatal("expected ServerInfo to carry connection/alert/security settings groups")
 	}
-	if si.GetConnection().GetSshUser() != "phelix" || si.GetConnection().GetSshPort() != 22 {
-		t.Fatalf("unexpected seeded connection settings: %+v", si.GetConnection())
+	// The connection group is present but always empty: the agent never
+	// reports SSH port/user/auth method or key material.
+	conn := si.GetConnection()
+	if conn.GetSshPort() != 0 || conn.GetSshUser() != "" || conn.GetAuthMethod() != "" ||
+		conn.GetSshPassword() != "" || conn.GetPrivateKey() != "" || conn.GetPublicKey() != "" {
+		t.Fatalf("connection settings must be empty on the wire, got %+v", conn)
 	}
 	if si.GetAlert().GetCpuThreshold() != 80 || si.GetSecurity().GetSshRootLogin() != "prohibit-password" {
 		t.Fatalf("unexpected seeded alert/security settings: alert=%+v security=%+v", si.GetAlert(), si.GetSecurity())

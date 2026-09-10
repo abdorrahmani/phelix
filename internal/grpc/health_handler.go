@@ -138,6 +138,7 @@ func processHealthSet(cmd *pb.HealthCommand, c *pb.HealthSetCommand, start time.
 	if err := configMgr.SaveConfig(appID, config); err != nil {
 		return newHealthResult(cmd, false, start, fmt.Sprintf("failed to save config: %v", err))
 	}
+	syncHealthDaemon()
 
 	return newHealthResult(cmd, true, start, "")
 }
@@ -222,6 +223,7 @@ func processHealthAdd(cmd *pb.HealthCommand, c *pb.HealthAddCommand, start time.
 	if err := configMgr.SaveConfig(appID, config); err != nil {
 		return newHealthResult(cmd, false, start, fmt.Sprintf("failed to save config: %v", err))
 	}
+	syncHealthDaemon()
 
 	return newHealthResult(cmd, true, start, "")
 }
@@ -259,6 +261,7 @@ func processHealthRemove(cmd *pb.HealthCommand, c *pb.HealthRemoveCommand, start
 	if err := configMgr.SaveConfig(appID, config); err != nil {
 		return newHealthResult(cmd, false, start, fmt.Sprintf("failed to save config: %v", err))
 	}
+	syncHealthDaemon()
 
 	return newHealthResult(cmd, true, start, "")
 }
@@ -291,6 +294,7 @@ func processHealthList(cmd *pb.HealthCommand, c *pb.HealthListCommand, start tim
 	var endpoints []*pb.EndpointConfig
 	for _, ep := range config.Endpoints {
 		endpoints = append(endpoints, &pb.EndpointConfig{
+			EndpointId:    ep.ID,
 			Name:          ep.Name,
 			Url:           ep.URL,
 			Interval:      ep.Interval,
@@ -338,23 +342,31 @@ func processHealthStatus(cmd *pb.HealthCommand, c *pb.HealthStatusCommand, start
 		return newHealthResult(cmd, false, start, fmt.Sprintf("health daemon not ready: %v", err))
 	}
 
-	statusMap := daemon.GetStatus(appID)
+	// Built from the canonical snapshot rather than from the daemon's result map,
+	// so every CONFIGURED endpoint is listed — an endpoint that has not been
+	// probed yet reports UNKNOWN instead of being omitted, matching what
+	// `phelix health status` prints locally.
+	snap := daemon.SnapshotForApp(appID, c.GetAppName())
 	var endpoints []*pb.EndpointHealthStatus
-	for name, result := range statusMap {
+	for _, e := range snap.EndpointList() {
 		ep := &pb.EndpointHealthStatus{
-			Name:      name,
-			Url:       result.URL,
-			Status:    result.Status,
-			CheckedAt: result.CheckedAt.UnixMilli(),
+			EndpointId: e.Config.ID,
+			Name:       e.Config.Name,
+			Url:        e.Config.URL,
+			Status:     health.StatusUnknown,
 		}
-		if result.StatusCode != nil {
-			ep.StatusCode = int32(*result.StatusCode)
-		}
-		if result.LatencyMs != nil {
-			ep.LatencyMs = *result.LatencyMs
-		}
-		if result.Error != nil {
-			ep.Error = *result.Error
+		if r := e.Result; r != nil {
+			ep.Status = r.Status
+			ep.CheckedAt = r.CheckedAt.UnixMilli()
+			if r.StatusCode != nil {
+				ep.StatusCode = int32(*r.StatusCode)
+			}
+			if r.LatencyMs != nil {
+				ep.LatencyMs = *r.LatencyMs
+			}
+			if r.Error != nil {
+				ep.Error = *r.Error
+			}
 		}
 		endpoints = append(endpoints, ep)
 	}
@@ -476,27 +488,34 @@ func ProcessHealthWatch(appID, appName string) (<-chan *pb.HealthStatusUpdate, e
 
 	updateChan := make(chan *pb.HealthStatusUpdate, 100)
 
-	// Register listener for real-time updates
+	// Register listener for real-time updates. This is a live view for one
+	// interactive watch session — it is NOT the synchronization channel, so it
+	// reports whatever has been observed and nothing else. The backend must
+	// persist endpoint state from AppHealthSnapshot instead.
 	listener := func(event interface{}) {
-		statusMap := daemon.GetStatus(resolvedID)
-		for name, result := range statusMap {
+		snap := daemon.SnapshotForApp(resolvedID, appName)
+		for _, e := range snap.EndpointList() {
+			if e.Result == nil {
+				continue
+			}
 			update := &pb.HealthStatusUpdate{
 				AppId:        resolvedID,
-				AppName:      result.AppName,
-				EndpointName: name,
-				Url:          result.URL,
-				Status:       result.Status,
-				CheckedAt:    result.CheckedAt.UnixMilli(),
-				IsHealthy:    result.Status == "UP",
+				AppName:      snap.AppName,
+				EndpointId:   e.Config.ID,
+				EndpointName: e.Config.Name,
+				Url:          e.Config.URL,
+				Status:       e.Result.Status,
+				CheckedAt:    e.Result.CheckedAt.UnixMilli(),
+				IsHealthy:    e.Result.Status == health.StatusUp,
 			}
-			if result.StatusCode != nil {
-				update.StatusCode = int32(*result.StatusCode)
+			if e.Result.StatusCode != nil {
+				update.StatusCode = int32(*e.Result.StatusCode)
 			}
-			if result.LatencyMs != nil {
-				update.LatencyMs = *result.LatencyMs
+			if e.Result.LatencyMs != nil {
+				update.LatencyMs = *e.Result.LatencyMs
 			}
-			if result.Error != nil {
-				update.Error = *result.Error
+			if e.Result.Error != nil {
+				update.Error = *e.Result.Error
 			}
 			select {
 			case updateChan <- update:
@@ -514,28 +533,44 @@ func ProcessHealthWatch(appID, appName string) (<-chan *pb.HealthStatusUpdate, e
 // Helper functions
 // ============================================================================
 
-// resolveAppIDFromRequest resolves an app ID or name to the actual ID.
+// resolveAppIDFromRequest resolves an app ID or name to the actual app ID.
+//
+// app_id is the identity, so it wins whenever it names a known app. A request
+// that carries only a name — or an app_id the agent does not know together with a
+// name it does — resolves through the name. Anything else is returned verbatim so
+// the caller's own lookup produces the "app not found" error.
 func resolveAppIDFromRequest(appID, appName string) (string, error) {
-	if appID != "" {
-		if _, err := fmt.Sscanf(appID, "%d", new(int)); err == nil {
-			return appID, nil
-		}
+	if appID == "" && appName == "" {
+		return "", fmt.Errorf("app_id or app_name is required")
 	}
 
+	apps := app.Manager.ListApplications()
+	if appID != "" {
+		for _, a := range apps {
+			if a.ID == appID {
+				return appID, nil
+			}
+		}
+	}
 	if appName != "" {
-		apps := app.Manager.ListApplications()
 		for _, a := range apps {
 			if a.Name == appName {
 				return a.ID, nil
 			}
 		}
 	}
+	return appID, nil
+}
 
-	if appID != "" {
-		return appID, nil
+// syncHealthDaemon nudges the health daemon to reconcile immediately after a
+// backend-issued configuration change, so a new endpoint starts being checked
+// (and reported) without waiting out the reconcile interval. A no-op in a process
+// with no running daemon. Sync is idempotent, so racing the periodic reconcile is
+// harmless.
+func syncHealthDaemon() {
+	if d := health.RunningDaemon(); d != nil {
+		go d.Sync()
 	}
-
-	return "", fmt.Errorf("app_id or app_name is required")
 }
 
 // findAppByID finds an app by its ID.

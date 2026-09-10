@@ -51,15 +51,32 @@ type PhelixServiceClient interface {
 	// The CLI processes them locally and returns results through the same stream.
 	// This works through NAT/firewalls because the CLI initiates the connection.
 	AgentStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientToServer, ServerToClient], error)
+	// Deprecated: Do not use.
 	// HealthSetConfig initializes health checks for an application (CLI-initiated).
+	//
+	// DEPRECATED: the agent no longer calls this. Health configuration reaches the
+	// backend through AppHealthSnapshot on MonitorStream, which survives a
+	// disconnect and propagates deletes. Kept declared so existing backends keep
+	// compiling; remove the handler in Phase 2.
 	HealthSetConfig(ctx context.Context, in *HealthSetConfigRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error)
+	// Deprecated: Do not use.
 	// HealthAddEndpoint adds a health check endpoint (CLI-initiated).
+	// DEPRECATED — see HealthSetConfig.
 	HealthAddEndpoint(ctx context.Context, in *HealthAddEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error)
+	// Deprecated: Do not use.
 	// HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
+	// DEPRECATED — see HealthSetConfig.
 	HealthRemoveEndpoint(ctx context.Context, in *HealthRemoveEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error)
+	// Deprecated: Do not use.
 	// ReportHealthResult sends a health check result from the daemon to the backend.
+	//
+	// DEPRECATED: one unary RPC per endpoint per interval, with no stable endpoint
+	// identity and no ordering against configuration. Superseded by
+	// AppHealthSnapshot on MonitorStream. The agent no longer calls this.
 	ReportHealthResult(ctx context.Context, in *ReportHealthResultRequest, opts ...grpc.CallOption) (*ReportHealthResultResponse, error)
 	// ReportAutoRestart sends an auto-restart event from the daemon to the backend.
+	// Still in use: an auto-restart is a point-in-time event that cannot be
+	// re-derived from a later snapshot.
 	ReportAutoRestart(ctx context.Context, in *ReportAutoRestartRequest, opts ...grpc.CallOption) (*ReportAutoRestartResponse, error)
 	// ReportRollbackEvent sends a detailed rollback lifecycle event to the backend.
 	// Each step of a rollback (init, lock, stop, copy, start, promote, etc.)
@@ -145,6 +162,7 @@ func (c *phelixServiceClient) AgentStream(ctx context.Context, opts ...grpc.Call
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type PhelixService_AgentStreamClient = grpc.BidiStreamingClient[ClientToServer, ServerToClient]
 
+// Deprecated: Do not use.
 func (c *phelixServiceClient) HealthSetConfig(ctx context.Context, in *HealthSetConfigRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HealthConfigResponse)
@@ -155,6 +173,7 @@ func (c *phelixServiceClient) HealthSetConfig(ctx context.Context, in *HealthSet
 	return out, nil
 }
 
+// Deprecated: Do not use.
 func (c *phelixServiceClient) HealthAddEndpoint(ctx context.Context, in *HealthAddEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HealthConfigResponse)
@@ -165,6 +184,7 @@ func (c *phelixServiceClient) HealthAddEndpoint(ctx context.Context, in *HealthA
 	return out, nil
 }
 
+// Deprecated: Do not use.
 func (c *phelixServiceClient) HealthRemoveEndpoint(ctx context.Context, in *HealthRemoveEndpointRequest, opts ...grpc.CallOption) (*HealthConfigResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(HealthConfigResponse)
@@ -175,6 +195,7 @@ func (c *phelixServiceClient) HealthRemoveEndpoint(ctx context.Context, in *Heal
 	return out, nil
 }
 
+// Deprecated: Do not use.
 func (c *phelixServiceClient) ReportHealthResult(ctx context.Context, in *ReportHealthResultRequest, opts ...grpc.CallOption) (*ReportHealthResultResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ReportHealthResultResponse)
@@ -255,15 +276,32 @@ type PhelixServiceServer interface {
 	// The CLI processes them locally and returns results through the same stream.
 	// This works through NAT/firewalls because the CLI initiates the connection.
 	AgentStream(grpc.BidiStreamingServer[ClientToServer, ServerToClient]) error
+	// Deprecated: Do not use.
 	// HealthSetConfig initializes health checks for an application (CLI-initiated).
+	//
+	// DEPRECATED: the agent no longer calls this. Health configuration reaches the
+	// backend through AppHealthSnapshot on MonitorStream, which survives a
+	// disconnect and propagates deletes. Kept declared so existing backends keep
+	// compiling; remove the handler in Phase 2.
 	HealthSetConfig(context.Context, *HealthSetConfigRequest) (*HealthConfigResponse, error)
+	// Deprecated: Do not use.
 	// HealthAddEndpoint adds a health check endpoint (CLI-initiated).
+	// DEPRECATED — see HealthSetConfig.
 	HealthAddEndpoint(context.Context, *HealthAddEndpointRequest) (*HealthConfigResponse, error)
+	// Deprecated: Do not use.
 	// HealthRemoveEndpoint removes a health check endpoint (CLI-initiated).
+	// DEPRECATED — see HealthSetConfig.
 	HealthRemoveEndpoint(context.Context, *HealthRemoveEndpointRequest) (*HealthConfigResponse, error)
+	// Deprecated: Do not use.
 	// ReportHealthResult sends a health check result from the daemon to the backend.
+	//
+	// DEPRECATED: one unary RPC per endpoint per interval, with no stable endpoint
+	// identity and no ordering against configuration. Superseded by
+	// AppHealthSnapshot on MonitorStream. The agent no longer calls this.
 	ReportHealthResult(context.Context, *ReportHealthResultRequest) (*ReportHealthResultResponse, error)
 	// ReportAutoRestart sends an auto-restart event from the daemon to the backend.
+	// Still in use: an auto-restart is a point-in-time event that cannot be
+	// re-derived from a later snapshot.
 	ReportAutoRestart(context.Context, *ReportAutoRestartRequest) (*ReportAutoRestartResponse, error)
 	// ReportRollbackEvent sends a detailed rollback lifecycle event to the backend.
 	// Each step of a rollback (init, lock, stop, copy, start, promote, etc.)

@@ -3,7 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -27,6 +30,13 @@ var rebuildBlueGreen bool
 var rebuildReplicas int
 var rebuildStrategy string
 var rebuildTag string
+var rebuildAutoRollback bool
+var rebuildCanary int
+
+// rolloutPlan is non-nil when this rebuild takes the canary/progressive path.
+// It is resolved by applyConfigDeployStrategy from --canary, --strategy or
+// phelix.yaml before the zero-downtime branch dispatches on it.
+var rolloutPlan *deploy.RolloutPlan
 
 var RebuildCmd = &cobra.Command{
 	Use:   "rebuild [ID|AppName] --port <PORT>",
@@ -133,13 +143,14 @@ var RebuildCmd = &cobra.Command{
 				color.YellowString("⚠"), project.FileName, serr)
 		}
 
-		// Zero-downtime deploy paths. When --blue-green or --replicas is set we
-		// hand off to the deploy package instead of the stop->build->start flow
-		// below. The deploy package builds via the same builder, starts the new
-		// instance on an internal port, runs the tiered health check, then
-		// atomically switches the proxy target — so the public port never drops
-		// a connection.
-		if rebuildBlueGreen || rebuildReplicas > 0 {
+		// Zero-downtime deploy paths. When --blue-green, --replicas or a
+		// canary/progressive rollout is selected we hand off to the deploy
+		// package instead of the stop->build->start flow below. The deploy
+		// package builds via the same builder, starts the new instance on an
+		// internal port, runs the tiered health check, then atomically
+		// switches the proxy target — so the public port never drops a
+		// connection.
+		if rebuildBlueGreen || rebuildReplicas > 0 || rolloutPlan != nil {
 			return runZeroDowntimeDeploy(appInfo, name, portToUse)
 		}
 
@@ -211,6 +222,13 @@ var RebuildCmd = &cobra.Command{
 				appInfo.ID,
 			)
 			tracker.Failed(startErr)
+			if rec != nil && rebuildAutoRollback {
+				// The version was recorded but never promoted; the previous
+				// classic process was stopped above, so the old version must
+				// be restarted to restore service. Brief downtime is
+				// unavoidable here — classic has no second slot.
+				runClassicAutoRollback(name, appInfo, rec.Version, portToUse, startErr)
+			}
 			return startErr
 		}
 		tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
@@ -232,12 +250,13 @@ var RebuildCmd = &cobra.Command{
 }
 
 // applyConfigDeployStrategy resolves which deployment path this rebuild takes
-// and maps it onto the existing --blue-green / --replicas flags.
+// and maps it onto the existing --blue-green / --replicas flags or a rollout
+// plan.
 //
-// Precedence: explicit --blue-green/--replicas > --strategy > phelix.yaml >
-// the strategy the app is currently deployed with > classic. --strategy is the
-// one-off override (the backend's remote rebuild uses it); it is never written
-// back to phelix.yaml.
+// Precedence: explicit --blue-green/--replicas/--canary > --strategy >
+// phelix.yaml > the strategy the app is currently deployed with > classic.
+// --strategy is the one-off override (the backend's remote rebuild uses it);
+// it is never written back to phelix.yaml.
 //
 // Inheriting the deployed strategy matters: falling straight through to classic
 // meant any rebuild that named no strategy — a phelix.yaml without a deploy
@@ -247,7 +266,36 @@ var RebuildCmd = &cobra.Command{
 // tier and rollback record it holds. Demoting a deployment destroys state, so
 // it has to be asked for (--strategy classic, or deploy.strategy in
 // phelix.yaml), not defaulted into.
+//
+// A canary/progressive rollout runs on the blue-green topology, so an app whose
+// last deploy was a rollout inherits blue-green when nothing names a strategy —
+// a safe full cut-over, never a destructive downgrade. Put deploy.strategy:
+// canary/progressive in phelix.yaml to make rollouts the app's default.
 func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName string) error {
+	// The explicit canary flag: one-shot rollout at the given traffic share.
+	// It names a strategy just like --blue-green does, so combining them is a
+	// contradiction rather than a precedence question.
+	if cmd.Flags().Changed("canary") {
+		if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"--canary cannot be combined with --blue-green or --replicas")
+		}
+		if rebuildStrategy != "" {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"--canary cannot be combined with --strategy (the flag already selects a canary rollout)")
+		}
+		if rebuildCanary < 1 || rebuildCanary > 99 {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"--canary must be between 1 and 99 (percent of traffic for the canary), got %d", rebuildCanary)
+		}
+		plan, err := canaryPlanFromFlag(cfg, rebuildCanary)
+		if err != nil {
+			return err
+		}
+		rolloutPlan = plan
+		return nil
+	}
+
 	if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
 		return nil
 	}
@@ -268,9 +316,9 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 		rebuildBlueGreen = true
 	case project.StrategyRolling:
 		// Rolling needs a replica count. phelix.yaml supplies one when it has
-		// it — including for an override that only named the strategy — then the
-		// width the app is already running at (so an inherited rolling rebuild
-		// does not silently shrink it), and 1 is the floor.
+		// it — including for an override that only named the strategy — then
+		// the width the app is already running at (so an inherited rolling
+		// rebuild does not silently shrink it), and 1 is the floor.
 		rebuildReplicas = 1
 		switch {
 		case cfg != nil && cfg.Deploy != nil && cfg.Deploy.Replicas > 0:
@@ -278,9 +326,17 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 		case deployed != nil && len(deployed.Replicas) > 0:
 			rebuildReplicas = len(deployed.Replicas)
 		}
+	case project.StrategyCanary, project.StrategyProgressive:
+		// The rollout plan (steps, verification window, thresholds) lives in
+		// phelix.yaml; project.Load has already validated its shape.
+		plan, err := rolloutPlanFromProject(cfg, strategy)
+		if err != nil {
+			return err
+		}
+		rolloutPlan = plan
 	default:
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-			"invalid --strategy %q\nHint: expected one of: classic, blue-green, rolling", strategy)
+			"invalid --strategy %q\nHint: expected one of: classic, blue-green, rolling, canary, progressive", strategy)
 	}
 	return nil
 }
@@ -289,10 +345,13 @@ func init() {
 	RebuildCmd.Flags().IntVarP(&rebuildPort, "port", "p", 8080, "Port to run the application on (defaults to previous port if unspecified)")
 	RebuildCmd.Flags().StringArrayVarP(&rebuildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	RebuildCmd.Flags().BoolVar(&rebuildNoUpload, "no-upload", false, "If set, do not upload/send app information to the server after rebuild")
-	RebuildCmd.Flags().StringVar(&rebuildStrategy, "strategy", "", "Deployment strategy for this rebuild only: classic, blue-green, or rolling (overrides phelix.yaml, never written to it)")
+	RebuildCmd.Flags().StringVar(&rebuildStrategy, "strategy", "", "Deployment strategy for this rebuild only: classic, blue-green, rolling, canary, or progressive (overrides phelix.yaml, never written to it)")
 	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
+	RebuildCmd.Flags().IntVar(&rebuildCanary, "canary", 0, "Rebuild with a canary deployment: route N percent of traffic to the new version, verify health and metrics, then promote (requires 'phelix proxy' and an existing deployment)")
 	RebuildCmd.Flags().StringVar(&rebuildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
+	RebuildCmd.Flags().BoolVar(&rebuildAutoRollback, "auto-rollback", false,
+		"On a deploy-phase failure (start, health check, traffic switch), automatically restore the previous known-good version")
 }
 
 // runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a
@@ -365,7 +424,9 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
 	}
-	defer release()
+	// The lock is NOT deferred: automatic rollback must acquire it again after
+	// the failed deploy returns (same-process flock excludes re-acquisition),
+	// and the recovery path below releases it explicitly first.
 
 	// Deployment telemetry. The sink is nil when the CLI has no session, which
 	// makes the tracker nil and the deploy identical to an offline run. Queued
@@ -374,8 +435,54 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	if rebuildBlueGreen {
 		strategy = string(deploy.ModeBlueGreen)
 	}
+	if rolloutPlan != nil {
+		strategy = rolloutPlan.Strategy
+	}
 	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, strategy)
 	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
+
+	// Canary/progressive rollouts run step windows that can take minutes; a
+	// Ctrl-C must abort the rollout through its cancellation path (which
+	// restores the stable version to 100% of traffic) instead of killing the
+	// CLI mid-switch. Blue-green and rolling keep their existing behavior.
+	deployCtx := context.Background()
+	if rolloutPlan != nil {
+		signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
+		deployCtx = signalCtx
+	}
+
+	if rolloutPlan != nil {
+		ro := &deploy.Rollout{
+			AppName:        name,
+			AppID:          appInfo.ID,
+			PublicPort:     publicPort,
+			Plan:           *rolloutPlan,
+			ExtraArgs:      rebuildArgs,
+			Source:         freshSource,
+			Launcher:       deploy.DefaultLauncher,
+			ProxyClient:    proxyClient,
+			HealthProvider: healthProvider,
+			Logger:         logger,
+			PortHandoff:    stopPublicPortOwner,
+			Telemetry:      tracker,
+		}
+		err := ro.Deploy(deployCtx)
+		reconcileAppWithDeploy(name)
+		if err != nil {
+			release()
+			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+				proxyClient, healthProvider, logger, tracker, err)
+		}
+		release()
+		fmt.Printf("%s %s rollout complete for %s (%d steps)\n",
+			color.GreenString("✓"), rolloutPlan.Strategy, color.CyanString("'%s'", name), len(rolloutPlan.Steps))
+		// Build Report + regression analysis (observability only).
+		emitBuildReport(name, lastReport, gitCommit,
+			&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
+		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
+		return nil
+	}
 
 	if rebuildBlueGreen {
 		bg := &deploy.BlueGreen{
@@ -398,8 +505,11 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		err := bg.Deploy(context.Background())
 		reconcileAppWithDeploy(name)
 		if err != nil {
-			return err
+			release()
+			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+				proxyClient, healthProvider, logger, tracker, err)
 		}
+		release()
 		fmt.Printf("%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
 		// Build Report + regression analysis (observability only; the deploy
 		// outcome above is already committed).
@@ -427,8 +537,11 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	err = r.Deploy(context.Background())
 	reconcileAppWithDeploy(name)
 	if err != nil {
-		return err
+		release()
+		return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+			proxyClient, healthProvider, logger, tracker, err)
 	}
+	release()
 	fmt.Printf("%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
 		color.GreenString("✓"), color.CyanString("'%s'", name), rebuildReplicas)
 	// Build Report + regression analysis (observability only).
@@ -436,6 +549,145 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
 	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	return nil
+}
+
+// autoRollbackAfterFailedDeploy responds to one failed zero-downtime deploy
+// when --auto-rollback is enabled. It is the SINGLE trigger point per failed
+// deployment (called once, at the failure return), so the recovery cannot
+// double-fire. Build/compile failures and user cancellations never reach it
+// as triggers: RecoverableDeployFailure classifies the error, and the failed
+// version must have been recorded (a pure build failure has no version to
+// roll back from).
+func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort int,
+	freshSource *deploy.FreshBuildSource, proxyClient *proxy.Client,
+	healthProvider deploy.HealthConfigProvider, logger *colorLogger,
+	tracker *deploy.Tracker, deployErr error) error {
+
+	failedVer := freshSource.TargetVersion()
+	if !rebuildAutoRollback || !deploy.RecoverableDeployFailure(deployErr) {
+		return deployErr
+	}
+	fmt.Printf("%s %v\n", color.RedString("✗"), deployErr)
+	fmt.Printf("%s Automatic rollback enabled\n", color.BlueString("→"))
+
+	if failedVer <= 0 {
+		// No version was recorded (build failed after PrepareBuild but the
+		// error still classified as deploy-phase): nothing to roll back from.
+		fmt.Printf("%s No version was recorded for this deployment; nothing to roll back\n",
+			color.YellowString("⚠"))
+		return deployErr
+	}
+
+	// The recovery is its own deployment operation: give it a fresh tracker
+	// (its own deployment_id) so its transitions never mix with the failed
+	// deploy's, matching how a manual rollback reports. Silent when the
+	// deploy state is unreadable — telemetry must never block recovery.
+	recoveryTracker := tracker
+	if st, serr := deploy.Load(name); serr == nil && st != nil && st.Mode != "" {
+		recoveryTracker = deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, string(st.Mode))
+	}
+	res := deploy.RunAutoRollback(context.Background(), deploy.AutoRollbackOptions{
+		AppName:        name,
+		AppID:          appInfo.ID,
+		PublicPort:     publicPort,
+		Launcher:       deploy.DefaultLauncher,
+		ProxyClient:    proxyClient,
+		HealthProvider: healthProvider,
+		Logger:         logger,
+		Replicas:       rebuildReplicas,
+		FailedVersion:  failedVer,
+		FailureReason:  deploy.AutoRollbackReason(failedVer, deployErr),
+		Telemetry:      recoveryTracker,
+	})
+	reconcileAppWithDeploy(name)
+	if !res.Restored {
+		if phelixerr.IsCode(res.Err, phelixerr.CodeRollbackTargetNotFound) {
+			// No previous known-good version: report it, do not fabricate a
+			// rollback target.
+			emitAutoRollbackEvent(appInfo, name, "", failedVer, 0,
+				deploy.AutoRollbackReason(failedVer, deployErr), false, res.Err)
+			fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n",
+				color.RedString("✗"))
+			fmt.Printf("  %v\n", res.Err)
+			return deployErr
+		}
+		tracker.Failed(deployErr)
+		emitAutoRollbackEvent(appInfo, name, "", failedVer, res.ToVer,
+			deploy.AutoRollbackReason(failedVer, deployErr), false, res.Err)
+		fmt.Printf("%s Automatic rollback failed\n", color.RedString("✗"))
+		fmt.Printf("\nPrevious known-good version could not be restored safely.\n")
+		fmt.Printf("Application state may require manual intervention.\n")
+		return phelixerr.Wrapf(phelixerr.CodeAutoRollbackFailed, res.Err,
+			"deployment of v%d failed and automatic rollback did not succeed", failedVer)
+	}
+	emitAutoRollbackEvent(appInfo, name, "", failedVer, res.ToVer,
+		deploy.AutoRollbackReason(failedVer, deployErr), res.AlreadyServing, nil)
+	if res.AlreadyServing {
+		// The failure never reached traffic (blue-green pre-switch abort,
+		// rolling failure at the first replica): the known-good version kept
+		// serving the whole time.
+		fmt.Printf("%s Deployment rolled back automatically — %s kept serving\n",
+			color.GreenString("✓"), color.CyanString("v%d", res.ToVer))
+		return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
+			"deployment of v%d failed; previous version v%d is serving again", failedVer, res.ToVer)
+	}
+	fmt.Printf("%s Deployment rolled back automatically\n", color.GreenString("✓"))
+	return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
+		"deployment of v%d failed; previous version v%d restored automatically", failedVer, res.ToVer)
+}
+
+// runClassicAutoRollback restores the previous known-good version after a
+// failed CLASSIC rebuild start. The old process was already stopped before
+// the failed start, so service is down; recovery restarts the known-good
+// binary (brief downtime is inherent to classic). History records the
+// recovery as automatic. Promotion of the failed version never happened, so
+// versions.json still names the known-good version as current.
+func runClassicAutoRollback(name string, appInfo *app.AppInfo, failedVer, port int, deployErr error) {
+	logger := &colorLogger{}
+	fmt.Printf("%s Automatic rollback enabled\n", color.BlueString("→"))
+	target, err := deploy.LastKnownGoodVersion(name)
+	if err != nil || target == failedVer {
+		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, 0,
+			deploy.AutoRollbackReason(failedVer, deployErr), false,
+			phelixerr.New(phelixerr.CodeRollbackTargetNotFound, "no previous known-good version available"))
+		fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n", color.RedString("✗"))
+		return
+	}
+	logger.Stepf("automatic rollback: restoring v%d", target)
+	binPath, _, err := deploy.VersionPaths(name, target)
+	if err != nil {
+		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
+			deploy.AutoRollbackReason(failedVer, deployErr), false, err)
+		fmt.Printf("%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
+		return
+	}
+	destBin := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
+	if err := copyFileForRollback(binPath, destBin); err != nil {
+		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
+			deploy.AutoRollbackReason(failedVer, deployErr), false, err)
+		fmt.Printf("%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
+		return
+	}
+	if err := app.Manager.StartApplication(appInfo.ID, port, name); err != nil {
+		fmt.Printf("%s Automatic rollback failed: could not start v%d: %v\n", color.RedString("✗"), target, err)
+		fmt.Printf("Application state may require manual intervention.\n")
+		startErr := phelixerr.Wrapf(phelixerr.CodeRollbackFailed, err, "could not start v%d", target)
+		deploy.RecordRollbackResultSource(name, failedVer, target, "classic",
+			deploy.AutoRollbackReason(failedVer, deployErr), nil, err, deploy.RollbackSourceAutomatic)
+		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
+			deploy.AutoRollbackReason(failedVer, deployErr), false, startErr)
+		return
+	}
+	// Promotion failed earlier only as a warning path — here the known-good
+	// version is already current in versions.json; re-promote is idempotent.
+	if err := deploy.PromoteVersion(name, target, "classic"); err != nil {
+		logger.Warnf("could not re-promote v%d: %v", target, err)
+	}
+	deploy.RecordRollbackResultSource(name, failedVer, target, "classic",
+		deploy.AutoRollbackReason(failedVer, deployErr), nil, nil, deploy.RollbackSourceAutomatic)
+	emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
+		deploy.AutoRollbackReason(failedVer, deployErr), false, nil)
+	logger.Successf("v%d started; previous version restored automatically", target)
 }
 
 // colorLogger implements deploy.Logger using the project's existing color

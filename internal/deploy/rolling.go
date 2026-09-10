@@ -30,6 +30,9 @@ type Rolling struct {
 	Notifier       Notifier
 	InFlight       InFlightProvider
 	GracePeriod    time.Duration
+	// stateStore is a test seam for deterministic persistence-failure coverage.
+	// Production leaves it nil and uses Store.
+	stateStore func(*DeployState) error
 	// PortHandoff, when set, is invoked right before the first proxy enrolment
 	// if something still owns the public port — almost always a classic
 	// instance from before the app migrated to rolling (classic → rolling
@@ -119,6 +122,11 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	}
 	migrated := legacy != nil
 
+	// Instances from an aborted predecessor may still be recorded as running
+	// with dead PIDs. Clear them before the rollout so replacements never
+	// build membership from stale records.
+	ReapStaleInstances(state)
+
 	// Shrink handling: snapshot instances beyond the desired replica count so
 	// they can be drained once the proxy membership no longer includes them.
 	surplus := applyReplicaSet(state.Replicas, r.Replicas)
@@ -163,7 +171,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 			if !progressed {
 				r.undoMigration(state, pre, log)
 			}
-			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "rolling deploy cancelled before replica %s", key)
+			return wrapDeployStep(err, fmt.Sprintf("rolling deploy cancelled before replica %s", key))
 		}
 		if err := r.rollOne(ctx, state, binaryPath, envOverlay, targetVer, key, tier, tierCfg, grace); err != nil {
 			failed = true
@@ -172,8 +180,17 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 				// previous strategy's serving instance changed: restore the
 				// pre-migration strategy so state and reality agree.
 				r.undoMigration(state, pre, log)
+			} else {
+				// Earlier replicas now serve the target while later replicas still
+				// serve the previous version. Persist that mixed fleet explicitly;
+				// ActiveVersion must not falsely claim one homogeneous release.
+				state.ActiveVersion = 0
+				if persistErr := r.persist(state); persistErr != nil {
+					return phelixerr.Wrapf(phelixerr.CodeFilesystem, persistErr,
+						"persist mixed rolling fleet after replica %s failed: %v", key, err)
+				}
 			}
-			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "rolling deploy failed at replica %s", key)
+			return wrapDeployStep(err, fmt.Sprintf("rolling deploy failed at replica %s", key))
 		}
 		if !progressed && migrated {
 			// First replacement healthy and in rotation: the previous
@@ -198,18 +215,20 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	state.Health.Tier = int(tier)
 	state.Health.TierLabel = tier.String()
 	state.Health.HealthyAt = time.Now()
-	if ver := targetVersionFromSource(src); ver > 0 {
-		state.ActiveVersion = ver
+	ver := targetVersionFromSource(src)
+	state.ActiveVersion = ver
+	if err := r.persist(state); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+			"persist completed rolling deploy state before promotion")
+	}
+	if ver > 0 {
 		if err := PromoteVersion(r.AppName, ver, string(ModeRolling)); err != nil {
-			log.Warnf("failed to promote version v%d: %v", ver, err)
+			return err
 		}
 	}
 	// Every replica is in rotation on the new binary: the target version is now
 	// the one serving traffic.
 	r.Telemetry.PromoteCurrentVersion()
-	if err := Store(state); err != nil {
-		log.Warnf("failed to persist rolling deploy state: %v (traffic already routed)", err)
-	}
 
 	log.Successf("rolling deploy of %s complete: %d replicas updated", r.AppName, len(indices))
 	r.Telemetry.Completed(fmt.Sprintf("%d replicas updated", len(indices)))
@@ -253,7 +272,7 @@ func (r *Rolling) undoMigration(state *DeployState, pre modeSnapshot, log Logger
 		return
 	}
 	state.restoreMode(pre)
-	if err := Store(state); err != nil {
+	if err := r.persist(state); err != nil {
 		log.Warnf("failed to persist strategy migration rollback: %v", err)
 	}
 }
@@ -267,10 +286,12 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	// telemetry, the proxy label ("replica-N") and the state file all agree.
 	index, _ := strconv.Atoi(key)
 
-	// Snapshot whatever serves this replica today.
+	// Snapshot the complete record; failed candidates must restore every field,
+	// not just PID, or state can claim "failed" while the old instance serves.
+	old := cloneInstance(state.Replicas[key])
 	oldPID, oldBinary := 0, ""
-	if cur := state.Replicas[key]; cur != nil {
-		oldPID, oldBinary = cur.PID, cur.BinaryPath
+	if old != nil {
+		oldPID, oldBinary = old.PID, old.BinaryPath
 	} else {
 		state.Replicas[key] = &Instance{Slot: key, Status: "stopped"}
 	}
@@ -291,7 +312,12 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 		// The old instance is STILL serving; mark only that a replacement is
 		// in flight without pretending the replica died.
 		inst.Status = "replacing"
-		_ = Store(state)
+		if err := r.persist(state); err != nil {
+			stopHeldProcess(ctx, proc, grace)
+			restoreReplica(state, key, old)
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+				"replica %s: persist replacement state", key)
+		}
 	}
 	r.Telemetry.ReplicaStarted(index, newPID, port)
 
@@ -299,10 +325,10 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	r.Telemetry.ReplicaHealthCheckStarted(index, port)
 	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), newPID, nil); err != nil {
 		stopHeldProcess(ctx, proc, grace)
-		inst.Status = "failed"
-		inst.PID = oldPID // revert to what actually still serves this replica
-		if err := Store(state); err != nil {
-			log.Warnf("replica %s: persist failure after unhealthy replacement: %v", key, err)
+		restoreReplica(state, key, old)
+		if storeErr := r.persist(state); storeErr != nil {
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, storeErr,
+				"replica %s: persist restored old record after unhealthy replacement", key)
 		}
 		return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed,
 			candidateHealthFailure(binaryPath, port, err),
@@ -314,12 +340,15 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	primary, backends := membershipAfterReplace(state.Replicas, key, port)
 	if r.ProxyClient == nil {
 		stopHeldProcess(ctx, proc, grace)
-		inst.Status = "failed"
-		inst.PID = oldPID
-		_ = Store(state)
+		restoreReplica(state, key, old)
+		if err := r.persist(state); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+				"replica %s: persist restored old record after missing proxy", key)
+		}
 		return phelixerr.Newf(phelixerr.CodeProxy, "replica %s: no proxy client configured", key)
 	}
 	var proxyErr error
+	wasEnrolled := r.enrolled
 	r.Telemetry.ReplicaProxySwitching(index, port,
 		fmt.Sprintf("replica %s entering rotation on public port %d", key, r.PublicPort))
 	if !r.enrolled {
@@ -330,9 +359,11 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 		if r.PortHandoff != nil && r.PublicPort > 0 && !phelixport.IsAvailable(r.PublicPort) {
 			if err := r.handOffPublicPort(ctx, log); err != nil {
 				stopHeldProcess(ctx, proc, grace)
-				inst.Status = "failed"
-				inst.PID = oldPID
-				_ = Store(state)
+				restoreReplica(state, key, old)
+				if storeErr := r.persist(state); storeErr != nil {
+					return phelixerr.Wrapf(phelixerr.CodeFilesystem, storeErr,
+						"replica %s: persist restored old record after port handoff failure", key)
+				}
 				return err
 			}
 		}
@@ -346,19 +377,56 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	}
 	if proxyErr != nil {
 		// Replica i never left rotation — no customer impact. Kill just the
-		// replacement we started.
+		// replacement we started and restore the full authoritative old record.
 		stopHeldProcess(ctx, proc, grace)
-		inst.Status = "failed"
-		inst.PID = oldPID
-		if err := Store(state); err != nil {
-			log.Warnf("replica %s: persist failure after proxy error: %v", key, err)
+		restoreReplica(state, key, old)
+		if err := r.persist(state); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+				"replica %s: persist restored old record after proxy error", key)
 		}
 		return phelixerr.Wrapf(phelixerr.CodeProxy, proxyErr,
 			"replica %s: proxy membership update failed; previous instance still serving", key)
 	}
 
-	// 4. Old instance is out of rotation: drain and stop it. Identity of the
-	// PID is verified against its recorded executable path first.
+	// The proxy now routes to the candidate. Persist that reality before the old
+	// instance is drained. If persistence fails, switch the proxy back to the old
+	// membership and stop the candidate; only drain after a durable commit.
+	candidate := &Instance{
+		Slot: key, PID: newPID, Port: port, BinaryPath: binaryPath,
+		StartedAt: time.Now(), Version: targetVer, Status: "running",
+	}
+	state.Replicas[key] = candidate
+	if err := r.persist(state); err != nil {
+		restoreReplica(state, key, old)
+		var compErr error
+		if wasEnrolled {
+			oldPrimary, oldBackends := healthyTargets(state.Replicas)
+			compErr = r.ProxyClient.Switch(ctx, r.AppName, oldPrimary, oldBackends...)
+		} else {
+			compErr = r.ProxyClient.Remove(ctx, r.AppName)
+			if compErr == nil {
+				r.enrolled = false
+			}
+		}
+		if compErr != nil {
+			// Compensation failed: do not stop the candidate because the proxy may
+			// still route to it. Persist a truthful mixed/uncertain fleet record.
+			state.Replicas[key] = candidate
+			_ = r.persist(state)
+			return phelixerr.Wrapf(phelixerr.CodeProxy, compErr,
+				"replica %s: state persistence failed and proxy compensation failed", key)
+		}
+		stopHeldProcess(ctx, proc, grace)
+		if restoreErr := r.persist(state); restoreErr != nil {
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+				"replica %s: persist proxy-switched replacement failed; proxy restored but restoring old state also failed: %v", key, restoreErr)
+		}
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+			"replica %s: persist proxy-switched replacement; proxy restored", key)
+	}
+
+	// 4. Old instance is out of rotation and replacement state is durable: drain
+	// and stop it. Identity is verified against the recorded executable path.
 	r.Telemetry.SetProxy(r.PublicPort, primary.Label, port, upstreamHosts(primary, backends))
 	r.Telemetry.ReplicaReplaced(index, newPID, port,
 		fmt.Sprintf("proxy primary %s, %d upstream(s)", primary.Label, len(backends)+1))
@@ -373,17 +441,15 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 		r.Telemetry.ReplicaStopped(index, oldPID, drainOutcome(report))
 	}
 
-	inst.PID = newPID
-	inst.Port = port
-	inst.BinaryPath = binaryPath
-	inst.StartedAt = time.Now()
-	inst.Version = targetVer
-	inst.Status = "running"
-	if err := Store(state); err != nil {
-		log.Warnf("replica %s: failed to persist deploy state: %v", key, err)
-	}
-	log.Successf("replica %s: healthy and in rotation (pid %d, port %d)", key, inst.PID, inst.Port)
+	log.Successf("replica %s: healthy and in rotation (pid %d, port %d)", key, candidate.PID, candidate.Port)
 	return nil
+}
+
+func (r *Rolling) persist(state *DeployState) error {
+	if r.stateStore != nil {
+		return r.stateStore(state)
+	}
+	return Store(state)
 }
 
 func (r *Rolling) logger() Logger {
@@ -501,6 +567,33 @@ func membershipAfterReplace(replicas map[string]*Instance, key string, newPort i
 		virtual[k] = v
 	}
 	return healthyTargets(virtual)
+}
+
+func cloneInstance(inst *Instance) *Instance {
+	if inst == nil {
+		return nil
+	}
+	copy := *inst
+	return &copy
+}
+
+func restoreReplica(state *DeployState, key string, old *Instance) {
+	if old == nil {
+		state.Replicas[key] = &Instance{Slot: key, Status: "stopped"}
+		return
+	}
+	state.Replicas[key] = cloneInstance(old)
+}
+
+func wrapDeployStep(err error, message string) error {
+	if err == nil {
+		return nil
+	}
+	code := phelixerr.CodeOf(err)
+	if code == phelixerr.CodeUnknown {
+		code = phelixerr.CodeDeployFailed
+	}
+	return phelixerr.Wrap(code, message, err)
 }
 
 // stopHeldProcess gracefully stops an instance whose Process handle we still

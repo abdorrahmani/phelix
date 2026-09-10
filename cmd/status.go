@@ -343,6 +343,16 @@ func displayDeployAndProxy(appName string) {
 			fmt.Println()
 		}
 		fmt.Printf("  In-flight:     %d\n", ps.InFlight)
+		// Invariant: for blue-green, the slot the deployment calls active MUST
+		// be the one the proxy routes to. Anything else means traffic and
+		// deploy.json disagree — surface it instead of rendering two "green"
+		// lines that contradict each other.
+		if state != nil && state.Mode == deploy.ModeBlueGreen && state.ActiveSlot != "" &&
+			ps.Primary.Label != "" && ps.Primary.Label != state.ActiveSlot {
+			fmt.Printf("  %s Proxy routes to %q but deploy state says slot %q is active — run %s to re-align, or redeploy.\n",
+				color.RedString("✗"), ps.Primary.Label, state.ActiveSlot,
+				color.CyanString("phelix start "+appName))
+		}
 		// Case D: proxy points at a slot whose recorded instance is dead.
 		if state != nil && state.Mode == deploy.ModeBlueGreen && state.ActiveSlot != "" {
 			if inst := state.ActiveInstance(); inst != nil && !deploy.InstanceAlive(inst) && inst.PID > 0 {

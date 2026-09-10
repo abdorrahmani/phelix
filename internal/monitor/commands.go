@@ -13,6 +13,21 @@ import (
 // appCommandExecutor executes lifecycle commands issued by the backend.
 type appCommandExecutor struct{}
 
+// RollbackHandler executes a remote rollback command through the SAME
+// service layer the local `phelix rollback` CLI command uses. The cmd
+// package registers the real implementation at daemon startup
+// (SetRollbackHandler); the nil default makes the executor's behavior
+// explicit — without a handler a rollback command is rejected, never
+// approximated by the lifecycle fallback below.
+var RollbackHandler func(payload CommandPayload) error
+
+// SetRollbackHandler registers the remote rollback implementation. Called by
+// the monitor daemon wiring; kept in monitor so the executor stays decoupled
+// from the cmd package (import cycle).
+func SetRollbackHandler(h func(payload CommandPayload) error) {
+	RollbackHandler = h
+}
+
 // NewCommandExecutor returns the default CommandExecutor implementation. It is
 // transport-agnostic and can be reused by any monitoring transport (gRPC today,
 // previously WebSocket).
@@ -68,7 +83,11 @@ func rebuildOverrideArgs(payload CommandPayload) ([]string, error) {
 	}
 
 	switch payload.Strategy {
-	case project.StrategyClassic, project.StrategyBlueGreen:
+	case project.StrategyClassic, project.StrategyBlueGreen,
+		project.StrategyCanary, project.StrategyProgressive:
+		// Canary/progressive resolve their rollout plan from the app's
+		// phelix.yaml (deploy.rollout.*), the same file a local rebuild in
+		// that directory reads; no extra payload fields are needed.
 		return []string{"--strategy", payload.Strategy}, nil
 	case project.StrategyRolling:
 		args := []string{"--strategy", payload.Strategy}
@@ -78,7 +97,7 @@ func rebuildOverrideArgs(payload CommandPayload) ([]string, error) {
 		return args, nil
 	}
 	return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
-		"unsupported deployment strategy %q: expected one of classic, blue-green, rolling", payload.Strategy)
+		"unsupported deployment strategy %q: expected one of: classic, blue-green, rolling, canary, progressive", payload.Strategy)
 }
 
 // Execute runs a lifecycle command against a managed application.
@@ -95,6 +114,23 @@ func rebuildOverrideArgs(payload CommandPayload) ([]string, error) {
 // Unknown types also fall back to `phelix <type> <id>`, preserving the previous
 // behavior for any future command.
 func (e *appCommandExecutor) Execute(cmd Command) error {
+	// Remote rollback never reaches the lifecycle dispatch: it invokes the
+	// existing rollback engine through the registered handler (same service
+	// layer as the local CLI), so there is no second implementation and no
+	// shelling out to `phelix rollback`. A rollback carrying deployment
+	// overrides is a backend bug — rejected, never silently ignored.
+	if cmd.Payload.Type == CommandRollback {
+		if cmd.Payload.Strategy != "" || cmd.Payload.Replicas != 0 {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"deployment overrides do not apply to rollback commands")
+		}
+		if RollbackHandler == nil {
+			return phelixerr.New(phelixerr.CodeUnimplemented,
+				"rollback command not available: no rollback handler registered")
+		}
+		return RollbackHandler(cmd.Payload)
+	}
+
 	// Validated before dispatch, not inside the fallback: the in-process
 	// branches below would otherwise accept an override and ignore it.
 	overrideArgs, err := rebuildOverrideArgs(cmd.Payload)

@@ -3,6 +3,7 @@ package health
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -13,8 +14,14 @@ import (
 
 // Daemon manages health checks for all applications
 type Daemon struct {
-	mu              sync.RWMutex
-	endpointStates  map[string]map[string]*EndpointState // app ID -> endpoint name -> state
+	mu             sync.RWMutex
+	endpointStates map[string]map[string]*EndpointState // app ID -> endpoint name -> state
+	// running is the set of live endpoint checkers, keyed by
+	// checkerKey(appID, endpointName). It is reconciled against the persisted
+	// configuration by Sync, so it is the daemon's view of "what is actually
+	// being checked right now" — as opposed to endpointStates, which is "what
+	// has been observed".
+	running         map[string]*checkHandle
 	checker         *Checker
 	configManager   *ConfigManager
 	stopChan        chan struct{}
@@ -27,16 +34,46 @@ type Daemon struct {
 	lastCleanup     time.Time
 }
 
+// checkHandle is one running endpoint checker. cfg is held BY VALUE: a
+// configuration change is a checker restart, never an in-place mutation of a
+// struct another goroutine is reading.
+type checkHandle struct {
+	cfg  HealthCheckConfig
+	stop chan struct{}
+}
+
+// checkerKey identifies a checker. The NUL separator keeps the key unambiguous
+// for endpoint names containing the separator character.
+func checkerKey(appID, endpointName string) string {
+	return appID + "\x00" + endpointName
+}
+
+// syncInterval is how often the daemon reconciles its running checkers against
+// the persisted health configuration. Configs are written by other processes
+// (`phelix health set/add/remove`, `phelix build`) and by backend-issued health
+// commands, so enumerating them once at startup would miss every change made
+// afterwards. It is a var so tests can shorten it.
+var syncInterval = 15 * time.Second
+
 // EventListener is called when health check events occur
 type EventListener func(event interface{})
 
 // HealthReporter sends health data to the backend.
+//
+// It carries only auto-restart EVENTS. Configuration and runtime status reach the
+// backend as AppHealthSnapshot messages over the monitor stream instead (see
+// SnapshotForApp and docs/health-backend-contract.md): a snapshot is complete and
+// idempotent, so it survives a disconnect, propagates deletions and needs no
+// ordering against configuration. An auto-restart is a point-in-time fact that
+// cannot be re-derived from a later snapshot, so it keeps its own channel.
 type HealthReporter interface {
-	SendHealthCheckResult(result *HealthCheckResult, appID string, appName string) error
 	SendAutoRestartEvent(record *AutoRestartRecord) error
 }
 
-var daemon *Daemon
+// daemonPtr holds the singleton. It is atomic because the monitor process reads
+// it from the gRPC snapshot sender while the health daemon is being initialized
+// on another goroutine.
+var daemonPtr atomic.Pointer[Daemon]
 
 // InitDaemon initializes the health check daemon
 func InitDaemon() (*Daemon, error) {
@@ -45,21 +82,23 @@ func InitDaemon() (*Daemon, error) {
 		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to initialize config manager")
 	}
 
-	daemon = &Daemon{
+	d := &Daemon{
 		endpointStates:  make(map[string]map[string]*EndpointState),
+		running:         make(map[string]*checkHandle),
 		checker:         NewChecker(),
 		configManager:   configMgr,
 		stopChan:        make(chan struct{}),
 		broadcastChan:   make(chan *HealthCheckResult, 100),
 		autoRestartChan: make(chan *AutoRestartRecord, 50),
 	}
+	daemonPtr.Store(d)
 
 	// Start background workers
-	daemon.startBroadcaster()
-	daemon.startAutoRestarter()
-	daemon.startMaintenanceWorker()
+	d.startBroadcaster()
+	d.startAutoRestarter()
+	d.startMaintenanceWorker()
 
-	return daemon, nil
+	return d, nil
 }
 
 // SetReporter sets the health reporter for sending results to the backend.
@@ -71,10 +110,23 @@ func (d *Daemon) SetReporter(r HealthReporter) {
 
 // GetDaemon returns the singleton daemon instance
 func GetDaemon() *Daemon {
-	if daemon == nil {
+	d := daemonPtr.Load()
+	if d == nil {
 		panic("Daemon not initialized")
 	}
-	return daemon
+	return d
+}
+
+// RunningDaemon returns the singleton daemon only when one is initialized AND
+// running in this process, and nil otherwise. Callers outside the health package
+// use it instead of GetDaemon so a plain CLI command — which has no daemon — is a
+// no-op rather than a panic.
+func RunningDaemon() *Daemon {
+	d := daemonPtr.Load()
+	if d == nil || !d.IsRunning() {
+		return nil
+	}
+	return d
 }
 
 // Start begins health checking for all configured apps
@@ -89,41 +141,116 @@ func (d *Daemon) Start() error {
 
 	logs.Info("health", "daemon starting...")
 
-	// Get all apps
 	if err := app.Manager.LoadState(); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load app state")
 	}
 
-	apps := app.Manager.ListApplications()
-	for _, appItem := range apps {
-		config := d.configManager.GetConfig(appItem.ID)
+	// One reconcile brings up every checker the persisted configuration asks
+	// for; the worker keeps doing it as configuration changes underneath.
+	d.Sync()
+	d.startSyncWorker()
+
+	return nil
+}
+
+// Sync reconciles the running endpoint checkers with the persisted health
+// configuration: it starts checkers for endpoints that gained a configuration,
+// restarts checkers whose configuration changed, and stops checkers whose
+// endpoint (or whole app) was removed.
+//
+// It is safe to call at any time and idempotent — calling it twice with an
+// unchanged configuration does nothing the second time.
+func (d *Daemon) Sync() {
+	if err := d.configManager.Reload(); err != nil {
+		// Keep the cached configuration rather than tearing every checker down
+		// because one read failed; the next tick retries.
+		logs.Warning("health", "failed to reload health configs: %v", err)
+	}
+
+	type wanted struct {
+		appID, appName, endpoint string
+		cfg                      HealthCheckConfig
+	}
+	var desired []wanted
+	for _, item := range app.Manager.ListApplications() {
+		config := d.configManager.GetConfig(item.ID)
 		if config == nil || !config.Enabled {
 			continue
 		}
-
-		// Initialize endpoint states for this app
-		d.mu.Lock()
-		if _, exists := d.endpointStates[appItem.ID]; !exists {
-			d.endpointStates[appItem.ID] = make(map[string]*EndpointState)
-		}
-
-		for endpointName := range config.Endpoints {
-			if _, exists := d.endpointStates[appItem.ID][endpointName]; !exists {
-				d.endpointStates[appItem.ID][endpointName] = &EndpointState{
-					CrashHistory: make([]time.Time, 0),
-				}
+		for _, name := range sortedEndpointNames(config.Endpoints) {
+			ep := config.Endpoints[name]
+			if ep == nil {
+				continue
 			}
-		}
-		d.mu.Unlock()
-
-		// Start health check goroutines for each endpoint
-		for endpointName, endpointConfig := range config.Endpoints {
-			d.wg.Add(1)
-			go d.checkEndpoint(appItem.ID, appItem.Name, endpointName, endpointConfig)
+			desired = append(desired, wanted{item.ID, item.Name, name, *ep})
 		}
 	}
 
-	return nil
+	type launch struct {
+		wanted
+		handle *checkHandle
+	}
+
+	d.mu.Lock()
+	keep := make(map[string]bool, len(desired))
+	var starting []launch
+	for _, w := range desired {
+		key := checkerKey(w.appID, w.endpoint)
+		keep[key] = true
+		if h := d.running[key]; h != nil {
+			if h.cfg == w.cfg {
+				continue // unchanged
+			}
+			close(h.stop) // configuration edited: replace the checker
+		}
+		h := &checkHandle{cfg: w.cfg, stop: make(chan struct{})}
+		d.running[key] = h
+		starting = append(starting, launch{w, h})
+	}
+	for key, h := range d.running {
+		if keep[key] {
+			continue
+		}
+		close(h.stop)
+		delete(d.running, key)
+	}
+	// Observations for endpoints that no longer exist must go too, or `health
+	// status`, the daemon rollup and the backend snapshot would keep reporting a
+	// frozen last-known state for something nobody configured.
+	for appID, states := range d.endpointStates {
+		for name := range states {
+			if !keep[checkerKey(appID, name)] {
+				delete(states, name)
+			}
+		}
+		if len(states) == 0 {
+			delete(d.endpointStates, appID)
+		}
+	}
+	d.mu.Unlock()
+
+	for _, l := range starting {
+		d.wg.Add(1)
+		go d.checkEndpoint(l.appID, l.appName, l.endpoint, l.handle)
+	}
+}
+
+// startSyncWorker re-reconciles configuration on a fixed interval.
+func (d *Daemon) startSyncWorker() {
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		ticker := time.NewTicker(syncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.stopChan:
+				return
+			case <-ticker.C:
+				d.Sync()
+			}
+		}
+	}()
 }
 
 // Stop halts all health checking
@@ -139,18 +266,28 @@ func (d *Daemon) Stop() error {
 	close(d.stopChan)
 	d.wg.Wait()
 
+	d.mu.Lock()
+	d.running = make(map[string]*checkHandle)
+	d.mu.Unlock()
+
 	logs.Info("health", "daemon stopped")
 	return nil
 }
 
-// checkEndpoint continuously checks a single endpoint
-func (d *Daemon) checkEndpoint(appID, appName, endpointName string, config *HealthCheckConfig) {
+// checkEndpoint continuously checks a single endpoint until its handle is
+// retired (configuration changed or removed) or the daemon stops.
+//
+// The first probe runs immediately: waiting a full interval left a freshly
+// configured endpoint reporting nothing for up to its interval, which the
+// backend cannot distinguish from an endpoint that is never checked at all.
+func (d *Daemon) checkEndpoint(appID, appName, endpointName string, handle *checkHandle) {
 	defer d.wg.Done()
 
+	config := handle.cfg
 	interval := 10 * time.Second
 	if config.Interval != "" {
-		if d, err := time.ParseDuration(config.Interval); err == nil {
-			interval = d
+		if parsed, err := time.ParseDuration(config.Interval); err == nil && parsed > 0 {
+			interval = parsed
 		}
 	}
 
@@ -158,26 +295,45 @@ func (d *Daemon) checkEndpoint(appID, appName, endpointName string, config *Heal
 	defer ticker.Stop()
 
 	for {
+		result := d.checker.Check(&config)
+		result.AppID = appID
+		result.AppName = appName
+
+		select {
+		case d.broadcastChan <- result:
+		default:
+			// A saturated channel means listeners are behind; the state update
+			// below still lands, so the snapshot stays correct.
+			logs.Debug("health", "broadcast channel full, dropping result for %s.%s", appName, endpointName)
+		}
+
+		d.updateEndpointState(appID, appName, endpointName, &config, result, handle)
+		logs.Debug("health", "%s.%s: %s (latency: %v ms)", appName, endpointName, result.Status, result.LatencyMs)
+
 		select {
 		case <-d.stopChan:
 			return
+		case <-handle.stop:
+			return
 		case <-ticker.C:
-			result := d.checker.Check(config)
-			result.AppID = appID
-			result.AppName = appName
-			d.broadcastChan <- result
-
-			d.updateEndpointState(appID, appName, endpointName, config, result)
-
-			logs.Debug("health", "%s.%s: %s (latency: %v ms)", appName, endpointName, result.Status, result.LatencyMs)
 		}
 	}
 }
 
-// updateEndpointState updates the state based on check result
-func (d *Daemon) updateEndpointState(appID, appName, endpointName string, config *HealthCheckConfig, result *HealthCheckResult) {
+// updateEndpointState records a check result.
+//
+// from identifies the checker that produced the result. A checker retired
+// mid-probe (its endpoint was removed or reconfigured while it was in flight)
+// still has one result to deliver; recording it would resurrect the state Sync
+// just dropped and could fire an auto-restart for an endpoint that no longer
+// exists. A nil from means the caller is not a checker and is always recorded.
+func (d *Daemon) updateEndpointState(appID, appName, endpointName string, config *HealthCheckConfig, result *HealthCheckResult, from *checkHandle) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	if from != nil && d.running[checkerKey(appID, endpointName)] != from {
+		return
+	}
 
 	if _, exists := d.endpointStates[appID]; !exists {
 		d.endpointStates[appID] = make(map[string]*EndpointState)
@@ -195,7 +351,6 @@ func (d *Daemon) updateEndpointState(appID, appName, endpointName string, config
 		state.ConsecutiveFailures = 0
 		state.LastSuccessTime = time.Now()
 		state.BackoffLevel = 0
-		state.CrashHistory = append(state.CrashHistory, time.Now())
 	} else {
 		state.ConsecutiveFailures++
 		state.LastFailTime = time.Now()
@@ -224,7 +379,11 @@ func (d *Daemon) updateEndpointState(appID, appName, endpointName string, config
 	d.configManager.SaveHistory(appID, endpointName, history)
 }
 
-// triggerAutoRestart initiates an automatic restart of the application
+// triggerAutoRestart initiates an automatic restart of the application.
+//
+// CrashHistory records auto-restarts, not checks: it is appended to here (and
+// only here), so crash_count_24h on the wire counts restart attempts in the last
+// 24h rather than growing on every successful probe.
 func (d *Daemon) triggerAutoRestart(appID, appName, endpointName string, config *HealthCheckConfig, state *EndpointState) {
 	backoffSeconds := d.calculateBackoff(state.BackoffLevel)
 
@@ -240,6 +399,8 @@ func (d *Daemon) triggerAutoRestart(appID, appName, endpointName string, config 
 	record := &AutoRestartRecord{
 		AppID:              appID,
 		AppName:            appName,
+		EndpointID:         config.ID,
+		EndpointName:       endpointName,
 		Reason:             fmt.Sprintf("%d consecutive health check failures on %s", state.ConsecutiveFailures, endpointName),
 		BackoffNextSeconds: backoffSeconds,
 		RestartedAt:        time.Now(),
@@ -271,7 +432,10 @@ func (d *Daemon) calculateBackoff(level int) int {
 	return backoffs[level]
 }
 
-// startBroadcaster sends health check results to listeners and reporter
+// startBroadcaster fans health check results out to local listeners (the live
+// terminal display, the remote `health watch` stream). Results do NOT go to the
+// backend from here: the backend receives them inside the app's health snapshot,
+// where they arrive with the endpoint's identity and configuration attached.
 func (d *Daemon) startBroadcaster() {
 	d.wg.Add(1)
 	go func() {
@@ -284,26 +448,22 @@ func (d *Daemon) startBroadcaster() {
 				d.mu.RLock()
 				listeners := make([]EventListener, len(d.eventListeners))
 				copy(listeners, d.eventListeners)
-				r := d.reporter
 				d.mu.RUnlock()
 
 				for _, l := range listeners {
 					go l(result)
-				}
-
-				if r != nil {
-					if err := r.SendHealthCheckResult(result, result.AppID, result.AppName); err != nil {
-						logs.Error("health", "report error: %v", err)
-					}
-				} else {
-					logs.Debug("health", "no reporter set, skipping backend report for %s.%s", result.AppID, result.EndpointName)
 				}
 			}
 		}
 	}()
 }
 
-// startAutoRestarter handles automatic app restarts
+// startAutoRestarter handles automatic app restarts.
+//
+// The restart is attempted BEFORE the event is reported, so exit_code describes
+// what actually happened: 0 when the app came back, non-zero when the restart
+// failed or was skipped for exceeding the crash-loop ceiling. Reporting first
+// (as this used to) always told the backend exit_code 0.
 func (d *Daemon) startAutoRestarter() {
 	d.wg.Add(1)
 	go func() {
@@ -313,17 +473,6 @@ func (d *Daemon) startAutoRestarter() {
 			case <-d.stopChan:
 				return
 			case record := <-d.autoRestartChan:
-				d.mu.RLock()
-				r := d.reporter
-				d.mu.RUnlock()
-				if r != nil {
-					_ = r.SendAutoRestartEvent(record)
-				}
-
-				if err := d.configManager.SaveAutoRestartRecord(record.AppID, record); err != nil {
-					logs.Error("health", "failed to save restart record: %v", err)
-				}
-
 				if record.CrashCount24h <= 10 {
 					logs.Info("health", "auto-restarting %s...", record.AppName)
 					if err := restartForAutoRestart(record.AppID); err != nil {
@@ -331,6 +480,21 @@ func (d *Daemon) startAutoRestarter() {
 						record.ExitCode = 1
 					} else {
 						record.ExitCode = 0
+					}
+				}
+
+				if err := d.configManager.SaveAutoRestartRecord(record.AppID, record); err != nil {
+					logs.Error("health", "failed to save restart record: %v", err)
+				}
+
+				d.mu.RLock()
+				r := d.reporter
+				d.mu.RUnlock()
+				if r != nil {
+					if err := r.SendAutoRestartEvent(record); err != nil {
+						// Local restart already happened; the report is
+						// best-effort and must not stall the worker.
+						logs.Error("health", "failed to report auto-restart for %s: %v", record.AppName, err)
 					}
 				}
 			}

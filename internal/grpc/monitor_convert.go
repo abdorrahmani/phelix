@@ -47,9 +47,9 @@ func toProtoServerInfo(info *server.Info) *pb.ServerInfo {
 }
 
 // toProtoServerConnection converts the Connection settings to its protobuf
-// representation. ssh_password and private_key are WRITE-ONLY: they are sent
-// agent→backend but the backend must never serialize them back. public_key
-// is READ-ONLY.
+// representation. The group is always empty — the agent does not collect SSH
+// connection details or key material (see server.ServerConnection) — but it is
+// still sent so the message shape stays stable.
 func toProtoServerConnection(c *server.ServerConnection) *pb.ServerConnection {
 	if c == nil {
 		return nil

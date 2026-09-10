@@ -35,6 +35,14 @@ const (
 	ModeRolling   Mode = "rolling"
 )
 
+// Canary rollout statuses, recorded in DeployState.Canary.Status.
+const (
+	CanaryRunning  = "running"  // rollout in flight (crash marker for recovery)
+	CanaryFailed   = "failed"   // rollout aborted: regression / verification failure
+	CanaryAborted  = "aborted"  // interrupted (crash or cancellation), recovered
+	CanaryPromoted = "promoted" // rollout completed; canary is the new active
+)
+
 // Instance describes one running backend instance behind the proxy.
 type Instance struct {
 	// Slot is the blue-green slot name ("blue"/"green") or, for rolling, a
@@ -64,6 +72,36 @@ type RollbackRecord struct {
 	FromVersion int       `json:"from_version"`
 	ToVersion   int       `json:"to_version"`
 	At          time.Time `json:"at"`
+}
+
+// CanaryState records the state of a canary/progressive rollout. A canary
+// rollout runs on the blue-green topology (the canary occupies the inactive
+// slot while the active slot keeps serving as the stable baseline), so it is
+// tracked as a sub-record of the blue-green DeployState rather than a separate
+// mode. Status "running" doubles as the crash marker: a rollout that never
+// wrote a terminal status was interrupted, and the next deploy recovers by
+// routing 100% of traffic back to the active (stable) slot.
+type CanaryState struct {
+	// Version is the rollout's target version.
+	Version int `json:"version"`
+	// Strategy is "canary" or "progressive".
+	Strategy string `json:"strategy"`
+	// Slot is the blue-green slot the canary instance runs on.
+	Slot string `json:"slot"`
+	// Step is the zero-based index of the step currently in flight.
+	Step int `json:"step"`
+	// Steps is the total number of steps in the plan.
+	Steps int `json:"steps"`
+	// TrafficPercent is the canary traffic share the last proxy switch set.
+	TrafficPercent int `json:"traffic_percent"`
+	// Status is one of the Canary* constants.
+	Status string `json:"status"`
+	// Reason records why a non-running rollout ended (regression details,
+	// cancellation, interruption recovery).
+	Reason string `json:"reason,omitempty"`
+	// StartedAt / UpdatedAt bracket the rollout.
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // HealthSummary records which health tier was last used for the app and its
@@ -119,6 +157,12 @@ type DeployState struct {
 	// by another process — can be correlated with the events that deployment
 	// emitted. Absent for deployments made before telemetry existed.
 	LastDeploymentID string `json:"last_deployment_id,omitempty"`
+	// LastRequestID correlates the most recent deployment topology with the
+	// backend command that initiated it. Empty for local deployments.
+	LastRequestID string `json:"last_request_id,omitempty"`
+	// Canary records the canary/progressive rollout state when the app is in
+	// (or recently finished) one. Nil for plain blue-green deploys.
+	Canary *CanaryState `json:"canary,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }

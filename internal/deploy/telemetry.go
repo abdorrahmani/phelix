@@ -34,6 +34,7 @@ const (
 	PhaseStarting    = "starting"
 	PhaseHealthCheck = "health_check"
 	PhaseSwitching   = "switching"
+	PhaseObserving   = "observing"
 	PhasePromoting   = "promoting"
 	PhaseDraining    = "draining"
 	PhaseCompleted   = "completed"
@@ -69,6 +70,13 @@ const (
 	EventReplicaReplaced           = "deployment.replica_replaced"
 	EventReplicaDraining           = "deployment.replica_draining"
 	EventReplicaStopped            = "deployment.replica_stopped"
+
+	// Canary / progressive rollout steps. The step's traffic share and its
+	// place in the plan travel in the event Message; a step that fails needs
+	// no dedicated event because the deployment's terminal failure event
+	// carries the regression reason.
+	EventRolloutStepStarted  = "deployment.rollout_step_started"
+	EventRolloutStepVerified = "deployment.rollout_step_verified"
 
 	EventCompleted = "deployment.completed"
 	EventFailed    = "deployment.failed"
@@ -152,6 +160,7 @@ type Snapshot struct {
 	AppID          string
 	AppName        string
 	DeploymentID   string
+	RequestID      string
 	Strategy       string
 	Phase          string
 	Status         string
@@ -180,6 +189,7 @@ type Event struct {
 	AppID        string
 	AppName      string
 	DeploymentID string
+	RequestID    string
 	Event        string
 	Strategy     string
 	Phase        string
@@ -213,10 +223,11 @@ type Sink interface {
 type Tracker struct {
 	mu sync.Mutex
 
-	sink    Sink
-	id      string
-	appID   string
-	appName string
+	sink      Sink
+	id        string
+	requestID string
+	appID     string
+	appName   string
 
 	strategy string
 	phase    string
@@ -267,6 +278,20 @@ func (t *Tracker) DeploymentID() string {
 	return t.id
 }
 
+// SetRequestID associates a backend command correlation id with every future
+// event and snapshot, and persists it when state is already bound.
+func (t *Tracker) SetRequestID(requestID string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.requestID = requestID
+	if t.state != nil {
+		t.state.LastRequestID = requestID
+	}
+	t.mu.Unlock()
+}
+
 // newDeploymentID mints an opaque, unique id for one deployment operation.
 // Phelix has no pre-existing per-operation identifier (the deploy lock records
 // operation/pid/time, which is not stable across the operation's events), so
@@ -294,6 +319,7 @@ func (t *Tracker) Bind(state *DeployState) {
 	t.state = state
 	if state != nil {
 		state.LastDeploymentID = t.id
+		state.LastRequestID = t.requestID
 	}
 	t.mu.Unlock()
 }
@@ -589,6 +615,27 @@ func (t *Tracker) ReplicaStopped(index int, pid int, message string) {
 	t.emit(EventReplicaStopped, replicaOpts(index, eventOpts{pid: pid, message: message}))
 }
 
+// RolloutStepStarted reports that a canary/progressive rollout is about to
+// switch traffic for one step of its plan. The message carries the step's
+// position and traffic share (e.g. "step 2/4: routing 25% to the canary for 5m").
+func (t *Tracker) RolloutStepStarted(slot string, port int, message string) {
+	if t == nil {
+		return
+	}
+	t.transition(PhaseSwitching, StatusInProgress)
+	t.emit(EventRolloutStepStarted, eventOpts{slot: slot, internalPort: port, message: message})
+}
+
+// RolloutStepVerified reports that one rollout step's verification window
+// completed (health and metrics) and the rollout proceeds to the next step.
+func (t *Tracker) RolloutStepVerified(slot string, port int, message string) {
+	if t == nil {
+		return
+	}
+	t.transition(PhaseObserving, StatusInProgress)
+	t.emit(EventRolloutStepVerified, eventOpts{slot: slot, internalPort: port, message: message})
+}
+
 // Completed marks the deployment successful. Callers invoke it only once the
 // new version actually serves traffic.
 func (t *Tracker) Completed(message string) {
@@ -659,6 +706,7 @@ func (t *Tracker) emit(name string, o eventOpts) {
 		AppID:           t.appID,
 		AppName:         t.appName,
 		DeploymentID:    t.id,
+		RequestID:       t.requestID,
 		Event:           name,
 		Strategy:        t.strategy,
 		Phase:           t.phase,
@@ -700,6 +748,7 @@ func (t *Tracker) snapshotLocked() *Snapshot {
 		AppID:           t.appID,
 		AppName:         t.appName,
 		DeploymentID:    t.id,
+		RequestID:       t.requestID,
 		Strategy:        t.strategy,
 		Phase:           t.phase,
 		Status:          t.status,

@@ -22,10 +22,6 @@ func withDetectors(t *testing.T, overrides map[string]any) {
 	orig := map[string]any{
 		"readFile":          readFile,
 		"execOutput":        execOutput,
-		"detectSSHPort":     detectSSHPort,
-		"detectSSHUser":     detectSSHUser,
-		"detectAuthMethod":  detectAuthMethod,
-		"detectSSHKeys":     detectSSHKeys,
 		"detectFirewall":    detectFirewall,
 		"detectAutoUpdates": detectAutoUpdates,
 		"detectSSHRoot":     detectSSHRoot,
@@ -34,10 +30,6 @@ func withDetectors(t *testing.T, overrides map[string]any) {
 	t.Cleanup(func() {
 		readFile = orig["readFile"].(func(string) ([]byte, error))
 		execOutput = orig["execOutput"].(func(string, ...string) (string, error))
-		detectSSHPort = orig["detectSSHPort"].(func() int)
-		detectSSHUser = orig["detectSSHUser"].(func() string)
-		detectAuthMethod = orig["detectAuthMethod"].(func() string)
-		detectSSHKeys = orig["detectSSHKeys"].(func() (string, string))
 		detectFirewall = orig["detectFirewall"].(func() bool)
 		detectAutoUpdates = orig["detectAutoUpdates"].(func() bool)
 		detectSSHRoot = orig["detectSSHRoot"].(func() string)
@@ -50,18 +42,6 @@ func withDetectors(t *testing.T, overrides map[string]any) {
 	}
 	if v, ok := overrides["execOutput"]; ok {
 		execOutput = v.(func(string, ...string) (string, error))
-	}
-	if v, ok := overrides["detectSSHPort"]; ok {
-		detectSSHPort = v.(func() int)
-	}
-	if v, ok := overrides["detectSSHUser"]; ok {
-		detectSSHUser = v.(func() string)
-	}
-	if v, ok := overrides["detectAuthMethod"]; ok {
-		detectAuthMethod = v.(func() string)
-	}
-	if v, ok := overrides["detectSSHKeys"]; ok {
-		detectSSHKeys = v.(func() (string, string))
 	}
 	if v, ok := overrides["detectFirewall"]; ok {
 		detectFirewall = v.(func() bool)
@@ -79,10 +59,6 @@ func withDetectors(t *testing.T, overrides map[string]any) {
 
 func TestDetectSettings_Defaults(t *testing.T) {
 	withDetectors(t, map[string]any{
-		"detectSSHPort":     func() int { return 0 }, // 0 → caller falls back to 22
-		"detectSSHUser":     func() string { return "phelix" },
-		"detectAuthMethod":  func() string { return "" }, // "" → caller falls back to "key"
-		"detectSSHKeys":     func() (string, string) { return "", "" },
 		"detectFirewall":    func() bool { return false },
 		"detectAutoUpdates": func() bool { return false },
 		"detectSSHRoot":     func() string { return "" }, // "" → caller falls back to "prohibit-password"
@@ -93,11 +69,8 @@ func TestDetectSettings_Defaults(t *testing.T) {
 	if s == nil {
 		t.Fatal("detectSettings must never return nil")
 	}
-	if s.Connection.SSHPort != 22 || s.Connection.SSHUser != "phelix" || s.Connection.AuthMethod != "key" {
-		t.Fatalf("connection defaults mismatch: %+v", s.Connection)
-	}
-	if s.Connection.PrivateKey != "" || s.Connection.PublicKey != "" {
-		t.Fatalf("expected empty keys, got private=%q public=%q", s.Connection.PrivateKey, s.Connection.PublicKey)
+	if s.Connection != (ServerConnection{}) {
+		t.Fatalf("connection must never be populated, got %+v", s.Connection)
 	}
 	if s.Alert.CPUThreshold != 80 || s.Alert.RAMThreshold != 90 || s.Alert.DiskThreshold != 90 {
 		t.Fatalf("alert thresholds mismatch: %+v", s.Alert)
@@ -117,12 +90,47 @@ func TestDetectSettings_Defaults(t *testing.T) {
 	}
 }
 
+// TestDetectSettings_NeverCollectsSSHDetails pins the security contract: even
+// with a full SSH keypair and an sshd Port in place, detection reports nothing
+// about the host's SSH configuration.
+func TestDetectSettings_NeverCollectsSSHDetails(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	t.Setenv("USER", "deploy")
+
+	sshDir := filepath.Join(tmp, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte("PRIVATE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519.pub"), []byte("PUBLIC"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withDetectors(t, map[string]any{
+		"readFile": func(path string) ([]byte, error) {
+			if path == "/etc/ssh/sshd_config" {
+				return []byte("Port 2222\nPermitRootLogin no\n"), nil
+			}
+			return os.ReadFile(path)
+		},
+	})
+
+	s := detectSettings()
+	if s.Connection != (ServerConnection{}) {
+		t.Fatalf("SSH details leaked into connection: %+v", s.Connection)
+	}
+	// The sshd file is still read for the Security group.
+	if s.Security.SSHRootLogin != "no" {
+		t.Fatalf("expected ssh_root_login no, got %q", s.Security.SSHRootLogin)
+	}
+}
+
 func TestDetectSettings_DetectionValues(t *testing.T) {
 	withDetectors(t, map[string]any{
-		"detectSSHPort":     func() int { return 2222 },
-		"detectSSHUser":     func() string { return "phelix" },
-		"detectAuthMethod":  func() string { return "key" },
-		"detectSSHKeys":     func() (string, string) { return "PRV", "PUB" },
 		"detectFirewall":    func() bool { return true },
 		"detectAutoUpdates": func() bool { return true },
 		"detectSSHRoot":     func() string { return "yes" },
@@ -130,9 +138,6 @@ func TestDetectSettings_DetectionValues(t *testing.T) {
 	})
 
 	s := detectSettings()
-	if s.Connection.SSHPort != 2222 || s.Connection.PrivateKey != "PRV" || s.Connection.PublicKey != "PUB" {
-		t.Fatalf("connection mismatch: %+v", s.Connection)
-	}
 	if !s.Security.FirewallEnabled || !s.Security.AutoUpdates || s.Security.SSHRootLogin != "yes" {
 		t.Fatalf("security mismatch: %+v", s.Security)
 	}
@@ -141,72 +146,11 @@ func TestDetectSettings_DetectionValues(t *testing.T) {
 	}
 }
 
-func TestDetectSSHUser_RealLoginUser(t *testing.T) {
-	t.Setenv("USER", "deploy")
-	if got := detectSSHUserImpl(); got != "deploy" {
-		t.Fatalf("expected $USER deploy, got %q", got)
-	}
-}
-
-func TestDetectSSHUser_WhoamiFallback(t *testing.T) {
-	t.Setenv("USER", "")
-	withDetectors(t, map[string]any{
-		"execOutput": func(name string, args ...string) (string, error) {
-			if name == "whoami" {
-				return "ops", nil
-			}
-			return "", &execError{name}
-		},
-	})
-	if got := detectSSHUserImpl(); got != "ops" {
-		t.Fatalf("expected whoami ops, got %q", got)
-	}
-}
-
-func TestDetectSSHUser_LastResortFallback(t *testing.T) {
-	t.Setenv("USER", "")
-	withDetectors(t, map[string]any{
-		"execOutput": func(name string, args ...string) (string, error) {
-			return "", &execError{name}
-		},
-	})
-	if got := detectSSHUserImpl(); got != defaultSSHUser {
-		t.Fatalf("expected fallback %q, got %q", defaultSSHUser, got)
-	}
-}
-
 func TestAlertFromConfig_FallsBackWhenUnset(t *testing.T) {
 	// config.Get() is nil (Load never ran under go test) → built-in defaults.
 	a := alertFromConfig()
 	if a.CPUThreshold != defaultCPUThreshold || a.RAMThreshold != defaultRAMThreshold || a.DiskThreshold != defaultDiskThreshold {
 		t.Fatalf("expected fallback thresholds, got %+v", a)
-	}
-}
-
-func TestDetectSSHPort_Parsing(t *testing.T) {
-	withDetectors(t, map[string]any{
-		"readFile": func(path string) ([]byte, error) {
-			if path == "/etc/ssh/sshd_config" {
-				return []byte("# comment\nPort 2222\n"), nil
-			}
-			return nil, os.ErrNotExist
-		},
-	})
-
-	if got := detectSSHPortImpl(); got != 2222 {
-		t.Fatalf("expected 2222, got %d", got)
-	}
-}
-
-func TestDetectSSHPort_Fallback(t *testing.T) {
-	withDetectors(t, map[string]any{
-		"readFile": func(path string) ([]byte, error) {
-			return nil, os.ErrNotExist
-		},
-	})
-
-	if got := detectSSHPortImpl(); got != 22 {
-		t.Fatalf("expected fallback 22, got %d", got)
 	}
 }
 
@@ -237,75 +181,6 @@ func TestDetectSSHRootLogin_Parsing(t *testing.T) {
 		if got := detectSSHRootLoginImpl(); got != tc.want {
 			t.Fatalf("config %q: expected %q, got %q", tc.config, tc.want, got)
 		}
-	}
-}
-
-func TestDetectSSHKeys_HOMEIsolation(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
-
-	sshDir := filepath.Join(tmp, ".ssh")
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte("PRIVATE"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519.pub"), []byte("PUBLIC"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// A lower-priority key that must NOT win.
-	if err := os.WriteFile(filepath.Join(sshDir, "id_rsa"), []byte("RSA"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	priv, pub := detectSSHKeysImpl()
-	if priv != "PRIVATE" {
-		t.Fatalf("expected ed25519 private key, got %q", priv)
-	}
-	if pub != "PUBLIC" {
-		t.Fatalf("expected ed25519 public key, got %q", pub)
-	}
-
-	if method := detectAuthMethodImpl(); method != "key" {
-		t.Fatalf("expected auth_method key, got %q", method)
-	}
-}
-
-func TestDetectSSHKeys_MissingPubKeyTolerated(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
-
-	sshDir := filepath.Join(tmp, ".ssh")
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte("PRIVATE"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	priv, pub := detectSSHKeysImpl()
-	if priv != "PRIVATE" {
-		t.Fatalf("expected private key, got %q", priv)
-	}
-	if pub != "" {
-		t.Fatalf("expected empty public key, got %q", pub)
-	}
-}
-
-func TestDetectSSHKeys_NoKeys(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("USERPROFILE", tmp)
-
-	priv, pub := detectSSHKeysImpl()
-	if priv != "" || pub != "" {
-		t.Fatalf("expected no keys, got private=%q public=%q", priv, pub)
-	}
-	if method := detectAuthMethodImpl(); method != "key" {
-		t.Fatalf("expected auth_method fallback key, got %q", method)
 	}
 }
 
@@ -451,17 +326,19 @@ func TestManager_LoadOrDetect_NoFileDetectsAndPersists(t *testing.T) {
 		pathFn: func() string { return path },
 	}
 
-	// Detection reads the real login user; pin it for a deterministic test.
 	withDetectors(t, map[string]any{
-		"detectSSHUser": func() string { return "realuser" },
+		"detectSSHRoot": func() string { return "no" },
 	})
 
 	m.ensure()
 	if calls != 1 {
 		t.Fatalf("expected one detect call, got %d", calls)
 	}
-	if m.settings == nil || m.settings.Connection.SSHUser != "realuser" {
+	if m.settings == nil || m.settings.Security.SSHRootLogin != "no" {
 		t.Fatalf("unexpected settings: %+v", m.settings)
+	}
+	if m.settings.Connection != (ServerConnection{}) {
+		t.Fatalf("expected empty connection, got %+v", m.settings.Connection)
 	}
 
 	// File must exist with 0600 permissions.
@@ -480,9 +357,8 @@ func TestManager_LoadOrDetect_PersistedFileWins(t *testing.T) {
 
 	// Pre-write a settings file with custom values.
 	input := Settings{
-		Connection: ServerConnection{SSHPort: 2222, SSHUser: "custom", AuthMethod: "key"},
-		Alert:      ServerAlert{CPUThreshold: 70},
-		Security:   ServerSecurity{SSHRootLogin: "no"},
+		Alert:    ServerAlert{CPUThreshold: 70},
+		Security: ServerSecurity{SSHRootLogin: "no"},
 	}
 	data, err := json.Marshal(input)
 	if err != nil {
@@ -505,9 +381,60 @@ func TestManager_LoadOrDetect_PersistedFileWins(t *testing.T) {
 	if detectCalled {
 		t.Fatal("expected detection NOT to run when a persisted file exists")
 	}
-	if m.settings == nil || m.settings.Connection.SSHPort != 2222 || m.settings.Connection.SSHUser != "custom" ||
-		m.settings.Alert.CPUThreshold != 70 || m.settings.Security.SSHRootLogin != "no" {
+	if m.settings == nil || m.settings.Alert.CPUThreshold != 70 || m.settings.Security.SSHRootLogin != "no" {
 		t.Fatalf("expected loaded settings, got %+v", m.settings)
+	}
+}
+
+// TestManager_ScrubsPersistedConnection covers the upgrade path: a
+// settings.json written by an older build still carries the operator's SSH
+// details, and ensure() must drop them from memory AND rewrite the file so the
+// key material leaves the disk.
+func TestManager_ScrubsPersistedConnection(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "settings.json")
+
+	stale := Settings{
+		Connection: ServerConnection{
+			SSHPort:    2222,
+			SSHUser:    "deploy",
+			AuthMethod: "key",
+			PrivateKey: "PRIVATE-KEY-MATERIAL",
+			PublicKey:  "PUBLIC-KEY",
+		},
+		Alert:    ServerAlert{CPUThreshold: 70},
+		Security: ServerSecurity{SSHRootLogin: "no"},
+	}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &settingsManager{
+		detect: func() *Settings { t.Fatal("detection must not run"); return nil },
+		pathFn: func() string { return path },
+	}
+	m.ensure()
+
+	if m.settings.Connection != (ServerConnection{}) {
+		t.Fatalf("connection not scrubbed: %+v", m.settings.Connection)
+	}
+	// The other groups survive the scrub.
+	if m.settings.Alert.CPUThreshold != 70 || m.settings.Security.SSHRootLogin != "no" {
+		t.Fatalf("scrub clobbered other groups: %+v", m.settings)
+	}
+
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected rewritten settings file: %v", err)
+	}
+	for _, secret := range []string{"PRIVATE-KEY-MATERIAL", "PUBLIC-KEY", "deploy", "2222"} {
+		if strings.Contains(string(onDisk), secret) {
+			t.Fatalf("%q still on disk after scrub: %s", secret, onDisk)
+		}
 	}
 }
 
@@ -519,7 +446,7 @@ func TestManager_LoadOrDetect_CorruptFileFallsBackAndRewrites(t *testing.T) {
 	}
 
 	withDetectors(t, map[string]any{
-		"detectSSHUser": func() string { return "realuser" },
+		"detectSSHRoot": func() string { return "no" },
 	})
 
 	m := &settingsManager{
@@ -528,15 +455,18 @@ func TestManager_LoadOrDetect_CorruptFileFallsBackAndRewrites(t *testing.T) {
 	}
 	m.ensure()
 
-	if m.settings == nil || m.settings.Connection.SSHUser != "realuser" {
+	if m.settings == nil || m.settings.Security.SSHRootLogin != "no" {
 		t.Fatalf("expected detected settings after corrupt file, got %+v", m.settings)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("expected rewritten settings file: %v", err)
 	}
-	if !strings.Contains(string(data), `"ssh_user": "realuser"`) {
-		t.Fatalf("expected rewritten file to contain the detected user: %q", string(data))
+	if !strings.Contains(string(data), `"ssh_root_login": "no"`) {
+		t.Fatalf("expected rewritten file to contain the detected value: %q", string(data))
+	}
+	if !strings.Contains(string(data), `"ssh_user": ""`) {
+		t.Fatalf("expected rewritten file to carry an empty ssh_user: %q", string(data))
 	}
 }
 

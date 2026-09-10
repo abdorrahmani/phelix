@@ -79,13 +79,20 @@ var proxyStatusCmd = &cobra.Command{
 		for _, s := range statuses {
 			backends := make([]string, 0, len(s.Backends))
 			for _, b := range s.Backends {
-				backends = append(backends, fmt.Sprintf("%s(%s)", b.Label, b.Host))
+				entry := fmt.Sprintf("%s(%s)", b.Label, b.Host)
+				if b.Weight > 0 {
+					entry += fmt.Sprintf(" %d%%", b.Weight)
+				}
+				backends = append(backends, entry)
 			}
-			fmt.Printf("  %s  public=:%d  primary=%s(%s)  backends=%v  in-flight=%d\n",
+			primary := fmt.Sprintf("%s(%s)", s.Primary.Label, s.Primary.Host)
+			if s.Primary.Weight > 0 {
+				primary += fmt.Sprintf(" %d%%", s.Primary.Weight)
+			}
+			fmt.Printf("  %s  public=:%d  primary=%s  backends=%v  in-flight=%d\n",
 				color.CyanString(s.AppName),
 				s.PublicPort,
-				s.Primary.Label,
-				s.Primary.Host,
+				primary,
 				backends,
 				s.InFlight,
 			)
