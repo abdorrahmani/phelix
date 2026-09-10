@@ -87,11 +87,26 @@ var BuildCmd = &cobra.Command{
 
 		name := args[0]
 
+		// Conflicting matrix flags fail fast: an explicit --matrix=false next
+		// to dimension flags must not silently drop the requested
+		// versions/platforms behind a plain single build.
+		if ferr := matrixFlagConflict(cmd.Flags().Changed("matrix"), matrixFlag, goVersions, rustVersions, platforms); ferr != nil {
+			return ferr
+		}
+
 		// Precedence: CLI flag > phelix.yaml > default. When --port was not
 		// passed, a phelix.yaml in the current directory supplies the port.
 		// Matrix activity includes the phelix.yaml matrix profile (enabled
 		// profiles activate the matrix without --matrix).
 		isMatrix := matrixActive(cmd, projCfg)
+		if isMatrix {
+			// Explicitly-set numeric matrix flags are validated before any
+			// build output starts: --matrix-concurrency 0 or a negative
+			// --matrix-retries used to be silently replaced by the defaults.
+			if ferr := validateMatrixFlagValues(matrixConcurrency, cmd.Flags().Changed("matrix-concurrency"), matrixRetries, cmd.Flags().Changed("matrix-retries")); ferr != nil {
+				return ferr
+			}
+		}
 		if !cmd.Flags().Changed("port") && !isMatrix {
 			if projCfg != nil && projCfg.Port != 0 {
 				buildPort = projCfg.Port
@@ -138,10 +153,6 @@ var BuildCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
-		if err := validateUniqueName(name); err != nil {
-			return err
-		}
-
 		// Get project root
 		currentDir, err := os.Getwd()
 		if err != nil {
@@ -164,6 +175,10 @@ var BuildCmd = &cobra.Command{
 		// or the phelix.yaml matrix profile is enabled. CLI flags, the YAML
 		// profile, and the wizard all converge into one normalized profile
 		// (matrix.Resolve) before the engine expands and executes it.
+		//
+		// Matrix builds compile artifacts for an existing application just as
+		// much as for a new one — they never register an app entry or start an
+		// instance, so the unique-name check below does not apply here.
 		if isMatrix {
 			prof, rerr := resolveMatrixProfile(cmd, projCfg, lang)
 			if rerr != nil {
@@ -173,6 +188,13 @@ var BuildCmd = &cobra.Command{
 		}
 
 		// --- Standard single-artifact build path ---
+		// The classic path creates a new app entry, so the name must be free.
+		// (Checked here, after the matrix branch: matrix builds record
+		// artifacts under the app's version history without registering it.)
+		if err := validateUniqueName(name); err != nil {
+			return err
+		}
+
 		// Check toolchain; prompt to install if missing
 		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
 		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
@@ -504,13 +526,13 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 		fmt.Printf("  %s Warning: could not record matrix run history: %v\n", color.YellowString("⚠"), serr)
 	}
 
-	executed, interrupted, err := startMatrixSession(run, plan.Combinations, extraArgs, buildDebug)
+	_, interrupted, err := startMatrixSession(run, plan.Combinations, extraArgs, buildDebug)
 	if err != nil {
 		return err
 	}
 
 	// Report (terminal + JSON) and version recording for the whole run.
-	completeMatrixSession(run, executed, tag)
+	completeMatrixSession(run, tag)
 
 	// Return an error when combinations failed or the run was interrupted, so
 	// the CLI exit code is non-zero. The user sees the full report above —

@@ -210,7 +210,8 @@ func TestMatrixStatus_JSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	var snap struct {
-		RunID     string `json:"run_id"`
+		Active    bool   `json:"active"`
+		ID        string `json:"id"`
 		Status    string `json:"status"`
 		Executing bool   `json:"executing"`
 		PID       int    `json:"pid"`
@@ -228,7 +229,7 @@ func TestMatrixStatus_JSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &snap); err != nil {
 		t.Fatalf("JSON output invalid: %v\n%s", err, out)
 	}
-	if snap.RunID != "mx_20260910_d78e" || snap.Status != "running" || !snap.Executing || snap.PID == 0 {
+	if snap.ID != "mx_20260910_d78e" || snap.Status != "running" || !snap.Executing || !snap.Active || snap.PID == 0 {
 		t.Fatalf("snapshot header: %+v", snap)
 	}
 	c := snap.Counters
@@ -296,5 +297,49 @@ func TestMatrixStatus_JSONReleaseBlock(t *testing.T) {
 	}
 	if snap.Release == nil || snap.Release.Version != 7 || snap.Release.Status != matrix.ReleaseStatusComplete {
 		t.Fatalf("release block: %+v", snap.Release)
+	}
+}
+
+// `matrix status --json` with nothing executing must emit machine-readable
+// JSON (never human text on the JSON stream), pointing at the most recent run.
+func TestMatrixStatus_JSONNoActiveRun(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	seedMatrixRun(t, "mx_20260909_8f31", time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC), "success", "success")
+
+	out, err := runMatrixStatus(t, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap struct {
+		Active        bool   `json:"active"`
+		MostRecentRun string `json:"most_recent_run"`
+	}
+	if err := json.Unmarshal([]byte(out), &snap); err != nil {
+		t.Fatalf("no-active-run JSON output invalid: %v\n%s", err, out)
+	}
+	if snap.Active {
+		t.Fatalf("no active run must report active=false: %s", out)
+	}
+	if snap.MostRecentRun != "mx_20260909_8f31" {
+		t.Fatalf("most_recent_run = %q, want the latest run ID", snap.MostRecentRun)
+	}
+}
+
+// `matrix status --json` with no history at all: valid JSON, no run pointer.
+func TestMatrixStatus_JSONNoActiveRunNoHistory(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	out, err := runMatrixStatus(t, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap map[string]any
+	if err := json.Unmarshal([]byte(out), &snap); err != nil {
+		t.Fatalf("empty-history JSON output invalid: %v\n%s", err, out)
+	}
+	if snap["active"] != false {
+		t.Fatalf("active must be false: %s", out)
+	}
+	if _, ok := snap["most_recent_run"]; ok {
+		t.Fatalf("no history must omit most_recent_run: %s", out)
 	}
 }

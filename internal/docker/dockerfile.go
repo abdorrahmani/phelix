@@ -71,9 +71,10 @@ func (g *DockerfileGenerator) generateGo() string {
 	b.WriteString("ARG GO_VERSION=1.23\n")
 	b.WriteString("FROM golang:${GO_VERSION}-alpine AS builder\n\n")
 	b.WriteString("WORKDIR /app\n\n")
-	// Dependency layer — cached unless go.mod/go.sum change
+	// Dependency layer — cached unless go.mod/go.sum change. The go.sum
+	// wildcard keeps the copy valid for dependency-free projects (no go.sum).
 	b.WriteString("# Copy dependency manifests first for layer caching\n")
-	b.WriteString("COPY go.mod go.sum ./\n")
+	b.WriteString("COPY go.mod go.sum* ./\n")
 	b.WriteString("RUN go mod download\n\n")
 	// Source layer — only rebuilt when source changes
 	b.WriteString("# Copy source code\n")
@@ -105,9 +106,10 @@ func (g *DockerfileGenerator) generateRust() string {
 	b.WriteString("ARG RUST_VERSION=1.80\n")
 	b.WriteString("FROM rust:${RUST_VERSION}-slim AS deps\n\n")
 	b.WriteString("WORKDIR /app\n\n")
-	// Copy dependency manifests
+	// Copy dependency manifests. The Cargo.lock wildcard keeps the copy valid
+	// for projects without a lock file (fresh `cargo new` has none yet).
 	b.WriteString("# Copy only Cargo files for dependency caching\n")
-	b.WriteString("COPY Cargo.toml Cargo.lock ./\n\n")
+	b.WriteString("COPY Cargo.toml Cargo.lock* ./\n\n")
 	// Create dummy main.rs to satisfy Cargo's requirement for src/main.rs
 	b.WriteString("# Create dummy main.rs to cache dependency compilation\n")
 	b.WriteString("RUN mkdir src && echo 'fn main() { println!(\"placeholder\"); }' > src/main.rs\n")
@@ -120,7 +122,7 @@ func (g *DockerfileGenerator) generateRust() string {
 	b.WriteString("FROM rust:${RUST_VERSION}-slim AS builder\n\n")
 	b.WriteString("WORKDIR /app\n\n")
 	b.WriteString("# Copy dependency manifests and pre-compiled deps\n")
-	b.WriteString("COPY Cargo.toml Cargo.lock ./\n")
+	b.WriteString("COPY Cargo.toml Cargo.lock* ./\n")
 	b.WriteString("COPY --from=deps /app/target /app/target\n\n")
 	b.WriteString("# Copy real source code\n")
 	b.WriteString("COPY src ./src\n\n")

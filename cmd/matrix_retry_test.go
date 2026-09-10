@@ -259,3 +259,57 @@ func TestResumeMatrixRun_LatestFiltersByApp(t *testing.T) {
 		t.Fatalf("latest resume for app = %v, want not-found", err)
 	}
 }
+
+// --matrix-dry-run previews a resume without executing it: no lock, no
+// ResumeCount bump, no history rewrite, no builds.
+func TestResumeMatrixRun_DryRun(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+
+	// An interrupted run: one success, one pending.
+	run := matrix.NewRun("mx_20260910_4d5e", "app", "/tmp/p", &matrix.Profile{
+		Lang: builder.Go, Versions: []string{"1.26", "1.27"}, Platforms: []string{"linux/amd64"}, Concurrency: 2,
+	}, time.Date(2026, 9, 10, 9, 0, 0, 0, time.UTC))
+	run.InitCombinations([]matrix.Combination{
+		{Lang: builder.Go, Version: "1.26", OS: "linux", Arch: "amd64", Platform: "linux/amd64"},
+		{Lang: builder.Go, Version: "1.27", OS: "linux", Arch: "amd64", Platform: "linux/amd64"},
+	})
+	run.RecordResult(matrix.Result{
+		Combination: matrix.Combination{Lang: builder.Go, Version: "1.26", OS: "linux", Arch: "amd64", Platform: "linux/amd64"},
+		Status:      "success",
+	})
+	run.Finalize(time.Date(2026, 9, 10, 9, 1, 0, 0, time.UTC))
+	if run.Status != matrix.RunStatusInterrupted {
+		t.Fatalf("fixture status = %s", run.Status)
+	}
+	if err := matrix.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+
+	oldResume, oldDry := matrixResume, matrixDryRun
+	defer func() { matrixResume, matrixDryRun = oldResume, oldDry }()
+	matrixResume = "mx_20260910_4d5e"
+	matrixDryRun = true
+
+	var err error
+	out := captureStdout(t, func() {
+		err = resumeMatrixRun(nil, nil, nil, "", false)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Dry run", "go1.27-linux-amd64", "unchanged"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dry-run output missing %q:\n%s", want, out)
+		}
+	}
+
+	// The run record must be untouched: same status, no resume count.
+	reloaded, lerr := matrix.LoadRun("mx_20260910_4d5e")
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if reloaded.Status != matrix.RunStatusInterrupted || reloaded.ResumeCount != 0 {
+		t.Fatalf("dry run must not modify the run: status=%s resume_count=%d",
+			reloaded.Status, reloaded.ResumeCount)
+	}
+}

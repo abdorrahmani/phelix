@@ -55,6 +55,35 @@ func TestResolve_ExplicitMatrixFalseDisables(t *testing.T) {
 	}
 }
 
+func TestResolve_ExplicitMatrixFalseWithDimensionFlagsRejected(t *testing.T) {
+	// --matrix=false next to explicitly requested versions/platforms is
+	// contradictory: the old behavior silently ignored the dimension flags and
+	// ran a plain single build. It must fail fast instead.
+	for _, tc := range []struct {
+		name string
+		cli  CLIOptions
+	}{
+		{"go versions", CLIOptions{GoVersions: []string{"1.26"}}},
+		{"rust versions", CLIOptions{RustVersions: []string{"1.77"}}},
+		{"platforms", CLIOptions{Platforms: []string{"linux/amd64"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := ResolveInput{
+				DetectedLang:  builder.Go,
+				MatrixFlag:    false,
+				MatrixFlagSet: true,
+				CLI:           tc.cli,
+				YAMLEnabled:   true,
+				YAML:          yamlProfile(builder.Go, []string{"1.26"}, []string{"linux/amd64"}, 0),
+			}
+			_, _, err := Resolve(in)
+			if err == nil || phelixerr.CodeOf(err) != phelixerr.CodeInvalidArgument {
+				t.Fatalf("expected invalid-argument error for --matrix=false + dimension flags, got %v", err)
+			}
+		})
+	}
+}
+
 func TestResolve_YAMLProfileActivatesWithoutFlag(t *testing.T) {
 	in := ResolveInput{
 		DetectedLang: builder.Go,

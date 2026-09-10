@@ -125,3 +125,50 @@ func TestRuleDescribe_HumanReadable(t *testing.T) {
 		t.Fatalf("describe = %q", d)
 	}
 }
+
+// --- Ambiguous spellings / determinism -----------------------------------------
+
+// RuleFromFields must resolve conflicting spellings deterministically (explicit
+// lang/version override the ecosystem shorthand) — never by Go map iteration
+// order. Repeated conversion of the same fields must always yield the same rule.
+func TestRuleFromFields_DeterministicPrecedence(t *testing.T) {
+	fields := map[string]string{"go": "1.25", "lang": "rust", "version": "1.77"}
+	for i := 0; i < 100; i++ {
+		r := RuleFromFields(fields)
+		if r.Dimensions[DimLang] != "rust" || r.Dimensions[DimVersion] != "1.77" {
+			t.Fatalf("iteration %d: explicit lang/version must override the shorthand, got %+v", i, r.Dimensions)
+		}
+	}
+}
+
+func TestValidateRuleFields_RejectsAmbiguousSpellings(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields map[string]string
+	}{
+		{"both shorthands", map[string]string{"go": "1.25", "rust": "1.77"}},
+		{"shorthand plus lang", map[string]string{"go": "1.25", "lang": "go"}},
+		{"shorthand plus version", map[string]string{"rust": "1.77", "version": "1.77"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, kind := range []string{"include", "exclude"} {
+				if err := ValidateRuleFields(kind, tc.fields); err == nil {
+					t.Fatalf("%s rule with %v must be rejected", kind, tc.fields)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateRuleFields_AcceptsUnambiguous(t *testing.T) {
+	for _, fields := range []map[string]string{
+		{"go": "1.25", "platform": "linux/amd64"},
+		{"lang": "go", "version": "1.25"},
+		{"os": "linux", "arch": "arm", "variant": "v7"},
+		{"go": "1.28", "tag": "latest"}, // extra keys are include metadata
+	} {
+		if err := ValidateRuleFields("include", fields); err != nil {
+			t.Fatalf("unambiguous rule %v rejected: %v", fields, err)
+		}
+	}
+}

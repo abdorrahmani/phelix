@@ -168,6 +168,10 @@ func (m *MatrixConfig) validate() error {
 					"configuration error: matrix.include[%d].%s is not a plain scalar value", i, k)
 			}
 		}
+		if err := matrix.ValidateRuleFields("include", rule.Fields()); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeConfiguration, err,
+				"configuration error: matrix.include[%d]: %v", i, err)
+		}
 		if err := matrix.ValidateRule("include", matrix.RuleFromFields(rule.Fields())); err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeConfiguration, err,
 				"configuration error: matrix.include[%d]: %v", i, err)
@@ -179,6 +183,10 @@ func (m *MatrixConfig) validate() error {
 				return phelixerr.Newf(phelixerr.CodeConfiguration,
 					"configuration error: matrix.exclude[%d].%s is not a plain scalar value", i, k)
 			}
+		}
+		if err := matrix.ValidateRuleFields("exclude", rule.Fields()); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeConfiguration, err,
+				"configuration error: matrix.exclude[%d]: %v", i, err)
 		}
 		if err := matrix.ValidateRule("exclude", matrix.RuleFromFields(rule.Fields())); err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeConfiguration, err,

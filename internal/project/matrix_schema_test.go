@@ -387,3 +387,68 @@ func TestSaveMatrixConfig_RoundTrip(t *testing.T) {
 		t.Fatalf("concurrency round-trip: %d", got.Concurrency)
 	}
 }
+
+// --- Ambiguous rule spellings ------------------------------------------------------
+
+// A rule that mixes the ecosystem shorthand with an explicit lang/version key
+// (or uses both shorthands) is ambiguous: conversion could only resolve it by
+// arbitrary precedence. It must be reported as a configuration error naming
+// the YAML location, not silently interpreted.
+func TestMatrixConfig_AmbiguousRuleSpellingsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			"both shorthands",
+			`
+matrix:
+  enabled: true
+  go:
+    versions: ["1.26"]
+  platforms: [linux/amd64]
+  exclude:
+    - go: "1.25"
+      rust: "1.77"
+`,
+		},
+		{
+			"shorthand plus lang",
+			`
+matrix:
+  enabled: true
+  go:
+    versions: ["1.26"]
+  platforms: [linux/amd64]
+  include:
+    - go: "1.28"
+      lang: rust
+      platform: linux/amd64
+`,
+		},
+		{
+			"shorthand plus version",
+			`
+matrix:
+  enabled: true
+  rust:
+    versions: ["1.77"]
+  platforms: [linux/amd64]
+  include:
+    - rust: "1.78"
+      version: "1.79"
+      platform: linux/amd64
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadMatrixYAML(t, tc.body)
+			if err == nil {
+				t.Fatal("ambiguous rule spelling must be rejected")
+			}
+			if !strings.Contains(err.Error(), "configuration error: matrix.") {
+				t.Fatalf("error must name the YAML location, got: %v", err)
+			}
+		})
+	}
+}

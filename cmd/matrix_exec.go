@@ -60,7 +60,9 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 	// Signal handling: the first SIGINT/SIGTERM cancels the session — no new
 	// combinations start, in-flight builds are killed through their build
 	// context, and their results are discarded so those combinations stay
-	// pending. A second signal terminates the process the default way.
+	// pending. The default disposition is then restored so a second signal
+	// terminates the process immediately (instead of being swallowed by this
+	// still-registered, no-longer-read channel).
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sigCh := make(chan os.Signal, 1)
@@ -71,6 +73,8 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 		select {
 		case <-sigCh:
 			cancel()
+			signal.Stop(sigCh)
+			signal.Reset(os.Interrupt, syscall.SIGTERM)
 		case <-sessionDone:
 		}
 	}()
@@ -156,13 +160,15 @@ func matrixSessionBuildFunc(run *matrix.Run, combos []matrix.Combination, extraA
 	}
 }
 
-// completeMatrixSession renders the report for the executed combinations and
-// records every successful artifact of the whole run (including combinations
-// that succeeded in an earlier, interrupted session of a resumed run) in the
-// versioning system. Observability only — it never fails the session.
-func completeMatrixSession(run *matrix.Run, executed []matrix.Result, tag string) {
-	report := matrix.GenerateReport(run.AppName, executed, run.StartedAt)
-	report.RunID = string(run.ID)
+// completeMatrixSession renders the report for the whole run and records every
+// successful artifact (including combinations that succeeded in an earlier,
+// interrupted session of a resumed run) in the versioning system. The report
+// is generated from the run record — not just this session's results — so a
+// resumed run's report.json describes all of its combinations, consistent with
+// the release manifest and versions.json. Observability only — it never fails
+// the session.
+func completeMatrixSession(run *matrix.Run, tag string) {
+	report := matrix.ReportFromRun(run)
 	report.PrintTerminal()
 
 	reportPath, _ := report.WriteJSON(run.ProjectDir)
@@ -311,6 +317,19 @@ func resumeMatrixRun(args []string, projCfg *project.Config, extraArgs []string,
 	}
 
 	combos := run.IncompleteCombinations()
+
+	// --matrix-dry-run previews what a resume would execute without touching
+	// the run: no lock, no ResumeCount bump, no history update, no builds.
+	if matrixDryRun {
+		fmt.Printf("%s Dry run: resuming Matrix Run %s (%s) would execute %d of %d combination(s):\n",
+			color.BlueString("→"), color.CyanString(string(run.ID)), run.AppName, len(combos), run.Total)
+		for _, c := range combos {
+			fmt.Printf("    %s %s\n", color.New(color.Faint).Sprint("•"), c.ID())
+		}
+		fmt.Printf("  %s Dry run — no builds executed; the run record is unchanged\n", color.YellowString("Note:"))
+		return nil
+	}
+
 	fmt.Printf("%s Resuming Matrix Run %s (%s): %d of %d combinations remaining\n",
 		color.BlueString("→"), color.CyanString(string(run.ID)), run.AppName, len(combos), run.Total)
 
@@ -327,11 +346,11 @@ func resumeMatrixRun(args []string, projCfg *project.Config, extraArgs []string,
 		return uerr
 	}
 
-	executed, interrupted, err := startMatrixSession(run, combos, buildArgs, debug)
+	_, interrupted, err := startMatrixSession(run, combos, buildArgs, debug)
 	if err != nil {
 		return err
 	}
-	completeMatrixSession(run, executed, tag)
+	completeMatrixSession(run, tag)
 
 	if interrupted {
 		return phelixerr.Newf(phelixerr.CodeBuildFailed,

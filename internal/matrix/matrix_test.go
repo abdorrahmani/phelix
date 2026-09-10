@@ -130,38 +130,6 @@ func TestParsePlan_SingleVersionSinglePlatform(t *testing.T) {
 	}
 }
 
-// --- IsMatrixMode tests ----------------------------------------------------
-
-func TestIsMatrixMode_FlagOnly(t *testing.T) {
-	if !IsMatrixMode(true, nil, nil, nil) {
-		t.Fatal("--matrix flag should enable matrix mode")
-	}
-}
-
-func TestIsMatrixMode_GoVersionsOnly(t *testing.T) {
-	if !IsMatrixMode(false, []string{"1.22"}, nil, nil) {
-		t.Fatal("--go-versions should enable matrix mode")
-	}
-}
-
-func TestIsMatrixMode_RustVersionsOnly(t *testing.T) {
-	if !IsMatrixMode(false, nil, []string{"1.77"}, nil) {
-		t.Fatal("--rust-versions should enable matrix mode")
-	}
-}
-
-func TestIsMatrixMode_PlatformsOnly(t *testing.T) {
-	if !IsMatrixMode(false, nil, nil, []string{"linux/amd64"}) {
-		t.Fatal("--platforms should enable matrix mode")
-	}
-}
-
-func TestIsMatrixMode_NothingSet(t *testing.T) {
-	if IsMatrixMode(false, nil, nil, nil) {
-		t.Fatal("no flags set should not enable matrix mode")
-	}
-}
-
 // --- Combination ID / naming tests -----------------------------------------
 
 func TestCombination_ID(t *testing.T) {

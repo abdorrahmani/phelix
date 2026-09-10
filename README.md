@@ -1337,7 +1337,7 @@ phelix dockerize myapp --tag v1.0.0 --with-compose --depends-on redis,postgres
 | `-a, --build-arg` | Extra build argument `KEY=VALUE` (repeatable; malformed entries are rejected with `INVALID_ARGUMENT`) |
 | `--with-compose` | Generate a `docker-compose.yml` with the app service |
 | `--depends-on` | Sidecar services for compose (`redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`) |
-| `--matrix` + family | Matrix Docker builds — `--go-versions`/`--rust-versions`/`--platforms`, `--multi-arch-tag`, `--push-partial`, `--matrix-concurrency` (see [Matrix builds](#matrix-builds)) |
+| `--matrix` + family | Matrix Docker builds — `--go-versions`/`--rust-versions`/`--platforms`, `--multi-arch-tag` (requires `--push`), `--push-partial`, `--matrix-concurrency`, `--matrix-retries`, `--matrix-dry-run` (see [Matrix builds](#matrix-builds)); a `matrix:` profile in `phelix.yaml` activates the Docker matrix too |
 
 #### How it works
 
@@ -1501,7 +1501,7 @@ phelix dockerize myapp --matrix --go-versions 1.22,1.27 --platforms linux/amd64,
 
 | Flag | Description |
 |------|-------------|
-| `--matrix` | Enable matrix mode (auto-enabled when `--go-versions`/`--rust-versions`/`--platforms` are set, or when the phelix.yaml matrix profile is enabled; an explicit `--matrix=false` disables an enabled profile) |
+| `--matrix` | Enable matrix mode (auto-enabled when `--go-versions`/`--rust-versions`/`--platforms` are set, or when the phelix.yaml matrix profile is enabled; an explicit `--matrix=false` disables an enabled profile — combining it with dimension flags is rejected) |
 | `--go-versions` | Comma-separated Go versions (`1.21`, `1.22.4`, `go1.27`, `v1.27` all work; patch versions allowed) |
 | `--rust-versions` | Comma-separated Rust versions (same format) |
 | `--platforms` | Target platforms (e.g. `linux/amd64,linux/arm64,linux/arm/v7,darwin/arm64`; case-insensitive) |
@@ -1547,7 +1547,9 @@ matrix:
 ```
 
 With `matrix.enabled: true`, a plain `phelix build` runs the matrix — no flags
-needed. The profile goes through the exact same validation and expansion as
+needed — and so does a plain `phelix dockerize` (its Linux combinations build
+images; other platforms fail fast with a pointer to `phelix build --matrix`).
+The profile goes through the exact same validation and expansion as
 CLI flags.
 
 #### Matrix dimensions, include, and exclude
@@ -1620,7 +1622,7 @@ at execution time, so later `phelix.yaml` edits never rewrite what an old run
 says it built.
 
 ```bash
-phelix matrix list                 # recorded runs, newest first
+phelix matrix list                 # recorded runs, newest first (--limit N caps the list; default 20, 0 = all)
 phelix matrix list --json          # machine-readable summaries
 phelix matrix show mx_20260909_8f31        # config snapshot + per-combination results
 phelix matrix show mx_20260909_8f31 --json
@@ -1678,11 +1680,14 @@ resume works after Ctrl-C, a crash, or a machine restart. Exact semantics:
 
 Resume uses the run's original configuration snapshot (dimensions, include/
 exclude rules, build args) — later `phelix.yaml` edits cannot change what the
-resumed run builds. A per-run lock file guards against two concurrent
-executions of the same run; a lock left by a dead process is reclaimed
-automatically after a restart. The first Ctrl-C stops the run cleanly
+resumed run builds. Explicit `--build-arg` flags on the resume invocation are
+the one exception: they replace the snapshot's build args (and the run record
+reflects the args actually used). A per-run lock file guards against two
+concurrent executions of the same run; a lock left by a dead process is
+reclaimed automatically after a restart. The first Ctrl-C stops the run cleanly
 (in-flight builds are killed and stay pending); a second one terminates
-immediately.
+immediately. `--matrix-dry-run` alongside `--resume` previews the combinations
+a resume would execute without touching the run.
 
 #### Manual retry
 
@@ -1751,6 +1756,9 @@ Semantics:
 - **Live state** comes from the same persisted run records the execution
   engine writes — after every attempt start and every completed combination.
   There is no second status system that could drift.
+- `--json` always emits JSON: `{"active": false}` (plus `most_recent_run`
+  when any history exists) when nothing is executing — never human text on
+  the JSON stream.
 - **Running combinations** show elapsed time (duration only — the build
   engine has no percentage to report) and the in-flight attempt when
   automatic retries are configured (`attempt 2/3`). Completed combinations
@@ -1860,7 +1868,7 @@ gets its own manifest — runs are never merged. Docker matrix builds
 #### How matrix builds work
 
 **Cross-compilation strategy:**
-- **Go**: native cross-compilation via `GOOS`/`GOARCH` (plus `GOARM=6`/`7` for the ARM variant platforms) with `CGO_ENABLED=0` — no extra toolchain needed. CGO projects fail with a clear error suggesting Docker-based builds or a C cross-compiler. If no host Go toolchain is installed, the build automatically falls back to the Docker path below.
+- **Go**: native cross-compilation via `GOOS`/`GOARCH` (plus `GOARM=6`/`7` for the ARM variant platforms) with `CGO_ENABLED=0` — no extra toolchain needed. CGO projects fail with a clear error suggesting Docker-based builds or a C cross-compiler. If no host Go toolchain is installed — or the host toolchain is a different Go version than the requested one — the build automatically falls back to the Docker path below, so an artifact is never labeled with a toolchain it was not built with.
 - **Rust**: uses the [`cross`](https://github.com/cross-rs/cross) tool (not raw `rustup target add`), building inside a Docker container with the correct linker/C libraries pre-configured. The requested version is pinned via `cross +<version>`, so each combination really builds with its own toolchain (rustup auto-installs missing ones).
 
 **Multi-version builds:** with more than one Go version (or no host Go
@@ -1881,7 +1889,7 @@ combinations can never overwrite each other):
 |----------|--------|
 | Binary | `builds/matrix/{lang}{version}-{os}-{arch}[-{variant}]/{app}_{arch}_{lang}_{version}[_{variant}]` — e.g. `builds/matrix/go1.22.4-linux-arm-v7/myapp_arm_go_1.22.4_v7` |
 | Docker per-combination tag | `{app}:{tag\|latest}-{lang}{version}-{arch}[-{variant}]` — e.g. `myapp:v1.2.3-go1.22-amd64`, `myapp:latest-go1.22.4-arm-v7` |
-| Docker multi-arch manifest | `{app}:{tag\|latest}` for a single combination, version-qualified (`{app}:{tag}-{version}`) when several combinations share the manifest |
+| Docker multi-arch manifest | `{app}:{tag\|latest}` for a single combination, version-qualified (`{app}:{tag}-{version}`) whenever the run produced more than one combination (so concurrent versions never overwrite each other's manifest) |
 | JSON report | `builds/matrix/report.json` |
 | Release manifest | `<PHELIX_DATA_DIR>/matrix/runs/<run-id>.manifest.json` (one per finished run with artifacts; see [Artifact checksums and the release manifest](#artifact-checksums-and-the-release-manifest)) |
 
@@ -1890,10 +1898,15 @@ combinations can never overwrite each other):
 `phelix build --matrix` for native binaries. Per-combination `TARGET*` build
 args (`TARGETPLATFORM`, `TARGETOS`, `TARGETARCH`, `TARGETVARIANT`,
 `TARGETVERSION`) are passed to every image build, so generated Dockerfiles can
-react to the target (see the `ARG GO_VERSION`/`ARG RUST_VERSION` notes in
-[Docker image building](#docker-image-building)). Your own `--build-arg
-KEY=VALUE` flags are forwarded too, and malformed entries (`KEY` without a
-value, empty keys) are rejected up front instead of being silently dropped.
+react to the target, and the requested toolchain version is additionally
+passed as `GO_VERSION`/`RUST_VERSION` — the build args the generated
+Dockerfiles pin their toolchain images on (see the `ARG GO_VERSION`/
+`ARG RUST_VERSION` notes in
+[Docker image building](#docker-image-building)). A Dockerfile is generated
+when the project has none, exactly like a single-image dockerize. Your own
+`--build-arg KEY=VALUE` flags are forwarded too, and malformed entries (`KEY`
+without a value, empty keys) are rejected up front instead of being silently
+dropped.
 
 > **Note:** `--matrix-tags` is kept for compatibility but is a no-op —
 > per-combination tagging is the default behavior of every matrix dockerize.
@@ -1904,7 +1917,7 @@ value, empty keys) are rejected up front instead of being silently dropped.
 - **Build phase**: fail-open — one failure doesn't stop the rest; full summary at the end. The CLI exits non-zero when any combination failed, so scripts can detect partial failures.
 - **Push phase**: fail-closed by default — if any combination failed, nothing is pushed. Use `--push-partial` to push only successful images.
 
-**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`, carrying the Matrix Run ID as `run_id`) listing each combination's status, duration, artifact path, SHA-256 checksum, cache status, attempt count and per-attempt log (automatic retries), and error (if failed — redacted, so compiler output with embedded credentials never lands in the report).
+**Reporting:** a terminal summary plus a JSON report (`builds/matrix/report.json`, carrying the Matrix Run ID as `run_id`) listing each combination's status, duration, artifact path, SHA-256 checksum, cache status, attempt count and per-attempt log (automatic retries), and error (if failed — redacted, so compiler output with embedded credentials never lands in the report). The report describes the whole run: a resumed run's report covers every combination (earlier sessions included), and combinations that never ran appear as `pending`.
 
 **Independent build reports per combination:** every combination retains its own build metrics — toolchain version, target platform, duration, cache status and binary size — recorded alongside the matrix version's artifacts in `versions.json` and mirrored in `builds/matrix/report.json` (`cache_status` per combination). Regression analysis is combination-aware: `Go 1.27 / linux-amd64` is only ever compared against previous `Go 1.27 / linux-amd64` builds, never against `Go 1.26 / linux-arm64` or a Rust build. After recording, each combination prints a compact summary of its own comparisons.
 

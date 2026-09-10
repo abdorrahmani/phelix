@@ -103,6 +103,15 @@ func Resolve(in ResolveInput) (*Profile, bool, error) {
 	// otherwise the flag, any dimension flag, or an enabled YAML profile
 	// activates it.
 	if !IsActive(in) {
+		// An explicit --matrix=false combined with dimension flags is
+		// contradictory: silently ignoring explicitly requested versions or
+		// platforms (the old behavior, which ran a plain single build) hides
+		// the mistake behind surprising output. Fail fast instead.
+		if in.MatrixFlagSet && !in.MatrixFlag &&
+			(len(in.CLI.GoVersions) > 0 || len(in.CLI.RustVersions) > 0 || len(in.CLI.Platforms) > 0) {
+			return nil, false, phelixerr.New(phelixerr.CodeInvalidArgument,
+				"matrix: --matrix=false cannot be combined with --go-versions/--rust-versions/--platforms — omit the dimension flags or drop --matrix=false")
+		}
 		return nil, false, nil
 	}
 

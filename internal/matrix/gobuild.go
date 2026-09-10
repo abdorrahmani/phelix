@@ -140,9 +140,14 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		}
 		return g.buildInDocker(ctx, c, result)
 	}
-	if g.UseDocker {
-		// Docker builds don't need CGO detection on the host — the container
-		// has the full Go toolchain. But we still warn.
+	if g.UseDocker || !g.hostGoProvides(ctx, c.Version) {
+		// The native path compiles with whatever `go` is on the PATH: a host
+		// toolchain of a different version would silently produce an artifact
+		// labeled with a toolchain it was not built with. The version-pinned
+		// Docker image keeps the label honest.
+		if !g.UseDocker {
+			logLine("host go toolchain is not version %s — using the version-pinned Docker image", c.Version)
+		}
 		if cgo, _ := DetectCgo(g.ProjectRoot); cgo {
 			logLine("cgo detected in source, using Docker build with full toolchain")
 		}
@@ -242,6 +247,39 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 // goarmFromVariant converts an ARM variant ("v7") to the GOARM value ("7").
 func goarmFromVariant(variant string) string {
 	return strings.TrimPrefix(variant, "v")
+}
+
+// hostGoProvides reports whether the host Go toolchain can build the requested
+// version. "1.22" matches any host 1.22.x patch (the golang:1.22 Docker tag
+// resolves the same way); an exact patch request needs the exact host patch.
+// A host version that cannot be determined is treated as a mismatch —
+// correctness over convenience.
+func (g *GoMatrixBuilder) hostGoProvides(ctx context.Context, requested string) bool {
+	cmd := g.command(ctx, "go", "env", "GOVERSION")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return goVersionProvides(requested, strings.TrimSpace(string(out)))
+}
+
+// goVersionProvides is the pure comparison behind hostGoProvides: the
+// requested version's components must be a prefix of the host version's
+// components ("1.22" ⊑ "1.22.4", "1.22.4" ⊑ "1.22.4", "1.22" ⋢ "1.24.0").
+func goVersionProvides(requested, host string) bool {
+	requested = normalizeVersionValue(requested)
+	host = normalizeVersionValue(host)
+	reqParts := strings.Split(requested, ".")
+	hostParts := strings.Split(host, ".")
+	if len(reqParts) == 0 || len(reqParts) > len(hostParts) {
+		return false
+	}
+	for i := range reqParts {
+		if reqParts[i] != hostParts[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // buildInDocker runs the Go build inside a version-specific Docker container.

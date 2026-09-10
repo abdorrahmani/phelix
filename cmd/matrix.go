@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/builder"
@@ -48,7 +49,9 @@ var matrixListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if skipped > 0 {
+		// The malformed-file warning is terminal output only: in --json mode
+		// stdout must stay pure, machine-readable JSON.
+		if skipped > 0 && !matrixListJSON {
 			fmt.Printf("%s %d malformed matrix run %s skipped\n",
 				color.YellowString("⚠"), skipped, plural(skipped))
 		}
@@ -212,6 +215,21 @@ func printMatrixRun(run *matrix.Run) {
 			attempts = dim.Sprintf(" (attempt %d)", c.Attempts)
 		}
 		fmt.Printf("  %s %-35s %s%s\n", icon, c.ID, dim.Sprint(c.Duration), attempts)
+		// Include-rule metadata (e.g. tag: latest) travels with the
+		// combination into the run record; show renders it so the attributes
+		// are visible where the README promises them.
+		if len(c.Metadata) > 0 {
+			keys := make([]string, 0, len(c.Metadata))
+			for k := range c.Metadata {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			parts := make([]string, 0, len(keys))
+			for _, k := range keys {
+				parts = append(parts, k+"="+c.Metadata[k])
+			}
+			fmt.Printf("      %s %s\n", dim.Sprint("Metadata:"), dim.Sprint(strings.Join(parts, " ")))
+		}
 		if c.Artifact != "" {
 			fmt.Printf("      %s %s\n", dim.Sprint("Artifact:"), dim.Sprint(c.Artifact))
 		}
@@ -312,6 +330,68 @@ func matrixResolveInput(cmd *cobra.Command, projCfg *project.Config, detectedLan
 // matrix profile included).
 func matrixActive(cmd *cobra.Command, projCfg *project.Config) bool {
 	return matrix.IsActive(matrixResolveInput(cmd, projCfg, builder.Go))
+}
+
+// matrixFlagConflict reports the contradictory combination of an explicit
+// --matrix=false with matrix dimension flags. Silently ignoring explicitly
+// requested versions/platforms (the old behavior, which ran a plain single
+// build) hides user error behind surprising output, so it is rejected up
+// front. matrix.Resolve applies the same rule at the engine level; this cmd
+// guard makes the branch decision itself fail fast.
+func matrixFlagConflict(matrixFlagSet, matrixFlag bool, goVers, rustVers, platforms []string) error {
+	if !matrixFlagSet || matrixFlag {
+		return nil
+	}
+	if len(goVers) > 0 || len(rustVers) > 0 || len(platforms) > 0 {
+		return phelixerr.New(phelixerr.CodeInvalidArgument,
+			"--matrix=false cannot be combined with --go-versions/--rust-versions/--platforms — omit the dimension flags or drop --matrix=false")
+	}
+	return nil
+}
+
+// validateMatrixFlagValues rejects explicitly-invalid numeric matrix flags
+// instead of silently falling back to the defaults: --matrix-concurrency must
+// be at least 1 and --matrix-retries at least 0. The *Set parameters tell
+// whether the flag was explicitly provided (an unset flag keeps its default,
+// which is valid).
+func validateMatrixFlagValues(concurrency int, concurrencySet bool, retries int, retriesSet bool) error {
+	if concurrencySet && concurrency <= 0 {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"--matrix-concurrency must be at least 1, got %d", concurrency)
+	}
+	if retriesSet && retries < 0 {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"--matrix-retries must be 0 or greater, got %d", retries)
+	}
+	return nil
+}
+
+// dockerizeMatrixResolveInput assembles the convergence input for the
+// dockerize command from its own matrix flags and the loaded phelix.yaml —
+// the exact analogue of matrixResolveInput for `phelix build`, so both
+// commands activate, validate, and expand the matrix identically.
+func dockerizeMatrixResolveInput(cmd *cobra.Command, projCfg *project.Config, detectedLang builder.Language) matrix.ResolveInput {
+	in := matrix.ResolveInput{
+		DetectedLang:  detectedLang,
+		MatrixFlag:    dockerizeMatrix,
+		MatrixFlagSet: cmd.Flags().Changed("matrix"),
+		CLI: matrix.CLIOptions{
+			GoVersions:   dockerizeGoVersions,
+			RustVersions: dockerizeRustVersions,
+			Platforms:    dockerizePlatforms,
+		},
+	}
+	if cmd.Flags().Changed("matrix-concurrency") {
+		in.CLI.Concurrency = dockerizeConcurrency
+	}
+	if f := cmd.Flags().Lookup("matrix-retries"); f != nil && f.Changed {
+		in.CLI.Retries = dockerizeMatrixRetries
+	}
+	if projCfg != nil && projCfg.Matrix != nil {
+		in.YAML = projCfg.Matrix.MatrixProfile()
+		in.YAMLEnabled = projCfg.Matrix.Enabled
+	}
+	return in
 }
 
 // resolveMatrixProfile converges CLI flags and the phelix.yaml matrix profile

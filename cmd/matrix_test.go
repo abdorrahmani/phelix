@@ -403,3 +403,120 @@ func TestMatrixShow_RequiresExactlyOneArg(t *testing.T) {
 		t.Fatalf("one arg must be accepted: %v", err)
 	}
 }
+
+// --- Flag validation --------------------------------------------------------------
+
+func TestMatrixFlagConflict(t *testing.T) {
+	cases := []struct {
+		name                        string
+		set, flag                   bool
+		goVers, rustVers, platforms []string
+		wantErr                     bool
+	}{
+		{"false plus go versions", true, false, []string{"1.26"}, nil, nil, true},
+		{"false plus rust versions", true, false, nil, []string{"1.77"}, nil, true},
+		{"false plus platforms", true, false, nil, nil, []string{"linux/amd64"}, true},
+		{"true plus go versions", true, true, []string{"1.26"}, nil, nil, false},
+		{"false alone", true, false, nil, nil, nil, false},
+		{"unset plus go versions", false, false, []string{"1.26"}, nil, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := matrixFlagConflict(tc.set, tc.flag, tc.goVers, tc.rustVers, tc.platforms)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("matrixFlagConflict = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && phelixerr.CodeOf(err) != phelixerr.CodeInvalidArgument {
+				t.Fatalf("conflict error code = %s", phelixerr.CodeOf(err))
+			}
+		})
+	}
+}
+
+func TestValidateMatrixFlagValues(t *testing.T) {
+	cases := []struct {
+		name           string
+		concurrency    int
+		concurrencySet bool
+		retries        int
+		retriesSet     bool
+		wantErr        bool
+	}{
+		{"explicit zero concurrency", 0, true, 0, false, true},
+		{"explicit negative concurrency", -2, true, 0, false, true},
+		{"explicit valid concurrency", 1, true, 0, false, false},
+		{"unset default concurrency", matrix.DefaultConcurrency, false, 0, false, false},
+		{"explicit negative retries", 3, true, -1, true, true},
+		{"explicit zero retries", 3, true, 0, true, false},
+		{"unset retries", 3, true, 0, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateMatrixFlagValues(tc.concurrency, tc.concurrencySet, tc.retries, tc.retriesSet)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateMatrixFlagValues = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// --- JSON purity -------------------------------------------------------------------
+
+// A malformed run file must not break `matrix list --json`: the warning is
+// terminal-only, so the JSON stream stays parseable.
+func TestMatrixList_JSONWithMalformedRuns(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	seedMatrixRun(t, "mx_20260909_8f31", time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC), "success", "success")
+	dir, err := matrix.RunsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mx_20260909_bad1.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runMatrixList(t, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs []map[string]any
+	if err := json.Unmarshal([]byte(out), &runs); err != nil {
+		t.Fatalf("JSON output must stay valid despite malformed run files: %v\n%s", err, out)
+	}
+	if len(runs) != 1 || runs[0]["id"] != "mx_20260909_8f31" {
+		t.Fatalf("JSON runs: %v", runs)
+	}
+}
+
+// --- Include-rule metadata in matrix show -------------------------------------------
+
+func TestMatrixShow_RendersMetadata(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	run := matrix.NewRun("mx_20260909_9e7a", "app", "/tmp/p", &matrix.Profile{
+		Lang: builder.Go, Versions: []string{"1.26"}, Platforms: []string{"linux/amd64"}, Concurrency: 2,
+	}, time.Date(2026, 9, 9, 3, 14, 21, 0, time.UTC))
+	run.InitCombinations([]matrix.Combination{
+		{
+			Lang: builder.Go, Version: "1.26", OS: "linux", Arch: "amd64", Platform: "linux/amd64",
+			Metadata: map[string]string{"tag": "latest", "channel": "stable"},
+		},
+	})
+	run.RecordResult(matrix.Result{
+		Combination: matrix.Combination{Lang: builder.Go, Version: "1.26", OS: "linux", Arch: "amd64", Platform: "linux/amd64"},
+		Status:      "success", Artifact: "/tmp/bin",
+	})
+	run.Finalize(time.Date(2026, 9, 9, 3, 15, 0, 0, time.UTC))
+	if err := matrix.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runMatrixShow(t, "mx_20260909_9e7a", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Metadata:", "tag=latest", "channel=stable"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("show output missing %q:\n%s", want, out)
+		}
+	}
+}

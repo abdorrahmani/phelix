@@ -27,15 +27,17 @@ var (
 	dockerizeDependsOn []string
 
 	// Matrix dockerize flags.
-	dockerizeMatrix       bool
-	dockerizeGoVersions   []string
-	dockerizeRustVersions []string
-	dockerizePlatforms    []string
-	dockerizeMatrixTags   bool
-	dockerizeMultiArchTag bool
-	dockerizePushPartial  bool
-	dockerizeConcurrency  int
-	dockerizeDebug        bool
+	dockerizeMatrix        bool
+	dockerizeGoVersions    []string
+	dockerizeRustVersions  []string
+	dockerizePlatforms     []string
+	dockerizeMatrixTags    bool
+	dockerizeMultiArchTag  bool
+	dockerizePushPartial   bool
+	dockerizeConcurrency   int
+	dockerizeMatrixRetries int
+	dockerizeMatrixDryRun  bool
+	dockerizeDebug         bool
 )
 
 var DockerizeCmd = &cobra.Command{
@@ -71,6 +73,22 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			return err
 		}
 
+		// Project configuration (phelix.yaml) supplies the matrix profile —
+		// the same three-way convergence (CLI flags > matrix profile >
+		// default) the build command applies. A present-but-invalid file
+		// fails fast here, exactly like `phelix build`.
+		projCfg, err := loadProjectConfig()
+		if err != nil {
+			return err
+		}
+
+		// Conflicting matrix flags fail fast (same rule as `phelix build`):
+		// an explicit --matrix=false next to dimension flags must not
+		// silently drop the requested versions/platforms.
+		if ferr := matrixFlagConflict(cmd.Flags().Changed("matrix"), dockerizeMatrix, dockerizeGoVersions, dockerizeRustVersions, dockerizePlatforms); ferr != nil {
+			return ferr
+		}
+
 		if IsInteractive() {
 			if !cmd.Flags().Changed("tag") {
 				if tag, err := PromptString("Image tag (leave blank for none)", ""); err == nil {
@@ -94,11 +112,6 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
-		// Check Docker availability
-		if err := docker.CheckDockerAvailable(); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available", err)
-		}
-
 		// Get project root
 		currentDir, err := os.Getwd()
 		if err != nil {
@@ -112,34 +125,32 @@ encryption mechanism as environment variables (via the internal/env package).`,
 		}
 
 		// --- Matrix dockerize path ---
-		if matrix.IsMatrixMode(dockerizeMatrix, dockerizeGoVersions, dockerizeRustVersions, dockerizePlatforms) {
-			return runDockerizeMatrixMode(name, string(lang), currentDir, dockerizeTag, dockerizeRegistry, dockerizePush, dockerizePushPartial)
+		// Active under the same rules as `phelix build`: --matrix, dimension
+		// flags, or an enabled phelix.yaml matrix profile (an explicit
+		// --matrix=false disables it). CLI flags, the YAML profile, and the
+		// wizard converge into one normalized profile before expansion. The
+		// Docker daemon is only required once something would actually build
+		// (--matrix-dry-run must work without it).
+		langEnum := builder.ParseLanguage(string(lang))
+		matrixIn := dockerizeMatrixResolveInput(cmd, projCfg, langEnum)
+		if matrix.IsActive(matrixIn) {
+			if ferr := validateMatrixFlagValues(dockerizeConcurrency, cmd.Flags().Changed("matrix-concurrency"), dockerizeMatrixRetries, cmd.Flags().Changed("matrix-retries")); ferr != nil {
+				return ferr
+			}
+			return runDockerizeMatrixMode(name, langEnum, currentDir, matrixIn)
+		}
+
+		// Check Docker availability (the classic path builds immediately).
+		if err := docker.CheckDockerAvailable(); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available", err)
 		}
 
 		fmt.Printf("%s Dockerizing application %s (%s)\n",
 			color.BlueString("→"), color.CyanString("'%s'", name), color.GreenString(string(lang)))
 
-		// --- Dockerfile generation ---
-		gen := docker.NewDockerfileGenerator(currentDir, lang)
-		if gen.HasExistingDockerfile() {
-			fmt.Printf("  %s Using existing Dockerfile\n", color.YellowString("Note:"))
-		} else {
-			fmt.Printf("  %s Generating multi-stage Dockerfile for %s...\n", color.BlueString("→"), color.GreenString(string(lang)))
-			if err := gen.WriteDockerfile(); err != nil {
-				return phelixerr.Wrap(phelixerr.CodeDocker, "failed to generate Dockerfile", err)
-			}
-			fmt.Printf("  %s Dockerfile created\n", color.GreenString("✓"))
-		}
-
-		// --- .dockerignore generation ---
-		if docker.HasExistingDockerignore(currentDir) {
-			fmt.Printf("  %s Using existing .dockerignore\n", color.YellowString("Note:"))
-		} else {
-			fmt.Printf("  %s Generating .dockerignore...\n", color.BlueString("→"))
-			if err := docker.WriteDockerignore(currentDir); err != nil {
-				return phelixerr.Wrap(phelixerr.CodeDocker, "failed to generate .dockerignore", err)
-			}
-			fmt.Printf("  %s .dockerignore created\n", color.GreenString("✓"))
+		// --- Dockerfile / .dockerignore generation ---
+		if err := ensureDockerfileAndIgnore(currentDir, lang); err != nil {
+			return err
 		}
 
 		// --- Build image ---
@@ -255,15 +266,50 @@ func init() {
 	DockerizeCmd.Flags().StringSliceVar(&dockerizeGoVersions, "go-versions", nil, "Go versions to build with (e.g. 1.22,1.23)")
 	DockerizeCmd.Flags().StringSliceVar(&dockerizeRustVersions, "rust-versions", nil, "Rust versions to build with (e.g. 1.77,1.78)")
 	DockerizeCmd.Flags().StringSliceVar(&dockerizePlatforms, "platforms", nil, "Target platforms (e.g. linux/amd64,linux/arm64)")
-	DockerizeCmd.Flags().BoolVar(&dockerizeMatrixTags, "matrix-tags", false, "Tag each version×platform combination separately (e.g. myapp:go1.22-linux-amd64)")
-	DockerizeCmd.Flags().BoolVar(&dockerizeMultiArchTag, "multi-arch-tag", false, "Create a multi-arch manifest list tag via docker buildx")
+	DockerizeCmd.Flags().BoolVar(&dockerizeMatrixTags, "matrix-tags", false, "Deprecated no-op: per-combination tagging is the default behavior of every matrix dockerize")
+	DockerizeCmd.Flags().BoolVar(&dockerizeMultiArchTag, "multi-arch-tag", false, "Create a multi-arch manifest list tag via docker buildx (requires --push)")
 	DockerizeCmd.Flags().BoolVar(&dockerizePushPartial, "push-partial", false, "Push only successful images even if some combinations failed")
 	DockerizeCmd.Flags().IntVar(&dockerizeConcurrency, "matrix-concurrency", matrix.DefaultConcurrency, "Max parallel builds in matrix mode")
+	DockerizeCmd.Flags().IntVar(&dockerizeMatrixRetries, "matrix-retries", 0, "Retry failed matrix combinations up to N additional times (transient failures only)")
+	DockerizeCmd.Flags().BoolVar(&dockerizeMatrixDryRun, "matrix-dry-run", false, "Print the matrix plan without building images")
 	DockerizeCmd.Flags().BoolVar(&dockerizeDebug, "debug", false, "Show verbose build output, commands, and Docker operations")
 }
 
+// ensureDockerfileAndIgnore guarantees a Dockerfile and a .dockerignore exist,
+// generating them when absent (an existing file is always used as-is). Shared
+// by the single-image and matrix dockerize paths — the matrix path previously
+// skipped this and failed every combination on Dockerfile-less projects.
+func ensureDockerfileAndIgnore(projectRoot string, lang docker.Language) error {
+	gen := docker.NewDockerfileGenerator(projectRoot, lang)
+	if gen.HasExistingDockerfile() {
+		fmt.Printf("  %s Using existing Dockerfile\n", color.YellowString("Note:"))
+	} else {
+		fmt.Printf("  %s Generating multi-stage Dockerfile for %s...\n", color.BlueString("→"), color.GreenString(string(lang)))
+		if err := gen.WriteDockerfile(); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeDocker, "failed to generate Dockerfile", err)
+		}
+		fmt.Printf("  %s Dockerfile created\n", color.GreenString("✓"))
+	}
+
+	if docker.HasExistingDockerignore(projectRoot) {
+		fmt.Printf("  %s Using existing .dockerignore\n", color.YellowString("Note:"))
+	} else {
+		fmt.Printf("  %s Generating .dockerignore...\n", color.BlueString("→"))
+		if err := docker.WriteDockerignore(projectRoot); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeDocker, "failed to generate .dockerignore", err)
+		}
+		fmt.Printf("  %s .dockerignore created\n", color.GreenString("✓"))
+	}
+	return nil
+}
+
 // runDockerizeMatrixMode builds Docker images for a matrix of version × platform
-// combinations. Each combination gets its own image tag
+// combinations. The matrix configuration converges exactly like `phelix build`
+// (CLI flags > phelix.yaml matrix profile > default; list replacement; an
+// explicit --matrix=false disables an enabled profile), so both commands
+// validate and expand the same way.
+//
+// Each combination gets its own image tag
 // ({app}:{tag|latest}-{lang}{version}-{arch}[-{variant}]); with
 // --multi-arch-tag, the per-version platform images are additionally assembled
 // into one multi-arch manifest list per toolchain version.
@@ -272,21 +318,15 @@ func init() {
 // we refuse to push any image. This prevents publishing a partial/inconsistent
 // release where some platforms work and others don't. The --push-partial flag
 // overrides this behavior.
-func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry string, push, pushPartial bool) error {
-	versions := dockerizeGoVersions
-	langEnum := builder.Go
-	if lang == "rust" {
-		versions = dockerizeRustVersions
-		langEnum = builder.Rust
+func runDockerizeMatrixMode(name string, lang builder.Language, projectRoot string, in matrix.ResolveInput) error {
+	prof, active, err := matrix.Resolve(in)
+	if err != nil {
+		return err
 	}
-	if len(versions) == 0 {
-		return phelixerr.Newf(
-			phelixerr.CodeInvalidArgument,
-			"matrix mode requires version flags: use --go-versions or --rust-versions",
-		)
+	if !active || prof == nil {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "matrix mode is not active")
 	}
-
-	plan, err := matrix.ParsePlan(langEnum, versions, dockerizePlatforms)
+	plan, err := prof.Plan()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix build plan", err)
 	}
@@ -296,12 +336,42 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 		return err
 	}
 
+	// A multi-arch manifest list is assembled from registry references by
+	// `docker buildx imagetools create` — the source images must already be
+	// pushed, so --multi-arch-tag without --push cannot work (it would fail
+	// after building everything, or worse, assemble from stale remote images).
+	if dockerizeMultiArchTag && !dockerizePush {
+		return phelixerr.New(phelixerr.CodeInvalidArgument,
+			"--multi-arch-tag assembles the manifest list from pushed registry images — pass --push (optionally with --push-partial)")
+	}
+
 	fmt.Printf("%s Docker matrix build: %s (%d combinations)\n",
 		color.BlueString("→"), color.CyanString(name), len(plan.Combinations))
+	if plan.IncludedCount > 0 || plan.ExcludedCount > 0 {
+		fmt.Printf("    %s base %d · included +%d · excluded -%d\n",
+			color.New(color.Faint).Sprint("•"), plan.BaseCount, plan.IncludedCount, plan.ExcludedCount)
+	}
 	for _, c := range plan.Combinations {
 		fmt.Printf("    %s %s\n", color.New(color.Faint).Sprint("•"), c.ID())
 	}
 	fmt.Println()
+
+	if dockerizeMatrixDryRun {
+		fmt.Printf("  %s Dry run — no images built\n", color.YellowString("Note:"))
+		return nil
+	}
+
+	// The daemon is required from here on (image builds); the dry-run exit
+	// above is deliberately daemon-free.
+	if err := docker.CheckDockerAvailable(); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available", err)
+	}
+
+	// A Dockerfile (and .dockerignore) must exist for `docker build` —
+	// generate them when absent, exactly like the single-image path.
+	if err := ensureDockerfileAndIgnore(projectRoot, docker.Language(string(lang))); err != nil {
+		return err
+	}
 
 	// Ensure buildx is available for multi-arch builds.
 	if err := matrix.EnsureBuildx(); err != nil {
@@ -311,17 +381,19 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 	dmb := &matrix.DockerMatrixBuilder{
 		ProjectRoot: projectRoot,
 		AppName:     name,
-		Registry:    registry,
-		Tag:         tag,
+		Registry:    dockerizeRegistry,
+		Tag:         dockerizeTag,
 		BuildArgs:   buildArgs,
 		Debug:       dockerizeDebug,
 	}
 
-	// Build each combination.
+	// Build each combination (retry budget and concurrency come from the
+	// resolved profile, so CLI > phelix.yaml > default applies here too).
 	startTime := time.Now()
 	results := matrix.Execute(plan, dmb.BuildDockerImage, matrix.ExecutorConfig{
-		Concurrency: dockerizeConcurrency,
+		Concurrency: prof.Concurrency,
 		Debug:       dockerizeDebug,
+		Retries:     prof.Retries,
 	})
 
 	// Generate report.
@@ -334,11 +406,17 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 	}
 
 	// Handle push with fail-closed semantics.
-	if push {
-		if err := dmb.PushImages(results, pushPartial); err != nil {
+	if dockerizePush {
+		if err := dmb.PushImages(results, dockerizePushPartial); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeDocker, "docker image push failed", err)
 		}
-		fmt.Printf("  %s All images pushed\n", color.GreenString("✓"))
+		pushed := len(matrix.Succeeded(results))
+		if report.Failed > 0 {
+			fmt.Printf("  %s Pushed %d of %d images (--push-partial)\n",
+				color.GreenString("✓"), pushed, report.Total)
+		} else {
+			fmt.Printf("  %s All %d images pushed\n", color.GreenString("✓"), pushed)
+		}
 	}
 
 	// Assemble multi-arch manifest lists (one per toolchain version) when
@@ -348,7 +426,7 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 	if dockerizeMultiArchTag {
 		byVersion, order := groupSuccessByVersion(results)
 		for _, ver := range order {
-			manifestTag := matrixManifestTag(tag, ver, len(plan.Combinations))
+			manifestTag := matrixManifestTag(dockerizeTag, ver, len(plan.Combinations))
 			manifest, err := dmb.BuildMultiArchManifest(context.Background(), byVersion[ver], manifestTag)
 			if err != nil {
 				return phelixerr.Wrap(phelixerr.CodeDocker, "failed to create multi-arch manifest", err)
@@ -379,7 +457,7 @@ func runDockerizeMatrixMode(name string, lang string, projectRoot, tag, registry
 		gitCommit := deploy.DetectGitCommit(projectRoot)
 		logger := &colorLogger{}
 		_, verErr := deploy.RecordMatrixBuild(
-			name, tag, gitCommit, artifacts, strings.Join(multiArchImages, ", "),
+			name, dockerizeTag, gitCommit, artifacts, strings.Join(multiArchImages, ", "),
 			deploy.DefaultRetention{Max: 5}, logger,
 		)
 		if verErr != nil {

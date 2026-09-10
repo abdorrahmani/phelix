@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/builder"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -111,7 +112,7 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 
 	// Merge user build args with the per-combination TARGET* args into a
 	// local copy. The builder's maps stay untouched (concurrency-safe).
-	merged := make(map[string]string, len(d.BuildArgs)+4)
+	merged := make(map[string]string, len(d.BuildArgs)+6)
 	for k, v := range d.BuildArgs {
 		merged[k] = v
 	}
@@ -122,6 +123,16 @@ func (d *DockerMatrixBuilder) BuildDockerImage(ctx context.Context, c Combinatio
 		merged["TARGETVARIANT"] = c.Variant
 	}
 	merged["TARGETVERSION"] = c.Version
+	// The ecosystem build args the generated Dockerfiles parameterize on
+	// (ARG GO_VERSION / ARG RUST_VERSION). Without them, every combination of
+	// a matrix dockerize would silently build with the Dockerfile's default
+	// toolchain while being tagged with the requested version.
+	switch c.Lang {
+	case builder.Go:
+		merged["GO_VERSION"] = c.Version
+	case builder.Rust:
+		merged["RUST_VERSION"] = c.Version
+	}
 
 	for _, k := range sortedKeys(merged) {
 		args = append(args, "--build-arg", k+"="+merged[k])

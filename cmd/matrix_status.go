@@ -60,16 +60,30 @@ runs show their final state; a completed run never reports "running".`,
 			return err
 		}
 		if len(active) == 0 {
-			fmt.Println("No active Matrix Run.")
 			runs, _, lerr := matrix.ListRuns()
+			latestID := ""
 			if lerr == nil && len(runs) > 0 {
-				latest := runs[0]
+				latestID = string(runs[0].ID)
+			}
+			if matrixStatusJSON {
+				// Machine-readable "nothing is executing" — never a fabricated
+				// run state, and never human text on the JSON stream.
+				out := struct {
+					Active        bool   `json:"active"`
+					MostRecentRun string `json:"most_recent_run,omitempty"`
+				}{Active: false, MostRecentRun: latestID}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(out)
+			}
+			fmt.Println("No active Matrix Run.")
+			if latestID != "" {
 				fmt.Printf("  Most recent run: %s (%s) — inspect it with 'phelix matrix show %s'\n",
-					color.CyanString(string(latest.ID)), latest.Status, latest.ID)
+					color.CyanString(latestID), runs[0].Status, latestID)
 			}
 			return nil
 		}
-		if len(active) > 1 {
+		if len(active) > 1 && !matrixStatusJSON {
 			fmt.Printf("%s %d matrix runs are executing — showing the most recently started one; name a run for its own status.\n",
 				color.YellowString("⚠"), len(active))
 		}
@@ -85,8 +99,12 @@ func init() {
 }
 
 // matrixStatusJSONSnapshot is the --json view of one run's current state.
+// The run's key is "id", consistent with `matrix list --json` and
+// `matrix show --json` (report.json/manifest files keep their own run_id /
+// matrix_run_id file schemas).
 type matrixStatusJSONSnapshot struct {
-	RunID        string                  `json:"run_id"`
+	Active       bool                    `json:"active"`
+	ID           string                  `json:"id"`
 	AppName      string                  `json:"app_name"`
 	Status       string                  `json:"status"`
 	Executing    bool                    `json:"executing"`
@@ -124,7 +142,8 @@ func printMatrixStatus(run *matrix.Run, asJSON bool) error {
 
 	if asJSON {
 		snapshot := matrixStatusJSONSnapshot{
-			RunID:       string(run.ID),
+			Active:      executing,
+			ID:          string(run.ID),
 			AppName:     run.AppName,
 			Status:      string(run.Status),
 			Executing:   executing,
@@ -224,7 +243,9 @@ func printMatrixStatus(run *matrix.Run, asJSON bool) error {
 				// gone, and a resume will re-execute it.
 				detail = "stale"
 			}
-			if rc.Attempts > 1 {
+			// Show the in-flight attempt whenever a retry budget is
+			// configured (attempt 1/3 included), matching the JSON view.
+			if run.Config.Retries > 0 && rc.Attempts >= 1 {
 				detail += dim.Sprintf(" (attempt %d/%d)", rc.Attempts, 1+run.Config.Retries)
 			}
 		default: // pending

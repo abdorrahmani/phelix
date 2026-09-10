@@ -72,11 +72,11 @@ final status in the source Run is failed.`,
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "could not record retry run", serr)
 		}
 
-		executed, interrupted, err := startMatrixSession(retryRun, combos, retryRun.Config.BuildArgs, buildDebug)
+		_, interrupted, err := startMatrixSession(retryRun, combos, retryRun.Config.BuildArgs, buildDebug)
 		if err != nil {
 			return err
 		}
-		completeMatrixSession(retryRun, executed, "")
+		completeMatrixSession(retryRun, "")
 
 		switch {
 		case interrupted:

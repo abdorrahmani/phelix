@@ -317,12 +317,6 @@ func ValidatePlatforms(platforms []string) ([]string, error) {
 	return dedup(cleanPlatforms), nil
 }
 
-// IsMatrixMode returns true when the user explicitly requested a matrix build.
-// The caller passes the --matrix flag value and the version/platform slices.
-func IsMatrixMode(matrixFlag bool, goVers, rustVers, platforms []string) bool {
-	return matrixFlag || len(goVers) > 0 || len(rustVers) > 0 || len(platforms) > 0
-}
-
 // DetectLangForMatrix infers the language from project files when the user
 // invokes --matrix without specifying a language. It delegates to the same
 // detection logic used by the non-matrix build path.

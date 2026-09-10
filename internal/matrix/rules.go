@@ -37,6 +37,28 @@ const (
 	ruleFieldRust = "rust"
 )
 
+// ruleDimensionFieldOrder is the fixed processing order for dimension-carrying
+// rule fields. Map iteration order must never decide a rule's meaning: when a
+// rule mixes the ecosystem shorthand with explicit lang/version keys (or, in a
+// hand-written file, both shorthands), the later entries in this order win —
+// deterministically. ValidateRuleFields rejects the ambiguous combinations so
+// users never rely on this precedence.
+var ruleDimensionFieldOrder = []string{
+	ruleFieldGo, ruleFieldRust,
+	DimLang, DimVersion, "platform", DimOS, DimArch, DimVariant,
+}
+
+// isRuleField reports whether key carries dimension constraints (as opposed to
+// include-rule metadata).
+func isRuleField(key string) bool {
+	for _, k := range ruleDimensionFieldOrder {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
 // RuleFromFields converts one flat user-facing rule map (a YAML
 // include/exclude entry) into a Rule. It is purely structural — no validation
 // beyond normalization — so it cannot fail and can be used before deciding
@@ -56,7 +78,14 @@ func RuleFromFields(fields map[string]string) Rule {
 	dims := map[string]string{}
 	meta := map[string]string{}
 
-	for k, v := range fields {
+	// Dimension fields are processed in a fixed order (see
+	// ruleDimensionFieldOrder) so conflicting spellings resolve the same way
+	// on every invocation — never by Go map iteration order.
+	for _, k := range ruleDimensionFieldOrder {
+		v, ok := fields[k]
+		if !ok {
+			continue
+		}
 		switch k {
 		case ruleFieldGo, ruleFieldRust:
 			dims[DimLang] = k
@@ -81,7 +110,10 @@ func RuleFromFields(fields map[string]string) Rule {
 			}
 		case DimOS, DimArch, DimVariant:
 			dims[k] = strings.ToLower(strings.TrimSpace(v))
-		default:
+		}
+	}
+	for k, v := range fields {
+		if !isRuleField(k) {
 			meta[k] = strings.TrimSpace(v)
 		}
 	}
@@ -94,6 +126,35 @@ func RuleFromFields(fields map[string]string) Rule {
 		rule.Metadata = meta
 	}
 	return rule
+}
+
+// ValidateRuleFields checks the raw key/value fields of one include/exclude
+// entry for ambiguous spellings that RuleFromFields could only resolve by
+// arbitrary (if deterministic) precedence: both ecosystem shorthands in one
+// rule, or a shorthand combined with an explicit lang/version key. Rejecting
+// them keeps a rule's meaning unambiguous instead of silently surprising.
+func ValidateRuleFields(kind string, fields map[string]string) error {
+	label := "exclude"
+	if kind == "include" {
+		label = "include"
+	}
+	_, hasGo := fields[ruleFieldGo]
+	_, hasRust := fields[ruleFieldRust]
+	if hasGo && hasRust {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"matrix: %s rule must not specify both %q and %q — pick one ecosystem", label, ruleFieldGo, ruleFieldRust)
+	}
+	if hasGo || hasRust {
+		if _, ok := fields[DimLang]; ok {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"matrix: %s rule must not combine %q/%q with %q — pick one spelling", label, ruleFieldGo, ruleFieldRust, DimLang)
+		}
+		if _, ok := fields[DimVersion]; ok {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"matrix: %s rule must not combine %q/%q with %q — pick one spelling", label, ruleFieldGo, ruleFieldRust, DimVersion)
+		}
+	}
+	return nil
 }
 
 // normalizeVersionValue applies the same prefix stripping ValidateVersions
