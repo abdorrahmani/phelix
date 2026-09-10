@@ -56,6 +56,12 @@ func MatrixCommandSettleTimeout() time.Duration {
 	return matrixCommandSettleTimeout
 }
 
+// The matrix command implementation compiled into this build declares its
+// capability: this module (the dispatch the MonitorStream routes matrix_*
+// commands to) existing IS the support — the backend may gate matrix
+// commands on it.
+func init() { RegisterCapability(CapabilityBuildMatrix) }
+
 // MatrixHandlerFunc executes one matrix command and returns its fully
 // populated result. The handler sets Status ("success"|"error"), Error and
 // ErrorCode on failure, and the matrix_* payload fields appropriate for the

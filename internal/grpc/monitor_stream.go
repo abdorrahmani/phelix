@@ -47,6 +47,10 @@ type monitorStreamManager struct {
 	paused   bool
 }
 
+// The MonitorStream compiled into this build (metrics, logs, ServerInfo,
+// and the remote lifecycle command channel) declares its capability.
+func init() { RegisterCapability(CapabilityMonitoring) }
+
 var monitorStream = &monitorStreamManager{
 	metricsCollector: monitor.NewMetricsCollector(),
 	commandExecutor:  monitor.NewCommandExecutor(),

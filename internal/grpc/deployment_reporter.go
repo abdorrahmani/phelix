@@ -34,6 +34,10 @@ import (
 // replica, so this covers a large rollout with headroom.
 const deploymentEventBuffer = 128
 
+// The deployment telemetry compiled into this build (DeploymentEvent
+// reporting and DeploymentSnapshot resync) declares its capability.
+func init() { RegisterCapability(CapabilityDeployment) }
+
 var (
 	deploymentEventCh   chan *pb.DeploymentEvent
 	deploymentOnce      sync.Once
