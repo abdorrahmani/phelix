@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
@@ -96,17 +98,30 @@ func runMonitor() error {
 	// so it keeps working across reconnects.
 	healthDaemon.SetReporter(phelixgrpc.NewGrpcHealthReporter(c))
 
-	// Load the durable command ledger before any stream can accept rollback
-	// requests. Corrupt/unreadable state fails startup closed instead of losing
-	// idempotency across a daemon restart.
+	// Load the durable command ledgers before any stream can accept rollback
+	// or matrix requests. Corrupt/unreadable state fails startup closed
+	// instead of losing idempotency across a daemon restart.
 	if err := phelixgrpc.InitializeRollbackLedger(); err != nil {
 		return err
 	}
+	if err := phelixgrpc.InitializeMatrixLedger(); err != nil {
+		return err
+	}
 
-	// Register command execution before opening streams; otherwise a command can
-	// arrive in the Start race window and be rejected as unimplemented.
+	// Register command execution before opening streams; otherwise a command
+	// can arrive in the Start race window and be rejected as unimplemented.
 	monitor.SetRollbackHandler(func(payload monitor.CommandPayload) error {
 		return RemoteRollback(payload)
+	})
+
+	// Remote matrix commands run the same engine as the local CLI. Their
+	// session context is canceled on daemon shutdown: an in-flight matrix
+	// build then finalizes its run as "interrupted" (resumable) instead of
+	// being killed mid-write — the same semantics as a local Ctrl-C.
+	matrixCtx, cancelMatrixSessions := context.WithCancel(context.Background())
+	defer cancelMatrixSessions()
+	phelixgrpc.SetMatrixHandler(func(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
+		return RemoteMatrixCommand(matrixCtx, req)
 	})
 
 	// Start the client: connects, and runs the reconnect loop, monitor stream,
@@ -163,6 +178,15 @@ func runMonitor() error {
 	<-sigChan
 
 	logs.Info("monitor", "shutdown signal received, stopping...")
+
+	// Cancel in-flight remote matrix sessions first: their runs finalize as
+	// "interrupted" (resumable) and their durable results are persisted. Wait
+	// for the commands to settle BEFORE closing the gRPC client so terminal
+	// results and events can still be delivered.
+	cancelMatrixSessions()
+	phelixgrpc.WaitPendingMatrixCommands(phelixgrpc.MatrixCommandSettleTimeout())
+	phelixgrpc.StopMatrixSender(5 * time.Second)
+
 	close(done)
 
 	// Stop the health-check daemon (flushes/waits its goroutines).

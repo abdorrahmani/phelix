@@ -25,9 +25,15 @@ const (
 	ledgerStateComplete    = "complete"
 )
 
+// rollbackLedgerEntry is one durably-recorded remote command. Command records
+// the command type ("rollback", "matrix_build", …) so an agent restart can
+// build an accurate indeterminate result for an entry whose execution was cut
+// short; entries written before the field existed (rollback-only ledgers)
+// fall back to the ledger's fallbackCommand.
 type rollbackLedgerEntry struct {
 	RequestID   string                   `json:"request_id"`
 	Fingerprint string                   `json:"fingerprint"`
+	Command     string                   `json:"command,omitempty"`
 	State       string                   `json:"state"`
 	Result      *pb.MonitorCommandResult `json:"result,omitempty"`
 	Delivered   bool                     `json:"delivered,omitempty"`
@@ -40,6 +46,10 @@ type rollbackLedgerFileData struct {
 	Entries []*rollbackLedgerEntry `json:"entries"`
 }
 
+// rollbackLedger is the durable idempotency ledger for remote commands. It is
+// generic over the command type: rollback and matrix commands each own one
+// instance (separate files, separate failure domains) with the same
+// begin/complete/markDelivered lifecycle.
 type rollbackLedger struct {
 	mu      sync.Mutex
 	path    string
@@ -49,12 +59,25 @@ type rollbackLedger struct {
 	pending map[string]bool
 	ready   bool
 	err     error
+	// fallbackCommand labels in-progress entries that predate the per-entry
+	// Command field (legacy rollback ledgers).
+	fallbackCommand string
+	// indeterminateNote extends the restart message with command-type-specific
+	// guidance (e.g. where a matrix run's state lives).
+	indeterminateNote string
 }
 
-var rollbackResults = newRollbackLedger(filepath.Join(server.DataDir(), rollbackLedgerFile), rollbackLedgerCapacity)
+var rollbackResults = newRollbackLedger(filepath.Join(server.DataDir(), rollbackLedgerFile), rollbackLedgerCapacity, "rollback", "")
 
-func newRollbackLedger(path string, max int) *rollbackLedger {
-	return &rollbackLedger{path: path, max: max, entries: make(map[string]*rollbackLedgerEntry), pending: make(map[string]bool)}
+func newRollbackLedger(path string, max int, fallbackCommand, indeterminateNote string) *rollbackLedger {
+	return &rollbackLedger{
+		path:              path,
+		max:               max,
+		entries:           make(map[string]*rollbackLedgerEntry),
+		pending:           make(map[string]bool),
+		fallbackCommand:   fallbackCommand,
+		indeterminateNote: indeterminateNote,
+	}
 }
 
 // InitializeRollbackLedger loads the durable remote-rollback idempotency
@@ -109,7 +132,7 @@ func (l *rollbackLedger) initialize() error {
 		}
 		e.State = ledgerStateComplete
 		e.UpdatedAt = now
-		e.Result = indeterminateRollbackResult(e.RequestID)
+		e.Result = l.indeterminateResult(e)
 		e.Delivered = false
 		l.pending[id] = true
 		changed = true
@@ -194,10 +217,12 @@ func (l *rollbackLedger) begin(req *pb.MonitorCommandRequest) (rollbackBeginOutc
 	}
 	if existing := l.entries[req.GetRequestId()]; existing != nil {
 		if existing.Fingerprint != fingerprint {
-			return 0, nil, phelixerr.New(phelixerr.CodeAlreadyExists, "request_id already exists with a different rollback payload")
+			return 0, nil, phelixerr.New(phelixerr.CodeAlreadyExists,
+				"request_id already exists with a different "+l.commandNoun(existing)+" payload")
 		}
 		if existing.State == ledgerStateInProgress {
-			return 0, nil, phelixerr.New(phelixerr.CodeUnavailable, "rollback request is already in progress")
+			return 0, nil, phelixerr.Newf(phelixerr.CodeUnavailable,
+				"%s request is already in progress", l.commandNoun(existing))
 		}
 		return rollbackBeginReplay, cloneMonitorCommandResult(existing.Result), nil
 	}
@@ -205,7 +230,14 @@ func (l *rollbackLedger) begin(req *pb.MonitorCommandRequest) (rollbackBeginOutc
 		return 0, nil, phelixerr.Newf(phelixerr.CodeUnavailable, "remote rollback ledger capacity %d reached", l.max)
 	}
 	now := time.Now().UnixMilli()
-	entry := &rollbackLedgerEntry{RequestID: req.GetRequestId(), Fingerprint: fingerprint, State: ledgerStateInProgress, CreatedAt: now, UpdatedAt: now}
+	entry := &rollbackLedgerEntry{
+		RequestID:   req.GetRequestId(),
+		Fingerprint: fingerprint,
+		Command:     req.GetType(),
+		State:       ledgerStateInProgress,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
 	l.entries[entry.RequestID] = entry
 	l.order = append(l.order, entry.RequestID)
 	if err := l.persistLocked(); err != nil {
@@ -275,6 +307,16 @@ func (l *rollbackLedger) markDelivered(requestID string) error {
 	return nil
 }
 
+// commandNoun names the command an entry belongs to for error messages
+// ("rollback", "matrix_build", …). Legacy entries predate the per-entry
+// Command field and fall back to the ledger's fallbackCommand.
+func (l *rollbackLedger) commandNoun(e *rollbackLedgerEntry) string {
+	if e.Command != "" {
+		return e.Command
+	}
+	return l.fallbackCommand
+}
+
 func (l *rollbackLedger) unavailableLocked() error {
 	if l.err != nil {
 		return phelixerr.Wrap(phelixerr.CodeUnavailable, "remote rollback ledger unavailable", l.err)
@@ -331,6 +373,25 @@ func (l *rollbackLedger) persistLocked() error {
 	return nil
 }
 
-func indeterminateRollbackResult(requestID string) *pb.MonitorCommandResult {
-	return &pb.MonitorCommandResult{RequestId: requestID, Command: "rollback", Status: "error", Error: "agent restarted while rollback was in progress; outcome is indeterminate and the command was not re-executed", ErrorCode: string(phelixerr.CodeUnavailable), Timestamp: time.Now().UnixMilli()}
+// indeterminateResult builds the terminal result for an entry whose
+// execution was interrupted by an agent restart: the outcome is unknown and
+// the command is never re-executed (fail-closed). The message carries the
+// ledger's command-type-specific follow-up guidance.
+func (l *rollbackLedger) indeterminateResult(e *rollbackLedgerEntry) *pb.MonitorCommandResult {
+	command := e.Command
+	if command == "" {
+		command = l.fallbackCommand
+	}
+	message := "agent restarted while the command was in progress; outcome is indeterminate and the command was not re-executed"
+	if l.indeterminateNote != "" {
+		message += " — " + l.indeterminateNote
+	}
+	return &pb.MonitorCommandResult{
+		RequestId: e.RequestID,
+		Command:   command,
+		Status:    "error",
+		Error:     message,
+		ErrorCode: string(phelixerr.CodeUnavailable),
+		Timestamp: time.Now().UnixMilli(),
+	}
 }

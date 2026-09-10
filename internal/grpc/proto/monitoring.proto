@@ -7,6 +7,7 @@ option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 import "internal/grpc/proto/ping.proto";
 import "internal/grpc/proto/deployment.proto";
 import "internal/grpc/proto/health.proto";
+import "internal/grpc/proto/matrix.proto";
 
 // ============================================================================
 // Monitoring data messages
@@ -287,6 +288,14 @@ message MonitorCommandRequest {
   // flag. Never mutates process/proxy/version/audit state; the structured
   // RollbackPreview is delivered through the normal rollback event stream.
   bool dry_run = 9;
+
+  // Remote Build Matrix options, carried by matrix_* commands only (additive;
+  // older agents ignore them). The agent executes the SAME matrix engine the
+  // local CLI uses — never a second implementation. dry-run semantics reuse
+  // the dry_run field above; run selection (matrix_resume / matrix_retry /
+  // matrix_status) reuses target ("latest" or "mx_…" run ID). See
+  // docs/matrix-backend-contract.md.
+  MatrixOptions matrix = 10;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -304,6 +313,27 @@ message MonitorCommandResult {
   // unclassified errors — never parse `error` to derive it. Additive field:
   // older backends see "" and ignore it.
   string error_code = 7;
+
+  // Remote Build Matrix fields (additive; set on matrix_* command results,
+  // empty/absent otherwise — older backends ignore them).
+  //
+  // matrix_run_id identifies the Matrix Run a mutating matrix command
+  // executed (or the run a status answer describes).
+  string matrix_run_id = 8;
+  // matrix_run is the run's complete state: the terminal outcome of
+  // matrix_build / matrix_resume / matrix_retry (including failures — a
+  // partial run reports status "error" AND carries its full state here) and
+  // the answer of matrix_status for a specific run.
+  MatrixRunState matrix_run = 9;
+  // matrix_runs is the matrix_list answer (run summaries, newest first). Also
+  // used by matrix_status with no active run: empty matrix_run plus the most
+  // recent summary (or an empty list when there is no history).
+  repeated MatrixRunSummary matrix_runs = 10;
+  // matrix_preview is the structured answer of a dry-run command.
+  MatrixPlanPreview matrix_preview = 11;
+  // matrix_docker is the terminal outcome of matrix_dockerize (image builds
+  // have no Matrix Run).
+  MatrixDockerResult matrix_docker = 12;
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the
@@ -343,6 +373,13 @@ message MonitorEvent {
     // configuration exists but lists zero endpoints IS reported, with an empty
     // endpoints list, so deleting the last endpoint still propagates.
     AppHealthSnapshot app_health = 18;
+    // matrix_run resyncs the current state of one ACTIVE Matrix Run (a run
+    // whose execution lock is held by a live process). Pushed on every
+    // (re)connection and periodically while the run executes, so a backend
+    // that missed lifecycle events converges on the real run state. Runs that
+    // are not executing are not resynced — query them with a matrix_status
+    // command.
+    MatrixRunState matrix_run = 19;
   }
 }
 

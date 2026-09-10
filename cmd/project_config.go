@@ -18,6 +18,15 @@ func loadProjectConfig() (*project.Config, error) {
 	if dir == "" {
 		return nil, nil
 	}
+	return loadProjectConfigFrom(dir)
+}
+
+// loadProjectConfigFrom loads phelix.yaml from an explicit directory — the
+// same semantics as loadProjectConfig (missing file = nil, nil; invalid file
+// = error). Remote matrix commands use it to read the matrix profile of an
+// application's project directory, which is not the daemon's working
+// directory.
+func loadProjectConfigFrom(dir string) (*project.Config, error) {
 	cfg, err := project.Load(dir)
 	if err != nil {
 		if phelixerr.CodeOf(err) == phelixerr.CodeNotFound {

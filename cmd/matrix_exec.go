@@ -31,38 +31,27 @@ import (
 // SIGINT/SIGTERM into an interruptible session whose unfinished combinations
 // stay pending — that is what makes `--resume` safe.
 
+// matrixSessionObserver receives incremental progress from a matrix
+// execution session. SessionStarted fires once, after the run lock is
+// acquired and before any combination executes; AttemptStarted/ResultRecorded
+// fire per attempt start and final combination result, after they have been
+// recorded into the run and persisted. The local CLI passes nil (no
+// observer); the remote matrix handlers pass an observer that streams
+// MatrixEvents to the backend. It is called from executor worker goroutines,
+// so implementations must be safe for concurrent use.
+type matrixSessionObserver interface {
+	SessionStarted(run *matrix.Run)
+	AttemptStarted(run *matrix.Run, c matrix.Combination, attempt int)
+	ResultRecorded(run *matrix.Run, res matrix.Result)
+}
+
 // startMatrixSession executes combos for run, which must already be persisted
 // in its pre-execution state (fresh runs via SaveRun, resumes via UpdateRun).
-// It builds the build function from the run's configuration snapshot (never
-// from the current phelix.yaml), applies the snapshot's retry budget, records
-// every completed combination into the run (and the history store) as it
-// finishes, and finalizes the run when done.
-//
-// interrupted reports whether the session stopped early because the user
-// hit SIGINT/SIGTERM: the run is left with status "interrupted" and its
-// pending combinations are resumable.
+// It is the local CLI entry point: SIGINT/SIGTERM cancels the session (no new
+// combinations start, in-flight builds are killed, their combinations stay
+// pending), the default signal disposition is restored so a second signal
+// terminates the process, and the session core runs to completion.
 func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs []string, debug bool) (executed []matrix.Result, interrupted bool, err error) {
-	if len(combos) == 0 {
-		return nil, false, nil
-	}
-
-	release, lerr := matrix.AcquireRunLock(run.ID)
-	if lerr != nil {
-		return nil, false, lerr
-	}
-	defer release()
-
-	buildFn, berr := matrixSessionBuildFunc(run, combos, extraArgs, debug)
-	if berr != nil {
-		return nil, false, berr
-	}
-
-	// Signal handling: the first SIGINT/SIGTERM cancels the session — no new
-	// combinations start, in-flight builds are killed through their build
-	// context, and their results are discarded so those combinations stay
-	// pending. The default disposition is then restored so a second signal
-	// terminates the process immediately (instead of being swallowed by this
-	// still-registered, no-longer-read channel).
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sigCh := make(chan os.Signal, 1)
@@ -78,6 +67,45 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 		case <-sessionDone:
 		}
 	}()
+
+	executed, interrupted, err = startMatrixSessionContext(ctx, run, combos, extraArgs, debug, nil)
+	signal.Stop(sigCh)
+	return executed, interrupted, err
+}
+
+// startMatrixSessionContext is the execution core shared by every matrix
+// entry point (fresh build, resume, manual retry — local CLI and remote
+// backend commands alike). It builds the build function from the run's
+// configuration snapshot (never from the current phelix.yaml), applies the
+// snapshot's retry budget, records every completed combination into the run
+// (and the history store) as it finishes, and finalizes the run when done.
+//
+// Cancellation comes from ctx (the CLI derives it from signals; the remote
+// path derives it from daemon shutdown). interrupted reports whether the
+// session stopped early: the run is left with status "interrupted" and its
+// pending combinations are resumable.
+//
+// obs, when non-nil, observes every attempt start and recorded result after
+// they are persisted.
+func startMatrixSessionContext(ctx context.Context, run *matrix.Run, combos []matrix.Combination, extraArgs []string, debug bool, obs matrixSessionObserver) (executed []matrix.Result, interrupted bool, err error) {
+	if len(combos) == 0 {
+		return nil, false, nil
+	}
+
+	release, lerr := matrix.AcquireRunLock(run.ID)
+	if lerr != nil {
+		return nil, false, lerr
+	}
+	defer release()
+
+	if obs != nil {
+		obs.SessionStarted(run)
+	}
+
+	buildFn, berr := matrixSessionBuildFunc(run, combos, extraArgs, debug)
+	if berr != nil {
+		return nil, false, berr
+	}
 
 	// Incremental persistence: one history update per completed combination
 	// (and per attempt start, so the live "running" state is visible to
@@ -96,10 +124,16 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 	onAttempt := func(c matrix.Combination, attempt int) {
 		run.MarkRunning(c.ID(), attempt, time.Now())
 		persist()
+		if obs != nil {
+			obs.AttemptStarted(run, c, attempt)
+		}
 	}
 	onResult := func(res matrix.Result) {
 		run.RecordResult(res)
 		persist()
+		if obs != nil {
+			obs.ResultRecorded(run, res)
+		}
 	}
 
 	results := matrix.Execute(&matrix.MatrixPlan{Lang: run.Config.Profile().Lang, Combinations: combos}, buildFn, matrix.ExecutorConfig{
@@ -115,7 +149,6 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 	if uerr := matrix.UpdateRun(run.Clone()); uerr != nil {
 		fmt.Printf("  %s Warning: could not record matrix run history: %v\n", color.YellowString("⚠"), uerr)
 	}
-	signal.Stop(sigCh)
 
 	for _, res := range results {
 		if res.Status != "" {
