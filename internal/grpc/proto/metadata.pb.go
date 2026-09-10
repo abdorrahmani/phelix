@@ -42,8 +42,15 @@ type CLIMetadata struct {
 	// runtime status (current_state/monitor_status). Absent in older agents —
 	// the backend must treat an empty value as "unknown" and keep working.
 	ConnectionState string `protobuf:"bytes,14,opt,name=connection_state,json=connectionState,proto3" json:"connection_state,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Capabilities the sending agent's build actually supports — its own
+	// declaration, not a version comparison (source builds carry no reliable
+	// version). Known values: "build_matrix" (the remote matrix command
+	// handler is registered; matrix_* commands may be sent). Absent in older
+	// agents — the backend must gate feature-specific commands on the
+	// specific entry, never on the field's presence, and keep working.
+	Capabilities  []string `protobuf:"bytes,15,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CLIMetadata) Reset() {
@@ -174,6 +181,13 @@ func (x *CLIMetadata) GetConnectionState() string {
 	return ""
 }
 
+func (x *CLIMetadata) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
+}
+
 // MetadataResponse is the backend's response to metadata sync.
 type MetadataResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -231,7 +245,7 @@ var File_internal_grpc_proto_metadata_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_metadata_proto_rawDesc = "" +
 	"\n" +
-	"\"internal/grpc/proto/metadata.proto\x12\x06phelix\"\xf9\x03\n" +
+	"\"internal/grpc/proto/metadata.proto\x12\x06phelix\"\x9d\x04\n" +
 	"\vCLIMetadata\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12#\n" +
@@ -250,7 +264,8 @@ const file_internal_grpc_proto_metadata_proto_rawDesc = "" +
 	"\x12total_managed_apps\x18\v \x01(\x05R\x10totalManagedApps\x12!\n" +
 	"\frunning_apps\x18\f \x01(\x05R\vrunningApps\x12\x1c\n" +
 	"\ttimestamp\x18\r \x01(\x03R\ttimestamp\x12)\n" +
-	"\x10connection_state\x18\x0e \x01(\tR\x0fconnectionState\"H\n" +
+	"\x10connection_state\x18\x0e \x01(\tR\x0fconnectionState\x12\"\n" +
+	"\fcapabilities\x18\x0f \x03(\tR\fcapabilities\"H\n" +
 	"\x10MetadataResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessageB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"

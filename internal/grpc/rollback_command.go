@@ -67,6 +67,10 @@ type rollbackLedger struct {
 	indeterminateNote string
 }
 
+// The remote rollback transport compiled into this build (this ledger plus
+// the rollback dispatch in monitor_stream.go) declares its capability.
+func init() { RegisterCapability(CapabilityRollback) }
+
 var rollbackResults = newRollbackLedger(filepath.Join(server.DataDir(), rollbackLedgerFile), rollbackLedgerCapacity, "rollback", "")
 
 func newRollbackLedger(path string, max int, fallbackCommand, indeterminateNote string) *rollbackLedger {

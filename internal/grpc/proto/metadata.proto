@@ -24,6 +24,14 @@ message CLIMetadata {
   // runtime status (current_state/monitor_status). Absent in older agents —
   // the backend must treat an empty value as "unknown" and keep working.
   string connection_state = 14;
+
+  // Capabilities the sending agent's build actually supports — its own
+  // declaration, not a version comparison (source builds carry no reliable
+  // version). Known values: "build_matrix" (the remote matrix command
+  // handler is registered; matrix_* commands may be sent). Absent in older
+  // agents — the backend must gate feature-specific commands on the
+  // specific entry, never on the field's presence, and keep working.
+  repeated string capabilities = 15;
 }
 
 // MetadataResponse is the backend's response to metadata sync.

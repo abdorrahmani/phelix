@@ -45,5 +45,10 @@ func collectMetadata() *pb.CLIMetadata {
 		// status above. Older agents leave this empty; the backend must
 		// tolerate that.
 		ConnectionState: connstate.Get(),
+		// Feature capabilities this build actually registered — the backend
+		// gates feature-specific commands on these (e.g. matrix_* on
+		// "build_matrix") instead of guessing from the version string.
+		// Older agents leave this empty; the backend must tolerate that.
+		Capabilities: []string{"build_matrix"},
 	}
 }
