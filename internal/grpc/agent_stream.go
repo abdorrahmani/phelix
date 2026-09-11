@@ -10,6 +10,7 @@ import (
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"google.golang.org/grpc/status"
 )
 
 // agentStreamManager manages the bidirectional AgentStream for backend-to-CLI commands.
@@ -25,7 +26,16 @@ var agentStream = &agentStreamManager{
 }
 
 // startAgentStream opens the bidirectional stream and processes incoming commands.
+//
+// Like the monitor stream loop, it stops entirely when the backend actively
+// rejects the credentials (gRPC Unauthenticated) — retrying a revoked token
+// every 2s only hammers the backend — and parks while no valid local session
+// exists instead of spinning on an attach that can never succeed.
 func (c *Client) startAgentStream() {
+	// Consecutive stream-rate budget terminations (E1), escalating the pause
+	// like the monitor stream loop does.
+	rateStrikes := 0
+
 	for {
 		select {
 		case <-c.done:
@@ -38,12 +48,52 @@ func (c *Client) startAgentStream() {
 			continue
 		}
 
+		if !sessionAvailable() {
+			select {
+			case <-c.done:
+				return
+			case <-time.After(monitorStreamNoSessionDelay):
+			}
+			continue
+		}
+
 		if err := c.openAgentStream(); err != nil {
+			if isAuthRejection(err) {
+				logs.ErrorFile("grpc", "[gRPC Agent] backend rejected credentials on agent stream: %v", err)
+				c.handleAuthRejected()
+				return
+			}
+
+			// Backend rate-limit budgets (E1–E3): back off for the budget's
+			// window instead of the normal 2s cadence — a fast reopen is
+			// exactly the pattern the budgets guard against.
+			policy := classifyStreamError(err)
+			if policy.reason != "" {
+				delay := policy.delay
+				if resourceExhaustedKind(err) == "stream_rate" {
+					rateStrikes++
+					delay = streamRateEscalation(rateStrikes)
+				} else {
+					rateStrikes = 0
+				}
+				logs.ErrorFile("grpc", "[gRPC Agent] %s: %v — next attempt in %s",
+					policy.reason, err, delay)
+				select {
+				case <-c.done:
+					return
+				case <-time.After(delay):
+				}
+				continue
+			}
+
+			rateStrikes = 0
 			logs.ErrorFile("grpc", "[gRPC Agent] Stream error: %v, reconnecting...", err)
 			c.reconnectIfNeeded()
 			time.Sleep(2 * time.Second)
 			continue
 		}
+
+		rateStrikes = 0
 	}
 }
 
@@ -79,6 +129,15 @@ func (c *Client) openAgentStream() error {
 			},
 		},
 	}); err != nil {
+		// A failed Send on a server-rejected stream carries no gRPC status
+		// (typically io.EOF); the actual cause — e.g. Unauthenticated for a
+		// revoked session — only surfaces on Recv. Harvest it so the loop can
+		// distinguish auth rejections from transport failures.
+		if _, recvErr := stream.Recv(); recvErr != nil {
+			if _, ok := status.FromError(recvErr); ok {
+				return phelixerr.Wrap(phelixerr.CodeConnection, "announce presence on agent stream", recvErr)
+			}
+		}
 		return phelixerr.Wrap(phelixerr.CodeConnection, "announce presence on agent stream", err)
 	}
 
@@ -155,7 +214,7 @@ func (c *Client) handleHealthWatch(stream pb.PhelixService_AgentStreamClient, cm
 			Command:   "health_watch",
 			Success:   false,
 			Timestamp: time.Now().UnixMilli(),
-			Error:     err.Error(),
+			Error:     phelixerr.Redact(err.Error()),
 		}
 		stream.Send(&pb.ClientToServer{
 			Payload: &pb.ClientToServer_HealthResult{

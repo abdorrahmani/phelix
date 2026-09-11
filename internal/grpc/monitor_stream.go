@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -27,8 +28,17 @@ const monitorCommandSettleDelay = 2 * time.Second
 // monitor stream after it ends (the underlying gRPC connection's own
 // reconnect/backoff logic — see reconnect.go — governs connection-level
 // retries; this is just the inter-stream-attempt pause on an otherwise
-// healthy connection).
+// healthy connection). The backend's rate-limit rejections override this
+// with a much longer pause — see classifyStreamError.
 const monitorStreamRetryDelay = 2 * time.Second
+
+// monitorStreamNoSessionDelay is how long the stream loop parks between
+// checks when no valid session exists (user logged out, or the session
+// expired locally). Parking instead of retrying every 2s avoids a hot loop
+// that can never authenticate; the loop resumes as soon as 'phelix auth
+// login' writes a fresh session. It is a var (not a const) so tests can
+// shorten it.
+var monitorStreamNoSessionDelay = 15 * time.Second
 
 const maxRemoteVerifyDurationMS = int64((30 * time.Minute) / time.Millisecond)
 
@@ -78,6 +88,21 @@ func cloneMonitorCommandResult(r *pb.MonitorCommandResult) *pb.MonitorCommandRes
 	return proto.Clone(r).(*pb.MonitorCommandResult)
 }
 
+// oversizedEventMessage builds the E4 diagnostic for an event the backend
+// rejected as too large. Split out so tests can assert the operator-facing
+// text (which message type, which limit) without depending on the logs
+// package's process-wide file handle.
+func oversizedEventMessage(payloadType string) string {
+	return fmt.Sprintf("event of type %s exceeded the backend 4 MiB message limit — this is a bug, the event must be chunked or trimmed", payloadType)
+}
+
+// oversizedEventLog is the sink for the E4 diagnostic; a var so tests can
+// capture the message. The default writes it to the self log (phelix.log),
+// which is what the daemon ships to the backend and what operators read.
+var oversizedEventLog = func(payloadType string) {
+	logs.ErrorFile("grpc", "[gRPC Monitor] %s", oversizedEventMessage(payloadType))
+}
+
 func (s *monitorStreamManager) send(event *pb.MonitorEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,9 +110,48 @@ func (s *monitorStreamManager) send(event *pb.MonitorEvent) error {
 		return phelixerr.New(phelixerr.CodeConnection, "monitor stream is not connected")
 	}
 	if err := s.stream.Send(event); err != nil {
+		// E4: the backend's explicit 4 MiB MaxRecvMsgSize. This is a client
+		// bug (an oversized event), not a transient failure — log it loudly
+		// with the payload type so the offending producer is identifiable,
+		// then surface the error to the caller as usual.
+		if messageTooLargeError(err) {
+			oversizedEventLog(eventPayloadName(event))
+		}
 		return phelixerr.Wrap(phelixerr.CodeConnection, "failed to send monitor event", err)
 	}
 	return nil
+}
+
+// eventPayloadName returns a human-readable name for a MonitorEvent's
+// payload type, used in oversized-event diagnostics (E4).
+func eventPayloadName(event *pb.MonitorEvent) string {
+	if event == nil {
+		return "<nil>"
+	}
+	switch event.Payload.(type) {
+	case *pb.MonitorEvent_ServerInfo:
+		return "server_info"
+	case *pb.MonitorEvent_ServerMetrics:
+		return "server_metrics"
+	case *pb.MonitorEvent_AppMetrics:
+		return "app_metrics"
+	case *pb.MonitorEvent_AppInfo:
+		return "app_info"
+	case *pb.MonitorEvent_LogEntry:
+		return "log_entry"
+	case *pb.MonitorEvent_CommandResult:
+		return "command_result"
+	case *pb.MonitorEvent_DeploymentSnapshot:
+		return "deployment_snapshot"
+	case *pb.MonitorEvent_AppHealth:
+		return "app_health"
+	case *pb.MonitorEvent_MatrixRun:
+		return "matrix_run"
+	case *pb.MonitorEvent_Pong:
+		return "pong"
+	default:
+		return "unknown"
+	}
 }
 
 func (s *monitorStreamManager) pause() {
@@ -121,8 +185,25 @@ func (c *Client) StartMonitorStream() {
 // etc.). It relies on the Client's own connection-level reconnect/backoff
 // (see reconnect.go) to recover the underlying gRPC connection; here we only
 // need to re-open the logical stream once the connection is healthy again.
+//
+// Two conditions end the loop instead of retrying:
+//
+//   - The backend actively rejects the credentials (gRPC Unauthenticated on
+//     the stream). Retrying with the same revoked token would hammer the
+//     backend every 2s and re-send the full snapshot set each time, so we
+//     stop the client entirely (handleAuthRejected) and wait for
+//     'phelix auth login'.
+//   - There is no valid local session. The loop parks for
+//     monitorStreamNoSessionDelay and re-checks, instead of spinning on an
+//     attach that can never succeed.
 func (c *Client) monitorStreamLoop() {
 	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream loop started")
+
+	// Consecutive stream-rate budget terminations (E1): each repeat earns a
+	// longer pause, so a budget-tripping stream stops re-sending its full
+	// snapshot burst at the floor delay. Any other outcome resets it.
+	rateStrikes := 0
+
 	for {
 		select {
 		case <-c.done:
@@ -136,9 +217,51 @@ func (c *Client) monitorStreamLoop() {
 			continue
 		}
 
+		if !sessionAvailable() {
+			select {
+			case <-c.done:
+				return
+			case <-time.After(monitorStreamNoSessionDelay):
+			}
+			continue
+		}
+
 		if err := c.runMonitorStream(); err != nil {
+			if isAuthRejection(err) {
+				logs.ErrorFile("grpc", "[gRPC Monitor] backend rejected credentials on monitor stream: %v", err)
+				c.handleAuthRejected()
+				return
+			}
+
+			// Backend rate-limit budgets (E1–E3) are not transient network
+			// failures: reconnecting at the normal 2s cadence is exactly the
+			// abuse pattern they guard against. Back off for the budget's
+			// window instead; only a genuine idle-timeout/disconnect keeps
+			// the normal cadence.
+			policy := classifyStreamError(err)
+			if policy.reason != "" {
+				delay := policy.delay
+				if resourceExhaustedKind(err) == "stream_rate" {
+					rateStrikes++
+					delay = streamRateEscalation(rateStrikes)
+				} else {
+					rateStrikes = 0
+				}
+				logs.ErrorFile("grpc", "[gRPC Monitor] %s: %v — next stream attempt in %s",
+					policy.reason, err, delay)
+				select {
+				case <-c.done:
+					return
+				case <-time.After(delay):
+				}
+				continue
+			}
+
+			rateStrikes = 0
 			logs.ErrorFile("grpc", "[gRPC Monitor] stream disconnected: %v", err)
 			c.reconnectIfNeeded()
+		} else {
+			rateStrikes = 0
 		}
 
 		select {
@@ -343,7 +466,10 @@ func commandErrorResult(req *pb.MonitorCommandRequest, err error) *pb.MonitorCom
 		Command:   req.GetType(),
 		AppName:   req.GetAppName(),
 		Status:    "error",
-		Error:     err.Error(),
+		// Error chains from the local executor can embed command output and
+		// environment values; redact before the result is serialized to the
+		// backend (same treatment as matrix command results).
+		Error:     phelixerr.Redact(err.Error()),
 		Timestamp: time.Now().UnixMilli(),
 	}
 	if structured := phelixerr.AsError(err); structured != nil {

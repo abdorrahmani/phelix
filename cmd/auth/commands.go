@@ -17,15 +17,33 @@ import (
 )
 
 var (
-	username string
-	apiKey   string
+	username   string
+	apiKey     string
+	loginScope string
 )
 
 // LoginCmd handles the "phelix auth" login command.
 var LoginCmd = &cobra.Command{
-	Use:   "login --username <username> --apikey <apikey>",
+	Use:   "login --username <username> --apikey <apikey> [--scope agent]",
 	Short: "Authenticate user with Phelix",
+	Long: `Authenticate user with Phelix.
+
+By default the login issues a full-scope session (dashboard + monitoring),
+stored in ~/.phelix/session.json — this is what interactive CLI commands use.
+
+Use --scope agent to issue a monitoring-only session for the phelix monitor
+daemon, stored separately in ~/.phelix/agent-session.json. An agent-scoped
+token can only be used by the monitoring channel: if the server it runs on is
+ever compromised, the stolen token cannot touch your dashboard or account.
+Use this variant when provisioning servers (install scripts, systemd setup).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if loginScope != "" && loginScope != ScopeAgent && loginScope != ScopeFull {
+			return phelixerr.Newf(
+				phelixerr.CodeInvalidArgument,
+				"invalid --scope %q: must be %q or %q",
+				loginScope, ScopeAgent, ScopeFull,
+			)
+		}
 		if username == "" && apiKey == "" {
 			if term.IsTerminal(int(os.Stdin.Fd())) {
 				if err := survey.AskOne(&survey.Input{Message: "Enter username"}, &username); err != nil {
@@ -42,13 +60,30 @@ var LoginCmd = &cobra.Command{
 			}
 		}
 
-		if err := authenticate(username, apiKey); err != nil {
+		if err := authenticate(username, apiKey, loginScope); err != nil {
+			// A rate-limited login already carries its operator-facing
+			// message and code (RATE_LIMITED with the Retry-After window);
+			// re-wrapping it as INVALID_CREDENTIALS would mangle both.
+			if phelixerr.CodeOf(err) == phelixerr.CodeRateLimited {
+				return err
+			}
 			return phelixerr.Wrapf(
 				phelixerr.CodeInvalidCredentials,
 				err,
 				"authentication failed for username %q",
 				username,
 			)
+		}
+
+		if loginScope == ScopeAgent {
+			// An agent-scoped token is rejected by the dashboard's REST
+			// endpoints, so the post-login app upload is skipped by design.
+			// The gRPC monitor surface (which the token IS valid for) syncs
+			// apps through its own metadata/snapshot flow.
+			fmt.Printf("Hi %s. Monitoring-only (agent-scoped) session created for the phelix monitor daemon.\n", color.New(color.Bold).SprintFunc()(username))
+			fmt.Printf("A compromised server can no longer expose your full account: this token only authorizes monitoring.\n")
+			connstate.MarkConnected()
+			return nil
 		}
 
 		printWelcome(username)
@@ -82,6 +117,7 @@ var LoginCmd = &cobra.Command{
 func init() {
 	LoginCmd.Flags().StringVarP(&username, "username", "u", "", "Username to login")
 	LoginCmd.Flags().StringVarP(&apiKey, "apiKey", "k", "", "api key to login")
+	LoginCmd.Flags().StringVar(&loginScope, "scope", "", "Token scope: 'agent' issues a monitoring-only session for the daemon (recommended when provisioning servers)")
 }
 
 // StatusCmd prints session status.
@@ -91,6 +127,13 @@ var StatusCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, err := GetValidSession()
 		if err != nil {
+			// No interactive session, but the daemon may still have its own
+			// agent-scoped session — report that instead of a bare error.
+			if agentSession, ok := GetValidAgentSession(); ok {
+				printAgentSession(agentSession, true)
+				printConnectionState()
+				return nil
+			}
 			return err
 		}
 
@@ -104,9 +147,34 @@ var StatusCmd = &cobra.Command{
 		}
 
 		printSession(session, status)
+		if agentSession, ok := GetValidAgentSession(); ok {
+			printAgentSession(agentSession, false)
+		}
 		printConnectionState()
 		return nil
 	},
+}
+
+// scopeLabel renders a session scope for status output; empty (pre-scope
+// sessions) is rendered as the full scope it actually is.
+func scopeLabel(scope string) string {
+	if scope == "" {
+		return ScopeFull
+	}
+	return scope
+}
+
+// printAgentSession reports the daemon's separate agent-scoped session.
+// only=true is used when no interactive session exists (daemon-only
+// provisioning via `phelix auth login --scope agent`).
+func printAgentSession(session *Session, only bool) {
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("• Monitor daemon session: %s (scope: %s, expires %s)\n",
+		green(session.SessionID), scopeLabel(session.Scope),
+		session.ExpiresAt.Format(time.RFC1123))
+	if only {
+		fmt.Printf("• No interactive session — dashboard/REST commands need 'phelix auth login'\n")
+	}
 }
 
 // printConnectionState renders the backend connection/auth state, separate
@@ -141,9 +209,31 @@ var LogoutCmd = &cobra.Command{
 	Use:   "logout",
 	Short: "Logout from Phelix (dashboard sync stops; local apps and monitor keep running)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		loggedOutAgent := false
+
+		// The daemon's agent-scoped session, when present, is its own server
+		// session record; log it out alongside the interactive one.
+		if agentSession, ok := GetValidAgentSession(); ok {
+			if err := performLogout(agentSession); err != nil {
+				fmt.Printf("  %s Could not log out the agent-scoped session: %v\n", color.YellowString("⚠"), err)
+			} else if err := removeAgentSession(); err != nil {
+				return err
+			} else {
+				loggedOutAgent = true
+			}
+		}
+
 		session, err := GetValidSession()
 		if err != nil {
-			fmt.Println("No active session found.")
+			if !loggedOutAgent {
+				fmt.Println("No active session found.")
+				return nil
+			}
+			// Agent-only provisioning: the daemon session above was the
+			// only one, and it is gone now.
+			connstate.MarkDisconnected()
+			fmt.Println("✓ Successfully logged out (agent-scoped session).")
+			fmt.Println("  Local apps and the monitor daemon are still running; dashboard sync is paused.")
 			return nil
 		}
 
@@ -197,6 +287,7 @@ func printSession(session *Session, status *SessionStatus) {
 		who = session.SessionID
 	}
 	fmt.Printf("• Authenticated as: %s\n", green(who))
+	fmt.Printf("• Session scope: %s\n", green(scopeLabel(session.Scope)))
 	if status != nil {
 		fmt.Printf("• Session: %s\n", status.SessionID)
 		fmt.Printf("• CLI: %s (%s/%s)\n", status.CliVersion, status.OS, status.Arch)

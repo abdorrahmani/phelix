@@ -9,6 +9,10 @@ type Session struct {
 	Username  string    `json:"username"`
 	UserID    uint      `json:"userID"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	// Scope echoes the backend's login-response scope ("agent" for a token
+	// requested via --scope agent, "full" otherwise). Empty means full scope
+	// (every session issued before the field existed was full-scope).
+	Scope string `json:"scope,omitempty"`
 }
 
 // AppProcess mirrors app.AppProcessConfig for the HTTP upload payload.
@@ -75,6 +79,7 @@ type SessionStatus struct {
 	OS         string `json:"os"`
 	Arch       string `json:"arch"`
 	ExpiresAt  string `json:"expiresAt"`
+	Scope      string `json:"scope"`
 }
 
 // AppDetail represents an application's runtime details plus its reported

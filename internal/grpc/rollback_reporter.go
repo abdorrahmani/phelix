@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -521,25 +520,17 @@ func (r *RollbackReporter) Event() *pb.RollbackLifecycleEvent {
 	return r.event
 }
 
-// loadSessionIdentity reads the session ID and token from disk without
-// failing the rollback if the session is missing or expired.
+// loadSessionIdentity reads the session ID and token from the preferred
+// session file (agent-scoped when present, interactive otherwise) without
+// failing the rollback if the session is missing or expired. Reading through
+// loadSession keeps the attributed session ID consistent with the one whose
+// credentials actually authenticate the RPC (attachAuthMetadata).
 func loadSessionIdentity() (sessionID, token string) {
-	home, err := os.UserHomeDir()
+	s, err := loadSession()
 	if err != nil {
 		return "", ""
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".phelix", "session.json"))
-	if err != nil {
-		return "", ""
-	}
-	var sess struct {
-		SessionID string `json:"sessionID"`
-		Token     string `json:"token"`
-	}
-	if err := json.Unmarshal(data, &sess); err != nil {
-		return "", ""
-	}
-	return sess.SessionID, sess.Token
+	return s.SessionID, s.Token
 }
 
 // writeLocalLog appends a structured line to ~/.phelix/apps/<app>/rollback.log.

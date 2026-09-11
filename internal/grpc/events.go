@@ -48,6 +48,13 @@ func (c *Client) SendEventChecked(event *pb.ApplicationEvent) error {
 	resp, err := c.serviceClient.ReportEvent(authCtx, event)
 	if err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Failed to send event: %v", err)
+		// The backend's failed-auth budget (E2) is not a transient failure:
+		// the attempt was rejected before validation. Report it as a
+		// rate-limit so the operator sees the backoff instead of a generic
+		// connection error, and do not force a reconnect.
+		if authBudgetError(err) {
+			return rateLimitedAuthError(err)
+		}
 		c.reconnectIfNeeded()
 		rpcErr := phelixerr.FromGRPC(err)
 		if code := phelixerr.CodeOf(rpcErr); code == phelixerr.CodeUnauthenticated || code == phelixerr.CodeSessionExpired {
@@ -74,6 +81,9 @@ func (c *Client) SendEventChecked(event *pb.ApplicationEvent) error {
 }
 
 // NewApplicationEvent creates a new ApplicationEvent with the given parameters.
+// The error message is redacted: caller-supplied err.Error() chains can embed
+// lower-layer output (command stderr, environment dumps) and this event is
+// serialized to the backend verbatim.
 func NewApplicationEvent(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) *pb.ApplicationEvent {
 	return &pb.ApplicationEvent{
 		ServerId:       server.GetServerID(),
@@ -82,7 +92,7 @@ func NewApplicationEvent(appID, appName, action string, success bool, errMsg str
 		Action:         action,
 		Timestamp:      time.Now().UnixMilli(),
 		Success:        success,
-		ErrorMessage:   errMsg,
+		ErrorMessage:   phelixerr.Redact(errMsg),
 		Pid:            int32(pid),
 		DeploymentMode: mode,
 		Version:        version,

@@ -2,7 +2,6 @@ package grpc
 
 import (
 	"context"
-	"crypto/tls"
 	"sync"
 	"time"
 
@@ -38,6 +37,12 @@ type Client struct {
 	connected     bool
 	cancel        context.CancelFunc
 	unreadySince  time.Time
+
+	// authParkMu guards authParkUntil: once the backend's failed-auth budget
+	// (E2) rejects a metadata sync, authenticated syncs park until the window
+	// passes instead of re-attempting every 30s.
+	authParkMu    sync.Mutex
+	authParkUntil time.Time
 }
 
 // NewClient creates a new gRPC client instance.
@@ -55,17 +60,35 @@ func NewClient() *Client {
 // for local development against a backend that doesn't terminate TLS.
 //
 // This is intentionally NOT configurable from the production config file —
-// there is no insecure fallback for the production backend.
+// there is no insecure fallback for the production backend. As a fail-safe
+// against a production build accidentally shipping the dev-mode embedded
+// config, the known production host is ALWAYS dialed with TLS, even when
+// mode is "dev".
 func transportCredentials() credentials.TransportCredentials {
 	cfg := config.Get()
-	if cfg != nil && cfg.App.Mode == "dev" {
-		logs.InfoFile("grpc", "[gRPC] dev mode: using insecure (plaintext) transport credentials")
+	if cfg == nil {
+		// No config loaded: default to TLS. Failing open to plaintext would
+		// send the session token over an unauthenticated transport.
+		return credentials.NewTLS(agentTLSConfig())
+	}
+	return transportCredentialsFor(cfg.App.Mode, cfg.App.GRPCUrl)
+}
+
+// transportCredentialsFor is the pure decision core of transportCredentials,
+// split out so the mode/host matrix is directly testable.
+func transportCredentialsFor(mode, target string) credentials.TransportCredentials {
+	if mode == "dev" && !isProductionBackend(target) {
+		logs.WarningFile("grpc", "[gRPC] dev mode: using insecure (plaintext) transport credentials for %s", target)
 		return insecure.NewCredentials()
 	}
+	if mode == "dev" && isProductionBackend(target) {
+		logs.WarningFile("grpc", "[gRPC] dev mode requested for production backend %s: refusing insecure transport, using TLS", target)
+	}
 	// #nosec G402 -- default TLS config: verifies the server certificate
-	// against the system trust store, which is what we want for the
-	// production backend (no InsecureSkipVerify, no custom CA override).
-	return credentials.NewTLS(&tls.Config{})
+	// against the system trust store (plus optional SPKI pinning, see
+	// agentTLSConfig), which is what we want for the production backend (no
+	// InsecureSkipVerify, no custom CA override).
+	return credentials.NewTLS(agentTLSConfig())
 }
 
 // Connect establishes the gRPC connection to the backend.
@@ -331,6 +354,16 @@ func (c *Client) sendMetadataOnce() {
 		return
 	}
 
+	// E2: while parked by the backend's failed-auth budget, skip the sync —
+	// each attempt is rejected before validation but still costs a round
+	// trip, and the budget message already told us the window.
+	c.authParkMu.Lock()
+	parked := time.Now().Before(c.authParkUntil)
+	c.authParkMu.Unlock()
+	if parked {
+		return
+	}
+
 	md := collectMetadata()
 	if md == nil {
 		logs.WarningFile("grpc", "[gRPC] collectMetadata returned nil (server_id empty?)")
@@ -351,6 +384,15 @@ func (c *Client) sendMetadataOnce() {
 
 	resp, err := c.serviceClient.SyncMetadata(authCtx, md)
 	if err != nil {
+		// The failed-auth budget (E2): park authenticated sync for the
+		// budget window rather than re-attempting on the normal cadence.
+		if authBudgetError(err) {
+			c.authParkMu.Lock()
+			c.authParkUntil = time.Now().Add(authBudgetBackoff)
+			c.authParkMu.Unlock()
+			logs.ErrorFile("grpc", "[gRPC] %v", rateLimitedAuthError(err))
+			return
+		}
 		logs.ErrorFile("grpc", "[gRPC] Metadata sync failed: %v", err)
 		// A credentials rejection is not a network failure: retrying forever
 		// with the same revoked key would hammer the backend. Stop

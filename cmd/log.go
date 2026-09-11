@@ -99,6 +99,11 @@ func streamLogs(name string, f *os.File) error {
 }
 
 func displayHistoricalLogs(f *os.File) error {
+	// Log lines are treated as opaque text: the CLI's own redaction (and the
+	// backend's, for anything that round-tripped through the dashboard) may
+	// leave "[REDACTED*]"-style sentinels in the history. They are normal
+	// content here — never parsed, un-redacted, or treated as an error
+	// condition (H2, docs/CLI_CHANGES_REQUIRED.md §4).
 	lastLines, err := getLastNLines(f, 10)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read historical logs", err)

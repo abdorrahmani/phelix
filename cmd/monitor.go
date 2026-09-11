@@ -89,6 +89,15 @@ func runMonitor() error {
 	}
 	logs.Info("monitor", "loaded agent identity agent_id=%s", server.GetAgentID())
 
+	// Least-privilege nudge (audit B1): if the session this daemon will use
+	// is a full-scope token, say so once at startup. A compromised server
+	// then exposes the whole account; `phelix auth login --scope agent`
+	// provisions a monitoring-only token instead.
+	if scope := phelixgrpc.PreferredSessionScope(); scope != phelixgrpc.SessionScopeAgent {
+		logs.Warning("monitor",
+			"daemon is authenticating with a full-scope session token; for least privilege run 'phelix auth login --scope agent' on this machine (monitoring-only token, see README § Authentication)")
+	}
+
 	healthDaemon := health.InitGlobalDaemon()
 	phelixgrpc.InitGlobalClient()
 	c := phelixgrpc.GetClient()

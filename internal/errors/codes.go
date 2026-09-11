@@ -19,6 +19,10 @@ const (
 	CodeUnauthorized       Code = "UNAUTHORIZED"
 	CodeInvalidCredentials Code = "INVALID_CREDENTIALS"
 	CodeSessionExpired     Code = "SESSION_EXPIRED"
+	// CodeRateLimited: the backend throttled the request (HTTP 429 on login
+	// with a Retry-After window, or a gRPC ResourceExhausted budget). The
+	// operation may succeed again once the announced window passes.
+	CodeRateLimited Code = "RATE_LIMITED"
 
 	// Configuration / validation.
 	CodeConfiguration Code = "CONFIGURATION_ERROR"

@@ -216,6 +216,43 @@ phelix auth logout     # invalidate and remove the session
 > dashboard? Skip `auth login` — build/run commands work the same. Only the
 > dashboard upload is skipped.
 
+### Agent-scoped sessions for the monitor daemon (recommended)
+
+By default, `phelix auth login` issues a **full-scope** session — valid for
+the dashboard and every monitoring channel. On a server you only monitor,
+that is more power than the daemon needs: a compromised server would expose a
+token that can touch your whole account.
+
+Use the **agent-scoped** variant when provisioning servers (install scripts,
+systemd setup):
+
+```bash
+phelix auth login --username <user> --apiKey <key> --scope agent
+```
+
+This requests a monitoring-only token (stored separately at
+`~/.phelix/agent-session.json` so it never displaces your interactive
+session). The token is accepted by the monitoring gRPC channel and nothing
+else — dashboards, account settings, and session management all reject it.
+If the server is ever compromised, the stolen token cannot be used to take
+over your account; revoke it from any other machine with `phelix auth
+logout` (which logs out both sessions).
+
+Both sessions can coexist: a typical server runs `--scope agent` for the
+daemon, while you use a normal (full-scope) login for interactive CLI
+commands there. `phelix auth status` shows both, including each token's
+scope.
+
+### Backend rate limits
+
+The backend throttles failed logins (HTTP 429 with a `Retry-After` window)
+and abusive retry patterns on the monitoring channel (gRPC
+`ResourceExhausted`). The CLI honors these: a throttled login tells you when
+to retry instead of failing generically, and the monitor daemon backs off for
+the announced window rather than hammering the backend. If you see a "too
+many failed authentication attempts" or "too many login attempts" message,
+wait for the stated window — retrying earlier only extends it.
+
 ## Interactive Wizard
 
 Phelix has two complementary interactive modes so you never have to memorize

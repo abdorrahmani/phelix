@@ -502,6 +502,12 @@ BANNER
     echo "  ${C_CYAN}phelix build myapp --port 8080${C_RESET}  # build & run an app"
     [ "${OS}" = "linux" ] && [ "${NO_SERVICE}" -eq 0 ] && \
         echo "  ${C_CYAN}sudo systemctl status phelix${C_RESET}   # monitor service"
+    # On servers used only for monitoring, prefer the agent-scoped session: a
+    # stolen token from a compromised server then has no account access.
+    echo
+    echo "  Server only running the monitor? Authenticate with"
+    echo "  ${C_CYAN}phelix auth login --scope agent${C_RESET} — the issued token"
+    echo "  only authorizes monitoring, not your account."
 }
 
 main "$@"

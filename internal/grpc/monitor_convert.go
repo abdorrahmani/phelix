@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"github.com/abdorrahmani/phelix/internal/app"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
@@ -50,6 +51,13 @@ func toProtoServerInfo(info *server.Info) *pb.ServerInfo {
 // representation. The group is always empty — the agent does not collect SSH
 // connection details or key material (see server.ServerConnection) — but it is
 // still sent so the message shape stays stable.
+//
+// H3 (2026-09-11 hardening): ssh_password and private_key are write-only
+// dashboard fields. The backend drops them on ingest and security-logs their
+// presence, so they must never be serialized here. The struct fields stay
+// (the persisted settings model still carries the group); the wire copy is
+// forcibly blanked as a defense-in-depth chokepoint even if some future code
+// path starts populating them.
 func toProtoServerConnection(c *server.ServerConnection) *pb.ServerConnection {
 	if c == nil {
 		return nil
@@ -58,8 +66,8 @@ func toProtoServerConnection(c *server.ServerConnection) *pb.ServerConnection {
 		SshPort:     int32(c.SSHPort),
 		SshUser:     c.SSHUser,
 		AuthMethod:  c.AuthMethod,
-		SshPassword: c.SSHPassword,
-		PrivateKey:  c.PrivateKey,
+		SshPassword: "", // write-only on the backend; never sent (H3)
+		PrivateKey:  "", // write-only on the backend; never sent (H3)
 		PublicKey:   c.PublicKey,
 	}
 }
@@ -253,12 +261,18 @@ func toProtoLogStream(s logs.LogStream) pb.LogStream {
 // exclusive by construction — component is only set on self-log entries and
 // stream only on app-log entries — so the backend can key display and rules
 // off source alone.
+//
+// The log body is redacted before it hits the wire: application logs contain
+// arbitrary user output (DATABASE_URL values, printed tokens, key material)
+// and self logs can embed lower-layer errors. This is the single chokepoint
+// every monitor-stream log passes through, so redaction here covers both
+// sources on every tick and every replay.
 func toProtoLogEntry(e logs.LogEntry, source pb.LogSource) *pb.MonitorLogEntry {
 	return &pb.MonitorLogEntry{
 		Id:        e.ID,
 		ServerId:  e.ServerID,
 		AppId:     e.AppID,
-		Log:       e.Log,
+		Log:       phelixerr.Redact(e.Log),
 		Date:      e.Date.UnixMilli(),
 		Level:     string(e.Level),
 		Source:    source,
