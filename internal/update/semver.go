@@ -42,8 +42,14 @@ func ParseSemver(s string) (Semver, error) {
 	if err != nil {
 		return Semver{}, phelixerr.Newf(phelixerr.CodeConfiguration, "malformed version %q", s)
 	}
-	minor, _ := strconv.ParseUint(m[2], 10, 64)
-	patch, _ := strconv.ParseUint(m[3], 10, 64)
+	minor, err := strconv.ParseUint(m[2], 10, 64)
+	if err != nil {
+		return Semver{}, phelixerr.Newf(phelixerr.CodeConfiguration, "malformed version %q", s)
+	}
+	patch, err := strconv.ParseUint(m[3], 10, 64)
+	if err != nil {
+		return Semver{}, phelixerr.Newf(phelixerr.CodeConfiguration, "malformed version %q", s)
+	}
 	return Semver{Major: major, Minor: minor, Patch: patch, Pre: m[4]}, nil
 }
 

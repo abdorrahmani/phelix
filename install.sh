@@ -208,8 +208,11 @@ detect_arch() {
     esac
 }
 
-# Resolve "latest" to a concrete version by following the stable URL. Returns
-# the concrete version string, or "latest" if resolution is unavailable (the
+# Resolve "latest" to a concrete version from the stable URL, using the same
+# contract as `phelix update` (internal/update): prefer the X-Phelix-Version
+# response header when the host sets one, then fall back to the first line of
+# the body — which is the `version` file release.sh publishes. Returns the
+# concrete version string, or "latest" if resolution is unavailable (the
 # download itself will still work against the /latest/ path).
 resolve_version() {
     local v="${1}"
@@ -222,6 +225,11 @@ resolve_version() {
         if resolved="$(curl -fsSI "${BASE_URL}/releases/latest/version" 2>/dev/null \
                        | sed -n 's/^[Xx]-Phelix-[Vv]ersion:[[:space:]]*//p' \
                        | tr -d '[:space:]\r' | head -n1)" && [ -n "${resolved}" ]; then
+            printf "%s" "${resolved}"
+            return
+        fi
+        if resolved="$(curl -fsSL "${BASE_URL}/releases/latest/version" 2>/dev/null \
+                       | head -n1 | tr -d '[:space:]\r')" && [ -n "${resolved}" ]; then
             printf "%s" "${resolved}"
             return
         fi

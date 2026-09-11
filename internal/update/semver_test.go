@@ -32,6 +32,9 @@ func TestParseSemver(t *testing.T) {
 		{"1.2.3-", Semver{}, true},
 		{"1.2.3+", Semver{}, true},
 		{"version-1.2.3", Semver{}, true},
+		// Components that overflow uint64 must be rejected, not clamped.
+		{"1.999999999999999999999999.0", Semver{}, true},
+		{"1.2.999999999999999999999999", Semver{}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {

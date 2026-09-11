@@ -107,9 +107,11 @@ stable release, using the **same release server and layout as the one-line
 installer** (`https://phelix.anophel.com/releases/<version>/phelix-<os>-<arch>`),
 so no Go/Rust toolchain is needed. It:
 
-- Resolves the latest stable version and compares it against the running one
-  with proper semantic-version ordering (`v1.2.3` and `1.2.3` are the same
-  version; a locally newer build is never downgraded).
+- Resolves the latest stable version from `releases/latest/version` on the
+  release server (the `X-Phelix-Version` response header when the host sets
+  one, otherwise the file's first line) and compares it against the running
+  one with proper semantic-version ordering (`v1.2.3` and `1.2.3` are the
+  same version; a locally newer build is never downgraded).
 - Downloads the matching prebuilt binary for the current platform into a
   temporary directory.
 - Verifies the release's **SHA-256 checksum** when one is published — a

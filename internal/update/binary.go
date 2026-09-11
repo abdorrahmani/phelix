@@ -262,5 +262,10 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		out.Close()
 		return err
 	}
+
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
 	return out.Close()
 }
