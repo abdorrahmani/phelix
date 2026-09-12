@@ -23,8 +23,8 @@
 #
 # Usage:
 #   curl -fsSL https://phelix.anophel.com/install.sh | bash           # latest
-#   curl -fsSL https://phelix.anophel.com/install.sh | bash -s -- --version v1.2.3
-#   PHELIX_VERSION=v1.2.3 curl -fsSL .../install.sh | bash
+#   curl -fsSL https://phelix.anophel.com/install.sh | bash -s -- --version 1.2.3
+#   PHELIX_VERSION=1.2.3 curl -fsSL .../install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --uninstall
 #
 set -euo pipefail
@@ -185,6 +185,24 @@ http_exists() {
     fi
 }
 
+# verify_sha256 <dir> <artifact-name>
+# Verifies <dir>/<artifact-name> against <dir>/<artifact-name>.sha256 (which
+# the caller must have downloaded). Uses sha256sum (Linux coreutils) with a
+# shasum fallback for macOS, where sha256sum is not installed by default.
+verify_sha256() {
+    local dir="$1" name="$2"
+    (
+        cd "${dir}"
+        if have_cmd sha256sum; then
+            sha256sum -c "${name}.sha256" >/dev/null
+        elif have_cmd shasum; then
+            shasum -a 256 -c "${name}.sha256" >/dev/null
+        else
+            fail "cannot verify checksum: neither sha256sum nor shasum is installed"
+        fi
+    )
+}
+
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
@@ -215,7 +233,9 @@ detect_arch() {
 # concrete version string, or "latest" if resolution is unavailable (the
 # download itself will still work against the /latest/ path).
 resolve_version() {
-    local v="${1}"
+    # Release directories are unprefixed (releases/1.0.0), so strip a
+    # user-supplied leading "v" (e.g. --version v1.2.3).
+    local v="${1#v}"
     if [ "${v}" != "latest" ]; then
         printf "%s" "${v}"
         return
@@ -286,12 +306,13 @@ install_binary() {
     download "${download_url}" "${TMPDIR_WORK}/${binary_name}" progress
 
     # Optional SHA-256 verification. We fetch <binary>.sha256 only if it exists;
-    # if it does, verify; if not, warn and continue (no half-baked check).
+    # if it does, download it and verify; if not, warn and continue (no
+    # half-baked check).
     local checksum_url="${download_url}.sha256"
     if http_exists "${checksum_url}"; then
+        download "${checksum_url}" "${TMPDIR_WORK}/${binary_name}.sha256"
         with_progress "Verifying SHA-256 checksum" \
-            bash -c 'cd "$1" && sha256sum -c "$2.sha256" >/dev/null' \
-            _ "${TMPDIR_WORK}" "${binary_name}"
+            verify_sha256 "${TMPDIR_WORK}" "${binary_name}"
         success "Checksum OK."
     else
         warn "No checksum published for this release; skipping verification."
@@ -403,7 +424,7 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --version)
-                VERSION="${2:?--version requires a value (e.g. v1.2.3)}"
+                VERSION="${2:?--version requires a value (e.g. 1.2.3)}"
                 shift 2
                 ;;
             --install-dir)
@@ -426,7 +447,7 @@ Usage:
   curl -fsSL https://phelix.anophel.com/install.sh | bash
 
 Options (pass after `bash -s --`):
-  --version <v>      Pin a release version (e.g. v1.2.3). Default: latest.
+  --version <v>      Pin a release version (e.g. 1.2.3). Default: latest.
   --install-dir <p>  Binary install directory. Default: /usr/local/bin.
   --no-service       Do not create/enable the systemd service.
   --uninstall        Remove Phelix (leaves ~/.phelix state in place).
