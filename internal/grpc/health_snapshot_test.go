@@ -185,7 +185,7 @@ func TestMonitorStream_HealthSnapshotOnEveryConnectCarriesDeletes(t *testing.T) 
 	defer srv.Close()
 
 	origMgr := app.Manager
-	app.Manager = &healthAppStub{items: []app.AppListItem{{ID: testAppID, Name: "billing"}}}
+	app.Manager = &healthAppStub{items: []app.AppListItem{{ID: testAppID, Name: "billing", Watching: true}}}
 	t.Cleanup(func() { app.Manager = origMgr })
 
 	origCollector, origExecutor := monitorStream.metricsCollector, monitorStream.commandExecutor

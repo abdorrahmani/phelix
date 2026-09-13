@@ -47,6 +47,13 @@ type AppInfo struct {
 	// machine reboot). Set to true whenever the app is started, cleared on an
 	// intentional StopApplication. Persisted in apps.json as "auto_start".
 	AutoStart bool
+	// Watching indicates whether this app participates in backend monitoring/
+	// reporting (app metrics, health snapshots, app logs, dashboard
+	// registration). It is a per-app opt-in: false — the default — keeps the
+	// app entirely out of the backend's monitoring data flow while leaving all
+	// local functionality untouched. Server-level monitoring is unaffected.
+	// Persisted in apps.json as "watching"; toggled with `phelix watch`.
+	Watching bool
 
 	// Process holds the process-supervision configuration for this app
 	// (start/stop commands, resource limits, auto-restart policy).
@@ -167,6 +174,9 @@ type AppStatus struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	Language    string
+	// Watching reports whether this app participates in backend monitoring
+	// (see AppInfo.Watching).
+	Watching bool
 }
 
 // AppListItem represents a simplified view of an application for listing
@@ -182,6 +192,11 @@ type AppListItem struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	Language    string
+	// Watching reports whether this app participates in backend monitoring
+	// (see AppInfo.Watching). Carried here because the reporting consumers
+	// (monitor stream, health snapshots, dashboard upload) enumerate apps
+	// through this read model.
+	Watching bool
 
 	// Configuration groups, carried so monitoring/upload consumers can report
 	// them without leaking back into the terminal list output.

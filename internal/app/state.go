@@ -90,6 +90,7 @@ func (m *AppManager) SaveState() error {
 		Language    string    `json:"language"`
 		NoUpload    bool      `json:"no_upload"`
 		AutoStart   bool      `json:"auto_start"`
+		Watching    bool      `json:"watching"`
 	}
 
 	savedApps := make(map[string]SavedApp)
@@ -109,6 +110,7 @@ func (m *AppManager) SaveState() error {
 			Language:    app.Language,
 			NoUpload:    app.NoUpload,
 			AutoStart:   app.AutoStart,
+			Watching:    app.Watching,
 		}
 	}
 
@@ -170,6 +172,7 @@ func (m *AppManager) LoadState() error {
 		Language    string    `json:"language"`
 		NoUpload    bool      `json:"no_upload"`
 		AutoStart   bool      `json:"auto_start"`
+		Watching    bool      `json:"watching"`
 	}
 
 	var savedApps map[string]SavedApp
@@ -211,6 +214,11 @@ func (m *AppManager) LoadState() error {
 		// restore language and no-upload flag
 		appInfo.Language = saved.Language
 		appInfo.NoUpload = saved.NoUpload
+
+		// Watching is a plain copy: state files that predate the field
+		// unmarshal to false, which is the required default — an upgrade
+		// must never opt an existing app into backend monitoring.
+		appInfo.Watching = saved.Watching
 
 		// AutoStart records that this app was intentionally started; on a fresh
 		// daemon launch (boot / monitor restart) it is the signal that the app

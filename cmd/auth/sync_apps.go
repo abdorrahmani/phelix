@@ -13,10 +13,17 @@ import (
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
-// SendAppsToServer uploads the list of running apps to the Phelix server.
+// SendAppsToServer uploads the list of watched apps to the Phelix server.
 // If the user is not logged in, it returns ErrNotLoggedIn so callers can skip
 // the upload quietly — building/running still works, only dashboard sync is
 // skipped until the user runs 'phelix auth login'.
+//
+// Apps with Watching=false are excluded from the upload: they do not
+// participate in backend monitoring, so the dashboard must not register them.
+// The upload itself still happens (even with an empty app list) — it is a
+// one-shot registration sync triggered by login/build, not periodic
+// monitoring traffic, and an empty list is the correct statement when no app
+// is watched.
 func SendAppsToServer() error {
 	cfg := config.Get()
 	if cfg == nil {
@@ -28,7 +35,13 @@ func SendAppsToServer() error {
 	}
 
 	appList := app.Manager.ListApplications()
-	logs.Info("monitor", "preparing to send %d apps to server", len(appList))
+	watched := 0
+	for _, a := range appList {
+		if a.Watching {
+			watched++
+		}
+	}
+	logs.Info("monitor", "preparing to send %d of %d apps to server", watched, len(appList))
 
 	// Same server identity the gRPC monitor stream reports (agent id); the
 	// backend keys app rows by (server_id, cli_id), so the REST app upload
@@ -38,6 +51,9 @@ func SendAppsToServer() error {
 
 	var appDetails []AppDetail
 	for _, a := range appList {
+		if !a.Watching {
+			continue
+		}
 		id, _ := strconv.ParseUint(a.ID, 10, 32)
 		appDetails = append(appDetails, AppDetail{
 			ID:          uint(id),

@@ -249,11 +249,17 @@ func (c *Client) SendDeploymentEvent(ev *pb.DeploymentEvent) error {
 var deploymentResyncInterval = 60 * time.Second
 
 // sendDeploymentSnapshots pushes the current deployment topology of every
-// managed app over the monitor stream. Apps with no zero-downtime deployment
-// produce no snapshot. Failures are logged, never fatal: the next tick retries.
+// watched app over the monitor stream. Apps with no zero-downtime deployment
+// produce no snapshot. Unwatched apps (Watching=false) are skipped at this
+// reporting boundary — including after a reconnect — so the backend receives
+// no deployment topology for them. Failures are logged, never fatal: the next
+// tick retries.
 func (c *Client) sendDeploymentSnapshots() {
 	pc := deployProxyClient()
 	for _, a := range app.Manager.ListApplications() {
+		if !a.Watching {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		snap := deploy.SnapshotForApp(ctx, a.Name, a.ID, pc)
 		cancel()

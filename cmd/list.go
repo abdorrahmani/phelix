@@ -62,7 +62,7 @@ func createTable() *tablewriter.Table {
 			},
 		}),
 	)
-	table.Header([]string{"ID", "Name", "Version", "Status", "Language", "PID", "Uptime", "Deploy", "Proxy"})
+	table.Header([]string{"ID", "Name", "Version", "Status", "Watching", "Language", "PID", "Uptime", "Deploy", "Proxy"})
 	return table
 }
 
@@ -80,6 +80,7 @@ func populateTable(table *tablewriter.Table, apps []app.AppListItem, proxyByApp 
 			color.BlueString(a.Name),
 			verCol,
 			status,
+			FormatWatching(a.Watching),
 			color.CyanString(lang),
 			fmt.Sprintf("%d", a.PID),
 			a.Uptime,

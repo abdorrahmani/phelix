@@ -443,11 +443,22 @@ func (c *Client) syncAllVersions() {
 		return
 	}
 
-	apps := app.Manager.ListApplications()
-	for _, a := range apps {
-		if a.Directory == "" {
-			continue
-		}
+	for _, a := range watchedAppsWithDirectory() {
 		SendVersionListForApp(a.ID, a.Name, a.Directory)
 	}
+}
+
+// watchedAppsWithDirectory returns the apps eligible for the periodic version
+// sync: registered, opted into backend monitoring (Watching), and carrying a
+// project directory. Unwatched apps are excluded — the sync is periodic app
+// telemetry, and no per-app data must flow for them.
+func watchedAppsWithDirectory() []app.AppListItem {
+	var out []app.AppListItem
+	for _, a := range app.Manager.ListApplications() {
+		if a.Directory == "" || !a.Watching {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }

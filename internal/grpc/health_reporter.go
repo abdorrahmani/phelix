@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
@@ -37,7 +38,14 @@ func NewGrpcHealthReporter(client *Client) *GrpcHealthReporter {
 // ~/.phelix/apps/<app>/health/restarts.json regardless). A live connection that
 // rejects the event IS returned, classified by gRPC status, so the caller can log
 // an authentication or validation failure as such instead of as "offline".
+//
+// An unwatched app is skipped the same way as a disconnected client: the restart
+// already happened and is persisted locally, and an unwatched app must not
+// generate backend monitoring events.
 func (r *GrpcHealthReporter) SendAutoRestartEvent(record *health.AutoRestartRecord) error {
+	if !app.IsWatched(record.AppID, record.AppName) {
+		return nil
+	}
 	if r.client == nil {
 		return nil
 	}

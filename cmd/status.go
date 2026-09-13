@@ -149,7 +149,7 @@ func createStatusTable() *tablewriter.Table {
 			},
 		}),
 	)
-	table.Header([]string{"ID", "Name", "Language", "Status", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
+	table.Header([]string{"ID", "Name", "Language", "Status", "Watching", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
 	return table
 }
 
@@ -166,6 +166,7 @@ func populateStatusTable(table *tablewriter.Table, status app.AppStatus) {
 		color.BlueString(status.Name),
 		color.CyanString(lang),
 		statusText,
+		FormatWatching(status.Watching),
 		fmt.Sprintf("%d", status.PID),
 		status.Uptime,
 		fmt.Sprintf("%.2f", ramUsageMB),

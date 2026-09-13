@@ -60,6 +60,7 @@ func main() {
 	rootCmd.AddCommand(cmd.StatusCmd)
 	rootCmd.AddCommand(cmd.StopCmd)
 	rootCmd.AddCommand(cmd.ListCmd)
+	rootCmd.AddCommand(cmd.WatchCmd)
 	rootCmd.AddCommand(cmd.LogCmd)
 	rootCmd.AddCommand(auth.Cmd)
 	rootCmd.AddCommand(cmd.RemoveCmd)

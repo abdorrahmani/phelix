@@ -3,6 +3,7 @@ package grpc
 import (
 	"sync"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
@@ -73,6 +74,13 @@ func ReportEvent(appID, appName, action string, success bool, errMsg string, pid
 // means the backend accepted the event (e.g. the app really was deleted from
 // its database); non-nil explains why the dashboard is now out of date.
 func ReportEventResult(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) error {
+	// Unwatched apps do not participate in backend monitoring/reporting: the
+	// event is intentionally not sent, which is not a staleness condition the
+	// caller should warn about.
+	if !app.IsWatched(appID, appName) {
+		return nil
+	}
+
 	// Without a session there is nothing to attribute the event to and the
 	// backend would reject it. Skip the upload entirely — the command itself
 	// already ran successfully.

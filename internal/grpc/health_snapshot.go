@@ -17,7 +17,7 @@ import (
 // same observation five times. It is a var so tests can shorten it.
 var healthSnapshotInterval = 10 * time.Second
 
-// sendHealthSnapshots pushes the health state of every managed app over the
+// sendHealthSnapshots pushes the health state of every watched app over the
 // monitor stream.
 //
 // This is the only agent -> backend health synchronization path. Each message is a
@@ -25,8 +25,10 @@ var healthSnapshotInterval = 10 * time.Second
 // reconnect-recovery mechanism: the backend replaces what it holds for that app.
 // Apps with no health configuration produce no snapshot — absence means "health is
 // not configured", so nothing is sent for them and reporting begins by itself once
-// a configuration is added. Failures are logged, never fatal: the next tick
-// retries, and a reconnect re-sends everything.
+// a configuration is added. The same holds for unwatched apps (Watching=false):
+// they are skipped here, so the backend receives no health data for them at all.
+// Failures are logged, never fatal: the next tick retries, and a reconnect
+// re-sends everything.
 func (c *Client) sendHealthSnapshots() {
 	daemon := health.RunningDaemon()
 	if daemon == nil {
@@ -36,6 +38,12 @@ func (c *Client) sendHealthSnapshots() {
 	}
 
 	for _, a := range app.Manager.ListApplications() {
+		// Watching gate, applied at the reporting boundary so it also holds
+		// after a reconnect: an unwatched app sends no health snapshot, even
+		// if it has health checks configured (they keep running locally).
+		if !a.Watching {
+			continue
+		}
 		snap := daemon.SnapshotForApp(a.ID, a.Name)
 		if snap == nil {
 			continue

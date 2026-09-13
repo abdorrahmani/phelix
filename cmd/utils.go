@@ -65,3 +65,12 @@ func FormatStatus(status string) string {
 		return status
 	}
 }
+
+// FormatWatching renders the per-app backend-monitoring opt-in as a
+// human-readable state (never a raw boolean), matching FormatStatus's style.
+func FormatWatching(watching bool) string {
+	if watching {
+		return color.GreenString("enabled")
+	}
+	return color.HiBlackString("disabled")
+}

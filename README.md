@@ -11,7 +11,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 ## Features
 
 - Multi-server application management
-- Real-time application monitoring (dashboard at `phelix.anophel.com`, opt-in via login)
+- Real-time application monitoring (dashboard at `phelix.anophel.com`, opt-in via login; per-app with `phelix watch`)
 - Centralized logging
 - Cross-server status checking
 - Optional authentication (build/run works offline; login enables dashboard sync)
@@ -1057,10 +1057,11 @@ phelix rollback history myapp --limit 50
 | `phelix start [<ID\|AppName>] [--port P] [--ensure]` | Start an app (or all apps if none given). `--ensure` builds if missing and rebuilds if startup fails. |
 | `phelix stop <ID\|AppName>` | Stop a running app. |
 | `phelix restart <ID\|AppName>` | Restart an app. |
-| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, version, deploy mode, proxy routing. |
-| `phelix list` | Table of all apps with version, status, deploy, and proxy columns. |
+| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing. |
+| `phelix list` | Table of all apps with version, status, watching, deploy, and proxy columns. |
 | `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. |
 | `phelix remove <ID\|AppName>` | Stop and delete an app from management. |
+| `phelix watch <ID\|AppName> [--disable]` | Enable (default) or disable backend monitoring for one app. See [Per-app watching](#per-app-watching-watching). |
 
 ### Encrypted environment variables
 
@@ -1975,7 +1976,7 @@ Starts the long-running gRPC monitoring daemon that:
 - Restores managed applications that were previously running (auto-start apps)
 - Opens a single, long-lived, TLS-secured gRPC stream to the Phelix backend (requires an authenticated session — see [Authentication](#authentication))
 - Monitors application status across all servers
-- Sends application information, resource metrics, and logs to the central server roughly every 2 seconds
+- Sends application information, resource metrics, and logs of every **watched** app to the central server roughly every 2 seconds (see [Per-app watching](#per-app-watching-watching) below)
 - Automatically reconnects with exponential backoff if the connection is lost
 - Provides real-time updates for all managed applications
 
@@ -1999,6 +2000,41 @@ Phelix can monitor multiple servers simultaneously. Each server running Phelix w
 - Send regular status updates
 - Maintain its own application state
 - Sync with other servers when needed
+
+#### Per-app watching (`watching`)
+
+Each application has a `watching` state that decides whether **that app**
+participates in backend monitoring/reporting. It is a per-app opt-in with
+**`disabled` as the default** — new apps, and apps from installations that
+predate the feature, are never monitored remotely until you say so.
+
+```bash
+phelix watch api              # enable:  api's monitoring data goes to the backend
+phelix watch api --disable    # disable: no monitoring data for api
+```
+
+The state persists in `apps.json`, is shown by `phelix list` (WATCHING column)
+and `phelix status` (Watching column), and takes effect on the monitor daemon's
+next reporting tick — no restart needed.
+
+When `watching` is **enabled**, the app participates in backend monitoring as
+usual: app metrics, health snapshots, app logs, deployment topology, and
+dashboard registration flow to `phelix.anophel.com`.
+
+When `watching` is **disabled**, none of that data is sent for the app — the
+backend receives no monitoring stream for it at all (not an empty payload).
+Everything else keeps working exactly as before: the app can still be built,
+run, stopped, restarted, rolled back, and inspected locally, local health
+checks and auto-restart keep running, and `phelix list`/`phelix status` show
+its full local state. Server-level monitoring (host metrics, server identity)
+is never affected — `watching` belongs to the application, not the server, so
+one server can mix watched and unwatched apps freely.
+
+This is primarily useful for **Free-plan users** who want to choose which
+application/server combination is monitored remotely instead of sending
+monitoring data for every local application. The CLI itself remains free and
+local: there are no subscription checks on this flag, and backend plan quotas
+are enforced server-side.
 
 ## System Requirements
 

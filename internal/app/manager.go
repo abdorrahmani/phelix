@@ -179,6 +179,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 			CreatedAt:   app.CreatedAt,
 			UpdatedAt:   app.UpdatedAt,
 			Language:    app.Language,
+			Watching:    app.Watching,
 			Process:     app.Config().Process,
 			Networking:  app.Config().Networking,
 			Logging:     app.Config().Logging,
@@ -228,6 +229,7 @@ func (m *AppManager) StatusApplication(identifier string) (AppStatus, error) {
 		UpdatedAt:   app.UpdatedAt,
 	}
 	status.Language = app.Language
+	status.Watching = app.Watching
 
 	if app.Status == "running" {
 		ramUsage, cpuUsage, err := m.getProcessMetrics(app.PID)

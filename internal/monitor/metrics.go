@@ -23,6 +23,11 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 	serverID := server.GetServerID()
 
 	for _, appInfo := range apps {
+		// Unwatched apps are excluded at the collection boundary: the backend
+		// receives no monitoring data for them, not an empty payload.
+		if !appInfo.Watching {
+			continue
+		}
 		status, err := app.Manager.StatusApplication(appInfo.ID)
 		if err != nil {
 			logs.Error("monitor", "error getting status for app %s: %v", appInfo.Name, err)
@@ -45,6 +50,11 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 	serverID := server.GetServerID()
 
 	for _, appInfo := range appList {
+		// Same watching gate as CollectAppMetrics: app details are dashboard
+		// monitoring data.
+		if !appInfo.Watching {
+			continue
+		}
 		apps = append(apps, AppDetails{
 			ID:          appInfo.ID,
 			ServerID:    serverID,
@@ -72,9 +82,13 @@ func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 
 func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
 	// Resolve the app manager's registered apps into plain log targets. The
-	// logs package itself stays app-agnostic.
+	// logs package itself stays app-agnostic. Unwatched apps are excluded so
+	// their log tail never reaches the backend.
 	targets := make([]logs.AppLogTarget, 0)
 	for _, a := range app.Manager.ListApplications() {
+		if !a.Watching {
+			continue
+		}
 		targets = append(targets, logs.AppLogTarget{ID: a.ID})
 	}
 	return logs.CollectAppLogs(targets, server.GetServerID())
