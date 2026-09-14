@@ -209,6 +209,14 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 
+		// Apply the watching value declared in phelix.yaml (desired state) to
+		// the app's persisted flag. A file without the key leaves the
+		// just-created entry at the disabled default.
+		if serr := syncProjectWatching(projCfg, id); serr != nil {
+			fmt.Printf("  %s Warning: could not apply watching from %s: %v\n",
+				color.YellowString("⚠"), project.FileName, serr)
+		}
+
 		// Apply health endpoints declared in phelix.yaml (desired state) to
 		// the app's persisted health configuration before the app starts.
 		if serr := syncProjectHealth(projCfg, id, name, buildPort); serr != nil {

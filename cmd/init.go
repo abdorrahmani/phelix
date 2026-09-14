@@ -61,6 +61,10 @@ var InitCmd = &cobra.Command{
 		cfg := &project.Config{
 			Name: initName,
 			Port: initPort,
+			// Watching defaults to disabled: a fresh project must not send
+			// monitoring data to the backend until the user opts in (via this
+			// file or `phelix watch`).
+			Watching: project.WatchingDisable,
 			// Generate a complete, working example: one default health
 			// endpoint and the classic strategy. Every generated field is
 			// supported and validated by project.Load.

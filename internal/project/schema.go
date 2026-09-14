@@ -131,6 +131,27 @@ const (
 	StrategyProgressive = "progressive"
 )
 
+// Values of the top-level watching key: enable opts the app into backend
+// monitoring, disable keeps it out. `phelix init` writes the disable default.
+const (
+	WatchingEnable  = "enable"
+	WatchingDisable = "disable"
+)
+
+// WatchingSetting reports the watching state declared in phelix.yaml. ok is
+// false when the key is absent, in which case callers must leave the app's
+// persisted flag untouched (older projects predate the key; the persisted
+// default — disabled — already applies to them).
+func (c *Config) WatchingSetting() (enabled, ok bool) {
+	switch c.Watching {
+	case WatchingEnable:
+		return true, true
+	case WatchingDisable:
+		return false, true
+	}
+	return false, false
+}
+
 // SupportedHealthModes mirrors health.DeployTierMode values.
 var supportedHealthModes = map[string]bool{
 	"auto": true, "http": true, "tcp-only": true, "none": true,
@@ -141,9 +162,14 @@ var supportedStrategies = map[string]bool{
 	StrategyCanary: true, StrategyProgressive: true,
 }
 
-// validate checks the health and deploy sections. Field-level errors name the
-// exact yaml path so the user can fix the file without reading source.
+// validate checks the watching, health and deploy sections. Field-level errors
+// name the exact yaml path so the user can fix the file without reading source.
 func (c *Config) validate() error {
+	if _, ok := c.WatchingSetting(); !ok && strings.TrimSpace(c.Watching) != "" {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: invalid watching %q\nHint: expected one of: enable, disable", c.Watching)
+	}
+
 	if c.Deploy != nil {
 		s := strings.TrimSpace(c.Deploy.Strategy)
 		if s != "" && !supportedStrategies[s] {

@@ -363,6 +363,7 @@ detects the project type (Go/Rust) and generates:
 # CLI flags override these values (e.g. --port).
 name: my-app
 port: 8080
+watching: disable
 health:
     endpoints:
         - name: default
@@ -379,6 +380,7 @@ deploy:
 ```yaml
 name: api
 port: 3000
+watching: enable
 
 health:
   endpoints:
@@ -404,6 +406,7 @@ deploy:
 |-------|----------|-------------|
 | `name` | no* | Application name used by `build`, `rebuild`, `health`, `rollback`, etc. *Optional: when missing, `build` prompts for it (TTY) or fails with a clear error (scripts). |
 | `port` | no | Public application port. Default `8080` when missing. |
+| `watching` | no | Backend monitoring opt-in: `enable` or `disable` (`phelix init` writes `disable`). Applied to the app on every build/rebuild; absent leaves the app's current state (see [Per-app watching](#per-app-watching-watching)). |
 | `health.endpoints[].name` | yes (per endpoint) | Endpoint name, e.g. `default`, `readiness`. Must be unique. |
 | `health.endpoints[].path` | yes (per endpoint) | HTTP path on localhost, e.g. `/health`. Must start with `/`. |
 | `health.endpoints[].interval` | no | Monitoring check interval (e.g. `10s`, `1m`). Default `10s`. |
@@ -656,8 +659,9 @@ phelix build myapp -p 8080 --tag "v1.2.3"
 #### `phelix init`
 
 Detects the project type (Go/Rust) and creates `phelix.yaml` with the
-application name, port, a default health endpoint, and the classic deploy
-strategy (see [Project Configuration](#project-configuration-phelixyaml)).
+application name, port, `watching: disable`, a default health endpoint, and
+the classic deploy strategy (see
+[Project Configuration](#project-configuration-phelixyaml)).
 Prompts interactively in a TTY; fully scriptable with flags:
 
 ```bash
@@ -2012,6 +2016,18 @@ predate the feature, are never monitored remotely until you say so.
 phelix watch api              # enable:  api's monitoring data goes to the backend
 phelix watch api --disable    # disable: no monitoring data for api
 ```
+
+You can also declare the state in `phelix.yaml`:
+
+```yaml
+watching: enable   # or disable; `phelix init` writes disable
+```
+
+When the key is present, `phelix build` and `phelix rebuild` apply its value
+to the app — the project file is the desired state, exactly like the `health:`
+block. A `phelix.yaml` without the key (older projects) leaves the app's
+current state untouched. `phelix watch` remains the runtime toggle for
+one-off changes between builds.
 
 The state persists in `apps.json`, is shown by `phelix list` (WATCHING column)
 and `phelix status` (Watching column), and takes effect on the monitor daemon's

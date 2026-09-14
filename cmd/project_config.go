@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/project"
@@ -107,4 +108,36 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 	fmt.Printf("  %s Applied %d health endpoint(s) from %s\n",
 		color.BlueString("→"), len(cfg.Health.Endpoints), color.CyanString(project.FileName))
 	return nil
+}
+
+// syncProjectWatching applies the watching value declared in phelix.yaml to
+// the app's persisted flag (the same store `phelix watch` writes).
+//
+// phelix.yaml is the desired state: when the watching key is present, its
+// value overrides the app's persisted flag on every build/rebuild — a project
+// that declares `watching: enable` stays watched even if the app entry was
+// created disabled. A file without the key (older projects) leaves the
+// persisted flag untouched, which for a new app means the disabled default.
+func syncProjectWatching(cfg *project.Config, appID string) error {
+	enabled, ok := cfg.WatchingSetting()
+	if !ok {
+		return nil
+	}
+
+	appManager, isReal := app.Manager.(*app.AppManager)
+	if !isReal {
+		return phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
+	}
+	info, exists := appManager.Apps[appID]
+	if !exists {
+		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found in state", appID)
+	}
+
+	// Mutate-then-SaveState, the same pattern `phelix watch` and the rebuild
+	// flow's NoUpload flag use.
+	if info.Watching == enabled {
+		return nil
+	}
+	info.Watching = enabled
+	return appManager.SaveState()
 }

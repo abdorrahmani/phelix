@@ -136,6 +136,14 @@ var RebuildCmd = &cobra.Command{
 			_ = app.Manager.SaveState()
 		}
 
+		// Apply the watching value declared in phelix.yaml (desired state) so
+		// a project that declares enable/disable converges on every rebuild.
+		// A file without the key leaves the persisted flag untouched.
+		if serr := syncProjectWatching(projCfg, appInfo.ID); serr != nil {
+			fmt.Printf("  %s Warning: could not apply watching from %s: %v\n",
+				color.YellowString("⚠"), project.FileName, serr)
+		}
+
 		// Apply health endpoints declared in phelix.yaml (desired state) so
 		// both the classic start and the zero-downtime deploy tiers see them.
 		if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil {
