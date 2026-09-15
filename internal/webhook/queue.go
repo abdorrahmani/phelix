@@ -13,8 +13,10 @@ import (
 // Job is one accepted webhook delivery handed to the build queue. It carries
 // the push metadata the pipeline must preserve: the pushed commit SHA is
 // recorded as webhook metadata (ledger + logs + events), never silently
-// presented as the state the rebuild compiled.
+// presented as the state the rebuild compiled. ID is the durable deployment
+// job identifier (wh_…) linking the queue job to its JobStore record.
 type Job struct {
+	ID         string
 	AppID      string
 	AppName    string
 	Directory  string
@@ -51,6 +53,7 @@ const perAppQueueDepth = 8
 // per-app deploy lock — that stays authoritative inside the rebuild pipeline.
 type Queue struct {
 	rebuild      RebuildFunc
+	onJobStart   func(job *Job)
 	onJobDone    func(job *Job, err error)
 	onJobDropped func(job *Job)
 
@@ -71,9 +74,11 @@ type appWorker struct {
 }
 
 // QueueOptions wires the queue. Rebuild is required; the callbacks are
-// optional observability hooks (event emission).
+// optional observability hooks (event emission, job-record updates).
 type QueueOptions struct {
 	Rebuild RebuildFunc
+	// OnJobStart is called when a worker picks a job up (before Rebuild).
+	OnJobStart func(job *Job)
 	// OnJobDone is called when a job's rebuild returns (success or failure).
 	OnJobDone func(job *Job, err error)
 	// OnJobDropped is called for jobs that were accepted but never started
@@ -89,6 +94,7 @@ func NewQueue(opts QueueOptions) *Queue {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Queue{
 		rebuild:      opts.Rebuild,
+		onJobStart:   opts.OnJobStart,
 		onJobDone:    opts.OnJobDone,
 		onJobDropped: opts.OnJobDropped,
 		ctx:          ctx,
@@ -172,8 +178,11 @@ func (q *Queue) drainDropped(w *appWorker) {
 }
 
 func (q *Queue) execute(job *Job) {
-	logs.Info("webhook", "job started app=%s app_id=%s delivery=%s branch=%s commit=%s",
-		job.AppName, job.AppID, job.DeliveryID, job.Branch, job.CommitSHA)
+	logs.Info("webhook", "job started app=%s app_id=%s job=%s delivery=%s branch=%s commit=%s",
+		job.AppName, job.AppID, job.ID, job.DeliveryID, job.Branch, job.CommitSHA)
+	if q.onJobStart != nil {
+		q.onJobStart(job)
+	}
 	err := q.rebuild(q.ctx, job)
 	if q.onJobDone != nil {
 		q.onJobDone(job, err)

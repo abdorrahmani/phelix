@@ -93,7 +93,8 @@ func ExitCodeFor(err error) int {
 		phelixerr.CodeRollbackTargetNotFound:
 		return ExitNotFound
 	case phelixerr.CodeBuildFailed, phelixerr.CodeToolchainNotFound,
-		phelixerr.CodeBuildTimeout, phelixerr.CodeUnsupportedProject:
+		phelixerr.CodeBuildTimeout, phelixerr.CodeUnsupportedProject,
+		phelixerr.CodeGitSyncFailed:
 		return ExitBuild
 	case phelixerr.CodeDeployFailed, phelixerr.CodeInstanceStartFailed,
 		phelixerr.CodeHealthCheckFailed, phelixerr.CodeDeployLocked:

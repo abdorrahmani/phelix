@@ -48,6 +48,9 @@ type Dependencies struct {
 	Ledger *DeliveryLedger
 	// Queue accepts jobs for serialized rebuild execution. Required.
 	Queue *Queue
+	// Jobs is the durable deployment-job store. Required for acceptance:
+	// a delivery is only acknowledged once its job record is persisted.
+	Jobs *JobStore
 	// LookupSecret reads a named secret environment variable. Defaults to a
 	// function that never finds one (tests inject os.LookupEnv or fakes).
 	LookupSecret func(string) (string, bool)
@@ -230,7 +233,42 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The durable deployment job is created and persisted BEFORE the delivery
+	// is acknowledged: if this write fails, the request is refused (and the
+	// ledger entry rolled back) so the provider redelivers — GitHub must
+	// never be told "accepted" while Phelix holds no durable record of the
+	// job.
+	if s.deps.Jobs == nil {
+		logs.Error("webhook", "app %s delivery=%s: no durable job store configured", resolved.Info.Name, deliveryID)
+		s.writeResponse(w, http.StatusInternalServerError, false, false, "webhook unavailable")
+		return
+	}
+	now := time.Now().UnixMilli()
+	record := &JobRecord{
+		ID:         NewJobID(),
+		DeliveryID: deliveryID,
+		AppID:      resolved.Info.ID,
+		AppName:    resolved.Info.Name,
+		Branch:     branch,
+		Commit:     payload.After,
+		Provider:   ProviderGitHub,
+		Status:     StatusAccepted,
+		Stage:      StageQueue,
+		AcceptedAt: now,
+	}
+	if err := s.deps.Jobs.Create(record); err != nil {
+		logs.Error("webhook", "app %s delivery=%s: could not persist deployment job: %v",
+			resolved.Info.Name, deliveryID, err)
+		if rmErr := s.deps.Ledger.Remove(resolved.Info.Name, deliveryID); rmErr != nil {
+			logs.Error("webhook", "app %s delivery=%s: could not roll back ledger entry: %v",
+				resolved.Info.Name, deliveryID, rmErr)
+		}
+		s.writeResponse(w, http.StatusInternalServerError, false, false, "webhook unavailable")
+		return
+	}
+
 	job := &Job{
+		ID:         record.ID,
 		AppID:      resolved.Info.ID,
 		AppName:    resolved.Info.Name,
 		Directory:  resolved.Info.Directory,
@@ -242,21 +280,30 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.deps.Queue.Enqueue(job); err != nil {
 		// The job never started; forget the delivery so the provider's
-		// redelivery (triggered by this non-2xx) starts from a clean slate.
+		// redelivery (triggered by this non-2xx) starts from a clean slate,
+		// and close the job record as a queue failure.
 		if rmErr := s.deps.Ledger.Remove(resolved.Info.Name, deliveryID); rmErr != nil {
 			logs.Error("webhook", "app %s delivery=%s: could not roll back ledger entry: %v",
 				resolved.Info.Name, deliveryID, rmErr)
 		}
-		logs.Error("webhook", "queue failure app=%s delivery=%s commit=%s: %v",
-			resolved.Info.Name, deliveryID, payload.After, err)
+		if mfErr := s.deps.Jobs.MarkFailed(record.ID, JobErrQueue, err.Error()); mfErr != nil {
+			logs.Warning("webhook", "job %s: could not record queue failure: %v", record.ID, mfErr)
+		}
+		logs.Error("webhook", "queue failure app=%s job=%s delivery=%s commit=%s: %v",
+			resolved.Info.Name, record.ID, deliveryID, payload.After, err)
 		s.deps.ReportEvent(resolved.Info.ID, resolved.Info.Name, EventActionQueueFailure, false, err.Error())
 		s.writeResponse(w, http.StatusServiceUnavailable, false, false, "webhook queue unavailable")
 		return
 	}
+	if qErr := s.deps.Jobs.MarkQueued(record.ID); qErr != nil {
+		// The job IS queued and will run; a failed status write is logged,
+		// never used to fail an accepted delivery.
+		logs.Warning("webhook", "job %s: could not record queued state: %v", record.ID, qErr)
+	}
 
-	logs.Info("webhook", "accepted webhook app=%s app_id=%s delivery=%s branch=%s commit=%s provider=%s",
-		resolved.Info.Name, resolved.Info.ID, deliveryID, branch, payload.After, ProviderGitHub)
-	s.deps.ReportEvent(resolved.Info.ID, resolved.Info.Name, EventActionAccepted, true, "")
+	logs.Info("webhook", "accepted webhook app=%s app_id=%s job=%s delivery=%s branch=%s commit=%s provider=%s",
+		resolved.Info.Name, resolved.Info.ID, record.ID, deliveryID, branch, payload.After, ProviderGitHub)
+	s.deps.ReportEvent(resolved.Info.ID, resolved.Info.Name, EventActionAccepted, true, JobEventMessage(record))
 	s.writeResponse(w, http.StatusOK, true, true, "webhook accepted")
 }
 

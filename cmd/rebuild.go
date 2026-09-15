@@ -32,6 +32,7 @@ var rebuildStrategy string
 var rebuildTag string
 var rebuildAutoRollback bool
 var rebuildCanary int
+var rebuildSourceDir string
 
 // rolloutPlan is non-nil when this rebuild takes the canary/progressive path.
 // It is resolved by applyConfigDeployStrategy from --canary, --strategy or
@@ -84,6 +85,34 @@ var RebuildCmd = &cobra.Command{
 			return err
 		}
 
+		// --source-dir builds from an isolated source directory (the webhook's
+		// exact-commit Git worktree) instead of the app's directory. The app
+		// identity, output binary path, deployment state and ports stay with
+		// the app; only the compiled source and the git metadata come from
+		// this directory. phelix.yaml is read from it too, so a push that
+		// changes the project configuration deploys with its own config.
+		buildSource := appInfo.Directory
+		if rebuildSourceDir != "" {
+			abs, err := filepath.Abs(rebuildSourceDir)
+			if err != nil {
+				return phelixerr.Wrapf(phelixerr.CodeInvalidArgument, err, "--source-dir %q could not be resolved", rebuildSourceDir)
+			}
+			if st, serr := os.Stat(abs); serr != nil || !st.IsDir() {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "--source-dir %q is not an existing directory", rebuildSourceDir)
+			}
+			buildSource = abs
+			// The project configuration governs the deploy; with an isolated
+			// source that is the configuration as pushed, not the one in the
+			// daemon's working directory.
+			sourceCfg, serr := loadProjectConfigFrom(buildSource)
+			if serr != nil {
+				return serr
+			}
+			if sourceCfg != nil {
+				projCfg = sourceCfg
+			}
+		}
+
 		name, portToUse := DetermineAppParameters(appInfo, cmd, rebuildPort)
 
 		// Precedence: CLI flag > persisted app port > phelix.yaml. The yaml is
@@ -106,11 +135,11 @@ var RebuildCmd = &cobra.Command{
 			return err
 		}
 
-		// Detect and validate language
+		// Detect and validate language (from the source being built)
 		buildMgr := builder.NewBuildManager()
 		lang := builder.ParseLanguage(appInfo.Language)
 		if !lang.IsSupported() {
-			lang = buildMgr.DetectLanguage(appInfo.Directory)
+			lang = buildMgr.DetectLanguage(buildSource)
 		}
 
 		if !lang.IsSupported() {
@@ -159,7 +188,7 @@ var RebuildCmd = &cobra.Command{
 		// switches the proxy target — so the public port never drops a
 		// connection.
 		if rebuildBlueGreen || rebuildReplicas > 0 || rolloutPlan != nil {
-			return runZeroDowntimeDeploy(appInfo, name, portToUse)
+			return runZeroDowntimeDeploy(appInfo, name, portToUse, buildSource)
 		}
 
 		// A classic rebuild of an app still managed by blue-green/rolling is
@@ -190,7 +219,7 @@ var RebuildCmd = &cobra.Command{
 		}
 
 		tracker.Building("classic rebuild")
-		rebuildReport, rerr := rebuildApp(appInfo.ID, rebuildArgs, buildMgr)
+		rebuildReport, rerr := rebuildApp(appInfo.ID, rebuildArgs, buildMgr, buildSource)
 		if rerr != nil {
 			tracker.Failed(rerr)
 			return rerr
@@ -198,8 +227,10 @@ var RebuildCmd = &cobra.Command{
 
 		// --- Version recording ------------------------------------------------
 		// Same two-phase invariant as build: record with is_current=false,
-		// promote only after the start succeeds.
-		gitCommit := deploy.DetectGitCommit(appInfo.Directory)
+		// promote only after the start succeeds. The git commit is detected
+		// from the source that was actually compiled, so version metadata
+		// never claims a commit the binary was not built from.
+		gitCommit := deploy.DetectGitCommit(buildSource)
 		logger := &colorLogger{}
 		rec, verErr := deploy.RecordFreshBuild(
 			name, appInfo.ID,
@@ -360,13 +391,17 @@ func init() {
 	RebuildCmd.Flags().StringVar(&rebuildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
 	RebuildCmd.Flags().BoolVar(&rebuildAutoRollback, "auto-rollback", false,
 		"On a deploy-phase failure (start, health check, traffic switch), automatically restore the previous known-good version")
+	RebuildCmd.Flags().StringVar(&rebuildSourceDir, "source-dir", "",
+		"Build from this source directory instead of the app's directory (used by the webhook's isolated Git source); the app identity, output binary and deployment state stay with the app")
 }
 
 // runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a
 // deploy.Builder closure around the existing rebuildApp path, a proxy.Client
 // for the control socket, and a colorised logger, then runs BlueGreen or
-// Rolling depending on which flag was set.
-func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) error {
+// Rolling depending on which flag was set. buildSource is the directory to
+// compile (the app's directory, or an isolated --source-dir); the output
+// binary and deployment state always stay with the app.
+func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, buildSource string) error {
 	socket, err := proxy.DefaultSocketPath()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
@@ -400,9 +435,10 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 	// deploy.Builder closure: delegates to the existing rebuild path, which
 	// handles language detection, toolchain checks and env injection. The
 	// captured build report is handed to FreshBuildSource via ReportFn so the
-	// recorded version carries the same telemetry as classic builds.
+	// recorded version carries the same telemetry as classic builds. The git
+	// commit is detected from the source actually compiled.
 	buildMgr := builder.NewBuildManager()
-	gitCommit := deploy.DetectGitCommit(appInfo.Directory)
+	gitCommit := deploy.DetectGitCommit(buildSource)
 	var lastReport *buildreport.Report
 	freshSource := &deploy.FreshBuildSource{
 		AppName:   name,
@@ -414,7 +450,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int) er
 		Logger:    logger,
 		ReportFn:  func() *buildreport.Report { return lastReport },
 		BuildFn: func(ctx context.Context, appID string, extraArgs []string) (string, error) {
-			report, berr := rebuildApp(appID, extraArgs, buildMgr)
+			report, berr := rebuildApp(appID, extraArgs, buildMgr, buildSource)
 			lastReport = report
 			if berr != nil {
 				return "", berr
@@ -735,7 +771,10 @@ func stopExistingApp(appInfo *app.AppInfo) error {
 
 // rebuildApp compiles the app and returns its captured build report so all
 // rebuild paths (classic and zero-downtime) persist identical telemetry.
-func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) (*buildreport.Report, error) {
+// sourceDir is the directory to compile — the app's directory by default, or
+// an isolated source (the webhook's exact-commit worktree) passed via
+// --source-dir. The output binary always lands in the app's directory.
+func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, sourceDir string) (*buildreport.Report, error) {
 	appInfo, err := GetAppInfo(id)
 	if err != nil {
 		return nil, err
@@ -746,6 +785,9 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager) (
 	}
 
 	projectRoot := appInfo.Directory
+	if sourceDir != "" {
+		projectRoot = sourceDir
+	}
 
 	// Detect language
 	lang := builder.ParseLanguage(appInfo.Language)

@@ -33,6 +33,12 @@ const (
 	CodeToolchainNotFound  Code = "TOOLCHAIN_NOT_FOUND"
 	CodeBuildTimeout       Code = "BUILD_TIMEOUT"
 	CodeUnsupportedProject Code = "UNSUPPORTED_PROJECT"
+	// CodeGitSyncFailed: the webhook's exact-commit Git source preparation
+	// failed (invalid repository, missing remote, fetch failure, commit not
+	// found, worktree creation). The rebuild pipeline never runs in this
+	// case — the deployed source must never silently fall back to whatever
+	// is on disk.
+	CodeGitSyncFailed Code = "GIT_SYNC_FAILED"
 
 	// Deploy / rollout.
 	CodeDeployFailed        Code = "DEPLOY_FAILED"

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -159,6 +160,7 @@ type harness struct {
 	url      string
 	queue    *Queue
 	ledger   *DeliveryLedger
+	jobs     *JobStore
 	rebuild  *fakeRebuild
 	events   *eventCapture
 	secrets  map[string]string
@@ -189,6 +191,11 @@ func newHarness(t *testing.T, extra ...*ResolvedApp) *harness {
 		t.Fatalf("ledger init: %v", err)
 	}
 
+	jobs := NewJobStore(filepath.Join(t.TempDir(), "jobs"), DefaultJobRetention)
+	if err := jobs.Load(); err != nil {
+		t.Fatalf("job store init: %v", err)
+	}
+
 	rebuild := newFakeRebuild()
 	queue := NewQueue(QueueOptions{Rebuild: rebuild.Rebuild})
 	events := &eventCapture{}
@@ -198,6 +205,7 @@ func newHarness(t *testing.T, extra ...*ResolvedApp) *harness {
 		Resolver:     resolver,
 		Ledger:       ledger,
 		Queue:        queue,
+		Jobs:         jobs,
 		LookupSecret: func(name string) (string, bool) { v, ok := secrets[name]; return v, ok },
 		ReportEvent:  events.record,
 	})
@@ -212,6 +220,7 @@ func newHarness(t *testing.T, extra ...*ResolvedApp) *harness {
 		url:      ts.URL,
 		queue:    queue,
 		ledger:   ledger,
+		jobs:     jobs,
 		rebuild:  rebuild,
 		events:   events,
 		secrets:  secrets,
@@ -794,6 +803,7 @@ func TestWebhookHandler_Dedup(t *testing.T) {
 			Resolver:     h.resolver,
 			Ledger:       h.ledger,
 			Queue:        queue,
+			Jobs:         h.jobs,
 			LookupSecret: func(name string) (string, bool) { v, ok := h.secrets[name]; return v, ok },
 			ReportEvent:  h.events.record,
 		})
@@ -971,9 +981,45 @@ func TestQueue_EnqueueFull(t *testing.T) {
 // Rebuild service: existing pipeline + deploy lock authority
 // ---------------------------------------------------------------------------
 
+// prepareRecorder is an injectable SourcePreparer: it hands out a fixed
+// source directory (or a failure) and records prepare/cleanup calls.
+type prepareRecorder struct {
+	mu      sync.Mutex
+	dir     string
+	err     error
+	jobs    []*Job
+	cleaned int32
+}
+
+func (r *prepareRecorder) preparer() SourcePreparer {
+	return func(ctx context.Context, job *Job) (*PreparedSource, error) {
+		r.mu.Lock()
+		r.jobs = append(r.jobs, job)
+		r.mu.Unlock()
+		if r.err != nil {
+			return nil, r.err
+		}
+		return &PreparedSource{
+			Dir: r.dir,
+			remove: func() error {
+				atomic.AddInt32(&r.cleaned, 1)
+				return nil
+			},
+		}, nil
+	}
+}
+
+func (r *prepareRecorder) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.jobs)
+}
+
+func (r *prepareRecorder) cleanupCount() int32 { return atomic.LoadInt32(&r.cleaned) }
+
 // recordingRunner captures the invocation without spawning a process.
 func recordingRunner(invocations *sync.Map) commandRunner {
-	return func(ctx context.Context, dir string, args ...string) ([]string, error) {
+	return func(ctx context.Context, job *Job, dir string, args ...string) ([]string, error) {
 		invocations.Store(dir, args)
 		return nil, nil
 	}
@@ -990,13 +1036,33 @@ func lockTestJob() *Job {
 	}
 }
 
+const fakeSourceDir = "/srv/api-isolated"
+
+func wantRebuildArgs(sourceDir string) []string {
+	return []string{"rebuild", "app-1", "--source-dir", sourceDir}
+}
+
+func assertArgs(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("invocation args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("invocation args = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestCliRebuild_WaitsForDeployLock(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // deploy lock paths live under $HOME/.phelix
 
 	var invocations sync.Map
-	rb := &CliRebuild{poll: 5 * time.Millisecond, run: recordingRunner(&invocations)}
+	prep := &prepareRecorder{dir: fakeSourceDir}
+	rb := &CliRebuild{poll: 5 * time.Millisecond, run: recordingRunner(&invocations), prepare: prep.preparer()}
 
-	// A manual rebuild owns the deploy lock; the webhook job must wait.
+	// A manual rebuild owns the deploy lock; the webhook job must wait — the
+	// isolated source is prepared, but the rebuild itself must not start.
 	release, err := deploy.AcquireDeployLock("api", "rebuild")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -1010,7 +1076,9 @@ func TestCliRebuild_WaitsForDeployLock(t *testing.T) {
 		t.Fatalf("rebuild returned while lock held: %v", err)
 	case <-time.After(150 * time.Millisecond):
 	}
-
+	if n := prep.callCount(); n != 1 {
+		t.Fatalf("source prepared %d times, want 1", n)
+	}
 	if _, ran := invocations.Load("/srv/api"); ran {
 		t.Fatal("rebuild invoked while the deploy lock was held by another operation")
 	}
@@ -1026,9 +1094,9 @@ func TestCliRebuild_WaitsForDeployLock(t *testing.T) {
 	}
 
 	args, _ := invocations.Load("/srv/api")
-	got := args.([]string)
-	if len(got) != 2 || got[0] != "rebuild" || got[1] != "app-1" {
-		t.Fatalf("invocation args = %v, want [rebuild app-1]", got)
+	assertArgs(t, args.([]string), wantRebuildArgs(fakeSourceDir))
+	if n := prep.cleanupCount(); n != 1 {
+		t.Fatalf("isolated source cleaned %d times, want exactly 1", n)
 	}
 }
 
@@ -1037,9 +1105,11 @@ func TestCliRebuild_RetriesAfterLockRace(t *testing.T) {
 
 	var calls int32
 	var mu sync.Mutex
+	prep := &prepareRecorder{dir: fakeSourceDir}
 	rb := &CliRebuild{
-		poll: 5 * time.Millisecond,
-		run: func(ctx context.Context, dir string, args ...string) ([]string, error) {
+		poll:    5 * time.Millisecond,
+		prepare: prep.preparer(),
+		run: func(ctx context.Context, job *Job, dir string, args ...string) ([]string, error) {
 			n := atomic.AddInt32(&calls, 1)
 			mu.Lock()
 			defer mu.Unlock()
@@ -1059,15 +1129,20 @@ func TestCliRebuild_RetriesAfterLockRace(t *testing.T) {
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Fatalf("runner calls = %d, want 2 (one lost race + one retry)", got)
 	}
+	if n := prep.cleanupCount(); n != 1 {
+		t.Fatalf("isolated source cleaned %d times, want exactly 1 (retries share it)", n)
+	}
 }
 
 func TestCliRebuild_BuildFailureIsNotRetried(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	var calls int32
+	prep := &prepareRecorder{dir: fakeSourceDir}
 	rb := &CliRebuild{
-		poll: 5 * time.Millisecond,
-		run: func(ctx context.Context, dir string, args ...string) ([]string, error) {
+		poll:    5 * time.Millisecond,
+		prepare: prep.preparer(),
+		run: func(ctx context.Context, job *Job, dir string, args ...string) ([]string, error) {
 			atomic.AddInt32(&calls, 1)
 			return []string{"→ build failed: exit status 1"},
 				phelixerr.Newf(phelixerr.CodeProcessFailed, "webhook: rebuild command failed")
@@ -1080,11 +1155,16 @@ func TestCliRebuild_BuildFailureIsNotRetried(t *testing.T) {
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("runner calls = %d, want 1 (no retry on a genuine failure)", got)
 	}
+	if n := prep.cleanupCount(); n != 1 {
+		t.Fatalf("isolated source cleaned %d times after a failed build, want 1", n)
+	}
 }
 
 func TestCliRebuild_ShutdownWhileWaitingForLock(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
+	// A rollback owns the deploy lock; the webhook job must keep waiting (and
+	// never steal it) until shutdown cancels it.
 	release, err := deploy.AcquireDeployLock("api", "rollback")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -1092,7 +1172,8 @@ func TestCliRebuild_ShutdownWhileWaitingForLock(t *testing.T) {
 	defer release()
 
 	var invocations sync.Map
-	rb := &CliRebuild{poll: 5 * time.Millisecond, run: recordingRunner(&invocations)}
+	prep := &prepareRecorder{dir: fakeSourceDir}
+	rb := &CliRebuild{poll: 5 * time.Millisecond, run: recordingRunner(&invocations), prepare: prep.preparer()}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -1112,16 +1193,75 @@ func TestCliRebuild_ShutdownWhileWaitingForLock(t *testing.T) {
 	if _, ran := invocations.Load("/srv/api"); ran {
 		t.Fatal("job started a rebuild despite shutdown")
 	}
+	if n := prep.cleanupCount(); n != 1 {
+		t.Fatalf("isolated source cleaned %d times at shutdown, want 1 (nothing was running)", n)
+	}
+}
+
+func TestCliRebuild_ShutdownWithSubprocessRunningKeepsSource(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	prep := &prepareRecorder{dir: fakeSourceDir}
+	rb := &CliRebuild{
+		poll:    5 * time.Millisecond,
+		prepare: prep.preparer(),
+		run: func(ctx context.Context, job *Job, dir string, args ...string) ([]string, error) {
+			// The rebuild subprocess is "running" when the server shuts down.
+			return nil, phelixerr.Wrap(phelixerr.CodeUnavailable,
+				"webhook: server shutdown; rebuild left running to completion",
+				errors.Join(ErrShutdown, ErrShutdownSubprocess))
+		},
+	}
+
+	if err := rb.Rebuild(context.Background(), lockTestJob()); !IsShutdownErr(err) {
+		t.Fatalf("rebuild = %v, want a shutdown error", err)
+	}
+	if n := prep.cleanupCount(); n != 0 {
+		t.Fatalf("isolated source was removed under a running rebuild (cleaned %d times, want 0 — the startup sweep owns it)", n)
+	}
+}
+
+func TestCliRebuild_GitSyncFailureNeverRunsRebuild(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	requireGit(t)
+
+	repo := newGitRepo(t) // app dir is a valid repo with remote and commits
+
+	var invocations sync.Map
+	rb := &CliRebuild{
+		poll:    5 * time.Millisecond,
+		run:     recordingRunner(&invocations),
+		prepare: NewGitSourcePreparer(filepath.Join(t.TempDir(), "wt")),
+	}
+	job := &Job{
+		AppID: "app-1", AppName: "api",
+		Directory: repo.appDir, Branch: "main",
+		CommitSHA:  "ffffffffffffffffffffffffffffffffffffffff", // never pushed
+		DeliveryID: "d-gitsync-1",
+	}
+
+	err := rb.Rebuild(context.Background(), job)
+	if err == nil {
+		t.Fatal("expected a git sync failure")
+	}
+	if !phelixerr.IsCode(err, phelixerr.CodeGitSyncFailed) {
+		t.Fatalf("error code = %v, want GIT_SYNC_FAILED (%v)", phelixerr.CodeOf(err), err)
+	}
+	if _, ran := invocations.Load(repo.appDir); ran {
+		t.Fatal("rebuild ran despite a git synchronization failure")
+	}
 }
 
 // The queued execution must reach the rebuild invocation through the deploy
 // lock boundary: with the lock held by a manual operation, the queued job
-// waits; once free, the job invokes the rebuild command.
+// waits; once free, the job invokes the rebuild command against the isolated
+// exact-commit source.
 func TestQueue_JobReachesRebuildThroughDeployLock(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	var invocations sync.Map
-	rb := &CliRebuild{poll: 5 * time.Millisecond, run: recordingRunner(&invocations)}
+	prep := &prepareRecorder{dir: fakeSourceDir}
+	rb := &CliRebuild{poll: 5 * time.Millisecond, run: recordingRunner(&invocations), prepare: prep.preparer()}
 	queue := NewQueue(QueueOptions{Rebuild: rb.Rebuild})
 	t.Cleanup(func() { queue.Close(2 * time.Second) })
 

@@ -150,7 +150,7 @@ var StartCmd = &cobra.Command{
 				return err
 			}
 
-			if _, rerr := rebuildApp(appInfo.ID, []string{}, buildMgr); rerr != nil {
+			if _, rerr := rebuildApp(appInfo.ID, []string{}, buildMgr, ""); rerr != nil {
 				return rerr
 			}
 
