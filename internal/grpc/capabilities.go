@@ -40,6 +40,11 @@ const (
 	// (matrix_* MonitorStream commands driving the existing matrix engine,
 	// ReportMatrixEvent lifecycle events, and run-state resync).
 	CapabilityBuildMatrix = "build_matrix"
+	// CapabilityWebhookManagement: the agent implements remote webhook
+	// management (webhook_* MonitorStream commands reading and mutating the
+	// existing webhook subsystem — durable jobs, delivery ledger, and the
+	// phelix.yaml webhook configuration).
+	CapabilityWebhookManagement = "webhook_management"
 )
 
 // agentCapabilities is the registry of capabilities this agent build

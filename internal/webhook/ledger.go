@@ -187,6 +187,44 @@ func (l *DeliveryLedger) Len() int {
 	return len(l.entries)
 }
 
+// DeliveryInfo is the read-only, wire-safe view of one recorded delivery:
+// metadata only — never the request body, signature or headers.
+type DeliveryInfo struct {
+	App        string
+	DeliveryID string
+	Branch     string
+	Commit     string
+	Provider   string
+	ReceivedAt int64
+}
+
+// RecentForApp returns the app's recorded deliveries, newest first, up to
+// limit (0 = all retained). Read-only: it never modifies dedup state.
+func (l *DeliveryLedger) RecentForApp(app string, limit int) []DeliveryInfo {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []DeliveryInfo
+	// l.order is insertion order; scan backwards for newest-first.
+	for i := len(l.order) - 1; i >= 0; i-- {
+		e := l.entries[l.order[i]]
+		if e == nil || e.App != app {
+			continue
+		}
+		out = append(out, DeliveryInfo{
+			App:        e.App,
+			DeliveryID: e.DeliveryID,
+			Branch:     e.Branch,
+			Commit:     e.Commit,
+			Provider:   e.Provider,
+			ReceivedAt: e.ReceivedAt,
+		})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 // evictLocked drops the oldest entries above capacity.
 func (l *DeliveryLedger) evictLocked() {
 	for len(l.order) > l.max {

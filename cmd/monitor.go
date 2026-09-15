@@ -116,6 +116,9 @@ func runMonitor() error {
 	if err := phelixgrpc.InitializeMatrixLedger(); err != nil {
 		return err
 	}
+	if err := phelixgrpc.InitializeWebhookLedger(); err != nil {
+		return err
+	}
 
 	// Register command execution before opening streams; otherwise a command
 	// can arrive in the Start race window and be rejected as unimplemented.
@@ -132,6 +135,11 @@ func runMonitor() error {
 	phelixgrpc.SetMatrixHandler(func(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
 		return RemoteMatrixCommand(matrixCtx, req)
 	})
+
+	// Remote webhook management reuses the existing webhook subsystem; the
+	// handler is registered before the client starts so no webhook command
+	// can arrive in the startup race window and be answered UNIMPLEMENTED.
+	phelixgrpc.SetWebhookHandler(RemoteWebhookCommand)
 
 	// Start the client: connects, and runs the reconnect loop, monitor stream,
 	// agent stream and metadata/version syncs in the background.
@@ -194,6 +202,7 @@ func runMonitor() error {
 	// results and events can still be delivered.
 	cancelMatrixSessions()
 	phelixgrpc.WaitPendingMatrixCommands(phelixgrpc.MatrixCommandSettleTimeout())
+	phelixgrpc.WaitPendingWebhookCommands(phelixgrpc.WebhookCommandSettleTimeout())
 	phelixgrpc.StopMatrixSender(5 * time.Second)
 
 	close(done)

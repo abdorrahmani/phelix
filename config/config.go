@@ -3,6 +3,8 @@ package config
 import (
 	"bytes"
 	_ "embed"
+	"os"
+	"strings"
 	"sync"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -58,10 +60,28 @@ func Load() error {
 			err = phelixerr.Wrap(phelixerr.CodeConfiguration, "unable to decode config", unmarshalErr)
 			return
 		}
+		applyEnvOverrides(&c)
 		cfg = &c
 	})
 
 	return err
+}
+
+// applyEnvOverrides applies the documented runtime overrides on top of the
+// embedded config: PHELIX_MODE, PHELIX_API and PHELIX_GRPC_URL. Empty values
+// are ignored, so setting a variable to "" keeps the embedded value. Mode is
+// normalized to lowercase to match the config's own vocabulary ("dev",
+// "production").
+func applyEnvOverrides(c *Config) {
+	if v := strings.TrimSpace(os.Getenv("PHELIX_MODE")); v != "" {
+		c.App.Mode = strings.ToLower(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("PHELIX_API")); v != "" {
+		c.App.API = v
+	}
+	if v := strings.TrimSpace(os.Getenv("PHELIX_GRPC_URL")); v != "" {
+		c.App.GRPCUrl = v
+	}
 }
 
 func Get() *Config {

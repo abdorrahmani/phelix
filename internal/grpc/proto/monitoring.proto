@@ -8,6 +8,7 @@ import "internal/grpc/proto/ping.proto";
 import "internal/grpc/proto/deployment.proto";
 import "internal/grpc/proto/health.proto";
 import "internal/grpc/proto/matrix.proto";
+import "internal/grpc/proto/webhook.proto";
 
 // ============================================================================
 // Monitoring data messages
@@ -296,6 +297,15 @@ message MonitorCommandRequest {
   // matrix_status) reuses target ("latest" or "mx_…" run ID). See
   // docs/matrix-backend-contract.md.
   MatrixOptions matrix = 10;
+
+  // Remote webhook management options, carried by webhook_* commands only
+  // (additive; older agents ignore them). The agent reads and mutates the
+  // SAME webhook subsystem the local CLI uses (durable jobs, delivery
+  // ledger, phelix.yaml webhook section) — never a second implementation.
+  // Every field is command-scoped and rejected when set on the wrong
+  // command. The HMAC secret value is never carried in any field. See
+  // docs/remote-webhook-backend-contract.md.
+  WebhookOptions webhook = 11;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -334,6 +344,21 @@ message MonitorCommandResult {
   // matrix_docker is the terminal outcome of matrix_dockerize (image builds
   // have no Matrix Run).
   MatrixDockerResult matrix_docker = 12;
+
+  // Remote webhook management fields (additive; set on webhook_* command
+  // results, empty/absent otherwise — older backends ignore them).
+  //
+  // webhook_jobs is the answer of webhook_status (the app's in-flight jobs,
+  // newest first) and webhook_history (the app's finished jobs, newest
+  // first, bounded by the request's limit).
+  repeated WebhookJob webhook_jobs = 13;
+  // webhook_config is the app's webhook configuration — the answer of
+  // webhook_config and the resulting state of every mutating webhook_*
+  // command.
+  WebhookConfigState webhook_config = 14;
+  // webhook_deliveries is the webhook_deliveries answer (accepted deliveries
+  // from the dedup ledger, newest first, bounded by the request's limit).
+  repeated WebhookDelivery webhook_deliveries = 15;
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the

@@ -1,10 +1,14 @@
 package project
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"go.yaml.in/yaml/v3"
 )
 
 // WebhookConfig is the phelix.yaml shape of the Git-push webhook trigger
@@ -26,6 +30,87 @@ type WebhookConfig struct {
 
 // envNamePattern matches a valid environment variable name.
 var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// Validate is the exported entry to the webhook section's validation — the
+// same rules project.Load enforces. Remote webhook mutations validate the
+// configuration they are about to persist through it, so a remote change can
+// never write a config the local webhook server would reject at load time.
+func (w *WebhookConfig) Validate() error { return w.validate() }
+
+// SaveWebhookConfig writes the webhook section into dir/phelix.yaml while
+// preserving every other key, comment, and the file's overall formatting:
+// the existing document is edited as a yaml.Node and only the `webhook`
+// mapping is replaced (or appended). A missing file is created with just the
+// webhook section; a malformed existing file is an error, never overwritten.
+// A nil config removes nothing — use a zero-value config with enabled=false
+// to persist an explicit disabled state.
+func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
+	if wc == nil {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "cannot save a nil webhook config")
+	}
+	if err := wc.validate(); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, FileName)
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
+		}
+		// New file: the standard header plus just the webhook section.
+		body, merr := yaml.Marshal(map[string]*WebhookConfig{"webhook": wc})
+		if merr != nil {
+			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode webhook config", merr)
+		}
+		return os.WriteFile(path, append([]byte(webhookConfigHeader()), body...), 0o644)
+	}
+
+	var doc yaml.Node
+	if uerr := yaml.Unmarshal(raw, &doc); uerr != nil {
+		return phelixerr.Wrapf(phelixerr.CodeConfiguration, uerr, "%s is malformed; not modifying it", path)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return phelixerr.Newf(phelixerr.CodeConfiguration, "%s is malformed: top level is not a mapping; not modifying it", path)
+	}
+	root := doc.Content[0]
+
+	newValue := &yaml.Node{}
+	if eerr := newValue.Encode(wc); eerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode webhook config", eerr)
+	}
+
+	replaced := false
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Kind == yaml.ScalarNode && root.Content[i].Value == "webhook" {
+			// Keep the key node (its comments survive); swap only the value.
+			*root.Content[i+1] = *newValue
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "webhook"}
+		root.Content = append(root.Content, key, newValue)
+	}
+
+	// Marshal the document node (not the root mapping): the file's leading
+	// comments live on the document node and would be dropped otherwise.
+	var buf strings.Builder
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if eerr := enc.Encode(&doc); eerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", eerr)
+	}
+	if cerr := enc.Close(); cerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
+	}
+	return os.WriteFile(path, []byte(buf.String()), 0o644)
+}
+
+func webhookConfigHeader() string {
+	return fmt.Sprintf("# Phelix project configuration.\n# CLI flags override these values (e.g. --port).\n")
+}
 
 // validate checks the webhook section. Presence-dependent fields (branch,
 // secret_env) are required when enabled; declared values are always checked

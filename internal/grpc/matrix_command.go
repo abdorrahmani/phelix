@@ -178,6 +178,10 @@ func validateMatrixCommand(req *pb.MonitorCommandRequest) error {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"%s command must not carry rollback/rebuild options (strategy, replicas, reason, verify_duration_ms)", req.GetType())
 	}
+	if req.GetWebhook() != nil {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"%s command must not carry webhook options (webhook)", req.GetType())
+	}
 	if req.GetDryRun() && !matrixDryRunnable(req.GetType()) {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "dry_run is not supported for %s commands", req.GetType())
 	}

@@ -309,6 +309,7 @@ func (c *Client) runMonitorStream() error {
 
 	ledger := rollbackResults
 	matrixLedger := matrixResults
+	webhookLedger := webhookResults
 	executor := monitorStream.commandExecutor
 	if err := ledger.initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote rollback ledger unavailable; rollback commands will fail closed: %v", err)
@@ -319,6 +320,11 @@ func (c *Client) runMonitorStream() error {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote matrix ledger unavailable; matrix commands will fail closed: %v", err)
 	} else {
 		c.replayPendingMatrixResults(matrixLedger)
+	}
+	if err := webhookLedger.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote webhook ledger unavailable; mutating webhook commands will fail closed: %v", err)
+	} else {
+		c.replayPendingWebhookResults(webhookLedger)
 	}
 
 	// Send server identity once per (re)connection, mirroring the legacy
@@ -347,7 +353,7 @@ func (c *Client) runMonitorStream() error {
 
 	recvErrCh := make(chan error, 1)
 	go func() {
-		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger, matrixLedger)
+		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger, matrixLedger, webhookLedger)
 	}()
 
 	ticker := time.NewTicker(monitorMetricsInterval)
@@ -395,7 +401,7 @@ func (c *Client) runMonitorStream() error {
 
 // monitorRecvLoop reads MonitorControl messages pushed by the backend
 // (remote commands, keepalive pings) until the stream ends.
-func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger, matrixLedger *rollbackLedger) error {
+func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger, matrixLedger *rollbackLedger, webhookLedger *rollbackLedger) error {
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -413,6 +419,16 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 			// lifecycle executor.
 			if isMatrixCommand(p.Command.GetType()) {
 				c.handleMatrixCommand(p.Command, matrixLedger)
+				continue
+			}
+			// Webhook management commands have their own dispatch too:
+			// ledger-guarded mutations and synchronous queries over the
+			// existing webhook subsystem. They never reach the lifecycle
+			// executor (there is deliberately no command that executes a
+			// webhook deployment remotely — deployments originate from the
+			// local HTTP webhook server only).
+			if isWebhookCommand(p.Command.GetType()) {
+				c.handleWebhookCommand(p.Command, webhookLedger)
 				continue
 			}
 			c.handleMonitorCommand(p.Command, executor, ledger)

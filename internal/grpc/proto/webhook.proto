@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// ============================================================================
+// Remote Webhook Management contract
+//
+// These messages expose the agent's existing Git webhook subsystem (the same
+// durable deployment jobs, delivery ledger and phelix.yaml webhook
+// configuration that `phelix webhook`, `phelix webhook status` and
+// `phelix webhook history` use) to the backend:
+//
+//   - Backend → agent:  webhook_* commands over MonitorStream
+//     (MonitorCommandRequest.type + MonitorCommandRequest.webhook).
+//   - Agent → backend:  terminal command results over MonitorStream
+//     (MonitorCommandResult webhook_* fields — mutating commands are durable
+//     and replayed on reconnect; queries are answered synchronously).
+//   - Agent → backend:  live deployment-job progress through the existing
+//     application-event channel (webhook_job_* events), NOT through this
+//     command channel.
+//
+// Source of truth for backend implementation:
+// docs/remote-webhook-backend-contract.md. Status/stage vocabularies are the
+// agent's own durable job model (never re-invented here): job status is one
+// of accepted|queued|syncing|building|deploying|health_checking|succeeded|
+// failed|rolled_back|cancelled, stage one of queue|git_sync|build|deploy|
+// health_check|cleanup|recovery.
+//
+// SECURITY: the HMAC secret itself is NEVER transmitted in either direction.
+// secret_env names the environment variable that holds it on the agent host;
+// the value stays local to the agent. There is deliberately no field that
+// could carry a secret value.
+// ============================================================================
+
+// WebhookOptions carries the options of a webhook_* command. Every field is
+// command-scoped: enabled belongs to webhook_enable/webhook_disable, branch
+// to webhook_set_branch, secret_env to webhook_set_secret_env, and limit
+// bounds webhook_history / webhook_deliveries answers. A field set on a
+// command it does not belong to is rejected with INVALID_ARGUMENT rather
+// than ignored.
+message WebhookOptions {
+  // Target state of webhook_enable (true) / webhook_disable (false). The
+  // command type already names the direction; this field is optional
+  // confirmation and must agree with it when set.
+  bool enabled = 1;
+  // Bare branch name (e.g. "main", never "refs/heads/main") for
+  // webhook_set_branch. Validated on the agent by the same rules as the
+  // phelix.yaml webhook.branch key.
+  string branch = 2;
+  // NAME of the environment variable holding the HMAC shared secret (e.g.
+  // "PHELIX_WEBHOOK_SECRET") for webhook_set_secret_env. Validated as an
+  // environment-variable name. The secret value itself never appears on the
+  // wire in any message.
+  string secret_env = 3;
+  // Maximum number of records to return for webhook_history /
+  // webhook_deliveries. 0 = the agent default (20); the agent caps it at
+  // 100. Ignored by webhook_status (active jobs are few by construction).
+  int32 limit = 4;
+}
+
+// WebhookJob is one durable webhook deployment job, as stored by the agent
+// (the same records `phelix webhook status`/`history` read). Only fields of
+// the existing job model are exposed — no secrets, no request bodies, no
+// worktree paths. Timestamps are unix milliseconds.
+message WebhookJob {
+  string job_id = 1;      // wh_… agent-side job identifier
+  string delivery_id = 2; // provider delivery identifier (replay key)
+  string app_id = 3;
+  string app_name = 4;
+  string branch = 5;
+  string commit = 6;      // exact pushed commit that was deployed
+  string provider = 7;
+  string status = 8;
+  string stage = 9;
+  int64 accepted_at = 10;
+  int64 started_at = 11;
+  int64 finished_at = 12;
+  int32 version = 13;     // Phelix version deployed (or restored, when rolled back); 0 = none
+  string error_code = 14; // machine-readable (e.g. GIT_SYNC_FAILED, WEBHOOK_JOB_INTERRUPTED)
+  string error_message = 15; // sanitized human summary
+}
+
+// WebhookConfigState is the app's webhook configuration as the agent reads
+// it from the app's phelix.yaml — the same source of truth local webhook
+// execution uses. Mutating commands return the resulting state so the
+// backend can reconcile without a follow-up query.
+message WebhookConfigState {
+  bool enabled = 1;
+  string branch = 2;
+  // Environment-variable NAME only. The HMAC secret value is never
+  // transmitted; it stays in the agent host's environment.
+  string secret_env = 3;
+  // Whether the agent process currently sees the secret_env variable set:
+  // "configured" | "missing" | "" (no secret_env configured). Reported for
+  // operator guidance only — the webhook server process owns the
+  // authoritative check at its startup.
+  string secret_env_status = 4;
+}
+
+// WebhookDelivery is one accepted webhook delivery from the agent's dedup
+// ledger — the operational view of replay protection. Metadata only: no
+// request bodies, no signatures, no headers.
+message WebhookDelivery {
+  string delivery_id = 1;
+  string app_name = 2;
+  string branch = 3;
+  string commit = 4;
+  string provider = 5;
+  int64 received_at = 6; // unix milliseconds
+}

@@ -22,9 +22,14 @@ var (
 	webhookHistoryLimit int
 )
 
+// webhookDataRoot is the webhook subsystem's durable state directory.
+func webhookDataRoot() string {
+	return filepath.Join(server.DataDir(), "webhook")
+}
+
 // webhookJobsDir is the durable deployment-job store location.
 func webhookJobsDir() string {
-	return filepath.Join(server.DataDir(), "webhook", "jobs")
+	return filepath.Join(webhookDataRoot(), "jobs")
 }
 
 var webhookStatusCmd = &cobra.Command{

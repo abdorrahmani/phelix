@@ -1664,7 +1664,15 @@ type MonitorCommandRequest struct {
 	// the dry_run field above; run selection (matrix_resume / matrix_retry /
 	// matrix_status) reuses target ("latest" or "mx_…" run ID). See
 	// docs/matrix-backend-contract.md.
-	Matrix        *MatrixOptions `protobuf:"bytes,10,opt,name=matrix,proto3" json:"matrix,omitempty"`
+	Matrix *MatrixOptions `protobuf:"bytes,10,opt,name=matrix,proto3" json:"matrix,omitempty"`
+	// Remote webhook management options, carried by webhook_* commands only
+	// (additive; older agents ignore them). The agent reads and mutates the
+	// SAME webhook subsystem the local CLI uses (durable jobs, delivery
+	// ledger, phelix.yaml webhook section) — never a second implementation.
+	// Every field is command-scoped and rejected when set on the wrong
+	// command. The HMAC secret value is never carried in any field. See
+	// docs/remote-webhook-backend-contract.md.
+	Webhook       *WebhookOptions `protobuf:"bytes,11,opt,name=webhook,proto3" json:"webhook,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1769,6 +1777,13 @@ func (x *MonitorCommandRequest) GetMatrix() *MatrixOptions {
 	return nil
 }
 
+func (x *MonitorCommandRequest) GetWebhook() *WebhookOptions {
+	if x != nil {
+		return x.Webhook
+	}
+	return nil
+}
+
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
 // sent back to the backend after a command finishes executing.
 type MonitorCommandResult struct {
@@ -1804,9 +1819,23 @@ type MonitorCommandResult struct {
 	MatrixPreview *MatrixPlanPreview `protobuf:"bytes,11,opt,name=matrix_preview,json=matrixPreview,proto3" json:"matrix_preview,omitempty"`
 	// matrix_docker is the terminal outcome of matrix_dockerize (image builds
 	// have no Matrix Run).
-	MatrixDocker  *MatrixDockerResult `protobuf:"bytes,12,opt,name=matrix_docker,json=matrixDocker,proto3" json:"matrix_docker,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	MatrixDocker *MatrixDockerResult `protobuf:"bytes,12,opt,name=matrix_docker,json=matrixDocker,proto3" json:"matrix_docker,omitempty"`
+	// Remote webhook management fields (additive; set on webhook_* command
+	// results, empty/absent otherwise — older backends ignore them).
+	//
+	// webhook_jobs is the answer of webhook_status (the app's in-flight jobs,
+	// newest first) and webhook_history (the app's finished jobs, newest
+	// first, bounded by the request's limit).
+	WebhookJobs []*WebhookJob `protobuf:"bytes,13,rep,name=webhook_jobs,json=webhookJobs,proto3" json:"webhook_jobs,omitempty"`
+	// webhook_config is the app's webhook configuration — the answer of
+	// webhook_config and the resulting state of every mutating webhook_*
+	// command.
+	WebhookConfig *WebhookConfigState `protobuf:"bytes,14,opt,name=webhook_config,json=webhookConfig,proto3" json:"webhook_config,omitempty"`
+	// webhook_deliveries is the webhook_deliveries answer (accepted deliveries
+	// from the dedup ledger, newest first, bounded by the request's limit).
+	WebhookDeliveries []*WebhookDelivery `protobuf:"bytes,15,rep,name=webhook_deliveries,json=webhookDeliveries,proto3" json:"webhook_deliveries,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *MonitorCommandResult) Reset() {
@@ -1919,6 +1948,27 @@ func (x *MonitorCommandResult) GetMatrixPreview() *MatrixPlanPreview {
 func (x *MonitorCommandResult) GetMatrixDocker() *MatrixDockerResult {
 	if x != nil {
 		return x.MatrixDocker
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetWebhookJobs() []*WebhookJob {
+	if x != nil {
+		return x.WebhookJobs
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetWebhookConfig() *WebhookConfigState {
+	if x != nil {
+		return x.WebhookConfig
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetWebhookDeliveries() []*WebhookDelivery {
+	if x != nil {
+		return x.WebhookDeliveries
 	}
 	return nil
 }
@@ -2267,7 +2317,7 @@ var File_internal_grpc_proto_monitoring_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
-	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\x1a internal/grpc/proto/matrix.proto\"\xd1\x05\n" +
+	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\x1a internal/grpc/proto/matrix.proto\x1a!internal/grpc/proto/webhook.proto\"\xd1\x05\n" +
 	"\n" +
 	"ServerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
@@ -2440,7 +2490,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05level\x18\x06 \x01(\tR\x05level\x12)\n" +
 	"\x06source\x18\a \x01(\x0e2\x11.phelix.LogSourceR\x06source\x12)\n" +
 	"\x06stream\x18\b \x01(\x0e2\x11.phelix.LogStreamR\x06stream\x12\x1c\n" +
-	"\tcomponent\x18\t \x01(\tR\tcomponent\"\xc3\x02\n" +
+	"\tcomponent\x18\t \x01(\tR\tcomponent\"\xf5\x02\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -2453,7 +2503,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x12verify_duration_ms\x18\b \x01(\x03R\x10verifyDurationMs\x12\x17\n" +
 	"\adry_run\x18\t \x01(\bR\x06dryRun\x12-\n" +
 	"\x06matrix\x18\n" +
-	" \x01(\v2\x15.phelix.MatrixOptionsR\x06matrix\"\xee\x03\n" +
+	" \x01(\v2\x15.phelix.MatrixOptionsR\x06matrix\x120\n" +
+	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\"\xb0\x05\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -2471,7 +2522,10 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	" \x03(\v2\x18.phelix.MatrixRunSummaryR\n" +
 	"matrixRuns\x12@\n" +
 	"\x0ematrix_preview\x18\v \x01(\v2\x19.phelix.MatrixPlanPreviewR\rmatrixPreview\x12?\n" +
-	"\rmatrix_docker\x18\f \x01(\v2\x1a.phelix.MatrixDockerResultR\fmatrixDocker\"\xa7\x05\n" +
+	"\rmatrix_docker\x18\f \x01(\v2\x1a.phelix.MatrixDockerResultR\fmatrixDocker\x125\n" +
+	"\fwebhook_jobs\x18\r \x03(\v2\x12.phelix.WebhookJobR\vwebhookJobs\x12A\n" +
+	"\x0ewebhook_config\x18\x0e \x01(\v2\x1a.phelix.WebhookConfigStateR\rwebhookConfig\x12F\n" +
+	"\x12webhook_deliveries\x18\x0f \x03(\v2\x17.phelix.WebhookDeliveryR\x11webhookDeliveries\"\xa7\x05\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
@@ -2538,14 +2592,18 @@ var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(*MonitorEvent)(nil),          // 16: phelix.MonitorEvent
 	(*MonitorControl)(nil),        // 17: phelix.MonitorControl
 	(*MatrixOptions)(nil),         // 18: phelix.MatrixOptions
-	(*MatrixRunState)(nil),        // 19: phelix.MatrixRunState
-	(*MatrixRunSummary)(nil),      // 20: phelix.MatrixRunSummary
-	(*MatrixPlanPreview)(nil),     // 21: phelix.MatrixPlanPreview
-	(*MatrixDockerResult)(nil),    // 22: phelix.MatrixDockerResult
-	(*Pong)(nil),                  // 23: phelix.Pong
-	(*DeploymentSnapshot)(nil),    // 24: phelix.DeploymentSnapshot
-	(*AppHealthSnapshot)(nil),     // 25: phelix.AppHealthSnapshot
-	(*Ping)(nil),                  // 26: phelix.Ping
+	(*WebhookOptions)(nil),        // 19: phelix.WebhookOptions
+	(*MatrixRunState)(nil),        // 20: phelix.MatrixRunState
+	(*MatrixRunSummary)(nil),      // 21: phelix.MatrixRunSummary
+	(*MatrixPlanPreview)(nil),     // 22: phelix.MatrixPlanPreview
+	(*MatrixDockerResult)(nil),    // 23: phelix.MatrixDockerResult
+	(*WebhookJob)(nil),            // 24: phelix.WebhookJob
+	(*WebhookConfigState)(nil),    // 25: phelix.WebhookConfigState
+	(*WebhookDelivery)(nil),       // 26: phelix.WebhookDelivery
+	(*Pong)(nil),                  // 27: phelix.Pong
+	(*DeploymentSnapshot)(nil),    // 28: phelix.DeploymentSnapshot
+	(*AppHealthSnapshot)(nil),     // 29: phelix.AppHealthSnapshot
+	(*Ping)(nil),                  // 30: phelix.Ping
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	3,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -2558,27 +2616,31 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	0,  // 7: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
 	1,  // 8: phelix.MonitorLogEntry.stream:type_name -> phelix.LogStream
 	18, // 9: phelix.MonitorCommandRequest.matrix:type_name -> phelix.MatrixOptions
-	19, // 10: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
-	20, // 11: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
-	21, // 12: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
-	22, // 13: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
-	2,  // 14: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	6,  // 15: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	7,  // 16: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	8,  // 17: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	13, // 18: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	15, // 19: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	23, // 20: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	24, // 21: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
-	25, // 22: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
-	19, // 23: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
-	14, // 24: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	26, // 25: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	26, // [26:26] is the sub-list for method output_type
-	26, // [26:26] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	19, // 10: phelix.MonitorCommandRequest.webhook:type_name -> phelix.WebhookOptions
+	20, // 11: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
+	21, // 12: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
+	22, // 13: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
+	23, // 14: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
+	24, // 15: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
+	25, // 16: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
+	26, // 17: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
+	2,  // 18: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	6,  // 19: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	7,  // 20: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	8,  // 21: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	13, // 22: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	15, // 23: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	27, // 24: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	28, // 25: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
+	29, // 26: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
+	20, // 27: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
+	14, // 28: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	30, // 29: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	30, // [30:30] is the sub-list for method output_type
+	30, // [30:30] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -2590,6 +2652,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 	file_internal_grpc_proto_deployment_proto_init()
 	file_internal_grpc_proto_health_proto_init()
 	file_internal_grpc_proto_matrix_proto_init()
+	file_internal_grpc_proto_webhook_proto_init()
 	file_internal_grpc_proto_monitoring_proto_msgTypes[14].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
