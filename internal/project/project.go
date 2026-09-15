@@ -33,6 +33,9 @@ type Config struct {
 	Health   *HealthConfig `yaml:"health,omitempty"`
 	Deploy   *DeployConfig `yaml:"deploy,omitempty"`
 	Matrix   *MatrixConfig `yaml:"matrix,omitempty"`
+	// Webhook configures the Git-push webhook trigger. Optional; an app
+	// without the section never accepts webhook deliveries.
+	Webhook *WebhookConfig `yaml:"webhook,omitempty"`
 }
 
 // Load reads and validates phelix.yaml from dir. A missing file is reported as
@@ -65,6 +68,9 @@ func Load(dir string) (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Matrix.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Webhook.validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil

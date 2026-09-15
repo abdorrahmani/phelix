@@ -24,6 +24,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - **Build Reports + Regression Alerts** (every successful build automatically records metrics — compiler, duration, cache status, binary size — and compares them against previous comparable builds to detect meaningful regressions, fully offline)
 - **Docker image building** (auto-generated multi-stage Dockerfiles for Go/Rust with optimized layer caching)
 - **Matrix builds** (build multiple compiler-version × platform combinations in one command)
+- **Git webhook deploys** (HMAC-authenticated push webhooks trigger the existing rebuild pipeline — see [Git Webhook Deploys](#git-webhook-deploys))
 
 ---
 
@@ -40,6 +41,7 @@ Phelix helps you build, run, and manage Go and Rust applications across a single
 - [Command Reference](#command-reference)
 - [Run Phelix in Docker](#run-phelix-in-docker)
 - [Multi-Server Monitoring](#multi-server-monitoring)
+- [Git Webhook Deploys](#git-webhook-deploys)
 - [System Requirements](#system-requirements)
 - [Where Phelix Stores Data](#where-phelix-stores-data)
 - [Error Handling](#error-handling)
@@ -398,6 +400,11 @@ health:
 
 deploy:
   strategy: blue-green
+
+webhook:
+  enabled: true
+  branch: main
+  secret_env: PHELIX_WEBHOOK_SECRET
 ```
 
 #### Field reference
@@ -418,6 +425,9 @@ deploy:
 | `deploy.rollout.duration` | no | Verification window for `canary` (e.g. `2m`). Default `30s`. |
 | `deploy.rollout.steps[]` | no | Progressive steps: `traffic` (percent) and optional `duration` per step; must strictly increase and end at `100`. |
 | `deploy.rollout.verification` | no | Regression thresholds: `interval`, `max_error_rate`, `max_error_delta`, `max_p95_factor` (see [Canary & progressive rollouts](#canary--progressive-rollouts)). |
+| `webhook.enabled` | no | Turns the Git push webhook trigger on for this app. Default `false`; apps without a `webhook` section never accept deliveries (see [Git Webhook Deploys](#git-webhook-deploys)). |
+| `webhook.branch` | yes (with `enabled`) | Bare branch name whose pushes trigger a rebuild (e.g. `main`, `release/2.x` — not `refs/heads/main`). |
+| `webhook.secret_env` | yes (with `enabled`) | Name of the environment variable holding the HMAC-SHA256 shared secret (e.g. `PHELIX_WEBHOOK_SECRET`). The secret itself is never stored in phelix.yaml. |
 
 The configuration file is fully optional. Projects without `phelix.yaml`
 keep working exactly as before — every existing flag and prompt is unchanged.
@@ -1971,6 +1981,7 @@ dropped.
 phelix version [--short | --verbose]
 phelix update [--check]   # update the Phelix binary to the latest release
 phelix monitor      # start the long-running gRPC monitoring daemon (foreground)
+phelix webhook      # start the Git push webhook server (foreground; see Git Webhook Deploys)
 ```
 
 ## Multi-Server Monitoring
@@ -2052,6 +2063,125 @@ monitoring data for every local application. The CLI itself remains free and
 local: there are no subscription checks on this flag, and backend plan quotas
 are enforced server-side.
 
+## Git Webhook Deploys
+
+`phelix webhook` starts a long-running HTTP server that accepts Git push
+webhooks and triggers a rebuild of the pushed application. The webhook layer
+is a **trigger only**: every accepted push is handed to the existing
+`phelix rebuild` pipeline, so the deployment strategy from `phelix.yaml`
+(classic, blue-green, rolling, canary, progressive), health verification,
+versioning, rollback history, build reports and the per-app deploy lock all
+behave exactly as if you had run the rebuild yourself.
+
+```text
+HTTP request → authenticate (HMAC-SHA256) → validate branch/app
+            → deduplicate delivery → build queue → phelix rebuild
+```
+
+### Configuration
+
+Each application opts in through its own `phelix.yaml`:
+
+```yaml
+webhook:
+  enabled: true
+  branch: main                 # bare branch name; pushes to other branches are ignored
+  secret_env: PHELIX_WEBHOOK_SECRET   # env var holding the shared secret
+```
+
+- The shared secret is **never stored in phelix.yaml** and never logged —
+  only the name of the environment variable that holds it.
+- `phelix webhook` fails at startup with a clear error when an app enables
+  the webhook but its `secret_env` variable is not set.
+- Projects without a `webhook` section are unaffected.
+
+### Running the server
+
+```bash
+PHELIX_WEBHOOK_SECRET=... phelix webhook                 # 127.0.0.1:9746
+PHELIX_WEBHOOK_SECRET=... phelix webhook --host 0.0.0.0 --port 9746
+```
+
+The server listens on `127.0.0.1:9746` by default (`--host`/`--port` to
+change). It runs in the foreground, exits cleanly on `SIGINT`/`SIGTERM`, and
+is designed to be supervised by systemd like `phelix monitor` (set the secret
+via `Environment=` or an `EnvironmentFile`). Apps are resolved live from
+`apps.json`, so apps added or removed while the server runs are picked up
+without a restart.
+
+### Endpoint
+
+```http
+POST /webhook/<app>
+```
+
+`<app>` is the app name or ID. GitHub-style headers are required:
+
+| Header | Meaning |
+|--------|---------|
+| `X-Hub-Signature-256: sha256=<hex>` | HMAC-SHA256 of the **exact raw request body** with the shared secret (compared constant-time) |
+| `X-GitHub-Delivery: <id>` | Unique delivery ID, used for replay protection |
+| `X-GitHub-Event: push` | Event type (`ping` and other events are acknowledged but ignored) |
+
+The request body is the provider's push payload; only `ref` and `after`
+(the pushed commit SHA) are read. Refs are normalized (`refs/heads/main` →
+`main`) and only the configured `webhook.branch` triggers a rebuild. Branch
+mismatch, branch deletion and non-push events are **not** errors — the
+server answers success without queueing anything.
+
+Responses are uniform JSON and never expose internal errors, paths or
+secrets:
+
+| Situation | Status | Body |
+|-----------|--------|------|
+| Accepted and queued | `200` | `{"accepted":true,"queued":true,"message":"webhook accepted"}` |
+| Branch mismatch / deleted / ping | `200` | `{"accepted":true,"queued":false,"message":"branch does not match configured branch"}` |
+| Duplicate delivery | `200` | `{"accepted":true,"queued":false,"message":"delivery already processed"}` |
+| Invalid/missing/malformed signature | `401` | `{"accepted":false,"queued":false,"message":"invalid signature"}` |
+| Unknown app or disabled webhook | `404` | `{"accepted":false,"queued":false,"message":"unknown application"}` |
+| Unreadable payload / missing delivery id | `400` | `{"accepted":false,"queued":false,"message":"invalid payload"}` |
+| Body over 2 MiB | `413` | `{"accepted":false,"queued":false,"message":"request body too large"}` |
+| Queue full/unavailable (provider redelivers) | `503` | `{"accepted":false,"queued":false,"message":"webhook queue unavailable"}` |
+
+### Replay protection and the build queue
+
+- Every accepted delivery ID is recorded in a durable ledger
+  (`~/.phelix/webhook/deliveries.json`, bounded to the 512 most recent
+  deliveries) **before** the request is acknowledged, so a redelivery —
+  concurrent or after a restart — never triggers a second rebuild.
+- The HTTP response returns as soon as the job is queued; it never waits for
+  the rebuild.
+- Jobs for the same app run strictly one at a time; different apps run
+  independently.
+- The webhook **waits** for the app's deploy lock when a manual rebuild or
+  rollback holds it — it never steals or bypasses the lock. The lock itself
+  is acquired and released by the rebuild pipeline, which stays authoritative.
+- On shutdown, the job in flight is given up to 60s to finish; a rebuild
+  subprocess that is already running is left to complete on its own (it is an
+  independent CLI invocation). Queued-but-unstarted jobs are dropped and
+  logged.
+
+### What it does not do
+
+The webhook trigger rebuilds the app's **local source directory** as it
+exists on disk — it does **not** `git pull`, clone or checkout. The pushed
+commit SHA is recorded as webhook metadata (delivery ledger, logs, events)
+and never presented as the commit that was compiled; synchronize the
+repository yourself (or via your own tooling) if the server's checkout must
+match the push. There is also no new deployment, health or rollback logic in
+the webhook layer — everything runs through the existing pipeline.
+
+### Events
+
+Webhook activity is reported through the existing event channel (subject to
+[per-app watching](#per-app-watching-watching)) as application events:
+`webhook_server_start`, `webhook_accepted`, `webhook_branch_mismatch`,
+`webhook_duplicate`, `webhook_queue_failure`, `webhook_rebuild_failed` (and
+`webhook_rejected` for authenticated-but-unreadable requests). Signature
+rejections are logged locally only — unauthenticated traffic must not be able
+to make the server emit backend traffic. Local logs always carry the useful
+identifiers (app, delivery ID, branch, commit).
+
 ## System Requirements
 
 - Go and/or Rust toolchain (auto-installed on Linux if missing; manual install required on other OSes)
@@ -2080,6 +2210,9 @@ All state lives under `~/.phelix/`:
 │   └── runs/                 # Matrix Run history: <id>.json records,
 │                             #   <id>.lock execution locks, <id>.manifest.json
 │                             #   release manifests (see Matrix builds)
+├── webhook/
+│   └── deliveries.json       # webhook delivery dedup ledger (replay protection;
+│                             #   bounded to the 512 most recent deliveries)
 └── apps/<AppName>/          # per-app data
     ├── versions.json        # version metadata index (incl. per-version build reports + per-combo matrix reports)
     ├── deploy.json           # blue-green / rolling state
@@ -2228,6 +2361,7 @@ guidelines.
 - Sessions are regularly validated.
 - Secure file permissions on sensitive files (`master.key` at `0600`).
 - Environment variables and registry credentials are encrypted at rest with AES-256-GCM and never logged in plaintext.
+- Webhook shared secrets live only in environment variables (never in `phelix.yaml`), signatures are verified with constant-time comparison, and the server binds to `127.0.0.1` unless you explicitly pass `--host`.
 - When not logged in, no app data, metrics, or events leave your machine.
 
 ## Support

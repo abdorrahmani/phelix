@@ -70,6 +70,7 @@ func main() {
 	rootCmd.AddCommand(cmd.DockerizeCmd)
 	rootCmd.AddCommand(cmd.DeployCmd)
 	rootCmd.AddCommand(cmd.MonitorCmd)
+	rootCmd.AddCommand(cmd.WebhookCmd)
 	rootCmd.AddCommand(cmd.MatrixCmd)
 
 	rootCmd.AddCommand(cmd.VersionCmd)

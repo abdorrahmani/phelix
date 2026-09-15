@@ -172,7 +172,7 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 // in that directory would read.
 func (e *appCommandExecutor) execFallback(cmd Command, target *resolvedApp, extraArgs []string) error {
 	args := append([]string{cmd.Payload.Type, target.ID}, extraArgs...)
-	execCmd, err := newPhelixCommand(target.Directory, args...)
+	execCmd, err := NewPhelixCommand(target.Directory, args...)
 	if err != nil {
 		return err
 	}
