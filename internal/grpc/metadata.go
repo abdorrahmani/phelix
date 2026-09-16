@@ -49,6 +49,13 @@ func collectMetadata() *pb.CLIMetadata {
 		// gates feature-specific commands on these (e.g. matrix_* on
 		// "build_matrix") instead of guessing from the version string.
 		// Older agents leave this empty; the backend must tolerate that.
-		Capabilities: []string{"build_matrix"},
+		//
+		// This MUST come from the registry, never a literal: every feature
+		// registers its own entry at package init (see capabilities.go), and
+		// a hardcoded list silently under-reports the build — which is
+		// exactly the bug that made the backend see only "build_matrix"
+		// while rollback, deployment, monitoring and webhook management were
+		// all implemented and registered.
+		Capabilities: AgentCapabilities(),
 	}
 }

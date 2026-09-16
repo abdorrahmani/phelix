@@ -27,10 +27,28 @@ message CLIMetadata {
 
   // Capabilities the sending agent's build actually supports — its own
   // declaration, not a version comparison (source builds carry no reliable
-  // version). Known values: "build_matrix" (the remote matrix command
-  // handler is registered; matrix_* commands may be sent). Absent in older
-  // agents — the backend must gate feature-specific commands on the
-  // specific entry, never on the field's presence, and keep working.
+  // version). Each implemented feature registers its own entry, so the list
+  // grows as the agent build gains features.
+  //
+  // Known values:
+  //   "monitoring"         — MonitorStream: metrics, logs, ServerInfo and the
+  //                          lifecycle command channel (start/stop/restart/
+  //                          remove/rebuild).
+  //   "deployment"         — zero-downtime deployment (blue-green/rolling/
+  //                          canary/progressive) with strategy overrides and
+  //                          deployment telemetry/snapshots.
+  //   "rollback"           — the "rollback" command and its durable
+  //                          idempotency ledger.
+  //   "build_matrix"       — matrix_* commands, matrix events, run-state
+  //                          resync.
+  //   "webhook_management" — webhook_* commands over the existing webhook
+  //                          subsystem (jobs, deliveries, configuration).
+  //
+  // The list is sorted and duplicate-free. Absent/empty in older agents —
+  // the backend must gate feature-specific commands on the specific entry,
+  // never on the field's presence, and keep working. An unknown entry is a
+  // capability this backend does not consume yet (forward compatibility),
+  // never an error.
   repeated string capabilities = 15;
 }
 
