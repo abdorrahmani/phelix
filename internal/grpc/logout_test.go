@@ -11,6 +11,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/connstate"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // recordingBackend captures AgentLogout calls and can be told to reject
@@ -34,7 +36,10 @@ func (b *recordingBackend) SyncMetadata(_ context.Context, md *pb.CLIMetadata) (
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.rejectAuth {
-		return nil, phelixerr.New(phelixerr.CodeUnauthenticated, "session revoked").(error)
+		// A real backend rejects over the wire as a gRPC status error; a
+		// plain error here would reach the client as codes.Unknown and never
+		// exercise the auth-expiration branch under test.
+		return nil, status.Error(codes.Unauthenticated, "session revoked")
 	}
 	return &pb.MetadataResponse{Accepted: true}, nil
 }
@@ -140,6 +145,10 @@ func TestHandleAuthRejected_StopsClientButKeepsState(t *testing.T) {
 // transient network failure (which would trigger endless reconnects).
 func TestSyncMetadata_UnauthenticatedDoesNotScheduleReconnect(t *testing.T) {
 	setupTestSession(t)
+
+	// Metadata is server-level data and flows only while at least one app is
+	// watched; open the gate so the UNAUTHENTICATED path is actually reached.
+	watchOneApp(t)
 
 	backend := &recordingBackend{rejectAuth: true}
 	c, _, cleanup := dialBufconn(t, backend)

@@ -64,6 +64,9 @@ func drainMonitorStream(t *testing.T, c *Client, streamErrCh chan error) {
 func runRollbackCommand(t *testing.T, exec *recordingExecutor, req *pb.MonitorCommandRequest, timeout time.Duration) *pb.MonitorCommandResult {
 	t.Helper()
 	setupTestSession(t)
+	// Server-level payloads (ServerInfo first) flow only while at least one
+	// app is watched; the harness waits on that initial snapshot.
+	watchOneApp(t)
 
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 10 * time.Second // no periodic ticks; only the post-command tick
@@ -175,6 +178,7 @@ func TestMonitorStream_RollbackCommandErrorPropagates(t *testing.T) {
 // replays the recorded result.
 func TestMonitorStream_RollbackDuplicateRequestNotReexecuted(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 10 * time.Second // no periodic ticks; only post-command ticks
@@ -254,6 +258,7 @@ func TestMonitorStream_RollbackWithoutRequestIDRejected(t *testing.T) {
 	// Same harness, but the result has no request_id to wait on — collect
 	// any rollback error result instead.
 	setupTestSession(t)
+	watchOneApp(t)
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 10 * time.Second // no periodic ticks; only post-command ticks
 	defer func() { monitorMetricsInterval = origInterval }()
@@ -308,6 +313,7 @@ func TestMonitorStream_RollbackWithoutRequestIDRejected(t *testing.T) {
 // destructive command on the channel).
 func TestMonitorStream_NonRollbackCommandsNotDeduped(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 10 * time.Second // no periodic ticks; only post-command ticks

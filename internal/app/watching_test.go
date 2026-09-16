@@ -164,3 +164,45 @@ func TestReadModelsCarryWatching(t *testing.T) {
 		t.Fatal("AppStatus.Watching must be true for the watched app")
 	}
 }
+
+// AnyWatched is the gate for server-level reporting (server identity, server
+// metrics, self logs, agent metadata): the server transmits its own data only
+// while at least one registered app is watched.
+func TestAnyWatched(t *testing.T) {
+	isolateStateFile(t)
+
+	seed := func(apps map[string]*AppInfo) {
+		t.Helper()
+		m := &AppManager{Apps: apps}
+		if err := m.SaveState(); err != nil {
+			t.Fatalf("SaveState: %v", err)
+		}
+		orig := Manager
+		Manager = m
+		t.Cleanup(func() { Manager = orig })
+	}
+
+	// No apps at all: nothing is transmitted about the server.
+	seed(map[string]*AppInfo{})
+	if AnyWatched() {
+		t.Fatal("AnyWatched with no apps must be false")
+	}
+
+	// Only unwatched apps: still nothing.
+	seed(map[string]*AppInfo{
+		"a": {ID: "a", Name: "unwatched", Status: "stopped"},
+		"b": {ID: "b", Name: "also-unwatched", Status: "stopped"},
+	})
+	if AnyWatched() {
+		t.Fatal("AnyWatched with only unwatched apps must be false")
+	}
+
+	// One watched app among several: server data flows.
+	seed(map[string]*AppInfo{
+		"a": {ID: "a", Name: "unwatched", Status: "stopped"},
+		"b": {ID: "b", Name: "watched", Status: "stopped", Watching: true},
+	})
+	if !AnyWatched() {
+		t.Fatal("AnyWatched with one watched app must be true")
+	}
+}

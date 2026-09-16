@@ -146,3 +146,105 @@ func TestCLIWatch_ResolvesByName(t *testing.T) {
 		t.Fatalf("status after watch-by-name must show enabled (code=%d):\n%s", code, stdout)
 	}
 }
+
+// seedWatchYamlApps writes an apps.json whose apps point at real project
+// directories: api's has an init-style phelix.yaml (watching: disable),
+// worker's has none.
+func seedWatchYamlApps(t *testing.T, home, apiDir, workerDir string) {
+	t.Helper()
+	phelixDir := filepath.Join(home, ".phelix")
+	if err := os.MkdirAll(filepath.Join(phelixDir, "logs"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	appsJSON := `{
+  "301": {
+    "id": "301",
+    "name": "api",
+    "pid": 0,
+    "status": "stopped",
+    "port": 8080,
+    "directory": "` + apiDir + `",
+    "language": "go",
+    "watching": false
+  },
+  "302": {
+    "id": "302",
+    "name": "worker",
+    "pid": 0,
+    "status": "stopped",
+    "port": 8081,
+    "directory": "` + workerDir + `",
+    "language": "go",
+    "watching": false
+  }
+}`
+	if err := os.WriteFile(filepath.Join(phelixDir, "apps.json"), []byte(appsJSON), 0o644); err != nil {
+		t.Fatalf("write apps.json: %v", err)
+	}
+}
+
+// `phelix watch` must keep the two copies of the watching state from
+// diverging: the runtime flag in apps.json AND the watching: key in the
+// project's phelix.yaml (the desired state the next build/rebuild converges
+// on — otherwise a rebuild would silently revert the toggle).
+func TestCLIWatch_UpdatesProjectYaml(t *testing.T) {
+	home := t.TempDir()
+	apiDir := t.TempDir()
+	workerDir := t.TempDir()
+
+	const initStyle = "# Phelix project configuration.\nname: api\nport: 3000\nwatching: disable\n"
+	if err := os.WriteFile(filepath.Join(apiDir, "phelix.yaml"), []byte(initStyle), 0o644); err != nil {
+		t.Fatalf("write phelix.yaml: %v", err)
+	}
+	seedWatchYamlApps(t, home, apiDir, workerDir)
+
+	readYaml := func() string {
+		raw, err := os.ReadFile(filepath.Join(apiDir, "phelix.yaml"))
+		if err != nil {
+			t.Fatalf("read phelix.yaml: %v", err)
+		}
+		return string(raw)
+	}
+
+	// Enable: both the runtime flag and the yaml key flip.
+	code, stdout, stderr := runPhelixInHome(t, home, "watch", "api")
+	if code != 0 {
+		t.Fatalf("phelix watch api exit = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Updated watching: enable") {
+		t.Fatalf("watch output missing the yaml-update note:\n%s", stdout)
+	}
+	yaml := readYaml()
+	for _, want := range []string{"watching: enable", "name: api", "port: 3000", "# Phelix project configuration."} {
+		if !strings.Contains(yaml, want) {
+			t.Fatalf("phelix.yaml after enable missing %q:\n%s", want, yaml)
+		}
+	}
+
+	// Disable: both flip back.
+	code, stdout, stderr = runPhelixInHome(t, home, "watch", "api", "--disable")
+	if code != 0 {
+		t.Fatalf("phelix watch api --disable exit = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(readYaml(), "watching: disable") {
+		t.Fatalf("phelix.yaml after --disable:\n%s", readYaml())
+	}
+
+	// An app whose project has no phelix.yaml: the toggle still works, no
+	// file is created, and the note says only the runtime state changed.
+	code, stdout, stderr = runPhelixInHome(t, home, "watch", "worker")
+	if code != 0 {
+		t.Fatalf("phelix watch worker exit = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "only the runtime state was changed") {
+		t.Fatalf("watch output missing the no-yaml note:\n%s", stdout)
+	}
+	if _, serr := os.Stat(filepath.Join(workerDir, "phelix.yaml")); !os.IsNotExist(serr) {
+		t.Fatal("phelix watch created a phelix.yaml; that is phelix init's job")
+	}
+
+	code, stdout, _ = runPhelixInHome(t, home, "status", "worker")
+	if code != 0 || !strings.Contains(stdout, "enabled") {
+		t.Fatalf("worker must be enabled in status (code=%d):\n%s", code, stdout)
+	}
+}

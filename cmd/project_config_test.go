@@ -23,6 +23,16 @@ func TestLoadProjectConfigMissing(t *testing.T) {
 	}
 }
 
+// A missing phelix.yaml loads as (nil, nil) and syncProjectWatching must be a
+// silent no-op on it, not a panic — `phelix build`/`phelix rebuild` in a
+// config-less directory call this on every run (regression: the nil deref
+// crashed the build after the app entry was already created).
+func TestSyncProjectWatchingNilConfig(t *testing.T) {
+	if err := syncProjectWatching(nil, "app-1"); err != nil {
+		t.Fatalf("syncProjectWatching(nil, ...) = %v, want nil", err)
+	}
+}
+
 func TestLoadProjectConfigInvalid(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

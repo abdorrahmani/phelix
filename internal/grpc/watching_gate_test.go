@@ -13,6 +13,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // watchingGateStub is an app-manager stub whose watching states can be flipped
@@ -56,6 +57,17 @@ func newWatchingGateStub() *watchingGateStub {
 		{ID: unwatchedAppID, Name: "unwatched-app", Status: "stopped"},
 		{ID: watchedAppID, Name: "watched-app", Status: "stopped", Watching: true},
 	}}
+}
+
+// watchOneApp installs the standard watching stub (exactly one watched app)
+// for tests that assert on server-level stream payloads — ServerInfo, server
+// metrics, self logs, metadata — or that drive the stream loop: all of those
+// flow only while at least one app is watched. Restored at test end.
+func watchOneApp(t *testing.T) {
+	t.Helper()
+	origMgr := app.Manager
+	app.Manager = newWatchingGateStub()
+	t.Cleanup(func() { app.Manager = origMgr })
 }
 
 // collectAppHealthIDs returns the app IDs of every AppHealth event the backend
@@ -396,5 +408,159 @@ func TestWatchedAppsWithDirectory(t *testing.T) {
 	got := watchedAppsWithDirectory()
 	if len(got) != 1 || got[0].ID != "watched-dir" {
 		t.Fatalf("watchedAppsWithDirectory = %+v, want exactly watched-dir", got)
+	}
+}
+
+// selfLogMetricsCollector lets the server-data test observe the self-log leg
+// of the metrics tick, which fakeMetricsCollector leaves empty.
+type selfLogMetricsCollector struct {
+	fakeMetricsCollector
+}
+
+func (selfLogMetricsCollector) CollectSelfLogs() ([]logs.LogEntry, error) {
+	return []logs.LogEntry{{ServerID: "srv-1", Log: "self log line"}}, nil
+}
+
+// The server-data half of the watching contract: server identity, server
+// metrics, and self logs flow only while at least one app is watched. A
+// stream that opens with nothing watched stays silent about the server (the
+// connect-time ServerInfo send is gated too), and the deferred ServerInfo
+// snapshot is delivered on the first tick after a `phelix watch` opt-in, in
+// time to attribute the metrics that start flowing.
+func TestMonitorStream_ServerDataRequiresAnyWatched(t *testing.T) {
+	setupTestSession(t)
+
+	stub := newWatchingGateStub()
+	stub.setWatching(watchedAppID, false) // start with everything unwatched
+	origMgr := app.Manager
+	app.Manager = stub
+	t.Cleanup(func() { app.Manager = origMgr })
+
+	origInterval := monitorMetricsInterval
+	monitorMetricsInterval = 20 * time.Millisecond
+	origCollector, origExecutor := monitorStream.metricsCollector, monitorStream.commandExecutor
+	monitorStream.metricsCollector = selfLogMetricsCollector{}
+	monitorStream.commandExecutor = &fakeCommandExecutor{}
+	t.Cleanup(func() {
+		monitorMetricsInterval = origInterval
+		monitorStream.metricsCollector = origCollector
+		monitorStream.commandExecutor = origExecutor
+	})
+
+	backend := newFakeMonitorBackend()
+	c, _, cleanup := dialBufconn(t, backend)
+	defer cleanup()
+
+	streamDone := make(chan struct{})
+	go func() {
+		defer close(streamDone)
+		_ = c.runMonitorStream()
+	}()
+	stop := func() {
+		stopMonitorStream()
+		select {
+		case <-streamDone:
+		case <-time.After(3 * time.Second):
+			t.Error("timed out waiting for the monitor stream to end")
+		}
+	}
+
+	isServerData := func(ev *pb.MonitorEvent) bool {
+		switch p := ev.Payload.(type) {
+		case *pb.MonitorEvent_ServerInfo, *pb.MonitorEvent_ServerMetrics:
+			return true
+		case *pb.MonitorEvent_LogEntry:
+			return p.LogEntry.GetSource() == pb.LogSource_LOG_SOURCE_SELF
+		}
+		return false
+	}
+
+	// Phase 1: nothing watched — across many ticks the stream must carry no
+	// server data at all.
+	time.Sleep(500 * time.Millisecond) // >20 ticks
+	backend.mu.Lock()
+	for _, ev := range backend.received {
+		if isServerData(ev) {
+			backend.mu.Unlock()
+			stop()
+			t.Fatalf("server data reached the backend while no app was watched: %+v", ev.Payload)
+		}
+	}
+	backend.mu.Unlock()
+
+	// Phase 2: opt in (as `phelix watch` does from another process) — the
+	// next tick must deliver the deferred ServerInfo, server metrics, and
+	// self logs.
+	stub.setWatching(watchedAppID, true)
+	if ev := backend.eventsWithPayload(func(ev *pb.MonitorEvent) bool {
+		_, ok := ev.Payload.(*pb.MonitorEvent_ServerInfo)
+		return ok
+	}, 3*time.Second); ev == nil {
+		stop()
+		t.Fatal("timed out waiting for the deferred ServerInfo after watching was enabled")
+	}
+	if ev := backend.eventsWithPayload(func(ev *pb.MonitorEvent) bool {
+		_, ok := ev.Payload.(*pb.MonitorEvent_ServerMetrics)
+		return ok
+	}, 3*time.Second); ev == nil {
+		stop()
+		t.Fatal("timed out waiting for server metrics after watching was enabled")
+	}
+	if ev := backend.eventsWithPayload(func(ev *pb.MonitorEvent) bool {
+		e, ok := ev.Payload.(*pb.MonitorEvent_LogEntry)
+		return ok && e.LogEntry.GetSource() == pb.LogSource_LOG_SOURCE_SELF
+	}, 3*time.Second); ev == nil {
+		stop()
+		t.Fatal("timed out waiting for self logs after watching was enabled")
+	}
+	stop()
+}
+
+// metadataCallRecorder counts SyncMetadata calls.
+type metadataCallRecorder struct {
+	pb.UnimplementedPhelixServiceServer
+	mu    sync.Mutex
+	calls int
+}
+
+func (b *metadataCallRecorder) SyncMetadata(context.Context, *pb.CLIMetadata) (*pb.MetadataResponse, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls++
+	return &pb.MetadataResponse{Accepted: true}, nil
+}
+
+func (b *metadataCallRecorder) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+// Agent metadata is server-level data: with nothing watched the sync must
+// not touch the backend at all, and it must resume on the next sync after an
+// opt-in.
+func TestSendMetadataOnce_RequiresAnyWatched(t *testing.T) {
+	setupTestSession(t)
+
+	stub := newWatchingGateStub()
+	stub.setWatching(watchedAppID, false)
+	origMgr := app.Manager
+	app.Manager = stub
+	t.Cleanup(func() { app.Manager = origMgr })
+
+	backend := &metadataCallRecorder{}
+	c, _, cleanup := dialBufconn(t, backend)
+	defer cleanup()
+
+	c.sendMetadataOnce()
+	c.sendMetadataOnce()
+	if n := backend.callCount(); n != 0 {
+		t.Fatalf("metadata sync hit the backend %d time(s) with no watched apps, want 0", n)
+	}
+
+	stub.setWatching(watchedAppID, true)
+	c.sendMetadataOnce()
+	if n := backend.callCount(); n != 1 {
+		t.Fatalf("metadata sync after opt-in: %d call(s), want 1", n)
 	}
 }

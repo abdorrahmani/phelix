@@ -142,6 +142,11 @@ func (b *fakeMonitorBackend) eventsWithPayload(match func(*pb.MonitorEvent) bool
 func TestMonitorStream_SendsServerInfoAndMetrics(t *testing.T) {
 	setupTestSession(t)
 
+	// Server-level data (ServerInfo, server metrics) flows only while at
+	// least one app is watched — the real app.Manager has no watched apps in
+	// the test environment, so stub one in.
+	watchOneApp(t)
+
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 20 * time.Millisecond
 	defer func() { monitorMetricsInterval = origInterval }()
@@ -224,6 +229,7 @@ func TestMonitorStream_SendsServerInfoAndMetrics(t *testing.T) {
 
 func TestMonitorStream_HandlesBackendCommand(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 200 * time.Millisecond // slow enough to not interfere
@@ -332,6 +338,7 @@ func TestMonitorStream_HandlesBackendCommand(t *testing.T) {
 
 func TestMonitorStream_RespondsToPing(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 200 * time.Millisecond

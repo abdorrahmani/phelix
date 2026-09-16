@@ -1,8 +1,12 @@
 package project
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // The top-level watching key accepts exactly enable/disable; anything else
@@ -66,6 +70,21 @@ func TestWatchingSetting(t *testing.T) {
 	}
 }
 
+// A nil *Config means no phelix.yaml was loaded (loadProjectConfig returns
+// (nil, nil) for a missing file). WatchingSetting must report the key as
+// absent instead of panicking — `phelix build` in a config-less directory
+// calls it on every run.
+func TestWatchingSettingNilConfig(t *testing.T) {
+	var cfg *Config
+	enabled, ok := cfg.WatchingSetting()
+	if ok {
+		t.Fatal("nil config must report the watching key as absent")
+	}
+	if enabled {
+		t.Fatal("nil config must not report watching as enabled")
+	}
+}
+
 // A saved watching value must round-trip through Save/Load — `phelix init`
 // writes the disable default and later matrix-init merges must not lose it.
 func TestWatchingRoundTrip(t *testing.T) {
@@ -84,4 +103,80 @@ func TestWatchingRoundTrip(t *testing.T) {
 	if _, ok := got.WatchingSetting(); !ok {
 		t.Fatal("saved disable must round-trip as a present key")
 	}
+}
+
+// SetWatching is the yaml half of `phelix watch`: it must replace (or append)
+// only the watching value, preserving every other key and comment, and must
+// never create or corrupt the file.
+func TestSetWatching(t *testing.T) {
+	const initStyle = `# Phelix project configuration.
+name: api
+port: 3000
+watching: disable
+`
+	t.Run("replaces existing key and preserves the rest", func(t *testing.T) {
+		dir := write(t, initStyle)
+		if err := SetWatching(dir, true); err != nil {
+			t.Fatalf("SetWatching(enable): %v", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, FileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(raw)
+		for _, want := range []string{"# Phelix project configuration.", "name: api", "port: 3000", "watching: enable"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("updated yaml missing %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "disable") {
+			t.Fatalf("old watching value survived:\n%s", got)
+		}
+		cfg, err := Load(dir)
+		if err != nil {
+			t.Fatalf("Load after SetWatching: %v", err)
+		}
+		if enabled, ok := cfg.WatchingSetting(); !ok || !enabled {
+			t.Fatalf("round-trip WatchingSetting = (%v, %v), want (true, true)", enabled, ok)
+		}
+	})
+
+	t.Run("appends when the key is absent", func(t *testing.T) {
+		dir := write(t, "name: api\nport: 3000\n")
+		if err := SetWatching(dir, false); err != nil {
+			t.Fatalf("SetWatching(disable): %v", err)
+		}
+		cfg, err := Load(dir)
+		if err != nil {
+			t.Fatalf("Load after SetWatching: %v", err)
+		}
+		if enabled, ok := cfg.WatchingSetting(); !ok || enabled {
+			t.Fatalf("round-trip WatchingSetting = (%v, %v), want (false, true)", enabled, ok)
+		}
+	})
+
+	t.Run("missing file is reported, never created", func(t *testing.T) {
+		dir := t.TempDir()
+		err := SetWatching(dir, true)
+		if phelixerr.CodeOf(err) != phelixerr.CodeNotFound {
+			t.Fatalf("SetWatching on missing file = %v, want CodeNotFound", err)
+		}
+		if _, serr := os.Stat(filepath.Join(dir, FileName)); !os.IsNotExist(serr) {
+			t.Fatal("SetWatching created a phelix.yaml; that is phelix init's job")
+		}
+	})
+
+	t.Run("malformed file is an error and is left unmodified", func(t *testing.T) {
+		const broken = "name: api\n\twatching: [oops\n"
+		dir := write(t, broken)
+		before, _ := os.ReadFile(filepath.Join(dir, FileName))
+		err := SetWatching(dir, true)
+		if phelixerr.CodeOf(err) != phelixerr.CodeConfiguration {
+			t.Fatalf("SetWatching on malformed file = %v, want CodeConfiguration", err)
+		}
+		after, _ := os.ReadFile(filepath.Join(dir, FileName))
+		if string(before) != string(after) {
+			t.Fatal("malformed phelix.yaml was modified despite the error")
+		}
+	})
 }

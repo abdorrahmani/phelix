@@ -34,3 +34,22 @@ func IsWatched(appID, appName string) bool {
 	}
 	return true
 }
+
+// AnyWatched reports whether at least one registered application is watched.
+// It is the gate for server-level reporting — server identity, server
+// metrics, self logs, agent metadata: the server transmits its own data to
+// the backend only while it has at least one watched app to report alongside.
+// A server whose every app has opted out sends no server data either.
+//
+// Like IsWatched it reads the persisted state through
+// Manager.ListApplications(), so a `phelix watch` toggle written by another
+// process takes effect on the monitor daemon's next reporting tick without a
+// restart.
+func AnyWatched() bool {
+	for _, a := range Manager.ListApplications() {
+		if a.Watching {
+			return true
+		}
+	}
+	return false
+}

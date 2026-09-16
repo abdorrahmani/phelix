@@ -119,6 +119,12 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 // created disabled. A file without the key (older projects) leaves the
 // persisted flag untouched, which for a new app means the disabled default.
 func syncProjectWatching(cfg *project.Config, appID string) error {
+	// No phelix.yaml (loadProjectConfig's nil, nil for a missing file):
+	// nothing to apply. Watching must never affect the build itself, so this
+	// is a silent no-op, exactly like the health sync's nil guard.
+	if cfg == nil {
+		return nil
+	}
 	enabled, ok := cfg.WatchingSetting()
 	if !ok {
 		return nil

@@ -354,6 +354,14 @@ func (c *Client) sendMetadataOnce() {
 		return
 	}
 
+	// Server-level data follows the watching opt-in (app.AnyWatched): with
+	// no watched app the agent transmits nothing about itself — not even
+	// presence/heartbeat metadata. The sync resumes on the next tick after a
+	// `phelix watch` opt-in.
+	if !app.AnyWatched() {
+		return
+	}
+
 	// E2: while parked by the backend's failed-auth budget, skip the sync —
 	// each attempt is rejected before validation but still costs a round
 	// trip, and the budget message already told us the window.

@@ -2,6 +2,8 @@ package project
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -141,8 +143,13 @@ const (
 // WatchingSetting reports the watching state declared in phelix.yaml. ok is
 // false when the key is absent, in which case callers must leave the app's
 // persisted flag untouched (older projects predate the key; the persisted
-// default — disabled — already applies to them).
+// default — disabled — already applies to them). A nil Config (no phelix.yaml
+// was loaded) is the same absence, reported safely: loadProjectConfig returns
+// (nil, nil) for a missing file, and a build must never crash on it.
 func (c *Config) WatchingSetting() (enabled, ok bool) {
+	if c == nil {
+		return false, false
+	}
 	switch c.Watching {
 	case WatchingEnable:
 		return true, true
@@ -150,6 +157,74 @@ func (c *Config) WatchingSetting() (enabled, ok bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// SetWatching writes the watching key into dir/phelix.yaml so the project
+// file reflects a `phelix watch` toggle: the next build/rebuild converges on
+// the yaml (syncProjectWatching), which would otherwise silently revert the
+// runtime toggle.
+//
+// The existing document is edited as a yaml.Node — only the `watching` value
+// is replaced (or the key appended); every other key, comment, and the file's
+// formatting survive, exactly like SaveMatrixConfig. A missing file is
+// reported as CodeNotFound and never created — creating a project config is
+// `phelix init`'s job, not a runtime toggle's. A malformed file is an error
+// and is never modified.
+func SetWatching(dir string, enabled bool) error {
+	path := filepath.Join(dir, FileName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return phelixerr.Newf(phelixerr.CodeNotFound, "%s not found in %s", FileName, dir)
+		}
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
+	}
+
+	var doc yaml.Node
+	if uerr := yaml.Unmarshal(raw, &doc); uerr != nil {
+		return phelixerr.Wrapf(phelixerr.CodeConfiguration, uerr, "%s is malformed; not modifying it", path)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return phelixerr.Newf(phelixerr.CodeConfiguration, "%s is malformed: top level is not a mapping; not modifying it", path)
+	}
+	root := doc.Content[0]
+
+	value := WatchingDisable
+	if enabled {
+		value = WatchingEnable
+	}
+	newValue := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+
+	replaced := false
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Kind == yaml.ScalarNode && root.Content[i].Value == "watching" {
+			// Keep the key node (its comments survive); swap only the value.
+			*root.Content[i+1] = *newValue
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "watching"}
+		root.Content = append(root.Content, key, newValue)
+	}
+
+	// Marshal the document node (not the root mapping): the file's leading
+	// comments live on the document node and would be dropped otherwise.
+	// Indent 2 keeps the common phelix.yaml style.
+	var buf strings.Builder
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if eerr := enc.Encode(&doc); eerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", eerr)
+	}
+	if cerr := enc.Close(); cerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
+	}
+	if werr := os.WriteFile(path, []byte(buf.String()), 0o644); werr != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, werr, "failed to write %s", path)
+	}
+	return nil
 }
 
 // SupportedHealthModes mirrors health.DeployTierMode values.

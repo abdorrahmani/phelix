@@ -336,6 +336,7 @@ func startMatrixTestStream(t *testing.T, b *fakeMonitorBackend, c *Client) (stop
 
 func TestMonitorStream_MatrixCommandAsyncAndIdempotent(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	// The matrix ledger must be anchored at the isolated data dir for this
@@ -430,6 +431,7 @@ func TestMonitorStream_MatrixCommandAsyncAndIdempotent(t *testing.T) {
 
 func TestMonitorStream_MatrixStatusSynchronous(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	origLedger := matrixResults
@@ -485,6 +487,7 @@ func TestMonitorStream_MatrixStatusSynchronous(t *testing.T) {
 
 func TestMonitorStream_MatrixValidationErrors(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	origLedger := matrixResults
@@ -547,6 +550,7 @@ func seedActiveMatrixRun(t *testing.T, id string) *matrix.Run {
 
 func TestMonitorStream_MatrixSnapshotResync(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	origInterval := monitorMetricsInterval

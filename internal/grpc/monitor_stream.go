@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
@@ -40,6 +41,16 @@ const monitorStreamRetryDelay = 2 * time.Second
 // shorten it.
 var monitorStreamNoSessionDelay = 15 * time.Second
 
+// monitorStreamNoWatchDelay is how long the stream loop parks between checks
+// when no application is watched. Server-level stream payloads — ServerInfo
+// first, which binds the stream to this server's identity — flow only while
+// at least one app is watched (app.AnyWatched); with none, an open stream
+// would stay unbound and be reaped by the backend's 2-minute pre-bind window
+// (E5), so the loop parks instead of churning connections. The first
+// `phelix watch` opt-in re-opens the stream within one delay. It is a var
+// (not a const) so tests can shorten it.
+var monitorStreamNoWatchDelay = 5 * time.Second
+
 const maxRemoteVerifyDurationMS = int64((30 * time.Minute) / time.Millisecond)
 
 // monitorStreamManager owns the single, long-lived MonitorStream and
@@ -55,6 +66,14 @@ type monitorStreamManager struct {
 
 	pausedMu sync.Mutex
 	paused   bool
+
+	// serverInfoSent is per-stream bookkeeping for the ServerInfo snapshot:
+	// set once the identity has been delivered on the current stream, reset
+	// when a new stream opens. ServerInfo is static identity data sent once
+	// per connection — but only while at least one app is watched (see
+	// app.AnyWatched); a stream that opens with nothing watched defers the
+	// snapshot until the first watched app appears.
+	serverInfoSent bool
 }
 
 // The MonitorStream compiled into this build (metrics, logs, ServerInfo,
@@ -226,6 +245,19 @@ func (c *Client) monitorStreamLoop() {
 			continue
 		}
 
+		// Server data — starting with the ServerInfo snapshot that binds the
+		// stream — flows only while at least one app is watched. With nothing
+		// watched an open stream has nothing to say and never binds, so park
+		// (like the no-session case) rather than open-and-be-reaped.
+		if !app.AnyWatched() {
+			select {
+			case <-c.done:
+				return
+			case <-time.After(monitorStreamNoWatchDelay):
+			}
+			continue
+		}
+
 		if err := c.runMonitorStream(); err != nil {
 			if isAuthRejection(err) {
 				logs.ErrorFile("grpc", "[gRPC Monitor] backend rejected credentials on monitor stream: %v", err)
@@ -294,6 +326,7 @@ func (c *Client) runMonitorStream() error {
 	monitorStream.mu.Lock()
 	monitorStream.stream = stream
 	monitorStream.cancel = cancel
+	monitorStream.serverInfoSent = false
 	monitorStream.mu.Unlock()
 
 	defer func() {
@@ -328,7 +361,9 @@ func (c *Client) runMonitorStream() error {
 	}
 
 	// Send server identity once per (re)connection, mirroring the legacy
-	// WebSocket "servers" message sent on connect/reconnect.
+	// WebSocket "servers" message sent on connect/reconnect — but only while
+	// at least one app is watched (see sendMonitorServerInfo); with nothing
+	// watched the snapshot is deferred to the first tick after opting in.
 	if err := c.sendMonitorServerInfo(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
@@ -610,7 +645,20 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 
 // sendMonitorServerInfo sends the ServerInfo snapshot once per stream
 // (re)connection, mirroring the legacy "servers" WebSocket message.
+//
+// Server-level data follows the watching opt-in (app.AnyWatched): with no
+// watched app there is nothing for the backend to attribute the server to,
+// so its identity is not sent either. A stream that opened in that state
+// keeps this call as a deferred retry — the metrics tick (sendMonitorTick)
+// invokes it until watching is enabled, and the once-per-stream flag below
+// prevents duplicates once it has been delivered.
 func (c *Client) sendMonitorServerInfo() error {
+	if !app.AnyWatched() {
+		return nil
+	}
+	if monitorStream.serverInfoSentOnStream() {
+		return nil
+	}
 	info := server.GetServerInfo()
 	if info == nil {
 		return phelixerr.New(phelixerr.CodeServer, "server info not initialized")
@@ -622,29 +670,65 @@ func (c *Client) sendMonitorServerInfo() error {
 			ServerInfo: toProtoServerInfo(info),
 		},
 	}
-	return monitorStream.send(event)
+	if err := monitorStream.send(event); err != nil {
+		return err
+	}
+	monitorStream.markServerInfoSent()
+	return nil
+}
+
+// serverInfoSentOnStream reports whether the ServerInfo snapshot has already
+// been delivered on the currently installed stream.
+func (s *monitorStreamManager) serverInfoSentOnStream() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serverInfoSent
+}
+
+// markServerInfoSent records that the ServerInfo snapshot was delivered on
+// the current stream.
+func (s *monitorStreamManager) markServerInfoSent() {
+	s.mu.Lock()
+	s.serverInfoSent = true
+	s.mu.Unlock()
 }
 
 // sendMonitorTick sends one full snapshot of server metrics, per-app
 // resource usage, per-app details, and logs — mirroring the legacy
 // WebSocket sendMetrics() tick (server_metrics + metrics + apps + app_logs +
 // self_logs), sent every monitorMetricsInterval.
+//
+// Server-level data follows the watching opt-in (app.AnyWatched): a server
+// whose every app has opted out of monitoring transmits nothing about itself
+// — no server metrics, no self logs. The ServerInfo send inside the gate is
+// the deferred half of the once-per-stream identity snapshot, so a stream
+// that opened while nothing was watched delivers it on the first tick after
+// a `phelix watch` opt-in, in time to attribute the metrics that start
+// flowing. Per-app payloads are filtered by watching at the collection
+// boundary (monitor.MetricsCollector).
 func (c *Client) sendMonitorTick() {
 	serverID := server.GetServerID()
 
-	if metrics, err := monitorStream.metricsCollector.CollectServerMetrics(); err != nil {
-		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect server metrics: %v", err)
-	} else {
-		event := &pb.MonitorEvent{
-			ServerId:  serverID,
-			Timestamp: time.Now().UnixMilli(),
-			Payload: &pb.MonitorEvent_ServerMetrics{
-				ServerMetrics: toProtoServerMetrics(metrics),
-			},
+	anyWatched := app.AnyWatched()
+	if anyWatched {
+		if err := c.sendMonitorServerInfo(); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 		}
-		if err := monitorStream.send(event); err != nil {
-			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server metrics: %v", err)
-			return
+
+		if metrics, err := monitorStream.metricsCollector.CollectServerMetrics(); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect server metrics: %v", err)
+		} else {
+			event := &pb.MonitorEvent{
+				ServerId:  serverID,
+				Timestamp: time.Now().UnixMilli(),
+				Payload: &pb.MonitorEvent_ServerMetrics{
+					ServerMetrics: toProtoServerMetrics(metrics),
+				},
+			}
+			if err := monitorStream.send(event); err != nil {
+				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server metrics: %v", err)
+				return
+			}
 		}
 	}
 
@@ -694,6 +778,12 @@ func (c *Client) sendMonitorTick() {
 		}
 	}
 
+	// Self logs are the daemon's own server-level data: they ride the same
+	// any-watched gate as the server metrics above rather than the per-app
+	// collection filters.
+	if !anyWatched {
+		return
+	}
 	if entries, err := monitorStream.metricsCollector.CollectSelfLogs(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect self logs: %v", err)
 	} else {

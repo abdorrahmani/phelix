@@ -123,6 +123,10 @@ func (b *metadataBudgetBackend) SyncMetadata(context.Context, *pb.CLIMetadata) (
 func TestMetadataSync_ParksOnAuthBudget(t *testing.T) {
 	setupTestSession(t)
 
+	// Metadata is server-level data and flows only while at least one app is
+	// watched; the gate must be open for the budget behavior to be exercised.
+	watchOneApp(t)
+
 	// Shorten the budget window for the test (the production value is 5m;
 	// the setter restores it).
 	setRateLimitBackoffsForTest(t, 80*time.Millisecond, 30*time.Second, 60*time.Second)
@@ -295,6 +299,7 @@ func (b *rateBudgetBackend) MonitorStream(stream pb.PhelixService_MonitorStreamS
 // the window elapses.
 func TestMonitorStreamLoop_BackoffsOnRateBudget(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	swapMonitorStreamDeps(t, fakeMetricsCollector{}, &fakeCommandExecutor{})
 
 	// Budget window of 250ms for the test; the production value (30s) is
@@ -351,6 +356,7 @@ func (b *capBackend) MonitorStream(pb.PhelixService_MonitorStreamServer) error {
 // far longer than the normal 2s cadence (shortened to 300ms for the test).
 func TestMonitorStreamLoop_CapErrorSurfacesWithoutStorm(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	swapMonitorStreamDeps(t, fakeMetricsCollector{}, &fakeCommandExecutor{})
 
 	setRateLimitBackoffsForTest(t, 5*time.Minute, 30*time.Second, 300*time.Millisecond)
@@ -405,6 +411,7 @@ func (b *idleTimeoutBackend) MonitorStream(stream pb.PhelixService_MonitorStream
 // (short) cadence rather than a budget pause.
 func TestMonitorStreamLoop_IdleTimeoutReconnectsNormally(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	swapMonitorStreamDeps(t, fakeMetricsCollector{}, &fakeCommandExecutor{})
 
 	// Make budget windows long so a (wrong) budget classification would be
@@ -676,6 +683,7 @@ func TestPreferredSessionScope(t *testing.T) {
 // nothing within that window is reaped).
 func TestMonitorStream_FirstEventIsPrompt(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	swapMonitorStreamDeps(t, fakeMetricsCollector{}, &fakeCommandExecutor{})
 
 	backend := newFakeMonitorBackend()

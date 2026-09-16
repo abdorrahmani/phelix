@@ -166,6 +166,7 @@ func swapMonitorStreamDeps(t *testing.T, collector monitor.MetricsCollector, exe
 // arrives with the credential material masked.
 func TestMonitorStream_RedactsStreamedLogs(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 20 * time.Millisecond
@@ -232,6 +233,7 @@ func TestMonitorStream_RedactsStreamedLogs(t *testing.T) {
 // Unauthenticated exactly once before the client tears itself down.
 func TestMonitorStreamLoop_StopsOnAuthRejection(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 
 	prevState := connstate.Get()
 	t.Cleanup(func() { connstate.Set(prevState) })
@@ -330,6 +332,7 @@ func (b *agentAuthRejectingBackend) attemptCount() int {
 // stream) as soon as 'phelix auth login' writes one.
 func TestMonitorStreamLoop_ParksWithoutSession(t *testing.T) {
 	setupTestSession(t)
+	watchOneApp(t)
 	removeTestSessionFile(t)
 
 	origDelay := monitorStreamNoSessionDelay
