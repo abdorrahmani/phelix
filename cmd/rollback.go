@@ -540,7 +540,7 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, targ
 		PublicPort:             publicPort,
 		ExpectedCurrentVersion: currentVer,
 		TargetVersion:          target,
-		Launcher:               deploy.DefaultLauncher,
+		Launcher:               deploy.LauncherForApp(appName),
 		ProxyClient:            proxyClient,
 		HealthProvider:         deploy.DefaultHealthProvider(),
 		Logger:                 &colorLogger{},

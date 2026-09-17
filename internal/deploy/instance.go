@@ -13,7 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -105,7 +107,22 @@ type InstanceLauncher func(ctx context.Context, binaryPath string, env []string)
 // Stdout/stderr are redirected to a per-instance log under ~/.phelix/logs so
 // the CLI terminal is not polluted by the app's output (or by cobra help if
 // the binary happens to be a CLI that exits without a subcommand).
-func DefaultLauncher(_ context.Context, binaryPath string, env []string) (Process, int, error) {
+func DefaultLauncher(ctx context.Context, binaryPath string, env []string) (Process, int, error) {
+	return launchInstance(ctx, binaryPath, env, resources.Config{})
+}
+
+// LauncherForApp reads current runtime policy, never the version's artifact state.
+func LauncherForApp(appName string) InstanceLauncher {
+	return func(ctx context.Context, binaryPath string, env []string) (Process, int, error) {
+		cfg, err := app.LoadResources(appName)
+		if err != nil {
+			return nil, 0, phelixerr.Wrap(phelixerr.CodeConfiguration, "deploy: load resource limits", err)
+		}
+		return launchInstance(ctx, binaryPath, env, cfg)
+	}
+}
+
+func launchInstance(_ context.Context, binaryPath string, env []string, cfg resources.Config) (Process, int, error) {
 	if binaryPath == "" {
 		return nil, 0, phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: binary path is empty")
 	}
@@ -135,7 +152,7 @@ func DefaultLauncher(_ context.Context, binaryPath string, env []string) (Proces
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
-	if err := cmd.Start(); err != nil {
+	if err := resources.Start(cmd, cfg); err != nil {
 		_ = logFile.Close()
 		return nil, 0, phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "deploy: start instance")
 	}

@@ -12,6 +12,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/port"
+	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -80,7 +81,7 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 	envVars = append(envVars, fmt.Sprintf("PORT=%d", portNum))
 	cmd.Env = envVars
 
-	if err := cmd.Start(); err != nil {
+	if err := resources.Start(cmd, app.Resources); err != nil {
 		f.Close()
 		return phelixerr.Wrapf(
 			phelixerr.CodeProcessFailed,

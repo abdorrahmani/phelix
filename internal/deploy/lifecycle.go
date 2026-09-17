@@ -293,7 +293,7 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 
 // StartOptions configures StartDeployment.
 type StartOptions struct {
-	// Launcher starts an instance; DefaultLauncher is used when nil.
+	// Launcher starts an instance; current app resource policy is used when nil.
 	Launcher InstanceLauncher
 	// ListenTimeout bounds the wait for a restored instance to bind its
 	// internal port. Defaults to 10s.
@@ -313,7 +313,7 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: start requires app state")
 	}
 	if opts.Launcher == nil {
-		opts.Launcher = DefaultLauncher
+		opts.Launcher = LauncherForApp(state.AppName)
 	}
 	if opts.ListenTimeout <= 0 {
 		opts.ListenTimeout = 10 * time.Second

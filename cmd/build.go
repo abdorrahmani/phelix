@@ -208,6 +208,9 @@ var BuildCmd = &cobra.Command{
 		if err := createAppEntry(id, name, lang, noUpload); err != nil {
 			return err
 		}
+		if err := syncProjectResources(projCfg, id); err != nil {
+			return err
+		}
 
 		// Apply the watching value declared in phelix.yaml (desired state) to
 		// the app's persisted flag. A file without the key leaves the

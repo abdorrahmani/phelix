@@ -113,6 +113,15 @@ var RebuildCmd = &cobra.Command{
 			}
 		}
 
+		// Resource policy follows this app's source, never the invoking directory.
+		resourceCfg, err := loadProjectConfigFrom(buildSource)
+		if err != nil {
+			return err
+		}
+		if err := syncProjectResources(resourceCfg, appInfo.ID); err != nil {
+			return err
+		}
+
 		name, portToUse := DetermineAppParameters(appInfo, cmd, rebuildPort)
 
 		// Precedence: CLI flag > persisted app port > phelix.yaml. The yaml is
@@ -504,7 +513,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			Plan:           *rolloutPlan,
 			ExtraArgs:      rebuildArgs,
 			Source:         freshSource,
-			Launcher:       deploy.DefaultLauncher,
+			Launcher:       deploy.LauncherForApp(name),
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
@@ -535,7 +544,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			PublicPort:     publicPort,
 			ExtraArgs:      rebuildArgs,
 			Source:         freshSource,
-			Launcher:       deploy.DefaultLauncher,
+			Launcher:       deploy.LauncherForApp(name),
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
@@ -571,7 +580,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		Replicas:       rebuildReplicas,
 		ExtraArgs:      rebuildArgs,
 		Source:         freshSource,
-		Launcher:       deploy.DefaultLauncher,
+		Launcher:       deploy.LauncherForApp(name),
 		ProxyClient:    proxyClient,
 		HealthProvider: healthProvider,
 		Logger:         logger,
@@ -634,7 +643,7 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 		AppName:        name,
 		AppID:          appInfo.ID,
 		PublicPort:     publicPort,
-		Launcher:       deploy.DefaultLauncher,
+		Launcher:       deploy.LauncherForApp(name),
 		ProxyClient:    proxyClient,
 		HealthProvider: healthProvider,
 		Logger:         logger,

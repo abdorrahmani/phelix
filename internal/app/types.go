@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/resources"
 )
 
 // AppManagerInterface defines the contract for application management
@@ -54,6 +56,9 @@ type AppInfo struct {
 	// local functionality untouched. Server-level monitoring is unaffected.
 	// Persisted in apps.json as "watching"; toggled with `phelix watch`.
 	Watching bool
+
+	// Resources is the per-instance runtime policy, independent of build versions.
+	Resources resources.Config
 
 	// Process holds the process-supervision configuration for this app
 	// (start/stop commands, resource limits, auto-restart policy).

@@ -465,6 +465,61 @@ phelix build --port 8080        # uses port 8080 even though the config says 300
 phelix build my-custom-name     # uses my-custom-name even though the config has a name
 ```
 
+#### Per-instance CPU and memory limits (Linux)
+
+```yaml
+resources:
+  cpu: "500m"
+  memory: "512Mi"
+```
+
+Both fields are optional. CPU accepts millicores (`250m`, `500m`, `1000m`)
+or cores (`0.5`, `1`, `2`), with at most three decimal places. The fixed
+`cpu.max` period is 100000 microseconds: `500m` writes `50000 100000`.
+The kernel's minimum quota requires at least `10m`; smaller values fail
+validation rather than being rounded up. Memory accepts positive integer
+quantities with binary units `Ki`, `Mi`, `Gi`, or `Ti`; `512Mi` writes
+`536870912` to `memory.max`. Zero, negative, malformed, overflowing,
+empty, and unsupported-unit quantities are rejected. CPU is a bandwidth
+ceiling, not CPU affinity or a reserved core.
+
+Each running instance gets its own cgroup, including each replica and both
+old/new instances during a deployment. Descendants inherit that instance's
+limits. An omitted field adds no limit for that resource; omitting the
+section or using `resources: {}` adds no Phelix limits for a new app.
+Host/ancestor cgroup limits still apply.
+
+Build/rebuild saves this policy as current app runtime configuration in
+`apps.json`, separate from versioned artifacts. Subsequent starts, restarts,
+and rollbacks use that current policy; rollback does not restore historical
+resource settings. A rebuild with an existing YAML file but no `resources`
+section clears the saved policy; a missing YAML file leaves it unchanged.
+Changes take effect on newly launched instances, not live processes.
+
+**Host requirements:** Linux cgroups v2, Linux 5.7+ with `clone3` permitted,
+and a writable delegated parent with the requested `cpu`/`memory` controllers
+already enabled in `cgroup.subtree_control`. Set `PHELIX_CGROUP_ROOT` to its
+clean absolute path, or Phelix uses its current cgroup resolved through
+`/proc/self/mountinfo` and `/proc/self/cgroup`. The parent generally must be
+empty to enable domain controllers; the launcher should run in a sibling
+or child cgroup, with the required delegation permissions. Phelix does not
+move the launcher or alter ancestor controller settings. Containers and
+systemd services must supply suitable delegation and syscall permissions.
+
+Phelix configures limits before atomically spawning the process into the
+cgroup (`CLONE_INTO_CGROUP`), so no unrestricted launch window exists.
+Setup or attachment failure aborts launch; it never retries without limits.
+Non-Linux hosts reject configured limits. Apps without limits retain the
+existing process launch path.
+
+A detached cleanup helper waits for the instance cgroup to become empty,
+then removes only that owned leaf. Cleanup covers normal exit, crash, and
+failed startup, remains idempotent, and survives the CLI exiting. Descendants
+keep the cgroup alive until they exit. The helper must not be killed by an
+external supervisor; no reboot recovery or orphan scavenger is provided.
+This phase applies to native app processes, not Docker/Kubernetes workloads
+or build commands, and adds no resource monitoring or OOM classification.
+
 #### Health endpoints
 
 Endpoints declared in `phelix.yaml` are applied to the app's persisted health
