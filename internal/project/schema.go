@@ -34,6 +34,9 @@ type DeployConfig struct {
 	Replicas int    `yaml:"replicas,omitempty"`
 	// Rollout configures canary/progressive deployments.
 	Rollout *RolloutConfig `yaml:"rollout,omitempty"`
+	// Autoscaling configures the rolling-deploy replica autoscaling decision
+	// engine. Optional; apps without the block never autoscale.
+	Autoscaling *AutoscalingConfig `yaml:"autoscaling,omitempty"`
 }
 
 // RolloutConfig is the phelix.yaml shape of a canary/progressive rollout. A
@@ -75,6 +78,131 @@ type RolloutVerificationConfig struct {
 	MaxErrorDelta float64 `yaml:"max_error_delta,omitempty"`
 	// MaxP95Factor bounds the canary p95 latency relative to the baseline's.
 	MaxP95Factor float64 `yaml:"max_p95_factor,omitempty"`
+}
+
+// AutoscalingConfig is the phelix.yaml shape of deploy.autoscaling, the
+// rolling-deploy replica autoscaling block. Phase 1 only loads, validates and
+// resolves it: the decision engine (internal/deploy/autoscale.go) consumes the
+// resolved AutoscaleSettings, and nothing executes scaling decisions yet.
+type AutoscalingConfig struct {
+	Enabled           bool                    `yaml:"enabled,omitempty"`
+	MinReplicas       int                     `yaml:"min_replicas,omitempty"`
+	MaxReplicas       int                     `yaml:"max_replicas,omitempty"`
+	Interval          string                  `yaml:"interval,omitempty"`
+	Cooldown          string                  `yaml:"cooldown,omitempty"`
+	CPU               *AutoscaleCPUConfig     `yaml:"cpu,omitempty"`
+	Latency           *AutoscaleLatencyConfig `yaml:"latency,omitempty"`
+	EvaluationWindows int                     `yaml:"evaluation_windows,omitempty"`
+}
+
+// AutoscaleCPUConfig holds the CPU thresholds in percent. Zero means unset.
+type AutoscaleCPUConfig struct {
+	ScaleUp   float64 `yaml:"scale_up,omitempty"`
+	ScaleDown float64 `yaml:"scale_down,omitempty"`
+}
+
+// AutoscaleLatencyConfig holds the proxy p95 latency thresholds. Empty means
+// unset.
+type AutoscaleLatencyConfig struct {
+	ScaleUpP95   string `yaml:"scale_up_p95,omitempty"`
+	ScaleDownP95 string `yaml:"scale_down_p95,omitempty"`
+}
+
+// Defaults applied by AutoscalingConfig.Resolve for fields left unset (0 or
+// ""). Validation rejects negatives and unparseable values, so those are
+// unambiguous.
+const (
+	DefaultAutoscaleInterval         = 15 * time.Second
+	DefaultAutoscaleCooldown         = 60 * time.Second
+	DefaultAutoscaleCPUUpPercent     = 70.0
+	DefaultAutoscaleCPUDownPercent   = 30.0
+	DefaultAutoscaleP95Up            = 500 * time.Millisecond
+	DefaultAutoscaleP95Down          = 150 * time.Millisecond
+	DefaultAutoscaleEvaluationWindow = 1
+)
+
+// AutoscaleSettings is the autoscaling block fully resolved: defaults applied,
+// durations parsed. It is the input to the deploy package's decision engine
+// (deploy.NewAutoscaler).
+type AutoscaleSettings struct {
+	Enabled           bool
+	MinReplicas       int
+	MaxReplicas       int
+	Interval          time.Duration
+	Cooldown          time.Duration
+	ScaleUpCPU        float64
+	ScaleDownCPU      float64
+	ScaleUpP95        time.Duration
+	ScaleDownP95      time.Duration
+	EvaluationWindows int
+}
+
+// Resolve applies the documented defaults. replicas is deploy.replicas; an
+// unset max_replicas defaults to it so enabling autoscaling alone never
+// widens the replica set beyond what the user declared. Call only on a config
+// that passed validate: unparseable values fall back to defaults here.
+func (a *AutoscalingConfig) Resolve(replicas int) AutoscaleSettings {
+	if a == nil {
+		return AutoscaleSettings{}
+	}
+	s := AutoscaleSettings{Enabled: a.Enabled}
+	s.MinReplicas = a.MinReplicas
+	if s.MinReplicas < 1 {
+		s.MinReplicas = 1
+	}
+	s.MaxReplicas = a.MaxReplicas
+	if s.MaxReplicas < s.MinReplicas {
+		if replicas > s.MinReplicas {
+			s.MaxReplicas = replicas
+		} else {
+			s.MaxReplicas = s.MinReplicas
+		}
+	}
+	s.Interval = positiveDurationOrDefault(a.Interval, DefaultAutoscaleInterval)
+	s.Cooldown = nonNegativeDurationOrDefault(a.Cooldown, DefaultAutoscaleCooldown)
+	s.ScaleUpCPU = DefaultAutoscaleCPUUpPercent
+	s.ScaleDownCPU = DefaultAutoscaleCPUDownPercent
+	if a.CPU != nil {
+		if a.CPU.ScaleUp > 0 {
+			s.ScaleUpCPU = a.CPU.ScaleUp
+		}
+		// ponytail: a literal 0 reads as "unset" and becomes the 30% default;
+		// switch to a pointer field if an "idle-only" scale_down of 0 is ever needed.
+		if a.CPU.ScaleDown > 0 {
+			s.ScaleDownCPU = a.CPU.ScaleDown
+		}
+	}
+	s.ScaleUpP95 = DefaultAutoscaleP95Up
+	s.ScaleDownP95 = DefaultAutoscaleP95Down
+	if a.Latency != nil {
+		if d, err := time.ParseDuration(a.Latency.ScaleUpP95); err == nil && d > 0 {
+			s.ScaleUpP95 = d
+		}
+		if d, err := time.ParseDuration(a.Latency.ScaleDownP95); err == nil && d > 0 {
+			s.ScaleDownP95 = d
+		}
+	}
+	s.EvaluationWindows = DefaultAutoscaleEvaluationWindow
+	if a.EvaluationWindows > 0 {
+		s.EvaluationWindows = a.EvaluationWindows
+	}
+	return s
+}
+
+func positiveDurationOrDefault(value string, def time.Duration) time.Duration {
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
+}
+
+func nonNegativeDurationOrDefault(value string, def time.Duration) time.Duration {
+	d, err := time.ParseDuration(value)
+	if err != nil || d < 0 {
+		return def
+	}
+	return d
 }
 
 // Percent is a YAML percentage that accepts either a bare number (25) or a
@@ -267,6 +395,11 @@ func (c *Config) validate() error {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.strategy: progressive requires a deploy.rollout.steps section\nHint: define at least one canary step and the final 100%% step")
 		}
+		if c.Deploy.Autoscaling != nil {
+			if err := c.Deploy.Autoscaling.validate(s); err != nil {
+				return err
+			}
+		}
 	}
 
 	if c.Health == nil {
@@ -413,4 +546,88 @@ func validateStepDuration(path, value string) error {
 			"configuration error: %s must not be negative, got %s", path, value)
 	}
 	return nil
+}
+
+// validate checks the autoscaling block. Parse and range errors are reported
+// even when the block is disabled so typos surface immediately; the strategy
+// requirement applies only when autoscaling is enabled (a disabled block on a
+// classic deploy is inert, not an error).
+func (a *AutoscalingConfig) validate(strategy string) error {
+	if a == nil {
+		return nil
+	}
+	if a.Enabled && strategy != StrategyRolling {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: deploy.autoscaling requires deploy.strategy: rolling, got %q\nHint: autoscaling manages rolling replicas", strategy)
+	}
+	if a.MinReplicas < 0 {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: invalid deploy.autoscaling.min_replicas %d\nHint: min_replicas must be >= 1", a.MinReplicas)
+	}
+	if a.MaxReplicas < 0 {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: invalid deploy.autoscaling.max_replicas %d\nHint: max_replicas must be >= 1", a.MaxReplicas)
+	}
+	if a.MinReplicas > 0 && a.MaxReplicas > 0 && a.MinReplicas > a.MaxReplicas {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: deploy.autoscaling.min_replicas %d exceeds max_replicas %d", a.MinReplicas, a.MaxReplicas)
+	}
+	if err := validateStepDuration("deploy.autoscaling.interval", a.Interval); err != nil {
+		return err
+	}
+	if err := validateStepDuration("deploy.autoscaling.cooldown", a.Cooldown); err != nil {
+		return err
+	}
+	if a.EvaluationWindows < 0 {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: invalid deploy.autoscaling.evaluation_windows %d\nHint: evaluation_windows must be >= 1", a.EvaluationWindows)
+	}
+	if a.CPU != nil {
+		if a.CPU.ScaleUp < 0 || a.CPU.ScaleUp > 100 {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.cpu.scale_up must be between 0 and 100, got %v", a.CPU.ScaleUp)
+		}
+		if a.CPU.ScaleDown < 0 || a.CPU.ScaleDown > 100 {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.cpu.scale_down must be between 0 and 100, got %v", a.CPU.ScaleDown)
+		}
+		if a.CPU.ScaleUp > 0 && a.CPU.ScaleDown > 0 && a.CPU.ScaleDown >= a.CPU.ScaleUp {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.cpu.scale_down (%v) must be below cpu.scale_up (%v)", a.CPU.ScaleDown, a.CPU.ScaleUp)
+		}
+	}
+	if a.Latency != nil {
+		up, err := parseAutoscaleP95("deploy.autoscaling.latency.scale_up_p95", a.Latency.ScaleUpP95)
+		if err != nil {
+			return err
+		}
+		down, err := parseAutoscaleP95("deploy.autoscaling.latency.scale_down_p95", a.Latency.ScaleDownP95)
+		if err != nil {
+			return err
+		}
+		if up > 0 && down > 0 && down >= up {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.latency.scale_down_p95 (%s) must be below latency.scale_up_p95 (%s)", a.Latency.ScaleDownP95, a.Latency.ScaleUpP95)
+		}
+	}
+	return nil
+}
+
+// parseAutoscaleP95 parses one optional latency threshold: empty means unset
+// (the default applies at Resolve); anything else must parse as a
+// non-negative duration.
+func parseAutoscaleP95(path, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: %s has invalid duration %q\nHint: use a duration like 500ms or 2s", path, value)
+	}
+	if d < 0 {
+		return 0, phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: %s must not be negative, got %s", path, value)
+	}
+	return d, nil
 }
