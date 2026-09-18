@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -219,25 +220,229 @@ func configureGroup(dir *os.File, l Limits) error {
 
 // Start uses CLONE_INTO_CGROUP: the child belongs to the limited cgroup before
 // it can execute or fork. Unsupported kernels/seccomp policies fail closed.
-func Start(cmd *exec.Cmd, cfg Config) error {
+//
+// For a limited launch it returns an Instance tracking handle: the
+// handle keeps the cleanup helper's lease open, so the detached helper removes
+// the cgroup only after the instance's resource events have been observed —
+// explicitly via ResourceOOM/Close, or automatically once the cgroup empties.
+// An unlimited launch (no configured limits) returns a nil handle and never
+// touches cgroups, exactly as in Phase 1.
+func Start(cmd *exec.Cmd, cfg Config) (*Instance, error) {
 	l, err := cfg.Limits()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if cfg.IsZero() {
-		return cmd.Start()
+		return nil, cmd.Start()
 	}
 	g, err := createGroup(l)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer g.close()
 	lease, err := startCleanup(g, cmd.Stderr)
 	if err != nil {
-		return errors.Join(fmt.Errorf("resource limits: start cleanup helper: %w", err), g.remove())
+		err = errors.Join(fmt.Errorf("resource limits: start cleanup helper: %w", err), g.remove())
+		g.close()
+		return nil, err
 	}
-	defer lease.Close()
-	return startInGroup(cmd, g, (*exec.Cmd).Start)
+	// capture the memory.events baseline before launch. The counters
+	// are cumulative per cgroup, so classification must compare across the
+	// instance's lifetime (oom_kill > 0 alone is not evidence of an OOM during
+	// this instance). Requires the memory controller, so only when a memory
+	// limit is configured; the read failing fails closed like the rest of the
+	// launch.
+	base := MemoryEvents{}
+	if l.MemoryBytes != 0 {
+		base, err = readMemoryEvents(g.dir)
+		if err != nil {
+			err = errors.Join(fmt.Errorf("resource limits: capture memory.events baseline: %w", err), g.remove())
+			_ = lease.Close()
+			g.close()
+			return nil, err
+		}
+	}
+	if err := startInGroup(cmd, g, (*exec.Cmd).Start); err != nil {
+		_ = lease.Close()
+		g.close()
+		return nil, err // startInGroup already removed the cgroup
+	}
+	inst := &Instance{
+		g:           g,
+		lease:       lease,
+		base:        base,
+		memCtl:      l.MemoryBytes != 0,
+		cpuCtl:      l.CPUQuota != 0,
+		memoryLimit: cfg.Memory,
+	}
+	inst.watch()
+	return inst, nil
+}
+
+// Instance is the launcher-side tracking handle for one limited instance.
+// It holds the detached cleanup helper's lease: the helper removes the cgroup
+// only after the lease is released, which happens either explicitly through
+// Close or automatically through watch once the cgroup has emptied — strictly
+// after the final memory.events snapshot has been cached, so cleanup can
+// never erase the OOM evidence. Close is required on every exit path the
+// process owner observes; an owner that dies without closing releases the
+// lease through its file descriptors.
+type Instance struct {
+	g     *group
+	lease *os.File
+	// base is the memory.events baseline captured before launch.
+	base MemoryEvents
+	// memCtl/cpuCtl record which controllers are enabled on the instance
+	// cgroup (Phase 1 enables exactly the configured ones); they gate which
+	// control files exist and therefore what can be read.
+	memCtl      bool
+	cpuCtl      bool
+	memoryLimit string
+
+	mu     sync.Mutex
+	final  *MemoryEvents // cached events captured once the cgroup emptied
+	closed bool
+}
+
+// watch mirrors the Phase 1 helper's polling from the launcher side so the
+// cleanup lease is released promptly even when the process owner exits or is
+// orphaned without calling Close (e.g. the CLI process ends, or the daemon
+// reloads state). It releases the lease only after caching the cgroup's final
+// memory.events, which is the Phase 2 cleanup-ordering guarantee.
+func (i *Instance) watch() {
+	go func() {
+		for {
+			// Every cgroup read and the lease release hold the instance lock,
+			// so the watcher can never race Close and use a directory handle
+			// the owner already closed.
+			i.mu.Lock()
+			if i.closed {
+				i.mu.Unlock()
+				return
+			}
+			data, err := readControl(i.g.dir, "cgroup.events")
+			if err != nil {
+				i.mu.Unlock()
+				// Cgroup already removed (helper path) or handles closed by
+				// the owner; nothing left to watch.
+				return
+			}
+			empty, err := unpopulated(data)
+			if err != nil {
+				i.mu.Unlock()
+				return
+			}
+			if !empty {
+				i.mu.Unlock()
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			ev, evErr := readMemoryEvents(i.g.dir)
+			if evErr == nil {
+				i.final = &ev
+			}
+			_ = i.lease.Close()
+			i.mu.Unlock()
+			return
+		}
+	}()
+}
+
+// ResourceOOM reports whether the instance's cgroup experienced a kernel
+// memory OOM kill during its lifetime: memory.events oom_kill increased
+// relative to the pre-launch baseline. It reads the live cgroup while it
+// exists and falls back to the cached snapshot after cleanup; a counter that
+// decreased is never an OOM. (false, nil) means no memory limit was
+// configured or no OOM kill happened; a non-nil error means the evidence was
+// lost — callers must treat that as "not provable", never as OOM.
+func (i *Instance) ResourceOOM() (bool, error) {
+	if !i.memCtl {
+		return false, nil
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.final != nil {
+		return i.final.OOMKill > i.base.OOMKill, nil
+	}
+	if i.closed {
+		return false, fmt.Errorf("resource limits: exit evidence no longer available (instance handle closed)")
+	}
+	ev, err := readMemoryEvents(i.g.dir)
+	if err != nil {
+		return false, fmt.Errorf("resource limits: read memory.events of exited instance: %w", err)
+	}
+	return ev.OOMKill > i.base.OOMKill, nil
+}
+
+// Snapshot reads the instance cgroup's current resource accounting: memory
+// usage, the enforced memory ceiling, cumulative memory events and CPU
+// accounting (only files for enabled controllers). Runtime information for
+// the process owner; monitoring/dashboard exposure is not part of this phase.
+func (i *Instance) Snapshot() (Usage, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.closed {
+		return Usage{}, fmt.Errorf("resource limits: instance handle closed")
+	}
+	var u Usage
+	if i.memCtl {
+		cur, err := readControl(i.g.dir, "memory.current")
+		if err != nil {
+			return u, fmt.Errorf("memory.current: %w", err)
+		}
+		if u.MemoryCurrent, err = parseScalarControl(cur); err != nil {
+			return u, fmt.Errorf("memory.current: %w", err)
+		}
+		max, err := readControl(i.g.dir, "memory.max")
+		if err != nil {
+			return u, fmt.Errorf("memory.max: %w", err)
+		}
+		if u.MemoryMax, err = parseScalarControl(max); err != nil {
+			return u, fmt.Errorf("memory.max: %w", err)
+		}
+		if u.MemoryEvents, err = readMemoryEvents(i.g.dir); err != nil {
+			return u, err
+		}
+	}
+	if i.cpuCtl {
+		data, err := readControl(i.g.dir, "cpu.stat")
+		if err != nil {
+			return u, fmt.Errorf("cpu.stat: %w", err)
+		}
+		if u.CPUStat, err = parseCPUStat(data); err != nil {
+			return u, err
+		}
+	}
+	return u, nil
+}
+
+// MemoryLimit returns the configured memory limit as written in the app
+// configuration (e.g. "512Mi"), for error context.
+func (i *Instance) MemoryLimit() string { return i.memoryLimit }
+
+// Close releases the cleanup lease and the cgroup file handles; the detached
+// helper then removes the cgroup (Phase 1 cleanup). Call after the exit was
+// observed and classified. Safe to call more than once.
+func (i *Instance) Close() error {
+	if i == nil {
+		return nil
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.closed {
+		return nil
+	}
+	i.closed = true
+	_ = i.lease.Close()
+	i.g.close()
+	return nil
+}
+
+func readMemoryEvents(dir *os.File) (MemoryEvents, error) {
+	data, err := readControl(dir, "memory.events")
+	if err != nil {
+		return MemoryEvents{}, fmt.Errorf("memory.events: %w", err)
+	}
+	return parseMemoryEvents(data)
 }
 
 func startInGroup(cmd *exec.Cmd, g *group, spawn func(*exec.Cmd) error) error {

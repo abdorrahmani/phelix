@@ -245,10 +245,17 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		newInst.Status = "failed"
 		newInst.PID = 0
 		bg.storeState(state)
-		return bg.failf(phelixerr.Wrapf(
-			phelixerr.CodeHealthCheckFailed,
-			err,
-			"deploy aborted: new instance unhealthy; active instance untouched",
+		// when the candidate died of its cgroup memory limit, the
+		// deployment error carries the resource-OOM reason (the health-check
+		// detail stays in the chain); the abort itself is unchanged and the
+		// active instance keeps serving.
+		return bg.failf(oomFailure(proc,
+			phelixerr.Wrapf(
+				phelixerr.CodeHealthCheckFailed,
+				err,
+				"deploy aborted: new instance unhealthy; active instance untouched",
+			),
+			"deploy aborted: new instance exceeded its configured memory limit and was killed by the kernel OOM killer; active instance untouched",
 		))
 	}
 	newInst.Status = "running"

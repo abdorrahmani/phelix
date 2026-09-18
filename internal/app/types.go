@@ -22,6 +22,14 @@ type AppManagerInterface interface {
 	RestoreAutoStartApps() (int, error)
 }
 
+// resourceTracker is the subset of the per-instance resource handle
+// (resources.Instance) the app lifecycle needs: exit classification and
+// cleanup-lease release. Tests inject fakes.
+type resourceTracker interface {
+	ResourceOOM() (bool, error)
+	Close() error
+}
+
 // AppInfo represents the state of a single application
 type AppInfo struct {
 	ID          string
@@ -59,6 +67,15 @@ type AppInfo struct {
 
 	// Resources is the per-instance runtime policy, independent of build versions.
 	Resources resources.Config
+
+	// resourceInstance tracks the resource cgroup of the running child
+	// It holds the detached cleanup helper's
+	// lease, so every exit path that observes the process must close it (see
+	// waitAndCloseLog, stopNewlyStarted and the startup-death classification
+	// in startApplicationProcess); a launcher that dies without closing
+	// releases the lease through its file descriptors. Never persisted; nil
+	// for unlimited apps.
+	resourceInstance resourceTracker
 
 	// Process holds the process-supervision configuration for this app
 	// (start/stop commands, resource limits, auto-restart policy).

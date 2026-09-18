@@ -330,9 +330,15 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, storeErr,
 				"replica %s: persist restored old record after unhealthy replacement", key)
 		}
-		return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed,
-			candidateHealthFailure(binaryPath, port, err),
-			"replica %s replacement failed health check; previous instance still serving", key)
+		// when the replacement died of its cgroup memory limit, the
+		// rolling failure carries the resource-OOM reason (the health-check
+		// detail stays in the chain). The recovery is the existing one: the
+		// previous instance is restored and keeps serving.
+		return oomFailure(proc,
+			phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed,
+				candidateHealthFailure(binaryPath, port, err),
+				"replica %s replacement failed health check; previous instance still serving", key),
+			fmt.Sprintf("replica %s replacement exceeded its configured memory limit and was killed by the kernel OOM killer; previous instance still serving", key))
 	}
 
 	// 3. Membership swap FIRST: new instance in, old instance out.

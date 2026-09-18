@@ -81,7 +81,8 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 	envVars = append(envVars, fmt.Sprintf("PORT=%d", portNum))
 	cmd.Env = envVars
 
-	if err := resources.Start(cmd, app.Resources); err != nil {
+	inst, err := resources.Start(cmd, app.Resources)
+	if err != nil {
 		f.Close()
 		return phelixerr.Wrapf(
 			phelixerr.CodeProcessFailed,
@@ -89,6 +90,9 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 			"failed to start application %q (ID: %s)",
 			name, id,
 		)
+	}
+	if inst != nil {
+		app.resourceInstance = inst
 	}
 
 	app.Cmd = cmd
@@ -125,6 +129,12 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 		if !m.isProcessRunning(app.PID) {
 			app.Status = "failed"
 			app.PID = 0
+			// classify a cgroup memory OOM kill before the cleanup
+			// lease is released, so a memory-limit death is not reported as a
+			// generic crash. Every other exit keeps the existing error.
+			if oomErr := app.classifyResourceExit(); oomErr != nil {
+				return oomErr
+			}
 			return phelixerr.Newf(
 				phelixerr.CodeProcessFailed,
 				"application %q (ID: %s) exited immediately after start; see log %s",
@@ -170,6 +180,44 @@ func (m *AppManager) stopNewlyStarted(app *AppInfo) {
 	}
 	app.Status = "failed"
 	app.PID = 0
+	app.closeResourceInstance()
+}
+
+// classifyResourceExit closes the app's resource tracking handle and reports
+// the structured resource-OOM failure when the instance was killed by its
+// cgroup memory limit (memory.events oom_kill increased during its
+// lifetime). It returns nil for every other exit — including when the OOM
+// evidence itself is unreadable — so existing lifecycle behavior is
+// unchanged. The handle is consumed either way.
+func (a *AppInfo) classifyResourceExit() error {
+	inst := a.resourceInstance
+	a.resourceInstance = nil
+	if inst == nil {
+		return nil
+	}
+	oom, err := inst.ResourceOOM()
+	_ = inst.Close()
+	if err != nil || !oom {
+		return nil
+	}
+	limit := ""
+	if a.Resources.Memory != "" {
+		limit = " of " + a.Resources.Memory
+	}
+	return phelixerr.Newf(
+		phelixerr.CodeResourceOOM,
+		"application %q (ID: %s) exceeded its configured memory limit%s and was killed by the kernel OOM killer; see log %s",
+		a.Name, a.ID, limit, a.LogFile,
+	)
+}
+
+// closeResourceInstance releases the cgroup cleanup lease after an exit was
+// observed without classifying it (intentional stop paths).
+func (a *AppInfo) closeResourceInstance() {
+	if a.resourceInstance != nil {
+		_ = a.resourceInstance.Close()
+		a.resourceInstance = nil
+	}
 }
 
 // waitAndCloseLog reaps an exited child process and releases its log file
@@ -180,6 +228,9 @@ func (m *AppManager) waitAndCloseLog(app *AppInfo) {
 	if app.Cmd != nil && app.Cmd.Process != nil {
 		_ = app.Cmd.Wait()
 	}
+	// The child was reaped; its cgroup evidence window is over, so release the
+	// cleanup lease before the log handle.
+	app.closeResourceInstance()
 	if app.logFileHandle != nil {
 		app.logFileHandle.Close()
 		app.logFileHandle = nil

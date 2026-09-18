@@ -518,7 +518,35 @@ failed startup, remains idempotent, and survives the CLI exiting. Descendants
 keep the cgroup alive until they exit. The helper must not be killed by an
 external supervisor; no reboot recovery or orphan scavenger is provided.
 This phase applies to native app processes, not Docker/Kubernetes workloads
-or build commands, and adds no resource monitoring or OOM classification.
+or build commands, and adds no resource monitoring dashboard.
+
+Memory-limit violations are detected through the instance cgroup's cgroup-v2
+`memory.events` counters: an instance is classified as **resource OOM** when
+`oom_kill` increases during its lifetime, not from the exit status or
+`SIGKILL` alone (a plain `SIGKILL` without a cgroup OOM kill keeps its
+existing meaning). The classification unit is the cgroup, so a killed
+descendant counts even if the main process survives. The launcher captures the
+counter baseline before launch and reads the final counters before the cleanup
+lease is released, so cleanup never erases the evidence. Resource OOM surfaces
+as the structured `RESOURCE_OOM` error — distinct from a generic process
+crash, a non-zero exit, and a failed health check — and carries the configured
+limit and PID in its message. Exits for any other reason (including unreadable
+evidence) keep the existing behavior.
+
+Deployment safety is unchanged in shape: a blue-green candidate that hits its
+memory limit fails its health check and never becomes the serving instance —
+the deployment fails with the resource-OOM reason while the old instance keeps
+serving. A rolling replacement killed by its memory limit is rejected through
+the existing rolling failure/recovery path (previous replica restored and still
+serving) with the resource-OOM reason attached. Rollback semantics are
+untouched: a rollback still uses the current saved resource policy, never the
+target version's historical settings.
+
+Current memory usage (`memory.current`/`memory.max`), memory event counters,
+and CPU accounting (`cpu.stat`) are readable internally by the runtime layer
+for lifecycle classification and future monitoring, but no dashboard, backend
+API, or live resizing exists in this phase; resource configuration changes
+still apply only to newly launched instances.
 
 #### Health endpoints
 

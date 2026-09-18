@@ -188,8 +188,12 @@ func TestUnpopulated(t *testing.T) {
 func TestUnlimitedStartBypassesCgroups(t *testing.T) {
 	t.Setenv("PHELIX_CGROUP_ROOT", "invalid-relative-root")
 	cmd := exec.Command("/bin/sh", "-c", "exit 0")
-	if err := Start(cmd, Config{}); err != nil {
+	inst, err := Start(cmd, Config{})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if inst != nil {
+		t.Fatal("unlimited launch returned a tracking handle")
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)

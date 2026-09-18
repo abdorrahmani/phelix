@@ -74,6 +74,13 @@ const (
 	// Process / OS.
 	CodeProcessFailed Code = "PROCESS_FAILED"
 	CodeFilesystem    Code = "FILESYSTEM_ERROR"
+	// CodeResourceOOM: a Phelix instance was killed because the memory limit
+	// of its per-instance cgroup was exceeded — cgroup-v2 memory.events
+	// oom_kill increased during the instance's lifetime. Distinct from
+	// PROCESS_FAILED (generic process exit) and HEALTH_CHECK_FAILED (failed
+	// probe) so automation can tell a resource-limit death from an
+	// application bug or an unresponsive candidate.
+	CodeResourceOOM Code = "RESOURCE_OOM"
 
 	// Docker.
 	CodeDocker                  Code = "DOCKER_ERROR"
