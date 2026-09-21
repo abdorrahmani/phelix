@@ -183,6 +183,10 @@ type Rollout struct {
 	Notifier       Notifier
 	InFlight       InFlightProvider
 	GracePeriod    time.Duration
+	// Runtime records how instances are launched ("native"/"docker"). Persisted
+	// into DeployState so rollback and recovery resolve the matching launcher.
+	// Empty is treated as native.
+	Runtime string
 	// PortHandoff, when set, is invoked right before the first proxy
 	// enrolment if something still owns the public port (a classic instance
 	// from before the app came under the proxy). The CLI wires this to
@@ -252,6 +256,9 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Newf(phelixerr.CodeConfiguration, "rollout: unsupported deploy mode %q for %q", state.Mode, ro.AppName))
 	}
 	state.AppID = ro.AppID
+	if ro.Runtime != "" {
+		state.Runtime = ro.Runtime
+	}
 	ro.Telemetry.Bind(state)
 	ro.Telemetry.SetVersions(activeVersionOf(state, ro.AppName), 0)
 

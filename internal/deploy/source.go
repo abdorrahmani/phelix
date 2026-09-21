@@ -141,6 +141,15 @@ func (f *FreshBuildSource) TargetVersion() int { return f.lastVersion }
 
 // targetVersionFromSource reads the version that should become active after deploy.
 func targetVersionFromSource(src BuildSource) int {
+	return TargetVersionOf(src)
+}
+
+// TargetVersionOf returns the version a source will promote after a successful
+// deploy, or 0 when the source does not know (or has not built yet). Exported
+// so the CLI can read the failed version off whichever BuildSource a deploy
+// used — native (FreshBuildSource) or docker (DockerBuildSource) — without a
+// type switch at the call site.
+func TargetVersionOf(src BuildSource) int {
 	if va, ok := src.(VersionAwareSource); ok {
 		return va.TargetVersion()
 	}

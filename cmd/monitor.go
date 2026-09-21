@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
@@ -243,5 +244,44 @@ func restoreDeployedApps() {
 		if err := runDeployAwareStart(info); err != nil {
 			logs.Warning("monitor", "failed to restore deployment for %s: %v", info.Name, err)
 		}
+	}
+	reconcileOrphanContainers(am)
+}
+
+// reconcileOrphanContainers reclaims phelix.managed containers that no app's
+// deploy state accounts for — the debris a deploy leaves when it crashes after
+// `docker run` but before persisting the new instance. It runs after the
+// deploy-aware restores above so any container a restore just (re)created is in
+// the allow-list. It is a no-op on a pure-native host: with no docker instances
+// recorded, the allow-list is empty and the `docker ps` filter matches nothing
+// (or docker is absent and the listing errors — logged, not fatal).
+func reconcileOrphanContainers(am *app.AppManager) {
+	known := map[string]bool{}
+	anyDocker := false
+	for _, info := range am.Apps {
+		state := loadDeployState(info.Name)
+		if state == nil {
+			continue
+		}
+		if state.Runtime == deploy.RuntimeDocker {
+			anyDocker = true
+		}
+		for _, id := range deploy.KnownContainerIDs(state) {
+			known[id] = true
+		}
+	}
+	// Skip entirely when this host has never run a docker-runtime deploy: no
+	// reason to shell out to docker (which may not even be installed) on a
+	// native-only VPS.
+	if !anyDocker && len(known) == 0 {
+		return
+	}
+	removed, err := deploy.ReconcileOrphanContainers(context.Background(), known)
+	if err != nil {
+		logs.Warning("monitor", "orphan container reconcile skipped: %v", err)
+		return
+	}
+	if len(removed) > 0 {
+		logs.Info("monitor", "reclaimed %d orphaned phelix container(s) left by an interrupted deploy", len(removed))
 	}
 }

@@ -318,6 +318,29 @@ func versionExists(vf *VersionsFile, ver int) bool {
 	return false
 }
 
+// DockerImageForVersion returns the image reference recorded for vN, for
+// container-runtime rollback. It is the image counterpart of VersionPaths: it
+// resolves the DockerImage field instead of an on-disk binary. An error is
+// returned when the version does not exist or was not recorded as a Docker
+// build (no image reference to run).
+func DockerImageForVersion(appName string, ver int) (string, error) {
+	vf, err := LoadVersions(appName)
+	if err != nil {
+		return "", err
+	}
+	for _, v := range vf.Versions {
+		if v.Version == ver {
+			if v.DockerImage == "" {
+				return "", phelixerr.Newf(phelixerr.CodeVersionNotFound,
+					"deploy: version v%d of %q has no docker image (recorded as a native build?)", ver, appName)
+			}
+			return v.DockerImage, nil
+		}
+	}
+	return "", phelixerr.Newf(phelixerr.CodeVersionNotFound,
+		"deploy: version v%d does not exist for %q; available: %s", ver, appName, formatAvailableVersions(vf))
+}
+
 // VersionPaths returns absolute binary and env snapshot paths for vN.
 func VersionPaths(appName string, ver int) (binaryPath, envPath string, err error) {
 	vf, err := LoadVersions(appName)

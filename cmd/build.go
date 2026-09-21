@@ -195,6 +195,13 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 
+		// Docker runtime: the first deploy is a CONTAINER deploy, not a native
+		// classic start. Hand off to the zero-downtime engine (image build →
+		// container → health → proxy enrol); the host toolchain is not needed.
+		if projCfg.DeployRuntime() == project.RuntimeDocker {
+			return runDockerInitialBuild(cmd, projCfg, name, buildPort, currentDir, lang, noUpload)
+		}
+
 		// Check toolchain; prompt to install if missing
 		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
 		if err := toolchain.EnsureTool(lang, Confirm); err != nil {

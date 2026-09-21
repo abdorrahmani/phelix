@@ -473,6 +473,28 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		},
 	}
 
+	// Resolve the launch runtime from the app's own source config (PHELIX_RUNTIME
+	// env → phelix.yaml deploy.runtime → native). Native keeps the existing
+	// binary source+launcher untouched; docker swaps in the image source and the
+	// container launcher — the deploy engines and proxy path are identical.
+	runtimeCfg, _ := loadProjectConfigFrom(buildSource)
+	deployRuntime := runtimeCfg.DeployRuntime()
+	var deploySource deploy.BuildSource = freshSource
+	launcher := deploy.LauncherForApp(name)
+	if deploy.IsDockerRuntime(deployRuntime) {
+		deploySource = &deploy.DockerBuildSource{
+			AppName:   name,
+			AppID:     appInfo.ID,
+			GitCommit: gitCommit,
+			Tag:       rebuildTag,
+			Retention: deploy.DefaultRetention{Max: 5},
+			Logger:    logger,
+			BuildFn:   dockerImageBuilder(buildSource),
+		}
+		launcher = deploy.DockerLauncherForApp(name)
+		logger.Stepf("docker runtime: instances run as containers (one agent, many app containers)")
+	}
+
 	release, err := deploy.AcquireDeployLock(name, "deploy")
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
@@ -512,8 +534,9 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			PublicPort:     publicPort,
 			Plan:           *rolloutPlan,
 			ExtraArgs:      rebuildArgs,
-			Source:         freshSource,
-			Launcher:       deploy.LauncherForApp(name),
+			Source:         deploySource,
+			Launcher:       launcher,
+			Runtime:        deployRuntime,
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
@@ -524,7 +547,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		reconcileAppWithDeploy(name)
 		if err != nil {
 			release()
-			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 				proxyClient, healthProvider, logger, tracker, err)
 		}
 		release()
@@ -532,7 +555,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			color.GreenString("✓"), rolloutPlan.Strategy, color.CyanString("'%s'", name), len(rolloutPlan.Steps))
 		// Build Report + regression analysis (observability only).
 		emitBuildReport(name, lastReport, gitCommit,
-			&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
+			&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		return nil
 	}
@@ -543,8 +566,9 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			AppID:          appInfo.ID,
 			PublicPort:     publicPort,
 			ExtraArgs:      rebuildArgs,
-			Source:         freshSource,
-			Launcher:       deploy.LauncherForApp(name),
+			Source:         deploySource,
+			Launcher:       launcher,
+			Runtime:        deployRuntime,
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
@@ -559,7 +583,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		reconcileAppWithDeploy(name)
 		if err != nil {
 			release()
-			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 				proxyClient, healthProvider, logger, tracker, err)
 		}
 		release()
@@ -567,7 +591,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		// Build Report + regression analysis (observability only; the deploy
 		// outcome above is already committed).
 		emitBuildReport(name, lastReport, gitCommit,
-			&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
+			&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		return nil
 	}
@@ -579,8 +603,9 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		PublicPort:     publicPort,
 		Replicas:       rebuildReplicas,
 		ExtraArgs:      rebuildArgs,
-		Source:         freshSource,
-		Launcher:       deploy.LauncherForApp(name),
+		Source:         deploySource,
+		Launcher:       launcher,
+		Runtime:        deployRuntime,
 		ProxyClient:    proxyClient,
 		HealthProvider: healthProvider,
 		Logger:         logger,
@@ -591,7 +616,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	reconcileAppWithDeploy(name)
 	if err != nil {
 		release()
-		return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, freshSource,
+		return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 			proxyClient, healthProvider, logger, tracker, err)
 	}
 	release()
@@ -599,7 +624,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		color.GreenString("✓"), color.CyanString("'%s'", name), rebuildReplicas)
 	// Build Report + regression analysis (observability only).
 	emitBuildReport(name, lastReport, gitCommit,
-		&deploy.RecordResult{Version: freshSource.TargetVersion()}, nil)
+		&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	return nil
 }
@@ -612,11 +637,10 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 // version must have been recorded (a pure build failure has no version to
 // roll back from).
 func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort int,
-	freshSource *deploy.FreshBuildSource, proxyClient *proxy.Client,
+	failedVer int, launcher deploy.InstanceLauncher, proxyClient *proxy.Client,
 	healthProvider deploy.HealthConfigProvider, logger *colorLogger,
 	tracker *deploy.Tracker, deployErr error) error {
 
-	failedVer := freshSource.TargetVersion()
 	if !rebuildAutoRollback || !deploy.RecoverableDeployFailure(deployErr) {
 		return deployErr
 	}
@@ -643,7 +667,7 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 		AppName:        name,
 		AppID:          appInfo.ID,
 		PublicPort:     publicPort,
-		Launcher:       deploy.LauncherForApp(name),
+		Launcher:       launcher,
 		ProxyClient:    proxyClient,
 		HealthProvider: healthProvider,
 		Logger:         logger,

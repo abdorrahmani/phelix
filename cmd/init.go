@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/builder"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -14,9 +15,10 @@ import (
 )
 
 var (
-	initName string
-	initPort int
-	initYes  bool
+	initName    string
+	initPort    int
+	initRuntime string
+	initYes     bool
 )
 
 // defaultInitPort mirrors the CLI's existing default port so init never has to
@@ -104,6 +106,34 @@ var InitCmd = &cobra.Command{
 			return err
 		}
 
+		runtime := initRuntime
+		if runtime == "" && IsInteractive() && !initYes {
+			picked, err := PromptSelect(
+				"Launch runtime — how should this app's instances run?",
+				[]string{
+					project.RuntimeNative + "  (host process — the model that runs on a bare VPS)",
+					project.RuntimeDocker + "  (container — one Phelix agent on the host manages many app containers)",
+				},
+			)
+			if err != nil {
+				return err
+			}
+			// The label carries a description after the value; keep the value.
+			runtime = strings.Fields(picked)[0]
+		}
+		if runtime == "" {
+			runtime = project.RuntimeNative
+		}
+		if runtime != project.RuntimeNative && runtime != project.RuntimeDocker {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"invalid runtime %q\nHint: expected one of: native, docker", runtime)
+		}
+		cfg.Deploy.Runtime = runtime
+
+		if runtime == project.RuntimeDocker {
+			cfg.Deploy.Strategy = project.StrategyBlueGreen
+		}
+
 		if err := project.Save(dir, cfg); err != nil {
 			return err
 		}
@@ -116,8 +146,14 @@ var InitCmd = &cobra.Command{
 				color.YellowString("⚠"), h.Port, h.File, h.Line)
 		}
 
-		fmt.Printf("%s Created %s (name: %s, port: %d)\n",
-			color.GreenString("✓"), color.CyanString(project.FileName), cfg.Name, cfg.Port)
+		fmt.Printf("%s Created %s (name: %s, port: %d, runtime: %s)\n",
+			color.GreenString("✓"), color.CyanString(project.FileName), cfg.Name, cfg.Port, cfg.Deploy.Runtime)
+		if cfg.Deploy.Runtime == project.RuntimeDocker {
+			fmt.Printf("  %s docker runtime: each instance runs as a container; strategy set to %s (classic is native-only).\n",
+				color.BlueString("→"), cfg.Deploy.Strategy)
+			fmt.Printf("  %s run Phelix on the host (with a reachable Docker daemon), then deploy with %s.\n",
+				color.BlueString("→"), color.CyanString("phelix rebuild "+cfg.Name))
+		}
 		return nil
 	},
 }
@@ -125,6 +161,7 @@ var InitCmd = &cobra.Command{
 func init() {
 	InitCmd.Flags().StringVar(&initName, "name", "", "Application name (defaults to the directory name)")
 	InitCmd.Flags().IntVar(&initPort, "port", 0, "Application port (interactive prompt when unset in a TTY)")
+	InitCmd.Flags().StringVar(&initRuntime, "runtime", "", "Launch runtime: native (host process) or docker (container). Interactive prompt when unset in a TTY; defaults to native")
 	InitCmd.Flags().BoolVar(&initYes, "yes", false, "Overwrite an existing phelix.yaml without prompting")
 }
 

@@ -32,6 +32,14 @@ type HealthConfig struct {
 type DeployConfig struct {
 	Strategy string `yaml:"strategy,omitempty"`
 	Replicas int    `yaml:"replicas,omitempty"`
+	// Runtime selects how instances are launched: "native" (default — exec the
+	// built binary as a host process, the model that runs on a bare VPS) or
+	// "docker" (build an image and run each instance as a container, so one
+	// Phelix agent on the host manages many app containers as one server). The
+	// PHELIX_RUNTIME env var overrides this per invocation. Docker runtime
+	// requires a zero-downtime strategy (blue-green/rolling/canary/progressive);
+	// the classic stop→start path stays native-only.
+	Runtime string `yaml:"runtime,omitempty"`
 	// Rollout configures canary/progressive deployments.
 	Rollout *RolloutConfig `yaml:"rollout,omitempty"`
 	// Autoscaling configures the rolling-deploy replica autoscaling decision
@@ -261,6 +269,19 @@ const (
 	StrategyProgressive = "progressive"
 )
 
+// Supported deploy runtimes. Native execs the built binary as a host process
+// (the model that runs on a bare VPS); docker builds an image and runs each
+// instance as a container so one host-level Phelix agent manages many app
+// containers as a single server.
+const (
+	RuntimeNative = "native"
+	RuntimeDocker = "docker"
+)
+
+var supportedRuntimes = map[string]bool{
+	RuntimeNative: true, RuntimeDocker: true,
+}
+
 // Values of the top-level watching key: enable opts the app into backend
 // monitoring, disable keeps it out. `phelix init` writes the disable default.
 const (
@@ -285,6 +306,31 @@ func (c *Config) WatchingSetting() (enabled, ok bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// DeployRuntime resolves the effective launch runtime for this build/rebuild.
+// Resolution order mirrors the rest of Phelix's config precedence:
+//
+//	PHELIX_RUNTIME env  →  phelix.yaml deploy.runtime  →  native (default)
+//
+// The env override lets an operator flip a single invocation to docker without
+// editing the file (the same shape as PHELIX_MODE/PHELIX_API overrides in
+// config.go). An unrecognized value falls back to native rather than failing —
+// validate() already rejects an invalid deploy.runtime in the file, and an env
+// typo must never silently switch a deploy to a runtime the operator did not
+// mean. A nil Config (no phelix.yaml) resolves to native.
+func (c *Config) DeployRuntime() string {
+	if env := strings.TrimSpace(os.Getenv("PHELIX_RUNTIME")); env != "" {
+		if supportedRuntimes[env] {
+			return env
+		}
+	}
+	if c != nil && c.Deploy != nil {
+		if rt := strings.TrimSpace(c.Deploy.Runtime); supportedRuntimes[rt] {
+			return rt
+		}
+	}
+	return RuntimeNative
 }
 
 // SetWatching writes the watching key into dir/phelix.yaml so the project
@@ -382,6 +428,18 @@ func (c *Config) validate() error {
 		if c.Deploy.Replicas < 0 {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: invalid deploy.replicas %d\nHint: replicas must be >= 1", c.Deploy.Replicas)
+		}
+		if rt := strings.TrimSpace(c.Deploy.Runtime); rt != "" && !supportedRuntimes[rt] {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: invalid deploy.runtime %q\nHint: expected one of: native, docker", c.Deploy.Runtime)
+		}
+		// Docker runtime rides the zero-downtime topology (blue-green/rolling/
+		// canary/progressive). The classic stop→start path is native-only, so a
+		// docker+classic combination is rejected up front rather than silently
+		// falling back to a host process.
+		if strings.TrimSpace(c.Deploy.Runtime) == RuntimeDocker && s == StrategyClassic {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.runtime: docker requires a zero-downtime strategy\nHint: set deploy.strategy to blue-green, rolling, canary, or progressive")
 		}
 		if c.Deploy.Replicas > 0 && s != StrategyRolling {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,

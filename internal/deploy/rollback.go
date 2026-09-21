@@ -159,7 +159,11 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 
 	src := opts.Source
 	if src == nil {
-		src = &ExistingVersionSource{AppName: opts.AppName, Version: opts.TargetVersion}
+		// Resolve the rollback source from the runtime the app was deployed
+		// with (persisted in state): a docker app rolls back to its recorded
+		// image, a native app to its on-disk binary. Defaults to native for
+		// every pre-docker state (Runtime empty).
+		src = RollbackSourceForRuntime(state.Runtime, opts.AppName, opts.AppID, opts.TargetVersion)
 	}
 	toVer, err := resolveRollbackTarget(opts.AppName, opts.TargetVersion, src)
 	if err != nil {
@@ -372,6 +376,13 @@ func resolveRollbackTarget(appName string, requested int, src BuildSource) (int,
 	// Build after history setup. Preserve VERSION_NOT_FOUND for automation.
 	if _, ok := src.(*ExistingVersionSource); ok {
 		if _, _, err := VersionPaths(appName, toVer); err != nil {
+			return 0, err
+		}
+	}
+	// Docker rollback target: the recorded image reference must exist, the
+	// container-runtime analogue of the binary check above.
+	if _, ok := src.(*DockerVersionSource); ok {
+		if _, err := DockerImageForVersion(appName, toVer); err != nil {
 			return 0, err
 		}
 	}

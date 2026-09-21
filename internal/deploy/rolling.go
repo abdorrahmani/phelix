@@ -30,6 +30,10 @@ type Rolling struct {
 	Notifier       Notifier
 	InFlight       InFlightProvider
 	GracePeriod    time.Duration
+	// Runtime records how instances are launched ("native"/"docker"). Persisted
+	// into DeployState so rollback and recovery resolve the matching launcher.
+	// Empty is treated as native.
+	Runtime string
 	// stateStore is a test seam for deterministic persistence-failure coverage.
 	// Production leaves it nil and uses Store.
 	stateStore func(*DeployState) error
@@ -103,6 +107,9 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
+	if r.Runtime != "" {
+		state.Runtime = r.Runtime
+	}
 	r.Telemetry.Bind(state)
 	r.Telemetry.SetVersions(activeVersionOf(state, r.AppName), 0)
 
@@ -289,9 +296,9 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	// Snapshot the complete record; failed candidates must restore every field,
 	// not just PID, or state can claim "failed" while the old instance serves.
 	old := cloneInstance(state.Replicas[key])
-	oldPID, oldBinary := 0, ""
+	oldPID := 0
 	if old != nil {
-		oldPID, oldBinary = old.PID, old.BinaryPath
+		oldPID = old.PID
 	} else {
 		state.Replicas[key] = &Instance{Slot: key, Status: "stopped"}
 	}
@@ -399,7 +406,8 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	// membership and stop the candidate; only drain after a durable commit.
 	candidate := &Instance{
 		Slot: key, PID: newPID, Port: port, BinaryPath: binaryPath,
-		StartedAt: time.Now(), Version: targetVer, Status: "running",
+		ContainerID: containerIDOf(proc),
+		StartedAt:   time.Now(), Version: targetVer, Status: "running",
 	}
 	state.Replicas[key] = candidate
 	if err := r.persist(state); err != nil {
@@ -436,9 +444,9 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	r.Telemetry.SetProxy(r.PublicPort, primary.Label, port, upstreamHosts(primary, backends))
 	r.Telemetry.ReplicaReplaced(index, newPID, port,
 		fmt.Sprintf("proxy primary %s, %d upstream(s)", primary.Label, len(backends)+1))
-	if oldPID > 0 {
+	if old != nil && (oldPID > 0 || old.ContainerID != "") {
 		r.Telemetry.ReplicaDraining(index, oldPID)
-		report := stopByPID(ctx, oldPID, grace, r.inFlight(r.AppName), oldBinary)
+		report := stopInstance(ctx, old, grace, r.inFlight(r.AppName))
 		if report.ForceKilled {
 			log.Warnf("replica %s: old instance (pid %d) ignored SIGTERM; SIGKILL applied", key, oldPID)
 		} else if report.Exited {
@@ -535,11 +543,11 @@ func (r *Rolling) stopSurplusReplicas(ctx context.Context, surplus []*Instance, 
 	}
 	log := r.logger()
 	for _, inst := range surplus {
-		if inst == nil || inst.PID <= 0 {
+		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 			continue
 		}
 		log.Stepf("stopping surplus replica %s (pid %d) removed by shrink", inst.Slot, inst.PID)
-		report := stopByPID(ctx, inst.PID, grace, 0, inst.BinaryPath)
+		report := stopInstance(ctx, inst, grace, 0)
 		if report.ForceKilled {
 			log.Warnf("surplus replica %s ignored SIGTERM; SIGKILL applied", inst.Slot)
 		}

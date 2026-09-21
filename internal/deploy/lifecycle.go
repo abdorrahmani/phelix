@@ -44,13 +44,12 @@ func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.D
 }
 
 // InstanceAlive reports whether inst's recorded process is alive AND still
-// resolves to the binary recorded for it. The executable check is what makes
-// a recycled PID unusable as "the instance is running" evidence.
+// resolves to the identity recorded for it. For native instances the
+// executable check makes a recycled PID unusable as "the instance is running"
+// evidence; for docker instances (ContainerID set) the check routes through
+// Docker and re-verifies the phelix.managed label. See instanceAliveViaRuntime.
 func InstanceAlive(inst *Instance) bool {
-	if inst == nil || inst.PID <= 0 {
-		return false
-	}
-	return findVerifiedProcess(inst.PID, inst.BinaryPath) != nil
+	return instanceAliveViaRuntime(inst)
 }
 
 // ServingInstance returns the instance that should be serving traffic right
