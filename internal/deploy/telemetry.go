@@ -115,6 +115,10 @@ type SlotState struct {
 	Active       bool
 	StartedAt    time.Time
 	HealthyAt    time.Time
+	// Image / ContainerID are set only for docker instances. Empty means the
+	// CLI does not know (native, or a pre-docker record) — never "native".
+	Image       string
+	ContainerID string
 }
 
 // ReplicaState is one rolling replica as recorded in deploy.json.
@@ -128,6 +132,10 @@ type ReplicaState struct {
 	PID          int
 	StartedAt    time.Time
 	HealthyAt    time.Time
+	// Image / ContainerID are set only for docker instances. Empty means the
+	// CLI does not know (native, or a pre-docker record) — never "native".
+	Image       string
+	ContainerID string
 }
 
 // ProxyState is what the deployment knows about the proxy daemon's routing for
@@ -169,6 +177,10 @@ type Snapshot struct {
 	ActiveSlot     string
 	Slots          []SlotState
 	Replicas       []ReplicaState
+
+	// Runtime is how this app launches instances ("native"/"docker"). Empty
+	// means unknown — never assume native.
+	Runtime string
 
 	ReplicasDesired int
 	ReplicasCurrent int
@@ -772,6 +784,7 @@ func (t *Tracker) snapshotLocked() *Snapshot {
 		return s
 	}
 
+	s.Runtime = t.state.Runtime
 	s.ActiveSlot = t.state.ActiveSlot
 	for _, name := range []string{SlotBlue, SlotGreen} {
 		inst := t.state.Slots[name]
@@ -788,6 +801,8 @@ func (t *Tracker) snapshotLocked() *Snapshot {
 			Active:       name == t.state.ActiveSlot,
 			StartedAt:    inst.StartedAt,
 			HealthyAt:    t.healthy[name],
+			Image:        dockerImageOf(inst),
+			ContainerID:  inst.ContainerID,
 		})
 	}
 
@@ -812,6 +827,8 @@ func (t *Tracker) snapshotLocked() *Snapshot {
 			PID:          inst.PID,
 			StartedAt:    inst.StartedAt,
 			HealthyAt:    t.healthy[key],
+			Image:        dockerImageOf(inst),
+			ContainerID:  inst.ContainerID,
 		})
 		// Observed counters only. A replica counts as current when a process is
 		// recorded for it, ready when that process is in rotation, and healthy
@@ -849,6 +866,17 @@ func (t *Tracker) instanceHealthLocked(key string, inst *Instance) string {
 	// A running instance from an earlier deployment: this deployment has no
 	// health evidence for it, and inventing one would be a fabrication.
 	return HealthUnknown
+}
+
+// dockerImageOf returns the container image ref for a docker instance. For
+// docker instances BinaryPath holds the image ref; for native instances it is a
+// filesystem path, which must never leak into the Image field — so the ref is
+// only reported when a ContainerID marks the instance as containerised.
+func dockerImageOf(inst *Instance) string {
+	if inst == nil || inst.ContainerID == "" {
+		return ""
+	}
+	return inst.BinaryPath
 }
 
 // instanceStatus normalises the persisted status, defaulting to "stopped" for

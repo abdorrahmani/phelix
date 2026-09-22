@@ -220,6 +220,47 @@ func TestToProtoDeploymentSnapshot_ZeroTimesStayZero(t *testing.T) {
 	}
 }
 
+func TestToProtoDeploymentSnapshot_DockerRuntimeCarriesImageAndContainer(t *testing.T) {
+	snap := ToProtoDeploymentSnapshot(&deploy.Snapshot{
+		AppName: "billing",
+		Runtime: "docker",
+		Slots: []deploy.SlotState{
+			{Slot: "green", Status: "running", Image: "billing:v3", ContainerID: "c0ffee"},
+		},
+		Replicas: []deploy.ReplicaState{
+			{ID: "replica-0", Index: 0, Status: "running", Image: "billing:v3", ContainerID: "dead10cc"},
+		},
+	})
+	if snap.GetRuntime() != "docker" {
+		t.Fatalf("runtime = %q, want docker", snap.GetRuntime())
+	}
+	sl := snap.GetSlots()[0]
+	if sl.GetImage() != "billing:v3" || sl.GetContainerId() != "c0ffee" {
+		t.Fatalf("slot image/container = %q/%q", sl.GetImage(), sl.GetContainerId())
+	}
+	rp := snap.GetReplicas()[0]
+	if rp.GetImage() != "billing:v3" || rp.GetContainerId() != "dead10cc" {
+		t.Fatalf("replica image/container = %q/%q", rp.GetImage(), rp.GetContainerId())
+	}
+}
+
+func TestToProtoDeploymentSnapshot_NativeLeavesDockerFieldsEmpty(t *testing.T) {
+	// A native snapshot: empty runtime, no container id. All three docker fields
+	// must serialize empty — empty means "unknown", never "native"/false, so the
+	// backend never mistakes a native instance for a container.
+	snap := ToProtoDeploymentSnapshot(&deploy.Snapshot{
+		AppName: "web",
+		Slots:   []deploy.SlotState{{Slot: "blue", Status: "running"}},
+	})
+	if snap.GetRuntime() != "" {
+		t.Fatalf("native runtime must stay empty, got %q", snap.GetRuntime())
+	}
+	sl := snap.GetSlots()[0]
+	if sl.GetImage() != "" || sl.GetContainerId() != "" {
+		t.Fatalf("native slot must leave image/container empty, got %q/%q", sl.GetImage(), sl.GetContainerId())
+	}
+}
+
 func TestToProtoDeploymentSnapshot_NilIsNil(t *testing.T) {
 	if got := ToProtoDeploymentSnapshot(nil); got != nil {
 		t.Fatalf("nil snapshot must convert to nil, got %+v", got)

@@ -310,6 +310,76 @@ func TestSnapshotForApp_StaleOpLockDoesNotReportInProgress(t *testing.T) {
 	}
 }
 
+func TestSnapshotForApp_DockerRuntimeCopiesImageAndContainer(t *testing.T) {
+	resetHome(t)
+
+	// status "starting" keeps healthOf from routing through InstanceAlive (which
+	// would shell out to Docker); this test is about the image/container/runtime
+	// fields reaching the snapshot, not health.
+	state := &DeployState{
+		AppName: "billing", AppID: "20", Mode: ModeBlueGreen, PublicPort: 3010,
+		Runtime:    "docker",
+		ActiveSlot: SlotGreen,
+		Slots: map[string]*Instance{
+			SlotGreen: {
+				Slot: SlotGreen, Version: 3, Status: "starting", Port: 49153,
+				BinaryPath: "billing:v3", ContainerID: "c0ffee",
+			},
+		},
+	}
+	if err := Store(state); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	snap := SnapshotForApp(context.Background(), "billing", "20", nil)
+	if snap == nil {
+		t.Fatalf("expected a snapshot")
+	}
+	if snap.Runtime != "docker" {
+		t.Fatalf("runtime = %q, want docker", snap.Runtime)
+	}
+	if len(snap.Slots) != 1 {
+		t.Fatalf("expected one slot, got %d", len(snap.Slots))
+	}
+	sl := snap.Slots[0]
+	if sl.ContainerID != "c0ffee" || sl.Image != "billing:v3" {
+		t.Fatalf("slot image/container = %q/%q, want billing:v3/c0ffee", sl.Image, sl.ContainerID)
+	}
+}
+
+func TestSnapshotForApp_NativeLeavesImageAndContainerEmpty(t *testing.T) {
+	resetHome(t)
+
+	// A native instance: no ContainerID, empty Runtime, but BinaryPath IS set (a
+	// filesystem path). Image must stay empty — the native binary path must never
+	// leak into it — and empty means "unknown", never "native".
+	state := &DeployState{
+		AppName: "web", AppID: "21", Mode: ModeBlueGreen, PublicPort: 3011,
+		ActiveSlot: SlotBlue,
+		Slots: map[string]*Instance{
+			SlotBlue: {
+				Slot: SlotBlue, Version: 5, Status: "stopped", Port: 49150,
+				BinaryPath: "/var/lib/phelix/apps/web/current",
+			},
+		},
+	}
+	if err := Store(state); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	snap := SnapshotForApp(context.Background(), "web", "21", nil)
+	if snap == nil {
+		t.Fatalf("expected a snapshot")
+	}
+	if snap.Runtime != "" {
+		t.Fatalf("native runtime must stay empty, got %q", snap.Runtime)
+	}
+	sl := snap.Slots[0]
+	if sl.Image != "" || sl.ContainerID != "" {
+		t.Fatalf("native slot must leave image/container empty (BinaryPath must not leak), got %q/%q", sl.Image, sl.ContainerID)
+	}
+}
+
 // mustSelfExe returns this test binary's path, used as an Instance.BinaryPath so
 // InstanceAlive's identity check passes for the current PID.
 func mustSelfExe(t *testing.T) string {
