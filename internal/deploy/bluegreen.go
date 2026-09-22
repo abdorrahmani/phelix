@@ -245,8 +245,8 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 6. Wait for healthy. On failure, abort and leave the active instance
 	//    untouched.
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), nil); err != nil {
-		err = candidateHealthFailure(binaryPath, port, err)
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), deployResolver(proc)); err != nil {
+		err = candidateHealthFailure(proc, binaryPath, port, tier, tierCfg, err)
 		log.Errorf("new instance on slot %s failed health check: %v", inactive, err)
 		// Kill the failed instance; do NOT touch the active one.
 		_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))

@@ -44,7 +44,16 @@ func execDockerRunner(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// `docker logs` demultiplexes the container's streams: an app's panic / bind
+	// error goes to the container's stderr, which docker replays on ITS stderr
+	// and exits 0. Merge both into stdout for the logs subcommand so a captured
+	// tail actually contains the reason a candidate died; every other subcommand
+	// keeps clean, separate streams (inspect/wait output must parse cleanly).
+	if len(args) > 0 && args[0] == "logs" {
+		cmd.Stderr = &stdout
+	} else {
+		cmd.Stderr = &stderr
+	}
 	if err := cmd.Run(); err != nil {
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
 			return stdout.String(), phelixerr.Wrapf(dockerErrCode(detail), err, "docker %s: %s",
@@ -242,6 +251,28 @@ func (p *dockerProcess) PID() int {
 // label-based verification (phase 3).
 func (p *dockerProcess) ContainerID() string { return p.id }
 
+// Logs returns a bounded, redacted tail of the container's `docker logs`
+// output. Deploy health-failure reporting uses it so a docker candidate that
+// dies at boot surfaces its actual panic/bind error — the docker-runtime
+// analogue of the native path's on-disk instance-log tail (instanceLogTail).
+// Best-effort: an unreadable/empty log (or a nil runner) yields "". The runner
+// merges the container's stderr into stdout for `logs` (see execDockerRunner),
+// so a partial tail is still returned even when docker reports a non-zero exit.
+func (p *dockerProcess) Logs(ctx context.Context, maxBytes int64) string {
+	if p.id == "" || p.run == nil {
+		return ""
+	}
+	out, _ := p.run(ctx, "logs", "--tail", "200", p.id)
+	if maxBytes > 0 && int64(len(out)) > maxBytes {
+		out = out[len(out)-int(maxBytes):]
+	}
+	tail := strings.TrimSpace(out)
+	if tail == "" {
+		return ""
+	}
+	return phelixerr.Redact(tail)
+}
+
 // containerIDOf returns the container id when proc is a docker instance, or ""
 // for a native process. Instance construction uses it so a docker instance
 // persists its ContainerID (and native instances stay unchanged).
@@ -250,6 +281,53 @@ func containerIDOf(proc Process) string {
 		return dp.ContainerID()
 	}
 	return ""
+}
+
+// dockerLogTailOf returns a redacted `docker logs` tail when proc is a docker
+// instance, else "" (native processes have no Logs method). Mirrors
+// containerIDOf so health.go can enrich a failure without a type switch on the
+// concrete launcher.
+func dockerLogTailOf(proc Process, maxBytes int64) string {
+	if lp, ok := proc.(interface {
+		Logs(ctx context.Context, maxBytes int64) string
+	}); ok {
+		return lp.Logs(context.Background(), maxBytes)
+	}
+	return ""
+}
+
+// Alive reports whether the container is still running, asked of Docker rather
+// than the host process table. Host-PID liveness is wrong for a container: the
+// PID is owned by the container's non-root user (a host signal-0 check gets
+// EPERM), and under Docker-Desktop/VM or userns-remap the PID may not be on the
+// host at all — both make a live container look dead and abort the deploy.
+//
+// A container that genuinely exited reports State.Running=false (fast-fail
+// preserved); a removed container ("no such container") is likewise dead. Any
+// OTHER inspect error is ambiguous (a daemon blip), so we report alive and let
+// the HTTP probe and the overall health timeout stay the authority rather than
+// aborting a healthy deploy on a transient error.
+func (p *dockerProcess) Alive() bool {
+	if p.id == "" || p.run == nil {
+		return false
+	}
+	out, err := p.run(context.Background(), "inspect", "-f", "{{.State.Running}}", p.id)
+	if err != nil {
+		return !isDockerNotRunning(err)
+	}
+	return strings.TrimSpace(out) == "true"
+}
+
+// dockerLivenessChecker returns a health.PidChecker that consults container
+// state when proc is a docker instance, or nil for a native process (so the
+// caller keeps the default host-PID checker). The returned checker ignores its
+// pid argument — container liveness is keyed on the container id, not the host
+// PID (which is exactly the value that is unreliable for containers).
+func dockerLivenessChecker(proc Process) func(pid int) bool {
+	if lp, ok := proc.(interface{ Alive() bool }); ok {
+		return func(int) bool { return lp.Alive() }
+	}
+	return nil
 }
 
 // Signal delivers sig to the container's main process without blocking, so

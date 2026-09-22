@@ -330,7 +330,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 
 	// 2. Health-check ONLY the replacement's port.
 	r.Telemetry.ReplicaHealthCheckStarted(index, port)
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), newPID, nil); err != nil {
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), newPID, deployResolver(proc)); err != nil {
 		stopHeldProcess(ctx, proc, grace)
 		restoreReplica(state, key, old)
 		if storeErr := r.persist(state); storeErr != nil {
@@ -343,7 +343,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 		// previous instance is restored and keeps serving.
 		return oomFailure(proc,
 			phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed,
-				candidateHealthFailure(binaryPath, port, err),
+				candidateHealthFailure(proc, binaryPath, port, tier, tierCfg, err),
 				"replica %s replacement failed health check; previous instance still serving", key),
 			fmt.Sprintf("replica %s replacement exceeded its configured memory limit and was killed by the kernel OOM killer; previous instance still serving", key))
 	}

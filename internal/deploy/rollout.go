@@ -384,8 +384,8 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	tier := selectDeployHealth(ctx, tierCfg, ro.AppName, hostPort(port), log, ro.Notifier)
 	ro.Telemetry.SetHealthConfig(tierCfg, tier)
 	ro.Telemetry.HealthCheckStarted(canarySlot, port)
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), nil); err != nil {
-		err = candidateHealthFailure(binaryPath, port, err)
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), deployResolver(proc)); err != nil {
+		err = candidateHealthFailure(proc, binaryPath, port, tier, tierCfg, err)
 		stopHeldProcess(ctx, proc, grace)
 		canaryInst.Status = "failed"
 		canaryInst.PID = 0

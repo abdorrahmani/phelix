@@ -48,6 +48,12 @@ or run this command directly to keep it attached to a terminal.`,
 // client's reconnect loop; this function only fails fast on unrecoverable
 // startup errors (e.g. app state cannot be loaded).
 func runMonitor() error {
+	// Opt-in local resource profiling. Off unless PHELIX_PPROF is set; binds
+	// loopback-only by default. Never exposed in a default production run.
+	if stopPprof := startPprofIfEnabled(); stopPprof != nil {
+		defer stopPprof()
+	}
+
 	if err := app.Manager.LoadState(); err != nil {
 		return err
 	}

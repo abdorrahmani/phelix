@@ -20,6 +20,7 @@ type fakeDocker struct {
 	run     string // stdout for `docker run`
 	inspect string // stdout for `docker inspect`
 	wait    string // stdout for `docker wait`
+	logs    string // stdout for `docker logs`
 	errs    map[string]error
 }
 
@@ -43,6 +44,8 @@ func (f *fakeDocker) runner() dockerRunner {
 			return f.inspect, nil
 		case "wait":
 			return f.wait, nil
+		case "logs":
+			return f.logs, nil
 		default:
 			return "", nil
 		}
