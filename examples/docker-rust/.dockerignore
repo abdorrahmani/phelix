@@ -1,0 +1,43 @@
+# Version control
+.git
+.gitignore
+
+# Environment and secrets (never leak into build context)
+.env
+.env.*
+*.env
+*.env.*
+
+# Build artifacts
+app_*
+*.exe
+*.dll
+*.so
+*.dylib
+target/
+dist/
+build/
+
+# Logs
+*.log
+logs/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Phelix internals
+.phelix/
+.zcode/
+
+# Documentation
+README.md
+LICENSE
+docs/
