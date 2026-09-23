@@ -1,0 +1,15 @@
+# Phelix project configuration for the blue-green example.
+# deploy.strategy: blue-green makes `phelix rebuild` a zero-downtime deploy
+# (it requires the phelix proxy — auto-started by rebuild if not running).
+name: bluegreen-demo
+port: 8080
+watching: disable
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto
+deploy:
+  strategy: blue-green
