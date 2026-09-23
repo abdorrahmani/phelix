@@ -117,6 +117,8 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Simple Go application](examples/simple-go/) — the minimal `PORT`-reading app.
 - [Simple Rust application](examples/simple-rust/) — the same, in Rust (stdlib only).
 - [Blue-green deployment](examples/blue-green/) — a zero-downtime deploy you can watch cut over.
+- [Docker runtime (Go)](examples/docker-go/) — Phelix runs the app as a container.
+- [Docker runtime (Rust)](examples/docker-rust/) — the same, in Rust.
 
 ## Documentation
 
