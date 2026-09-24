@@ -339,6 +339,64 @@ names are for reaching the *backing* tier, which Phelix never blue-greens.
   builds and cuts over the app tier; compose keeps `mysql`/`redis` up with their
   volumes.
 
+## Choosing how the image is built
+
+Under `deploy.runtime: docker`, one key — `deploy.docker.build` — chooses HOW the
+app image is produced. It changes only *where the image comes from*; the
+launcher, proxy, network attach, blue-green and rollback are identical.
+
+| Your setup | Set |
+|---|---|
+| No compose, or the app is not a compose service | `dockerfile` (default — nothing to set) |
+| App is in compose for **local dev** (a profile), but on the server only Phelix runs it | `dockerfile` (default) + the profiles pattern |
+| Compose is the **source of truth for the build** (context/args/target) and you don't want to duplicate it into a standalone Dockerfile | `compose` |
+
+**`dockerfile` (default):** Phelix generates a Dockerfile if the project has
+none (a user's is always respected) and builds it — today's behavior, unchanged.
+
+**`compose`:** Phelix runs `docker compose build <service>` (compose applies the
+service's own `build:` config — context, args, target, dockerfile), then tags the
+result `<app>:vN`. Requires `deploy.docker.service`; `compose_file` defaults to
+`docker-compose.yml`:
+
+```yaml
+deploy:
+  runtime: docker
+  strategy: blue-green
+  network: myproj_appnet
+  docker:
+    build: compose
+    service: app          # the compose service whose build config makes this image
+```
+
+`build: compose` is **build only**. The compose service's `environment` /
+`env_file` are NOT imported into the running container — runtime env stays with
+`phelix env` (encrypted, single source of truth, no accidental secret
+duplication). `depends_on` is not honored either (Phelix has no cross-app
+ordering), so the app must tolerate a briefly-unavailable backing service.
+
+**The ownership rule (every strategy):** the app tier has exactly one owner. If
+the same app is *also* run as a docker-compose service, Phelix and compose both
+manage it — duplicate instances and a fight over the public port. Phelix prints a
+warning before deploying when it detects this (it never blocks). Keep the app
+service behind a compose `profile` so `docker compose up -d` on the server never
+starts it (the warning then stays silent — the desired signal), or
+`docker compose stop <svc>`.
+
+Runnable examples of each choice:
+
+- [`examples/docker-compose-profiles-go`](../../examples/docker-compose-profiles-go/)
+  — app in compose for local dev (profile), Phelix builds it (`dockerfile`) on the server.
+- [`examples/docker-compose-aware-go`](../../examples/docker-compose-aware-go/)
+  — Phelix builds *from* the compose service (`build: compose`).
+- [`examples/docker-compose-multiservice-go`](../../examples/docker-compose-multiservice-go/)
+  — several app services, one shared backing tier; each is its own Phelix app.
+
+Each has a Rust counterpart (`docker-compose-profiles-rust`,
+`docker-compose-aware-rust`, `docker-compose-multiservice-rust`) — identical
+`phelix.yaml` and `docker-compose.yml` shape, only the toolchain and Dockerfile
+differ.
+
 ## How instances are identified and cleaned up
 
 - Every container Phelix starts carries a `phelix.managed=true` label plus the
