@@ -397,7 +397,7 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		runtime = RuntimeDocker
 	}
 	if opts.Launcher == nil {
-		opts.Launcher = LauncherForRuntime(runtime, state.AppName)
+		opts.Launcher = LauncherForRuntime(runtime, state.Network, state.AppName)
 	}
 
 	// The on-disk existence check is native-only: for docker, BinaryPath is an

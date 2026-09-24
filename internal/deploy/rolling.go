@@ -34,6 +34,10 @@ type Rolling struct {
 	// into DeployState so rollback and recovery resolve the matching launcher.
 	// Empty is treated as native.
 	Runtime string
+	// Network is the user-defined Docker network app containers attach to
+	// (docker runtime only). Persisted into DeployState so rollback/recovery
+	// reattach to the same network. Empty means none (default bridge).
+	Network string
 	// stateStore is a test seam for deterministic persistence-failure coverage.
 	// Production leaves it nil and uses Store.
 	stateStore func(*DeployState) error
@@ -109,6 +113,9 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	state.AppID = r.AppID
 	if r.Runtime != "" {
 		state.Runtime = r.Runtime
+	}
+	if r.Network != "" {
+		state.Network = r.Network
 	}
 	r.Telemetry.Bind(state)
 	r.Telemetry.SetVersions(activeVersionOf(state, r.AppName), 0)

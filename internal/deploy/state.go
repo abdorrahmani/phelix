@@ -141,6 +141,12 @@ type DeployState struct {
 	// source the forward deploy used — a docker app must roll back to an image,
 	// not to a binary path. Empty means native (every pre-docker deploy).
 	Runtime string `json:"runtime,omitempty"`
+	// Network is the user-defined Docker network this app's containers are
+	// attached to (docker runtime only). Persisted next to Runtime so rollback,
+	// recovery and monitor-restore attach containers to the same network the
+	// forward deploy used — otherwise a restored container could not resolve the
+	// backing services by their compose DNS names. Empty = none (default bridge).
+	Network string `json:"network,omitempty"`
 	// PublicPort is the externally exposed port the user asked for. It is
 	// stable for the life of the app and is the only port the client ever sees.
 	PublicPort int `json:"public_port"`

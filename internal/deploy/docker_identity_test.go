@@ -132,11 +132,18 @@ func TestRollbackSourceForRuntime_PicksByRuntime(t *testing.T) {
 
 func TestLauncherForRuntime_PicksByRuntime(t *testing.T) {
 	// Smoke check: both return non-nil launchers; the docker branch must not
-	// panic constructing its closure.
-	if LauncherForRuntime(RuntimeDocker, "app") == nil {
-		t.Fatal("docker runtime launcher is nil")
+	// panic constructing its closure, with or without a network attached.
+	if LauncherForRuntime(RuntimeDocker, "myproj_appnet", "app") == nil {
+		t.Fatal("docker runtime launcher (with network) is nil")
 	}
-	if LauncherForRuntime(RuntimeNative, "app") == nil {
+	if LauncherForRuntime(RuntimeDocker, "", "app") == nil {
+		t.Fatal("docker runtime launcher (no network) is nil")
+	}
+	if LauncherForRuntime(RuntimeNative, "", "app") == nil {
 		t.Fatal("native runtime launcher is nil")
+	}
+	// Native ignores the network argument entirely (a host process has none).
+	if LauncherForRuntime(RuntimeNative, "myproj_appnet", "app") == nil {
+		t.Fatal("native runtime launcher must ignore the network argument, not nil out")
 	}
 }

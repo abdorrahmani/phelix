@@ -106,15 +106,20 @@ func redactDockerArgs(args []string) string {
 // byte-for-byte identical to the native path — it only ever sees a Process and
 // a 127.0.0.1 port. In docker mode the launcher's binaryPath argument carries
 // the image reference (e.g. "myapp:v12"), not a filesystem path.
-func DockerLauncherForApp(appName string) InstanceLauncher {
-	return newDockerLauncher(appName, "", execDockerRunner)
+//
+// network, when non-empty, is the user-defined Docker network each container is
+// attached to (so the app resolves compose backing services by DNS name); ""
+// keeps the default bridge (no --network).
+func DockerLauncherForApp(appName, network string) InstanceLauncher {
+	return newDockerLauncher(appName, "", network, execDockerRunner)
 }
 
 // newDockerLauncher is the test-injectable constructor. slot may be "" when the
 // caller does not know it (the InstanceLauncher signature does not carry it);
 // the app label alone is enough to reclaim containers, and the slot label is
-// enriched opportunistically.
-func newDockerLauncher(appName, slot string, run dockerRunner) InstanceLauncher {
+// enriched opportunistically. network is the user-defined Docker network to
+// attach to, or "" for the default bridge.
+func newDockerLauncher(appName, slot, network string, run dockerRunner) InstanceLauncher {
 	if run == nil {
 		run = execDockerRunner
 	}
@@ -134,6 +139,23 @@ func newDockerLauncher(appName, slot string, run dockerRunner) InstanceLauncher 
 		// loopback only — the proxy is the sole public entry point, so the
 		// container must never be reachable from outside the host directly.
 		args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d/tcp", dockerInternalPort))
+
+		// Attach to a user-defined network (the docker-compose backing tier) when
+		// one is configured, so the app resolves backing services by their compose
+		// DNS names (mysql:3306, redis:6379). This is ADDITIVE to the loopback
+		// publish above: OUTBOUND calls travel the shared network by service name,
+		// while INBOUND traffic still arrives only through the proxy's published
+		// loopback port.
+		//
+		// Deliberately NO --network-alias. A managed app container must not be
+		// resolvable by a stable service name: blue-green/rolling briefly runs two
+		// instances of the same app, and a shared alias would let the network's DNS
+		// round-robin route requests to the unproven candidate. App instances are
+		// reached ONLY through the phelix proxy's public port; this attach exists
+		// purely for the app's own outbound calls to backing services.
+		if network != "" {
+			args = append(args, "--network", network)
+		}
 
 		// Secrets are injected via a 0600 --env-file, never -e on the argv,
 		// so decrypted env never appears in `ps` or the process table. PORT is
@@ -167,6 +189,33 @@ func newDockerLauncher(appName, slot string, run dockerRunner) InstanceLauncher 
 
 		return proc, hostPort, nil
 	}
+}
+
+// VerifyDockerNetwork checks that a user-defined Docker network exists before a
+// docker-runtime deploy attaches app containers to it. The CLI calls it in the
+// deploy setup path so a not-yet-created or mistyped network fails fast — before
+// any image is built or container run — with an actionable message, instead of
+// every `docker run --network` erroring deep inside the deploy. Empty network is
+// a no-op (no explicit network requested).
+func VerifyDockerNetwork(ctx context.Context, network string) error {
+	return verifyDockerNetwork(ctx, execDockerRunner, network)
+}
+
+// verifyDockerNetwork is the test-injectable core of VerifyDockerNetwork.
+func verifyDockerNetwork(ctx context.Context, run dockerRunner, network string) error {
+	if strings.TrimSpace(network) == "" {
+		return nil
+	}
+	if _, err := run(ctx, "network", "inspect", network); err != nil {
+		// A missing network is a user-configuration problem, not a Docker fault:
+		// point at the two ways to create it (a bare network, or the compose
+		// project that owns the backing services). The cause is preserved so a
+		// genuine daemon error stays inspectable under --debug.
+		return phelixerr.Wrapf(phelixerr.CodeInvalidArgument, err,
+			"docker network %q not found\n  Create it with:            docker network create %s\n  or start the backing services first: docker compose up -d (compose creates its network)",
+			network, network)
+	}
+	return nil
 }
 
 // writeDockerEnvFile writes KEY=VALUE lines to a temp file (0600) for

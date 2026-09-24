@@ -40,6 +40,12 @@ type DeployConfig struct {
 	// requires a zero-downtime strategy (blue-green/rolling/canary/progressive);
 	// the classic stop→start path stays native-only.
 	Runtime string `yaml:"runtime,omitempty"`
+	// Network is the user-defined Docker network each managed app container is
+	// attached to, so the app resolves backing services (mysql, redis, ...) by
+	// their docker-compose DNS names (mysql:3306, redis:6379). Only meaningful
+	// with runtime: docker; empty means the default bridge (no --network passed,
+	// the pre-network behavior). Resolved via DeployNetwork().
+	Network string `yaml:"network,omitempty"`
 	// Rollout configures canary/progressive deployments.
 	Rollout *RolloutConfig `yaml:"rollout,omitempty"`
 	// Autoscaling configures the rolling-deploy replica autoscaling decision
@@ -333,6 +339,27 @@ func (c *Config) DeployRuntime() string {
 	return RuntimeNative
 }
 
+// DeployNetwork resolves the user-defined Docker network to attach managed app
+// containers to. Resolution mirrors DeployRuntime:
+//
+//	PHELIX_NETWORK env  →  phelix.yaml deploy.network  →  "" (no explicit network)
+//
+// Empty means "do not pass --network": the container lands on the default
+// bridge, exactly the pre-network behavior. Phelix never invents a network
+// name. Only meaningful under the docker runtime (validate() rejects a network
+// set for any other runtime); a nil Config resolves to "".
+func (c *Config) DeployNetwork() string {
+	if env := strings.TrimSpace(os.Getenv("PHELIX_NETWORK")); env != "" {
+		return env
+	}
+	if c != nil && c.Deploy != nil {
+		if n := strings.TrimSpace(c.Deploy.Network); n != "" {
+			return n
+		}
+	}
+	return ""
+}
+
 // SetWatching writes the watching key into dir/phelix.yaml so the project
 // file reflects a `phelix watch` toggle: the next build/rebuild converges on
 // the yaml (syncProjectWatching), which would otherwise silently revert the
@@ -440,6 +467,20 @@ func (c *Config) validate() error {
 		if strings.TrimSpace(c.Deploy.Runtime) == RuntimeDocker && s == StrategyClassic {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.runtime: docker requires a zero-downtime strategy\nHint: set deploy.strategy to blue-green, rolling, canary, or progressive")
+		}
+		// deploy.network attaches app containers to a user-defined Docker network,
+		// which only the docker runtime can do. Rejected up front for any other
+		// runtime (mirrors the docker+classic rejection above) rather than silently
+		// ignored on a native deploy. A whitespace-only value is a typo, not "no
+		// network", so it is refused too.
+		if net := strings.TrimSpace(c.Deploy.Network); net != "" {
+			if strings.TrimSpace(c.Deploy.Runtime) != RuntimeDocker {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: deploy.network requires deploy.runtime: docker\nHint: set deploy.runtime: docker, or remove deploy.network")
+			}
+		} else if c.Deploy.Network != "" {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.network must not be blank\nHint: set a Docker network name (e.g. myproj_appnet) or remove the key")
 		}
 		if c.Deploy.Replicas > 0 && s != StrategyRolling {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,

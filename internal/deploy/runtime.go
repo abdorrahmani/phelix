@@ -17,12 +17,13 @@ func IsDockerRuntime(r string) bool {
 
 // LauncherForRuntime returns the InstanceLauncher a deploy should use for the
 // given runtime. Native returns the existing binary launcher (unchanged
-// behavior); docker returns the container launcher. Centralized here so the
-// forward deploy, rollback, and auto-rollback paths never diverge on which
-// launcher a runtime maps to.
-func LauncherForRuntime(runtime, appName string) InstanceLauncher {
+// behavior; network is ignored — a host process has no Docker network); docker
+// returns the container launcher attached to network (empty = default bridge).
+// Centralized here so the forward deploy, rollback, and auto-rollback paths
+// never diverge on which launcher a runtime maps to.
+func LauncherForRuntime(runtime, network, appName string) InstanceLauncher {
 	if IsDockerRuntime(runtime) {
-		return DockerLauncherForApp(appName)
+		return DockerLauncherForApp(appName, network)
 	}
 	return LauncherForApp(appName)
 }

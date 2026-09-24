@@ -540,13 +540,16 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, targ
 		PublicPort:             publicPort,
 		ExpectedCurrentVersion: currentVer,
 		TargetVersion:          target,
-		Launcher:               deploy.LauncherForApp(appName),
-		ProxyClient:            proxyClient,
-		HealthProvider:         deploy.DefaultHealthProvider(),
-		Logger:                 &colorLogger{},
-		Telemetry:              tracker,
-		Reason:                 reason,
-		Verify:                 verifyReq,
+		// Runtime-and-network-aware launcher: a docker app rolls back into a
+		// container reattached to the same user network the forward deploy used
+		// (native resolves to the unchanged binary launcher; both fields empty).
+		Launcher:       deploy.LauncherForRuntime(state.Runtime, state.Network, appName),
+		ProxyClient:    proxyClient,
+		HealthProvider: deploy.DefaultHealthProvider(),
+		Logger:         &colorLogger{},
+		Telemetry:      tracker,
+		Reason:         reason,
+		Verify:         verifyReq,
 	})
 	rollbackDuration := time.Since(stepStart)
 	r.SetMetadata("rollback_duration_ms", fmt.Sprintf("%d", rollbackDuration.Milliseconds()))

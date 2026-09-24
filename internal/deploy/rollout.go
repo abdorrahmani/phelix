@@ -187,6 +187,10 @@ type Rollout struct {
 	// into DeployState so rollback and recovery resolve the matching launcher.
 	// Empty is treated as native.
 	Runtime string
+	// Network is the user-defined Docker network app containers attach to
+	// (docker runtime only). Persisted into DeployState so rollback/recovery
+	// reattach to the same network. Empty means none (default bridge).
+	Network string
 	// PortHandoff, when set, is invoked right before the first proxy
 	// enrolment if something still owns the public port (a classic instance
 	// from before the app came under the proxy). The CLI wires this to
@@ -258,6 +262,9 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	state.AppID = ro.AppID
 	if ro.Runtime != "" {
 		state.Runtime = ro.Runtime
+	}
+	if ro.Network != "" {
+		state.Network = ro.Network
 	}
 	ro.Telemetry.Bind(state)
 	ro.Telemetry.SetVersions(activeVersionOf(state, ro.AppName), 0)

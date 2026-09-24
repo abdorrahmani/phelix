@@ -73,6 +73,10 @@ type BlueGreen struct {
 	// into DeployState so rollback and recovery resolve the matching launcher
 	// and rollback source. Empty is treated as native.
 	Runtime string
+	// Network is the user-defined Docker network app containers attach to
+	// (docker runtime only). Persisted into DeployState so rollback/recovery
+	// reattach to the same network. Empty means none (default bridge).
+	Network string
 	// InFlight is optional; nil reports 0 in-flight at shutdown.
 	InFlight InFlightProvider
 	// GracePeriod overrides DefaultGracePeriod when > 0.
@@ -137,6 +141,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	state.AppID = bg.AppID
 	if bg.Runtime != "" {
 		state.Runtime = bg.Runtime
+	}
+	if bg.Network != "" {
+		state.Network = bg.Network
 	}
 	bg.Telemetry.Bind(state)
 	bg.Telemetry.SetVersions(activeVersionOf(state, bg.AppName), 0)

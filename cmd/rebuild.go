@@ -479,6 +479,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	// container launcher — the deploy engines and proxy path are identical.
 	runtimeCfg, _ := loadProjectConfigFrom(buildSource)
 	deployRuntime := runtimeCfg.DeployRuntime()
+	deployNetwork := runtimeCfg.DeployNetwork()
 	var deploySource deploy.BuildSource = freshSource
 	launcher := deploy.LauncherForApp(name)
 	if deploy.IsDockerRuntime(deployRuntime) {
@@ -491,7 +492,20 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			Logger:    logger,
 			BuildFn:   dockerImageBuilder(buildSource),
 		}
-		launcher = deploy.DockerLauncherForApp(name)
+		launcher = deploy.DockerLauncherForApp(name, deployNetwork)
+		if deployNetwork != "" {
+			// Fail fast before any image build or container run: a missing user
+			// network means containers could never resolve the backing services
+			// on it, so abort now with an actionable message rather than after a
+			// full image build. Bounded so a wedged daemon cannot hang the deploy.
+			pfCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			verr := deploy.VerifyDockerNetwork(pfCtx, deployNetwork)
+			cancel()
+			if verr != nil {
+				return verr
+			}
+			logger.Stepf("docker runtime: attaching containers to network %q (backing services reachable by their compose DNS names)", deployNetwork)
+		}
 		logger.Stepf("docker runtime: instances run as containers (one agent, many app containers)")
 	}
 
@@ -537,6 +551,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			Source:         deploySource,
 			Launcher:       launcher,
 			Runtime:        deployRuntime,
+			Network:        deployNetwork,
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
@@ -569,6 +584,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			Source:         deploySource,
 			Launcher:       launcher,
 			Runtime:        deployRuntime,
+			Network:        deployNetwork,
 			ProxyClient:    proxyClient,
 			HealthProvider: healthProvider,
 			Logger:         logger,
