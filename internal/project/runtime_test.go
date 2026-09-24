@@ -149,3 +149,102 @@ func TestValidate_RejectsNetworkWithoutDocker(t *testing.T) {
 		t.Fatal("deploy.network without deploy.runtime: docker must be rejected")
 	}
 }
+
+func TestDeployDockerBuild_Precedence(t *testing.T) {
+	// No deploy block, empty docker block, and nil config all default to dockerfile.
+	if (&Config{}).DeployDockerBuild() != DockerBuildDockerfile {
+		t.Error("no deploy block must default to dockerfile")
+	}
+	if (&Config{Deploy: &DeployConfig{Docker: &DockerRuntimeConfig{}}}).DeployDockerBuild() != DockerBuildDockerfile {
+		t.Error("empty docker.build must default to dockerfile")
+	}
+	var nilCfg *Config
+	if nilCfg.DeployDockerBuild() != DockerBuildDockerfile {
+		t.Error("nil config must default to dockerfile")
+	}
+	cfg := &Config{Deploy: &DeployConfig{Docker: &DockerRuntimeConfig{Build: DockerBuildCompose}}}
+	if cfg.DeployDockerBuild() != DockerBuildCompose {
+		t.Errorf("explicit compose must resolve to compose, got %q", cfg.DeployDockerBuild())
+	}
+}
+
+func TestDeployComposeFileAndService_Defaults(t *testing.T) {
+	// compose_file defaults; service is empty when unset.
+	c := &Config{Deploy: &DeployConfig{Docker: &DockerRuntimeConfig{Build: DockerBuildCompose, Service: "app"}}}
+	if c.DeployComposeFile() != DefaultComposeFile {
+		t.Errorf("compose_file default = %q, want %q", c.DeployComposeFile(), DefaultComposeFile)
+	}
+	if c.DeployComposeService() != "app" {
+		t.Errorf("service = %q, want app", c.DeployComposeService())
+	}
+	c2 := &Config{Deploy: &DeployConfig{Docker: &DockerRuntimeConfig{ComposeFile: "compose.prod.yml"}}}
+	if c2.DeployComposeFile() != "compose.prod.yml" {
+		t.Errorf("explicit compose_file not honored: %q", c2.DeployComposeFile())
+	}
+	if (&Config{}).DeployComposeFile() != DefaultComposeFile {
+		t.Error("nil docker block must still default the compose file")
+	}
+}
+
+func TestValidate_RejectsDockerBlockWithoutDocker(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		Name: "billing", Port: 8080,
+		Deploy: &DeployConfig{Strategy: StrategyBlueGreen, Docker: &DockerRuntimeConfig{Build: DockerBuildDockerfile}},
+	}
+	if err := Save(dir, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("a deploy.docker block without deploy.runtime: docker must be rejected")
+	}
+}
+
+func TestValidate_RejectsInvalidDockerBuild(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		Name: "billing", Port: 8080,
+		Deploy: &DeployConfig{Runtime: RuntimeDocker, Strategy: StrategyBlueGreen, Docker: &DockerRuntimeConfig{Build: "podman"}},
+	}
+	if err := Save(dir, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("an invalid deploy.docker.build must be rejected")
+	}
+}
+
+func TestValidate_ComposeBuildRequiresService(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		Name: "billing", Port: 8080,
+		Deploy: &DeployConfig{Runtime: RuntimeDocker, Strategy: StrategyBlueGreen, Docker: &DockerRuntimeConfig{Build: DockerBuildCompose}},
+	}
+	if err := Save(dir, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("build: compose without a service must be rejected")
+	}
+}
+
+func TestValidate_AcceptsComposeBuildWithService(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{
+		Name: "billing", Port: 8080,
+		Deploy: &DeployConfig{
+			Runtime: RuntimeDocker, Strategy: StrategyBlueGreen,
+			Docker: &DockerRuntimeConfig{Build: DockerBuildCompose, Service: "app"},
+		},
+	}
+	if err := Save(dir, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("docker + compose build + service must be valid: %v", err)
+	}
+	if got.DeployDockerBuild() != DockerBuildCompose || got.DeployComposeService() != "app" {
+		t.Errorf("docker build round-trip failed: build=%q service=%q", got.DeployDockerBuild(), got.DeployComposeService())
+	}
+}

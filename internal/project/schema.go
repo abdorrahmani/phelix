@@ -46,11 +46,47 @@ type DeployConfig struct {
 	// with runtime: docker; empty means the default bridge (no --network passed,
 	// the pre-network behavior). Resolved via DeployNetwork().
 	Network string `yaml:"network,omitempty"`
+	// Docker configures HOW the app image is built under runtime: docker (the
+	// launcher, proxy, network, blue-green and rollback are unaffected — this is
+	// only where the image comes from). Only meaningful with runtime: docker.
+	Docker *DockerRuntimeConfig `yaml:"docker,omitempty"`
 	// Rollout configures canary/progressive deployments.
 	Rollout *RolloutConfig `yaml:"rollout,omitempty"`
 	// Autoscaling configures the rolling-deploy replica autoscaling decision
 	// engine. Optional; apps without the block never autoscale.
 	Autoscaling *AutoscalingConfig `yaml:"autoscaling,omitempty"`
+}
+
+// DockerRuntimeConfig selects HOW the app image is built under
+// deploy.runtime: docker. It changes only where the image comes from; the
+// launcher, proxy, network attach, blue-green and rollback are identical
+// regardless of strategy.
+type DockerRuntimeConfig struct {
+	// Build is the image-build strategy: "dockerfile" (default — generate or
+	// reuse a Dockerfile and docker-build it, today's behavior) or "compose"
+	// (build the named compose service with its own build config, then tag the
+	// result <app>:vN). Empty means dockerfile.
+	Build string `yaml:"build,omitempty"`
+	// ComposeFile is the compose file to build from when Build == "compose".
+	// Defaults to "docker-compose.yml", resolved relative to the build dir.
+	ComposeFile string `yaml:"compose_file,omitempty"`
+	// Service is the compose service whose build config produces this app's
+	// image. Required when Build == "compose".
+	Service string `yaml:"service,omitempty"`
+}
+
+// Docker image-build strategies for deploy.docker.build.
+const (
+	DockerBuildDockerfile = "dockerfile"
+	DockerBuildCompose    = "compose"
+)
+
+// DefaultComposeFile is the compose file used when deploy.docker.compose_file
+// is unset.
+const DefaultComposeFile = "docker-compose.yml"
+
+var supportedDockerBuilds = map[string]bool{
+	DockerBuildDockerfile: true, DockerBuildCompose: true,
 }
 
 // RolloutConfig is the phelix.yaml shape of a canary/progressive rollout. A
@@ -360,6 +396,41 @@ func (c *Config) DeployNetwork() string {
 	return ""
 }
 
+// DeployDockerBuild resolves the effective docker image-build strategy from
+// phelix.yaml deploy.docker.build, defaulting to "dockerfile". Config-driven
+// (no env override): switching how images are built is a project decision, not
+// a per-invocation one. Only meaningful under the docker runtime; a nil Config
+// or absent block resolves to "dockerfile".
+func (c *Config) DeployDockerBuild() string {
+	if c != nil && c.Deploy != nil && c.Deploy.Docker != nil {
+		if b := strings.TrimSpace(c.Deploy.Docker.Build); supportedDockerBuilds[b] {
+			return b
+		}
+	}
+	return DockerBuildDockerfile
+}
+
+// DeployComposeFile resolves the compose file used when build: compose,
+// defaulting to DefaultComposeFile. The path is resolved relative to the build
+// directory by the caller.
+func (c *Config) DeployComposeFile() string {
+	if c != nil && c.Deploy != nil && c.Deploy.Docker != nil {
+		if f := strings.TrimSpace(c.Deploy.Docker.ComposeFile); f != "" {
+			return f
+		}
+	}
+	return DefaultComposeFile
+}
+
+// DeployComposeService returns the compose service that builds this app's image
+// under build: compose, or "" when none is configured.
+func (c *Config) DeployComposeService() string {
+	if c != nil && c.Deploy != nil && c.Deploy.Docker != nil {
+		return strings.TrimSpace(c.Deploy.Docker.Service)
+	}
+	return ""
+}
+
 // SetWatching writes the watching key into dir/phelix.yaml so the project
 // file reflects a `phelix watch` toggle: the next build/rebuild converges on
 // the yaml (syncProjectWatching), which would otherwise silently revert the
@@ -481,6 +552,24 @@ func (c *Config) validate() error {
 		} else if c.Deploy.Network != "" {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.network must not be blank\nHint: set a Docker network name (e.g. myproj_appnet) or remove the key")
+		}
+		// deploy.docker selects the image-build strategy and only applies to the
+		// docker runtime (mirrors the deploy.network rule). build must be one of
+		// the two known strategies, and build: compose needs a service name.
+		if c.Deploy.Docker != nil {
+			if strings.TrimSpace(c.Deploy.Runtime) != RuntimeDocker {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: deploy.docker requires deploy.runtime: docker\nHint: set deploy.runtime: docker, or remove the deploy.docker block")
+			}
+			build := strings.TrimSpace(c.Deploy.Docker.Build)
+			if build != "" && !supportedDockerBuilds[build] {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: invalid deploy.docker.build %q\nHint: expected one of: dockerfile, compose", c.Deploy.Docker.Build)
+			}
+			if build == DockerBuildCompose && strings.TrimSpace(c.Deploy.Docker.Service) == "" {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: deploy.docker.build: compose requires deploy.docker.service\nHint: name the compose service that builds this app's image (e.g. service: app)")
+			}
 		}
 		if c.Deploy.Replicas > 0 && s != StrategyRolling {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,

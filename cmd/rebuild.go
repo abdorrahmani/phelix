@@ -483,6 +483,12 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	var deploySource deploy.BuildSource = freshSource
 	launcher := deploy.LauncherForApp(name)
 	if deploy.IsDockerRuntime(deployRuntime) {
+		// How the image is built (dockerfile default | compose) — this only
+		// changes where the image comes from; the launcher/proxy/network below
+		// are identical either way.
+		deployBuild := runtimeCfg.DeployDockerBuild()
+		composeFile := runtimeCfg.DeployComposeFile()
+		composeService := runtimeCfg.DeployComposeService()
 		deploySource = &deploy.DockerBuildSource{
 			AppName:   name,
 			AppID:     appInfo.ID,
@@ -490,7 +496,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			Tag:       rebuildTag,
 			Retention: deploy.DefaultRetention{Max: 5},
 			Logger:    logger,
-			BuildFn:   dockerImageBuilder(buildSource),
+			BuildFn:   dockerImageBuilder(buildSource, deployBuild, composeFile, composeService),
 		}
 		launcher = deploy.DockerLauncherForApp(name, deployNetwork)
 		if deployNetwork != "" {
@@ -506,6 +512,19 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			}
 			logger.Stepf("docker runtime: attaching containers to network %q (backing services reachable by their compose DNS names)", deployNetwork)
 		}
+		if deployBuild == project.DockerBuildCompose {
+			logger.Stepf("docker runtime: image built from compose service %q in %s (build only — runtime env stays with `phelix env`)", composeService, composeFile)
+		}
+		// Warn (never block) if the same app also runs as a compose-managed
+		// container — the app tier would then have two owners. Silent under the
+		// compose-profile pattern (no such container runs on the server).
+		warnSvc := composeService
+		if warnSvc == "" {
+			warnSvc = name
+		}
+		ownCtx, ownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		warnIfComposeManaged(ownCtx, logger, name, warnSvc)
+		ownCancel()
 		logger.Stepf("docker runtime: instances run as containers (one agent, many app containers)")
 	}
 

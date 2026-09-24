@@ -15,10 +15,12 @@ import (
 )
 
 var (
-	initName    string
-	initPort    int
-	initRuntime string
-	initYes     bool
+	initName           string
+	initPort           int
+	initRuntime        string
+	initDockerBuild    string
+	initComposeService string
+	initYes            bool
 )
 
 // defaultInitPort mirrors the CLI's existing default port so init never has to
@@ -132,6 +134,11 @@ var InitCmd = &cobra.Command{
 
 		if runtime == project.RuntimeDocker {
 			cfg.Deploy.Strategy = project.StrategyBlueGreen
+			dockerCfg, derr := resolveInitDockerBuild(cmd, dir, cfg.Name)
+			if derr != nil {
+				return derr
+			}
+			cfg.Deploy.Docker = dockerCfg // nil leaves build unset (dockerfile default)
 		}
 
 		if err := project.Save(dir, cfg); err != nil {
@@ -151,6 +158,10 @@ var InitCmd = &cobra.Command{
 		if cfg.Deploy.Runtime == project.RuntimeDocker {
 			fmt.Printf("  %s docker runtime: each instance runs as a container; strategy set to %s (classic is native-only).\n",
 				color.BlueString("→"), cfg.Deploy.Strategy)
+			if cfg.Deploy.Docker != nil && cfg.Deploy.Docker.Build == project.DockerBuildCompose {
+				fmt.Printf("  %s image built from compose service %s (build only — runtime env stays with 'phelix env').\n",
+					color.BlueString("→"), color.CyanString(cfg.Deploy.Docker.Service))
+			}
 			fmt.Printf("  %s run Phelix on the host (with a reachable Docker daemon), then deploy with %s.\n",
 				color.BlueString("→"), color.CyanString("phelix rebuild "+cfg.Name))
 		}
@@ -158,10 +169,54 @@ var InitCmd = &cobra.Command{
 	},
 }
 
+// resolveInitDockerBuild decides the docker image-build strategy for `phelix
+// init`. The --docker-build / --compose-service flags win; otherwise, in a TTY
+// (and not --yes) with a docker-compose.yml present, it offers build: compose
+// (service defaults to the app name). Returns nil to leave build unset — the
+// dockerfile default. Additive and fully skippable.
+func resolveInitDockerBuild(cmd *cobra.Command, dir, appName string) (*project.DockerRuntimeConfig, error) {
+	if cmd.Flags().Changed("docker-build") {
+		switch initDockerBuild {
+		case project.DockerBuildDockerfile, "":
+			return nil, nil
+		case project.DockerBuildCompose:
+			svc := strings.TrimSpace(initComposeService)
+			if svc == "" {
+				svc = appName
+			}
+			return &project.DockerRuntimeConfig{Build: project.DockerBuildCompose, Service: svc}, nil
+		default:
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"invalid --docker-build %q\nHint: expected one of: dockerfile, compose", initDockerBuild)
+		}
+	}
+	if !IsInteractive() || initYes {
+		return nil, nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, project.DefaultComposeFile)); err != nil {
+		return nil, nil // no compose file — nothing to offer
+	}
+	use, err := PromptConfirm(
+		"A "+project.DefaultComposeFile+" is present. Build the image from a compose service (keep compose as the build's source of truth)?", false)
+	if err != nil || !use {
+		return nil, nil
+	}
+	svc, err := PromptString("Compose service that builds this app", appName)
+	if err != nil {
+		return nil, nil
+	}
+	if svc = strings.TrimSpace(svc); svc == "" {
+		svc = appName
+	}
+	return &project.DockerRuntimeConfig{Build: project.DockerBuildCompose, Service: svc}, nil
+}
+
 func init() {
 	InitCmd.Flags().StringVar(&initName, "name", "", "Application name (defaults to the directory name)")
 	InitCmd.Flags().IntVar(&initPort, "port", 0, "Application port (interactive prompt when unset in a TTY)")
 	InitCmd.Flags().StringVar(&initRuntime, "runtime", "", "Launch runtime: native (host process) or docker (container). Interactive prompt when unset in a TTY; defaults to native")
+	InitCmd.Flags().StringVar(&initDockerBuild, "docker-build", "", "Docker image-build strategy (docker runtime only): dockerfile (default) or compose")
+	InitCmd.Flags().StringVar(&initComposeService, "compose-service", "", "Compose service that builds this app's image (used with --docker-build compose; defaults to the app name)")
 	InitCmd.Flags().BoolVar(&initYes, "yes", false, "Overwrite an existing phelix.yaml without prompting")
 }
 
