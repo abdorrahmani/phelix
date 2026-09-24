@@ -197,6 +197,148 @@ Everything else — `phelix env`, `phelix health`, canary/progressive rollouts,
 build reports — works exactly as in the native runtime; only the launch
 mechanism (container instead of host process) changed.
 
+## Backing services (databases, caches): split ownership
+
+Phelix builds and zero-downtime-deploys your **app tier**. It does **not** run
+your databases or caches — you own those, with `docker compose`. The split is
+deliberate, not a limitation:
+
+- **Phelix owns the app tier** — the stateless Go/Rust services it builds and
+  cuts over. Blue-green and rolling both assume instances are **interchangeable
+  and disposable**: start a second copy, shift traffic, discard the old one.
+  That is exactly right for a stateless app.
+- **You own the backing tier** — `mysql`, `redis`, `postgres`, … — via
+  `docker compose`. A single-writer stateful service is the opposite of
+  disposable: you cannot start a second `mysql` on the same volume and cut over
+  between them, so **Phelix must never blue-green a database.** A backing
+  service just needs to be *up*, on a *stable network*, with its *volume* —
+  which is precisely what compose is for.
+
+A **shared Docker network** connects the two tiers. The app container Phelix
+launches joins the network your backing services already sit on and reaches
+them by their **compose service name** (`mysql:3306`, `redis:6379`) — the DNS
+compose gives every service on that network. One new key turns it on:
+
+```yaml
+deploy:
+  runtime: docker
+  network: myproj_appnet   # ← attach app containers to this existing network
+```
+
+An empty or omitted `network` keeps today's behavior: the container lands on the
+default bridge and cannot resolve compose service names.
+
+### Step by step: `billing` (Phelix) + `mysql` and `redis` (compose)
+
+**1. A compose file with ONLY the backing services**, on a named network, with
+volumes. Phelix's app is *not* in here.
+
+```yaml
+# compose.yml
+services:
+  mysql:
+    image: mysql:8
+    networks: [appnet]
+    volumes: [db:/var/lib/mysql]
+    environment:
+      MYSQL_DATABASE: billing
+      MYSQL_ROOT_PASSWORD: change-me
+  redis:
+    image: redis:7
+    networks: [appnet]
+
+networks:
+  appnet: {}
+volumes:
+  db: {}
+```
+
+```bash
+docker compose up -d      # creates the "appnet" network AND starts the services
+```
+
+**2. Find the network's real name.** Compose **prefixes** the network with the
+project name (the compose directory by default), so `appnet` becomes
+`myproj_appnet`:
+
+```bash
+docker network ls        # look for <project>_appnet, e.g. myproj_appnet
+```
+
+To pin a stable, prefix-free name instead, set `name:` on the network:
+
+```yaml
+networks:
+  appnet:
+    name: appnet         # the network is now literally "appnet"
+```
+
+**3. Point `billing`'s `phelix.yaml` at that network:**
+
+```yaml
+name: billing
+port: 8080
+deploy:
+  runtime: docker
+  strategy: blue-green
+  network: myproj_appnet   # the name from `docker network ls`
+health:
+  endpoints:
+    - name: default
+      path: /health
+      mode: auto
+```
+
+**4. Give the app its connection strings by DNS name**, through encrypted env —
+never baked into the image:
+
+```bash
+phelix env set billing DATABASE_URL "mysql://user:pass@mysql:3306/billing"
+phelix env set billing REDIS_URL   "redis://redis:6379"
+```
+
+`mysql` and `redis` resolve because the container is on `myproj_appnet`; the
+values are injected into the container via the private `0600` env-file (never
+`-e` on the command line).
+
+**5. Deploy the app tier as usual:**
+
+```bash
+phelix proxy                 # once (build/rebuild auto-start it too)
+phelix build billing         # first deploy: build image, run on appnet, health-check, enrol
+phelix rebuild billing       # every subsequent zero-downtime deploy
+```
+
+Phelix runs `billing:vN` as a container on `myproj_appnet` **and** publishes it
+to a loopback port for the proxy — both at once: the app calls `mysql`/`redis`
+outbound over the shared network, while inbound traffic still arrives only
+through the proxy's public port. If the network does not exist yet, the deploy
+stops before building anything and tells you to `docker network create` it or
+`docker compose up -d` the backing services first.
+
+### Many services share one network
+
+Each Go/Rust service is its **own** `phelix.yaml` / its own Phelix app — *N
+services = N apps*. They can all set the same `network:`; compose still holds
+only the backing tier. So `billing`, `auth`, and `users` deploy independently
+and all reach `mysql`/`redis` by name.
+
+**App→app calls go through the callee's proxy public port, not its container
+name.** Call `auth` at `http://<host>:<auth-public-port>`, never `http://auth:…`.
+Phelix deliberately gives managed containers **no network alias**, because
+blue-green/rolling briefly runs *two* containers of the same app — a shared
+name would let the network's DNS round-robin route requests to the unproven
+candidate. The proxy port is the stable, zero-downtime address; container DNS
+names are for reaching the *backing* tier, which Phelix never blue-greens.
+
+### Who owns what
+
+- `docker compose down` stops **only** the backing services. Phelix-managed app
+  containers are not part of the compose project, so compose never touches them.
+- Phelix never restarts, versions, or blue-greens the backing services. It
+  builds and cuts over the app tier; compose keeps `mysql`/`redis` up with their
+  volumes.
+
 ## How instances are identified and cleaned up
 
 - Every container Phelix starts carries a `phelix.managed=true` label plus the
@@ -222,6 +364,14 @@ mechanism (container instead of host process) changed.
 
 ## Related
 
+- **Runnable examples:** [`examples/docker-go`](../../examples/docker-go/) /
+  [`examples/docker-rust`](../../examples/docker-rust/) run the app as a
+  container with no backing services;
+  [`examples/docker-compose-go`](../../examples/docker-compose-go/) /
+  [`examples/docker-compose-rust`](../../examples/docker-compose-rust/) add this
+  split-ownership model — Phelix runs the app on a shared network beside a
+  compose-owned Redis backing tier (`deploy.network`), each with a
+  `docker-compose.yml` and a Dockerfile generated by `phelix dockerize`.
 - [Docker image building](docker-images.md) — the `dockerize` command and the
   Dockerfile generator this runtime reuses.
 - [Identity](../architecture/identity.md) — the `agent_id` / `app_id` /

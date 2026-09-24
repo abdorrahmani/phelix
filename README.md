@@ -119,6 +119,8 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Blue-green deployment](examples/blue-green/) — a zero-downtime deploy you can watch cut over.
 - [Docker runtime (Go)](examples/docker-go/) — Phelix runs the app as a container.
 - [Docker runtime (Rust)](examples/docker-rust/) — the same, in Rust.
+- [Docker + compose backing services (Go)](examples/docker-compose-go/) — Phelix runs the app on a shared network; docker-compose owns Redis.
+- [Docker + compose backing services (Rust)](examples/docker-compose-rust/) — the same, in Rust.
 
 ## Documentation
 
