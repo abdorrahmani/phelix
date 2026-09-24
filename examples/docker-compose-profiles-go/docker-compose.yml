@@ -1,0 +1,33 @@
+# Pattern C — the app is a compose service for LOCAL dev only (behind the "local"
+# profile); the backing tier (redis) has no profile, so it is what runs on the
+# SERVER.
+#
+#   LOCAL dev:  docker compose --profile local up   # runs app + redis
+#   SERVER:     docker compose up -d                # runs ONLY redis
+#               phelix build profiles-go-demo       # Phelix runs the app tier
+#
+# Because the app service is gated behind the profile, `docker compose up -d` on
+# the server never starts it — so Phelix is the sole owner of the app tier and
+# the ownership-conflict warning stays silent.
+services:
+  app:
+    build: .
+    image: profiles-go-demo:local
+    profiles: ["local"] # local dev only — NOT started by a plain `docker compose up -d`
+    environment:
+      PORT: "8080"
+      REDIS_ADDR: "redis:6379"
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on: [redis]
+    networks: [appnet]
+
+  redis:
+    image: redis:7-alpine
+    networks: [appnet]
+
+networks:
+  # No explicit name → compose prefixes it with the project (directory) name:
+  # docker-compose-profiles-go_appnet. That is the value in phelix.yaml's
+  # deploy.network (confirm with `docker network ls`).
+  appnet: {}

@@ -1,0 +1,48 @@
+# Pattern B — docker-compose owns the app's BUILD config (context/args/target),
+# and Phelix builds the image FROM this `app` service (deploy.docker.build:
+# compose), tagging the result aware-go-demo:vN. The build config is defined once
+# here and never duplicated into a Phelix-owned Dockerfile.
+#
+#   SERVER:  docker compose up -d mysql redis   # backing tier ONLY (never `up app`)
+#            phelix env set aware-go-demo DATABASE_URL mysql://user:pass@mysql:3306/app
+#            phelix env set aware-go-demo REDIS_ADDR   redis:6379
+#            phelix build aware-go-demo          # Phelix: `docker compose build app` → tag → run
+#
+# Phelix imports NONE of the app service's `environment` — runtime env is set via
+# `phelix env` (encrypted, single source of truth). `depends_on` is not honored
+# either; the app tolerates a briefly-unavailable backing service.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GO_VERSION: "1.27"
+      target: prod
+    image: aware-go-demo # explicit name so the built image is unambiguous
+    environment:
+      # LOCAL-dev convenience only — Phelix does NOT read these at runtime.
+      PORT: "8080"
+      MYSQL_ADDR: "mysql:3306"
+      REDIS_ADDR: "redis:6379"
+    depends_on: [mysql, redis]
+    networks: [appnet]
+
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: app
+      MYSQL_ROOT_PASSWORD: change-me
+    volumes: [db:/var/lib/mysql]
+    networks: [appnet]
+
+  redis:
+    image: redis:7-alpine
+    networks: [appnet]
+
+networks:
+  # Compose default name is <project>_appnet → docker-compose-aware-go_appnet,
+  # which is phelix.yaml's deploy.network (confirm with `docker network ls`).
+  appnet: {}
+volumes:
+  db: {}

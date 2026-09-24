@@ -121,6 +121,12 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Docker runtime (Rust)](examples/docker-rust/) — the same, in Rust.
 - [Docker + compose backing services (Go)](examples/docker-compose-go/) — Phelix runs the app on a shared network; docker-compose owns Redis.
 - [Docker + compose backing services (Rust)](examples/docker-compose-rust/) — the same, in Rust.
+- [Docker + compose profile (Go)](examples/docker-compose-profiles-go/) — app in compose for local dev, Phelix runs it on the server.
+- [Docker + compose profile (Rust)](examples/docker-compose-profiles-rust/) — the same, in Rust.
+- [Docker image built from a compose service (Go)](examples/docker-compose-aware-go/) — `deploy.docker.build: compose`.
+- [Docker image built from a compose service (Rust)](examples/docker-compose-aware-rust/) — the same, in Rust.
+- [Docker multiservice (Go)](examples/docker-compose-multiservice-go/) — several app services, one shared backing tier.
+- [Docker multiservice (Rust)](examples/docker-compose-multiservice-rust/) — the same, in Rust.
 
 ## Documentation
 
