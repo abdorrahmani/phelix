@@ -7,7 +7,7 @@ into testable packages. All runtime state lives on disk under `~/.phelix/` (see
 [state management](state-management.md) and the
 [data-directory reference](../reference/data-directory.md)).
 
-Requires Go 1.27 (per `go.mod`).
+Requires Go 1.27.1 (per `go.mod`).
 
 ```text
                  ┌──────────── main.go (entry, command registration) ┐
@@ -93,10 +93,8 @@ internal/
 └── version/             # build-time version info
 ```
 
-> This layout is regenerated from the actual repository tree. The historical
-> `DEVELOPMENT.md` listing predated several packages (`buildreport`, `connstate`,
-> `errreport`, `port`, `project`, `resources`, `syscmd`, `update`, `webhook`) and
-> stated Go 1.26.3+; the current source requires Go 1.27.
+> This layout is regenerated from the actual repository tree.
+> stated Go 1.27.1+; the current source requires Go 1.27.1.
 
 ## Related
 
