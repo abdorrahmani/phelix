@@ -208,6 +208,18 @@ leave your machine. See [Security](docs/guides/security.md).
 
 ## License
 
-No license file is currently present in this repository; the licensing status is
-unresolved. See the repository's license metadata for the authoritative status
-before relying on it.
+Phelix is **source-available** (not classic open source). The CLI in this
+repository is licensed under the **Functional Source License, Version 1.1, with
+an Apache 2.0 future license (FSL-1.1-ALv2)** — see [`LICENSE`](./LICENSE). Each
+released version converts to Apache 2.0 two years after its release.
+
+You may use, study, modify, and redistribute the CLI for any purpose **except a
+Competing Use** (reselling it or offering a competing hosted/dashboard service).
+You are very welcome to fork it and contribute changes back.
+
+- **"Phelix" name & logo** are trademarks of Mohammad Abdorrahmani — see [`TRADEMARK.md`](./TRADEMARK.md).
+- **Contributing** (DCO + CLA): see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+- **Plain-language summary** of what's allowed: see [`docs/licensing.md`](docs/licensing.md).
+
+The Phelix dashboard backend and frontend at `phelix.anophel.com`, including its
+paid features, are proprietary and are not part of this repository.
