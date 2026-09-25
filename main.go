@@ -7,6 +7,7 @@ import (
 	"github.com/abdorrahmani/phelix/cmd/auth"
 	"github.com/abdorrahmani/phelix/config"
 	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/abdorrahmani/phelix/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -14,6 +15,9 @@ import (
 var healthDaemon *health.GlobalDaemon
 
 func main() {
+	if resources.RunCleanupHelper() {
+		return
+	}
 	err := config.Load()
 	if err != nil {
 		// config.Load runs before the command tree exists; render through the

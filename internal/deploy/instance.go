@@ -13,7 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -105,7 +107,22 @@ type InstanceLauncher func(ctx context.Context, binaryPath string, env []string)
 // Stdout/stderr are redirected to a per-instance log under ~/.phelix/logs so
 // the CLI terminal is not polluted by the app's output (or by cobra help if
 // the binary happens to be a CLI that exits without a subcommand).
-func DefaultLauncher(_ context.Context, binaryPath string, env []string) (Process, int, error) {
+func DefaultLauncher(ctx context.Context, binaryPath string, env []string) (Process, int, error) {
+	return launchInstance(ctx, binaryPath, env, resources.Config{})
+}
+
+// LauncherForApp reads current runtime policy, never the version's artifact state.
+func LauncherForApp(appName string) InstanceLauncher {
+	return func(ctx context.Context, binaryPath string, env []string) (Process, int, error) {
+		cfg, err := app.LoadResources(appName)
+		if err != nil {
+			return nil, 0, phelixerr.Wrap(phelixerr.CodeConfiguration, "deploy: load resource limits", err)
+		}
+		return launchInstance(ctx, binaryPath, env, cfg)
+	}
+}
+
+func launchInstance(_ context.Context, binaryPath string, env []string, cfg resources.Config) (Process, int, error) {
 	if binaryPath == "" {
 		return nil, 0, phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: binary path is empty")
 	}
@@ -135,20 +152,49 @@ func DefaultLauncher(_ context.Context, binaryPath string, env []string) (Proces
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
-	if err := cmd.Start(); err != nil {
+	inst, err := resources.Start(cmd, cfg)
+	if err != nil {
 		_ = logFile.Close()
 		return nil, 0, phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "deploy: start instance")
 	}
+	pid := cmd.Process.Pid
+	memoryLimit := cfg.Memory
 
 	errCh := make(chan struct{})
-	proc := &osProcess{cmd: cmd, pid: cmd.Process.Pid, doneCh: errCh}
+	proc := &osProcess{cmd: cmd, pid: pid, doneCh: errCh}
 	go func() {
 		waitErr := cmd.Wait()
+		// classify a cgroup memory OOM kill before releasing the
+		// cleanup lease (the watcher keeps the cgroup observable until here),
+		// so Wait callers receive the resource reason instead of an
+		// unexplained SIGKILL. Non-OOM exits keep the wait error unchanged.
+		if inst != nil {
+			oom, oomErr := inst.ResourceOOM()
+			_ = inst.Close()
+			if oomErr == nil && oom {
+				waitErr = oomExitError(waitErr, pid, memoryLimit)
+			}
+		}
 		_ = logFile.Close()
 		proc.reap(waitErr)
 	}()
 
 	return proc, port, nil
+}
+
+// oomExitError tags an instance exit as a resource OOM kill: the instance
+// cgroup's memory.events oom_kill increased during its lifetime. The original
+// wait error (exit status / signal) stays in the chain.
+func oomExitError(waitErr error, pid int, memoryLimit string) error {
+	limit := ""
+	if memoryLimit != "" {
+		limit = " of " + memoryLimit
+	}
+	msg := fmt.Sprintf("instance (pid %d) exceeded its configured memory limit%s and was killed by the kernel OOM killer", pid, limit)
+	if waitErr == nil {
+		return phelixerr.New(phelixerr.CodeResourceOOM, msg)
+	}
+	return phelixerr.Wrapf(phelixerr.CodeResourceOOM, waitErr, "%s", msg)
 }
 
 // openInstanceLog creates (or appends to) a log file for a deploy instance.

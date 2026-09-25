@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/builder"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -14,9 +15,12 @@ import (
 )
 
 var (
-	initName string
-	initPort int
-	initYes  bool
+	initName           string
+	initPort           int
+	initRuntime        string
+	initDockerBuild    string
+	initComposeService string
+	initYes            bool
 )
 
 // defaultInitPort mirrors the CLI's existing default port so init never has to
@@ -104,6 +108,39 @@ var InitCmd = &cobra.Command{
 			return err
 		}
 
+		runtime := initRuntime
+		if runtime == "" && IsInteractive() && !initYes {
+			picked, err := PromptSelect(
+				"Launch runtime — how should this app's instances run?",
+				[]string{
+					project.RuntimeNative + "  (host process — the model that runs on a bare VPS)",
+					project.RuntimeDocker + "  (container — one Phelix agent on the host manages many app containers)",
+				},
+			)
+			if err != nil {
+				return err
+			}
+			// The label carries a description after the value; keep the value.
+			runtime = strings.Fields(picked)[0]
+		}
+		if runtime == "" {
+			runtime = project.RuntimeNative
+		}
+		if runtime != project.RuntimeNative && runtime != project.RuntimeDocker {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"invalid runtime %q\nHint: expected one of: native, docker", runtime)
+		}
+		cfg.Deploy.Runtime = runtime
+
+		if runtime == project.RuntimeDocker {
+			cfg.Deploy.Strategy = project.StrategyBlueGreen
+			dockerCfg, derr := resolveInitDockerBuild(cmd, dir, cfg.Name)
+			if derr != nil {
+				return derr
+			}
+			cfg.Deploy.Docker = dockerCfg // nil leaves build unset (dockerfile default)
+		}
+
 		if err := project.Save(dir, cfg); err != nil {
 			return err
 		}
@@ -116,15 +153,70 @@ var InitCmd = &cobra.Command{
 				color.YellowString("⚠"), h.Port, h.File, h.Line)
 		}
 
-		fmt.Printf("%s Created %s (name: %s, port: %d)\n",
-			color.GreenString("✓"), color.CyanString(project.FileName), cfg.Name, cfg.Port)
+		fmt.Printf("%s Created %s (name: %s, port: %d, runtime: %s)\n",
+			color.GreenString("✓"), color.CyanString(project.FileName), cfg.Name, cfg.Port, cfg.Deploy.Runtime)
+		if cfg.Deploy.Runtime == project.RuntimeDocker {
+			fmt.Printf("  %s docker runtime: each instance runs as a container; strategy set to %s (classic is native-only).\n",
+				color.BlueString("→"), cfg.Deploy.Strategy)
+			if cfg.Deploy.Docker != nil && cfg.Deploy.Docker.Build == project.DockerBuildCompose {
+				fmt.Printf("  %s image built from compose service %s (build only — runtime env stays with 'phelix env').\n",
+					color.BlueString("→"), color.CyanString(cfg.Deploy.Docker.Service))
+			}
+			fmt.Printf("  %s run Phelix on the host (with a reachable Docker daemon), then deploy with %s.\n",
+				color.BlueString("→"), color.CyanString("phelix rebuild "+cfg.Name))
+		}
 		return nil
 	},
+}
+
+// resolveInitDockerBuild decides the docker image-build strategy for `phelix
+// init`. The --docker-build / --compose-service flags win; otherwise, in a TTY
+// (and not --yes) with a docker-compose.yml present, it offers build: compose
+// (service defaults to the app name). Returns nil to leave build unset — the
+// dockerfile default. Additive and fully skippable.
+func resolveInitDockerBuild(cmd *cobra.Command, dir, appName string) (*project.DockerRuntimeConfig, error) {
+	if cmd.Flags().Changed("docker-build") {
+		switch initDockerBuild {
+		case project.DockerBuildDockerfile, "":
+			return nil, nil
+		case project.DockerBuildCompose:
+			svc := strings.TrimSpace(initComposeService)
+			if svc == "" {
+				svc = appName
+			}
+			return &project.DockerRuntimeConfig{Build: project.DockerBuildCompose, Service: svc}, nil
+		default:
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"invalid --docker-build %q\nHint: expected one of: dockerfile, compose", initDockerBuild)
+		}
+	}
+	if !IsInteractive() || initYes {
+		return nil, nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, project.DefaultComposeFile)); err != nil {
+		return nil, nil // no compose file — nothing to offer
+	}
+	use, err := PromptConfirm(
+		"A "+project.DefaultComposeFile+" is present. Build the image from a compose service (keep compose as the build's source of truth)?", false)
+	if err != nil || !use {
+		return nil, nil
+	}
+	svc, err := PromptString("Compose service that builds this app", appName)
+	if err != nil {
+		return nil, nil
+	}
+	if svc = strings.TrimSpace(svc); svc == "" {
+		svc = appName
+	}
+	return &project.DockerRuntimeConfig{Build: project.DockerBuildCompose, Service: svc}, nil
 }
 
 func init() {
 	InitCmd.Flags().StringVar(&initName, "name", "", "Application name (defaults to the directory name)")
 	InitCmd.Flags().IntVar(&initPort, "port", 0, "Application port (interactive prompt when unset in a TTY)")
+	InitCmd.Flags().StringVar(&initRuntime, "runtime", "", "Launch runtime: native (host process) or docker (container). Interactive prompt when unset in a TTY; defaults to native")
+	InitCmd.Flags().StringVar(&initDockerBuild, "docker-build", "", "Docker image-build strategy (docker runtime only): dockerfile (default) or compose")
+	InitCmd.Flags().StringVar(&initComposeService, "compose-service", "", "Compose service that builds this app's image (used with --docker-build compose; defaults to the app name)")
 	InitCmd.Flags().BoolVar(&initYes, "yes", false, "Overwrite an existing phelix.yaml without prompting")
 }
 

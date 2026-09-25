@@ -1,0 +1,18 @@
+# api-demo — one of two independent apps. Its own public port (8080). Shares the
+# multiservice network + Redis with worker-demo. Default dockerfile build.
+name: api-demo
+port: 8080
+watching: disable
+deploy:
+  runtime: docker
+  strategy: blue-green
+  # One shared network for the whole project; its compose default name is
+  # <project>_appnet where the project is the parent compose dir.
+  network: docker-compose-multiservice-go_appnet
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto

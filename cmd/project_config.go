@@ -110,6 +110,34 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 	return nil
 }
 
+// syncProjectResources persists current runtime policy, not versioned state.
+func syncProjectResources(cfg *project.Config, appID string) error {
+	if cfg == nil {
+		return nil
+	}
+	if err := cfg.Resources.Validate(); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "invalid resource limits", err)
+	}
+	manager, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
+	}
+	info := manager.Apps[appID]
+	if info == nil {
+		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found in state", appID)
+	}
+	previous := info.Resources
+	if previous == cfg.Resources {
+		return nil
+	}
+	info.Resources = cfg.Resources
+	if err := manager.SaveState(); err != nil {
+		info.Resources = previous
+		return err
+	}
+	return nil
+}
+
 // syncProjectWatching applies the watching value declared in phelix.yaml to
 // the app's persisted flag (the same store `phelix watch` writes).
 //

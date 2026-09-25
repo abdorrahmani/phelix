@@ -30,11 +30,13 @@ func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.D
 		log = &nopLogger{}
 	}
 	for _, inst := range retired {
-		if inst == nil || inst.PID <= 0 {
+		// Docker instances record PID 0; their identity is the ContainerID, so a
+		// PID<=0 skip would leak a retired container across a strategy migration.
+		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 			continue
 		}
-		log.Stepf("stopping retired %q instance (pid %d) from previous strategy", inst.Slot, inst.PID)
-		report := stopByPID(ctx, inst.PID, grace, inFlight, inst.BinaryPath)
+		log.Stepf("stopping retired %q instance (%s) from previous strategy", inst.Slot, instanceRef(inst))
+		report := stopInstance(ctx, inst, grace, inFlight)
 		if report.ForceKilled {
 			log.Warnf("retired instance %q ignored SIGTERM; SIGKILL applied", inst.Slot)
 		}
@@ -44,13 +46,12 @@ func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.D
 }
 
 // InstanceAlive reports whether inst's recorded process is alive AND still
-// resolves to the binary recorded for it. The executable check is what makes
-// a recycled PID unusable as "the instance is running" evidence.
+// resolves to the identity recorded for it. For native instances the
+// executable check makes a recycled PID unusable as "the instance is running"
+// evidence; for docker instances (ContainerID set) the check routes through
+// Docker and re-verifies the phelix.managed label. See instanceAliveViaRuntime.
 func InstanceAlive(inst *Instance) bool {
-	if inst == nil || inst.PID <= 0 {
-		return false
-	}
-	return findVerifiedProcess(inst.PID, inst.BinaryPath) != nil
+	return instanceAliveViaRuntime(inst)
 }
 
 // ServingInstance returns the instance that should be serving traffic right
@@ -121,13 +122,18 @@ func instancesServing(s *DeployState) []*Instance {
 	}
 	switch s.Mode {
 	case ModeBlueGreen:
-		if inst := s.ActiveInstance(); inst != nil && inst.PID > 0 {
+		// An instance is "claimed to serve" when it has a live PID (native) OR a
+		// ContainerID (docker instances record PID 0 — their identity is the
+		// container). Liveness is then decided by InstanceAlive, which is already
+		// runtime-aware. Gating on PID>0 alone excluded every docker instance and
+		// reported a live container as stopped.
+		if inst := s.ActiveInstance(); inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
 			return []*Instance{inst}
 		}
 	case ModeRolling:
 		var out []*Instance
 		for _, k := range sortedReplicaKeys(s.Replicas) {
-			if inst := s.Replicas[k]; inst != nil && inst.PID > 0 {
+			if inst := s.Replicas[k]; inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
 				out = append(out, inst)
 			}
 		}
@@ -230,7 +236,22 @@ func ReapStaleInstances(state *DeployState) {
 	}
 	reap := func(instances map[string]*Instance) {
 		for _, inst := range instances {
-			if inst == nil || inst.PID <= 0 {
+			if inst == nil {
+				continue
+			}
+			// Docker: liveness is the label-verified container check (a PID<=0
+			// docker instance was skipped before, so a dead container never got
+			// reaped). A gone/removed managed container clears the record.
+			if inst.ContainerID != "" {
+				if !dockerContainerAlive(inst.ContainerID) {
+					inst.PID = 0
+					inst.Status = "stopped"
+				}
+				continue
+			}
+			// Native: unchanged — conservative bare-liveness check (a live PID
+			// whose binary can't be verified is deliberately left alone here).
+			if inst.PID <= 0 {
 				continue
 			}
 			if !pidAlive(inst.PID) {
@@ -241,6 +262,19 @@ func ReapStaleInstances(state *DeployState) {
 	}
 	reap(state.Slots)
 	reap(state.Replicas)
+}
+
+// instanceRef renders a human label for logs that works for both runtimes: the
+// short container id for a docker instance, the host pid for a native one.
+func instanceRef(inst *Instance) string {
+	if inst.ContainerID != "" {
+		id := inst.ContainerID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		return "container " + id
+	}
+	return "pid " + strconv.Itoa(inst.PID)
 }
 
 // TeardownDeployment stops a proxy-managed deployment: every recorded
@@ -264,19 +298,25 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 
 	stopAll := func(instances map[string]*Instance) {
 		for _, inst := range instances {
-			if inst == nil || inst.PID <= 0 {
+			// A docker instance records PID 0 — its identity is the ContainerID,
+			// so skipping on PID<=0 left the container running while teardown
+			// lied "stopped". Present = live PID OR a ContainerID.
+			if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 				continue
 			}
 			if !InstanceAlive(inst) {
-				// Stale record (dead PID or recycled): just clear it.
+				// Stale record (dead/recycled PID, or a gone container): clear it.
 				inst.Status = "stopped"
 				inst.PID = 0
 				continue
 			}
-			log.Stepf("stopping %s instance pid %d (grace %s)", state.AppName, inst.PID, grace)
-			report := stopByPID(ctx, inst.PID, grace, 0, inst.BinaryPath)
+			log.Stepf("stopping %s instance %s (grace %s)", state.AppName, instanceRef(inst), grace)
+			// stopInstance routes ContainerID -> docker stop/kill and PID ->
+			// verified host-signal stop, and (via GracefulStop) escalates to
+			// SIGKILL / `docker kill` after grace for an app that ignores SIGTERM.
+			report := stopInstance(ctx, inst, grace, 0)
 			if report.ForceKilled {
-				log.Warnf("instance pid %d ignored SIGTERM; SIGKILL applied", inst.PID)
+				log.Warnf("instance %s ignored SIGTERM; SIGKILL applied", instanceRef(inst))
 			}
 			inst.Status = "stopped"
 			inst.PID = 0
@@ -293,7 +333,7 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 
 // StartOptions configures StartDeployment.
 type StartOptions struct {
-	// Launcher starts an instance; DefaultLauncher is used when nil.
+	// Launcher starts an instance; current app resource policy is used when nil.
 	Launcher InstanceLauncher
 	// ListenTimeout bounds the wait for a restored instance to bind its
 	// internal port. Defaults to 10s.
@@ -311,9 +351,6 @@ type StartOptions struct {
 func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions) error {
 	if state == nil || state.AppName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: start requires app state")
-	}
-	if opts.Launcher == nil {
-		opts.Launcher = DefaultLauncher
 	}
 	if opts.ListenTimeout <= 0 {
 		opts.ListenTimeout = 10 * time.Second
@@ -351,8 +388,26 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "unsupported deploy mode %q", state.Mode)
 	}
 
-	if _, err := os.Stat(toStart[0].BinaryPath); err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeNotFound, err, "deploy: recorded binary for %s is gone", state.AppName)
+	// Resolve the runtime to restore with. Prefer the persisted state.Runtime;
+	// fall back to docker when an older state predates the Runtime field but the
+	// instance to restore carries a ContainerID (so a pre-field docker deploy is
+	// not regressed into the native binary launcher).
+	runtime := state.Runtime
+	if runtime == "" && toStart[0].ContainerID != "" {
+		runtime = RuntimeDocker
+	}
+	if opts.Launcher == nil {
+		opts.Launcher = LauncherForRuntime(runtime, state.Network, state.AppName)
+	}
+
+	// The on-disk existence check is native-only: for docker, BinaryPath is an
+	// image reference (e.g. "app:v11"), not a file, so stat always fails. The
+	// docker launcher errors clearly on a missing image; native still errors
+	// NOT_FOUND when the recorded binary is truly gone (behavior unchanged).
+	if !IsDockerRuntime(runtime) {
+		if _, err := os.Stat(toStart[0].BinaryPath); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeNotFound, err, "deploy: recorded binary for %s is gone", state.AppName)
+		}
 	}
 
 	for _, inst := range toStart {
@@ -373,10 +428,15 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 				state.AppName, addr, opts.ListenTimeout)
 		}
 		inst.PID = proc.PID()
+		// Record the fresh runtime identity. For docker this is the NEW
+		// container's id; without it InstanceAlive would keep checking the old
+		// (now-stopped) container and report the restored app as stopped. For a
+		// native process containerIDOf returns "" (unchanged).
+		inst.ContainerID = containerIDOf(proc)
 		inst.Port = newPort
 		inst.Status = "running"
 		inst.StartedAt = time.Now()
-		log.Successf("instance pid %d listening on %s", inst.PID, addr)
+		log.Successf("instance %s listening on %s", instanceRef(inst), addr)
 	}
 
 	if err := Store(state); err != nil {
@@ -400,14 +460,16 @@ func RestoreProxyRoute(ctx context.Context, state *DeployState, pc ProxyClient, 
 	switch state.Mode {
 	case ModeBlueGreen:
 		inst := state.ActiveInstance()
-		if inst == nil || inst.PID <= 0 {
+		// Present = live PID (native) OR a ContainerID (docker records PID 0),
+		// so a restored docker route is not skipped as "no running instance".
+		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 			return phelixerr.Newf(phelixerr.CodeNotFound, "no running instance for %s", state.AppName)
 		}
 		primary = proxy.Target{Host: hostPort(inst.Port), Label: inst.Slot}
 	case ModeRolling:
 		for _, k := range sortedReplicaKeys(state.Replicas) {
 			inst := state.Replicas[k]
-			if inst == nil || inst.PID <= 0 {
+			if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 				continue
 			}
 			t := proxy.Target{Host: hostPort(inst.Port), Label: "replica-" + k}

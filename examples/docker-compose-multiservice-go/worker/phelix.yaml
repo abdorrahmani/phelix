@@ -1,0 +1,16 @@
+# worker-demo — the second app. Its own public port (8090), same shared network
+# and Redis as api-demo. Default dockerfile build.
+name: worker-demo
+port: 8090
+watching: disable
+deploy:
+  runtime: docker
+  strategy: blue-green
+  network: docker-compose-multiservice-go_appnet
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto

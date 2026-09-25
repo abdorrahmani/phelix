@@ -32,8 +32,61 @@ type HealthConfig struct {
 type DeployConfig struct {
 	Strategy string `yaml:"strategy,omitempty"`
 	Replicas int    `yaml:"replicas,omitempty"`
+	// Runtime selects how instances are launched: "native" (default — exec the
+	// built binary as a host process, the model that runs on a bare VPS) or
+	// "docker" (build an image and run each instance as a container, so one
+	// Phelix agent on the host manages many app containers as one server). The
+	// PHELIX_RUNTIME env var overrides this per invocation. Docker runtime
+	// requires a zero-downtime strategy (blue-green/rolling/canary/progressive);
+	// the classic stop→start path stays native-only.
+	Runtime string `yaml:"runtime,omitempty"`
+	// Network is the user-defined Docker network each managed app container is
+	// attached to, so the app resolves backing services (mysql, redis, ...) by
+	// their docker-compose DNS names (mysql:3306, redis:6379). Only meaningful
+	// with runtime: docker; empty means the default bridge (no --network passed,
+	// the pre-network behavior). Resolved via DeployNetwork().
+	Network string `yaml:"network,omitempty"`
+	// Docker configures HOW the app image is built under runtime: docker (the
+	// launcher, proxy, network, blue-green and rollback are unaffected — this is
+	// only where the image comes from). Only meaningful with runtime: docker.
+	Docker *DockerRuntimeConfig `yaml:"docker,omitempty"`
 	// Rollout configures canary/progressive deployments.
 	Rollout *RolloutConfig `yaml:"rollout,omitempty"`
+	// Autoscaling configures the rolling-deploy replica autoscaling decision
+	// engine. Optional; apps without the block never autoscale.
+	Autoscaling *AutoscalingConfig `yaml:"autoscaling,omitempty"`
+}
+
+// DockerRuntimeConfig selects HOW the app image is built under
+// deploy.runtime: docker. It changes only where the image comes from; the
+// launcher, proxy, network attach, blue-green and rollback are identical
+// regardless of strategy.
+type DockerRuntimeConfig struct {
+	// Build is the image-build strategy: "dockerfile" (default — generate or
+	// reuse a Dockerfile and docker-build it, today's behavior) or "compose"
+	// (build the named compose service with its own build config, then tag the
+	// result <app>:vN). Empty means dockerfile.
+	Build string `yaml:"build,omitempty"`
+	// ComposeFile is the compose file to build from when Build == "compose".
+	// Defaults to "docker-compose.yml", resolved relative to the build dir.
+	ComposeFile string `yaml:"compose_file,omitempty"`
+	// Service is the compose service whose build config produces this app's
+	// image. Required when Build == "compose".
+	Service string `yaml:"service,omitempty"`
+}
+
+// Docker image-build strategies for deploy.docker.build.
+const (
+	DockerBuildDockerfile = "dockerfile"
+	DockerBuildCompose    = "compose"
+)
+
+// DefaultComposeFile is the compose file used when deploy.docker.compose_file
+// is unset.
+const DefaultComposeFile = "docker-compose.yml"
+
+var supportedDockerBuilds = map[string]bool{
+	DockerBuildDockerfile: true, DockerBuildCompose: true,
 }
 
 // RolloutConfig is the phelix.yaml shape of a canary/progressive rollout. A
@@ -75,6 +128,131 @@ type RolloutVerificationConfig struct {
 	MaxErrorDelta float64 `yaml:"max_error_delta,omitempty"`
 	// MaxP95Factor bounds the canary p95 latency relative to the baseline's.
 	MaxP95Factor float64 `yaml:"max_p95_factor,omitempty"`
+}
+
+// AutoscalingConfig is the phelix.yaml shape of deploy.autoscaling, the
+// rolling-deploy replica autoscaling block. Phase 1 only loads, validates and
+// resolves it: the decision engine (internal/deploy/autoscale.go) consumes the
+// resolved AutoscaleSettings, and nothing executes scaling decisions yet.
+type AutoscalingConfig struct {
+	Enabled           bool                    `yaml:"enabled,omitempty"`
+	MinReplicas       int                     `yaml:"min_replicas,omitempty"`
+	MaxReplicas       int                     `yaml:"max_replicas,omitempty"`
+	Interval          string                  `yaml:"interval,omitempty"`
+	Cooldown          string                  `yaml:"cooldown,omitempty"`
+	CPU               *AutoscaleCPUConfig     `yaml:"cpu,omitempty"`
+	Latency           *AutoscaleLatencyConfig `yaml:"latency,omitempty"`
+	EvaluationWindows int                     `yaml:"evaluation_windows,omitempty"`
+}
+
+// AutoscaleCPUConfig holds the CPU thresholds in percent. Zero means unset.
+type AutoscaleCPUConfig struct {
+	ScaleUp   float64 `yaml:"scale_up,omitempty"`
+	ScaleDown float64 `yaml:"scale_down,omitempty"`
+}
+
+// AutoscaleLatencyConfig holds the proxy p95 latency thresholds. Empty means
+// unset.
+type AutoscaleLatencyConfig struct {
+	ScaleUpP95   string `yaml:"scale_up_p95,omitempty"`
+	ScaleDownP95 string `yaml:"scale_down_p95,omitempty"`
+}
+
+// Defaults applied by AutoscalingConfig.Resolve for fields left unset (0 or
+// ""). Validation rejects negatives and unparseable values, so those are
+// unambiguous.
+const (
+	DefaultAutoscaleInterval         = 15 * time.Second
+	DefaultAutoscaleCooldown         = 60 * time.Second
+	DefaultAutoscaleCPUUpPercent     = 70.0
+	DefaultAutoscaleCPUDownPercent   = 30.0
+	DefaultAutoscaleP95Up            = 500 * time.Millisecond
+	DefaultAutoscaleP95Down          = 150 * time.Millisecond
+	DefaultAutoscaleEvaluationWindow = 1
+)
+
+// AutoscaleSettings is the autoscaling block fully resolved: defaults applied,
+// durations parsed. It is the input to the deploy package's decision engine
+// (deploy.NewAutoscaler).
+type AutoscaleSettings struct {
+	Enabled           bool
+	MinReplicas       int
+	MaxReplicas       int
+	Interval          time.Duration
+	Cooldown          time.Duration
+	ScaleUpCPU        float64
+	ScaleDownCPU      float64
+	ScaleUpP95        time.Duration
+	ScaleDownP95      time.Duration
+	EvaluationWindows int
+}
+
+// Resolve applies the documented defaults. replicas is deploy.replicas; an
+// unset max_replicas defaults to it so enabling autoscaling alone never
+// widens the replica set beyond what the user declared. Call only on a config
+// that passed validate: unparseable values fall back to defaults here.
+func (a *AutoscalingConfig) Resolve(replicas int) AutoscaleSettings {
+	if a == nil {
+		return AutoscaleSettings{}
+	}
+	s := AutoscaleSettings{Enabled: a.Enabled}
+	s.MinReplicas = a.MinReplicas
+	if s.MinReplicas < 1 {
+		s.MinReplicas = 1
+	}
+	s.MaxReplicas = a.MaxReplicas
+	if s.MaxReplicas < s.MinReplicas {
+		if replicas > s.MinReplicas {
+			s.MaxReplicas = replicas
+		} else {
+			s.MaxReplicas = s.MinReplicas
+		}
+	}
+	s.Interval = positiveDurationOrDefault(a.Interval, DefaultAutoscaleInterval)
+	s.Cooldown = nonNegativeDurationOrDefault(a.Cooldown, DefaultAutoscaleCooldown)
+	s.ScaleUpCPU = DefaultAutoscaleCPUUpPercent
+	s.ScaleDownCPU = DefaultAutoscaleCPUDownPercent
+	if a.CPU != nil {
+		if a.CPU.ScaleUp > 0 {
+			s.ScaleUpCPU = a.CPU.ScaleUp
+		}
+		// ponytail: a literal 0 reads as "unset" and becomes the 30% default;
+		// switch to a pointer field if an "idle-only" scale_down of 0 is ever needed.
+		if a.CPU.ScaleDown > 0 {
+			s.ScaleDownCPU = a.CPU.ScaleDown
+		}
+	}
+	s.ScaleUpP95 = DefaultAutoscaleP95Up
+	s.ScaleDownP95 = DefaultAutoscaleP95Down
+	if a.Latency != nil {
+		if d, err := time.ParseDuration(a.Latency.ScaleUpP95); err == nil && d > 0 {
+			s.ScaleUpP95 = d
+		}
+		if d, err := time.ParseDuration(a.Latency.ScaleDownP95); err == nil && d > 0 {
+			s.ScaleDownP95 = d
+		}
+	}
+	s.EvaluationWindows = DefaultAutoscaleEvaluationWindow
+	if a.EvaluationWindows > 0 {
+		s.EvaluationWindows = a.EvaluationWindows
+	}
+	return s
+}
+
+func positiveDurationOrDefault(value string, def time.Duration) time.Duration {
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
+}
+
+func nonNegativeDurationOrDefault(value string, def time.Duration) time.Duration {
+	d, err := time.ParseDuration(value)
+	if err != nil || d < 0 {
+		return def
+	}
+	return d
 }
 
 // Percent is a YAML percentage that accepts either a bare number (25) or a
@@ -133,6 +311,19 @@ const (
 	StrategyProgressive = "progressive"
 )
 
+// Supported deploy runtimes. Native execs the built binary as a host process
+// (the model that runs on a bare VPS); docker builds an image and runs each
+// instance as a container so one host-level Phelix agent manages many app
+// containers as a single server.
+const (
+	RuntimeNative = "native"
+	RuntimeDocker = "docker"
+)
+
+var supportedRuntimes = map[string]bool{
+	RuntimeNative: true, RuntimeDocker: true,
+}
+
 // Values of the top-level watching key: enable opts the app into backend
 // monitoring, disable keeps it out. `phelix init` writes the disable default.
 const (
@@ -157,6 +348,87 @@ func (c *Config) WatchingSetting() (enabled, ok bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// DeployRuntime resolves the effective launch runtime for this build/rebuild.
+// Resolution order mirrors the rest of Phelix's config precedence:
+//
+//	PHELIX_RUNTIME env  →  phelix.yaml deploy.runtime  →  native (default)
+//
+// The env override lets an operator flip a single invocation to docker without
+// editing the file (the same shape as PHELIX_MODE/PHELIX_API overrides in
+// config.go). An unrecognized value falls back to native rather than failing —
+// validate() already rejects an invalid deploy.runtime in the file, and an env
+// typo must never silently switch a deploy to a runtime the operator did not
+// mean. A nil Config (no phelix.yaml) resolves to native.
+func (c *Config) DeployRuntime() string {
+	if env := strings.TrimSpace(os.Getenv("PHELIX_RUNTIME")); env != "" {
+		if supportedRuntimes[env] {
+			return env
+		}
+	}
+	if c != nil && c.Deploy != nil {
+		if rt := strings.TrimSpace(c.Deploy.Runtime); supportedRuntimes[rt] {
+			return rt
+		}
+	}
+	return RuntimeNative
+}
+
+// DeployNetwork resolves the user-defined Docker network to attach managed app
+// containers to. Resolution mirrors DeployRuntime:
+//
+//	PHELIX_NETWORK env  →  phelix.yaml deploy.network  →  "" (no explicit network)
+//
+// Empty means "do not pass --network": the container lands on the default
+// bridge, exactly the pre-network behavior. Phelix never invents a network
+// name. Only meaningful under the docker runtime (validate() rejects a network
+// set for any other runtime); a nil Config resolves to "".
+func (c *Config) DeployNetwork() string {
+	if env := strings.TrimSpace(os.Getenv("PHELIX_NETWORK")); env != "" {
+		return env
+	}
+	if c != nil && c.Deploy != nil {
+		if n := strings.TrimSpace(c.Deploy.Network); n != "" {
+			return n
+		}
+	}
+	return ""
+}
+
+// DeployDockerBuild resolves the effective docker image-build strategy from
+// phelix.yaml deploy.docker.build, defaulting to "dockerfile". Config-driven
+// (no env override): switching how images are built is a project decision, not
+// a per-invocation one. Only meaningful under the docker runtime; a nil Config
+// or absent block resolves to "dockerfile".
+func (c *Config) DeployDockerBuild() string {
+	if c != nil && c.Deploy != nil && c.Deploy.Docker != nil {
+		if b := strings.TrimSpace(c.Deploy.Docker.Build); supportedDockerBuilds[b] {
+			return b
+		}
+	}
+	return DockerBuildDockerfile
+}
+
+// DeployComposeFile resolves the compose file used when build: compose,
+// defaulting to DefaultComposeFile. The path is resolved relative to the build
+// directory by the caller.
+func (c *Config) DeployComposeFile() string {
+	if c != nil && c.Deploy != nil && c.Deploy.Docker != nil {
+		if f := strings.TrimSpace(c.Deploy.Docker.ComposeFile); f != "" {
+			return f
+		}
+	}
+	return DefaultComposeFile
+}
+
+// DeployComposeService returns the compose service that builds this app's image
+// under build: compose, or "" when none is configured.
+func (c *Config) DeployComposeService() string {
+	if c != nil && c.Deploy != nil && c.Deploy.Docker != nil {
+		return strings.TrimSpace(c.Deploy.Docker.Service)
+	}
+	return ""
 }
 
 // SetWatching writes the watching key into dir/phelix.yaml so the project
@@ -255,6 +527,50 @@ func (c *Config) validate() error {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: invalid deploy.replicas %d\nHint: replicas must be >= 1", c.Deploy.Replicas)
 		}
+		if rt := strings.TrimSpace(c.Deploy.Runtime); rt != "" && !supportedRuntimes[rt] {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: invalid deploy.runtime %q\nHint: expected one of: native, docker", c.Deploy.Runtime)
+		}
+		// Docker runtime rides the zero-downtime topology (blue-green/rolling/
+		// canary/progressive). The classic stop→start path is native-only, so a
+		// docker+classic combination is rejected up front rather than silently
+		// falling back to a host process.
+		if strings.TrimSpace(c.Deploy.Runtime) == RuntimeDocker && s == StrategyClassic {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.runtime: docker requires a zero-downtime strategy\nHint: set deploy.strategy to blue-green, rolling, canary, or progressive")
+		}
+		// deploy.network attaches app containers to a user-defined Docker network,
+		// which only the docker runtime can do. Rejected up front for any other
+		// runtime (mirrors the docker+classic rejection above) rather than silently
+		// ignored on a native deploy. A whitespace-only value is a typo, not "no
+		// network", so it is refused too.
+		if net := strings.TrimSpace(c.Deploy.Network); net != "" {
+			if strings.TrimSpace(c.Deploy.Runtime) != RuntimeDocker {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: deploy.network requires deploy.runtime: docker\nHint: set deploy.runtime: docker, or remove deploy.network")
+			}
+		} else if c.Deploy.Network != "" {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.network must not be blank\nHint: set a Docker network name (e.g. myproj_appnet) or remove the key")
+		}
+		// deploy.docker selects the image-build strategy and only applies to the
+		// docker runtime (mirrors the deploy.network rule). build must be one of
+		// the two known strategies, and build: compose needs a service name.
+		if c.Deploy.Docker != nil {
+			if strings.TrimSpace(c.Deploy.Runtime) != RuntimeDocker {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: deploy.docker requires deploy.runtime: docker\nHint: set deploy.runtime: docker, or remove the deploy.docker block")
+			}
+			build := strings.TrimSpace(c.Deploy.Docker.Build)
+			if build != "" && !supportedDockerBuilds[build] {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: invalid deploy.docker.build %q\nHint: expected one of: dockerfile, compose", c.Deploy.Docker.Build)
+			}
+			if build == DockerBuildCompose && strings.TrimSpace(c.Deploy.Docker.Service) == "" {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: deploy.docker.build: compose requires deploy.docker.service\nHint: name the compose service that builds this app's image (e.g. service: app)")
+			}
+		}
 		if c.Deploy.Replicas > 0 && s != StrategyRolling {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.replicas requires deploy.strategy: rolling")
@@ -266,6 +582,11 @@ func (c *Config) validate() error {
 		} else if s == StrategyProgressive {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.strategy: progressive requires a deploy.rollout.steps section\nHint: define at least one canary step and the final 100%% step")
+		}
+		if c.Deploy.Autoscaling != nil {
+			if err := c.Deploy.Autoscaling.validate(s); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -413,4 +734,88 @@ func validateStepDuration(path, value string) error {
 			"configuration error: %s must not be negative, got %s", path, value)
 	}
 	return nil
+}
+
+// validate checks the autoscaling block. Parse and range errors are reported
+// even when the block is disabled so typos surface immediately; the strategy
+// requirement applies only when autoscaling is enabled (a disabled block on a
+// classic deploy is inert, not an error).
+func (a *AutoscalingConfig) validate(strategy string) error {
+	if a == nil {
+		return nil
+	}
+	if a.Enabled && strategy != StrategyRolling {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: deploy.autoscaling requires deploy.strategy: rolling, got %q\nHint: autoscaling manages rolling replicas", strategy)
+	}
+	if a.MinReplicas < 0 {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: invalid deploy.autoscaling.min_replicas %d\nHint: min_replicas must be >= 1", a.MinReplicas)
+	}
+	if a.MaxReplicas < 0 {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: invalid deploy.autoscaling.max_replicas %d\nHint: max_replicas must be >= 1", a.MaxReplicas)
+	}
+	if a.MinReplicas > 0 && a.MaxReplicas > 0 && a.MinReplicas > a.MaxReplicas {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: deploy.autoscaling.min_replicas %d exceeds max_replicas %d", a.MinReplicas, a.MaxReplicas)
+	}
+	if err := validateStepDuration("deploy.autoscaling.interval", a.Interval); err != nil {
+		return err
+	}
+	if err := validateStepDuration("deploy.autoscaling.cooldown", a.Cooldown); err != nil {
+		return err
+	}
+	if a.EvaluationWindows < 0 {
+		return phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: invalid deploy.autoscaling.evaluation_windows %d\nHint: evaluation_windows must be >= 1", a.EvaluationWindows)
+	}
+	if a.CPU != nil {
+		if a.CPU.ScaleUp < 0 || a.CPU.ScaleUp > 100 {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.cpu.scale_up must be between 0 and 100, got %v", a.CPU.ScaleUp)
+		}
+		if a.CPU.ScaleDown < 0 || a.CPU.ScaleDown > 100 {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.cpu.scale_down must be between 0 and 100, got %v", a.CPU.ScaleDown)
+		}
+		if a.CPU.ScaleUp > 0 && a.CPU.ScaleDown > 0 && a.CPU.ScaleDown >= a.CPU.ScaleUp {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.cpu.scale_down (%v) must be below cpu.scale_up (%v)", a.CPU.ScaleDown, a.CPU.ScaleUp)
+		}
+	}
+	if a.Latency != nil {
+		up, err := parseAutoscaleP95("deploy.autoscaling.latency.scale_up_p95", a.Latency.ScaleUpP95)
+		if err != nil {
+			return err
+		}
+		down, err := parseAutoscaleP95("deploy.autoscaling.latency.scale_down_p95", a.Latency.ScaleDownP95)
+		if err != nil {
+			return err
+		}
+		if up > 0 && down > 0 && down >= up {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.latency.scale_down_p95 (%s) must be below latency.scale_up_p95 (%s)", a.Latency.ScaleDownP95, a.Latency.ScaleUpP95)
+		}
+	}
+	return nil
+}
+
+// parseAutoscaleP95 parses one optional latency threshold: empty means unset
+// (the default applies at Resolve); anything else must parse as a
+// non-negative duration.
+func parseAutoscaleP95(path, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: %s has invalid duration %q\nHint: use a duration like 500ms or 2s", path, value)
+	}
+	if d < 0 {
+		return 0, phelixerr.Newf(phelixerr.CodeConfiguration,
+			"configuration error: %s must not be negative, got %s", path, value)
+	}
+	return d, nil
 }

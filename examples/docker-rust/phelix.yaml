@@ -1,0 +1,20 @@
+# Phelix project configuration for the docker-rust example.
+#
+# deploy.runtime: docker  → Phelix builds an image and runs each instance as a
+#                           container (one Phelix agent on the host manages many
+#                           app containers as one server).
+# deploy.strategy: blue-green → required: the docker runtime rides the
+#                           zero-downtime topology; classic is native-only.
+name: docker-rust-demo
+port: 8080
+watching: disable
+deploy:
+  runtime: docker
+  strategy: blue-green
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto

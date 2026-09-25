@@ -77,6 +77,7 @@ func ToProtoDeploymentSnapshot(s *deploy.Snapshot) *pb.DeploymentSnapshot {
 		Failure:         toProtoDeploymentFailure(s.Failure),
 		StartedAt:       unixMilli(s.StartedAt),
 		UpdatedAt:       unixMilli(s.UpdatedAt),
+		Runtime:         s.Runtime,
 	}
 	for _, sl := range s.Slots {
 		out.Slots = append(out.Slots, &pb.DeploymentSlot{
@@ -89,6 +90,8 @@ func ToProtoDeploymentSnapshot(s *deploy.Snapshot) *pb.DeploymentSnapshot {
 			Active:       sl.Active,
 			StartedAt:    unixMilli(sl.StartedAt),
 			HealthyAt:    unixMilli(sl.HealthyAt),
+			Image:        sl.Image,
+			ContainerId:  sl.ContainerID,
 		})
 	}
 	for _, rp := range s.Replicas {
@@ -102,6 +105,8 @@ func ToProtoDeploymentSnapshot(s *deploy.Snapshot) *pb.DeploymentSnapshot {
 			Pid:          int32(rp.PID),
 			StartedAt:    unixMilli(rp.StartedAt),
 			HealthyAt:    unixMilli(rp.HealthyAt),
+			Image:        rp.Image,
+			ContainerId:  rp.ContainerID,
 		})
 	}
 	if p := s.Proxy; p != nil {

@@ -1,0 +1,20 @@
+# Phelix project config — pattern B: Phelix builds the image FROM the compose
+# service's build config (build: compose), instead of a standalone Dockerfile.
+name: aware-go-demo
+port: 8080
+watching: disable
+deploy:
+  runtime: docker
+  strategy: blue-green
+  network: docker-compose-aware-go_appnet
+  docker:
+    build: compose            # build via `docker compose build <service>`, then tag app:vN
+    compose_file: docker-compose.yml
+    service: app              # the compose service whose build config produces this image
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto

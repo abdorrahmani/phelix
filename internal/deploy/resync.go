@@ -36,6 +36,7 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 		DeploymentID:   state.LastDeploymentID,
 		RequestID:      state.LastRequestID,
 		Strategy:       string(state.Mode),
+		Runtime:        state.Runtime,
 		CurrentVersion: versionLabel(state.ActiveVersion),
 		TargetVersion:  versionLabel(state.ActiveVersion),
 		ActiveSlot:     state.ActiveSlot,
@@ -87,6 +88,8 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 			Active:       name == state.ActiveSlot,
 			StartedAt:    inst.StartedAt,
 			HealthyAt:    healthyAt(inst),
+			Image:        dockerImageOf(inst),
+			ContainerID:  inst.ContainerID,
 		})
 	}
 
@@ -108,6 +111,8 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 			PID:          inst.PID,
 			StartedAt:    inst.StartedAt,
 			HealthyAt:    healthyAt(inst),
+			Image:        dockerImageOf(inst),
+			ContainerID:  inst.ContainerID,
 		})
 		if inst.PID > 0 {
 			s.ReplicasCurrent++

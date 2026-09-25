@@ -10,6 +10,7 @@ import (
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/resources"
 )
 
 var (
@@ -76,21 +77,22 @@ func ensureDirectories() error {
 // SaveState saves the current state to disk
 func (m *AppManager) SaveState() error {
 	type SavedApp struct {
-		ID          string    `json:"id"`
-		Name        string    `json:"name"`
-		PID         int       `json:"pid"`
-		Status      string    `json:"status"`
-		Start       time.Time `json:"start"`
-		Port        int       `json:"port"`
-		LogFile     string    `json:"log_file"`
-		BuildStatus string    `json:"build_status"`
-		CreatedAt   time.Time `json:"created_at"`
-		UpdatedAt   time.Time `json:"updated_at"`
-		Directory   string    `json:"directory"`
-		Language    string    `json:"language"`
-		NoUpload    bool      `json:"no_upload"`
-		AutoStart   bool      `json:"auto_start"`
-		Watching    bool      `json:"watching"`
+		ID          string           `json:"id"`
+		Name        string           `json:"name"`
+		PID         int              `json:"pid"`
+		Status      string           `json:"status"`
+		Start       time.Time        `json:"start"`
+		Port        int              `json:"port"`
+		LogFile     string           `json:"log_file"`
+		BuildStatus string           `json:"build_status"`
+		CreatedAt   time.Time        `json:"created_at"`
+		UpdatedAt   time.Time        `json:"updated_at"`
+		Directory   string           `json:"directory"`
+		Language    string           `json:"language"`
+		NoUpload    bool             `json:"no_upload"`
+		AutoStart   bool             `json:"auto_start"`
+		Watching    bool             `json:"watching"`
+		Resources   resources.Config `json:"resources,omitzero"`
 	}
 
 	savedApps := make(map[string]SavedApp)
@@ -111,6 +113,7 @@ func (m *AppManager) SaveState() error {
 			NoUpload:    app.NoUpload,
 			AutoStart:   app.AutoStart,
 			Watching:    app.Watching,
+			Resources:   app.Resources,
 		}
 	}
 
@@ -158,21 +161,22 @@ func (m *AppManager) LoadState() error {
 	fileMutex.Unlock()
 
 	type SavedApp struct {
-		ID          string    `json:"id"`
-		Name        string    `json:"name"`
-		PID         int       `json:"pid"`
-		Status      string    `json:"status"`
-		Start       time.Time `json:"start"`
-		Port        int       `json:"port"`
-		LogFile     string    `json:"log_file"`
-		BuildStatus string    `json:"build_status"`
-		CreatedAt   time.Time `json:"created_at"`
-		UpdatedAt   time.Time `json:"updated_at"`
-		Directory   string    `json:"directory"`
-		Language    string    `json:"language"`
-		NoUpload    bool      `json:"no_upload"`
-		AutoStart   bool      `json:"auto_start"`
-		Watching    bool      `json:"watching"`
+		ID          string           `json:"id"`
+		Name        string           `json:"name"`
+		PID         int              `json:"pid"`
+		Status      string           `json:"status"`
+		Start       time.Time        `json:"start"`
+		Port        int              `json:"port"`
+		LogFile     string           `json:"log_file"`
+		BuildStatus string           `json:"build_status"`
+		CreatedAt   time.Time        `json:"created_at"`
+		UpdatedAt   time.Time        `json:"updated_at"`
+		Directory   string           `json:"directory"`
+		Language    string           `json:"language"`
+		NoUpload    bool             `json:"no_upload"`
+		AutoStart   bool             `json:"auto_start"`
+		Watching    bool             `json:"watching"`
+		Resources   resources.Config `json:"resources,omitzero"`
 	}
 
 	var savedApps map[string]SavedApp
@@ -219,6 +223,7 @@ func (m *AppManager) LoadState() error {
 		// unmarshal to false, which is the required default — an upgrade
 		// must never opt an existing app into backend monitoring.
 		appInfo.Watching = saved.Watching
+		appInfo.Resources = saved.Resources
 
 		// AutoStart records that this app was intentionally started; on a fresh
 		// daemon launch (boot / monitor restart) it is the signal that the app

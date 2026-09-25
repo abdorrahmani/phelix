@@ -30,6 +30,14 @@ type Rolling struct {
 	Notifier       Notifier
 	InFlight       InFlightProvider
 	GracePeriod    time.Duration
+	// Runtime records how instances are launched ("native"/"docker"). Persisted
+	// into DeployState so rollback and recovery resolve the matching launcher.
+	// Empty is treated as native.
+	Runtime string
+	// Network is the user-defined Docker network app containers attach to
+	// (docker runtime only). Persisted into DeployState so rollback/recovery
+	// reattach to the same network. Empty means none (default bridge).
+	Network string
 	// stateStore is a test seam for deterministic persistence-failure coverage.
 	// Production leaves it nil and uses Store.
 	stateStore func(*DeployState) error
@@ -103,6 +111,12 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
+	if r.Runtime != "" {
+		state.Runtime = r.Runtime
+	}
+	if r.Network != "" {
+		state.Network = r.Network
+	}
 	r.Telemetry.Bind(state)
 	r.Telemetry.SetVersions(activeVersionOf(state, r.AppName), 0)
 
@@ -289,9 +303,9 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	// Snapshot the complete record; failed candidates must restore every field,
 	// not just PID, or state can claim "failed" while the old instance serves.
 	old := cloneInstance(state.Replicas[key])
-	oldPID, oldBinary := 0, ""
+	oldPID := 0
 	if old != nil {
-		oldPID, oldBinary = old.PID, old.BinaryPath
+		oldPID = old.PID
 	} else {
 		state.Replicas[key] = &Instance{Slot: key, Status: "stopped"}
 	}
@@ -323,16 +337,22 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 
 	// 2. Health-check ONLY the replacement's port.
 	r.Telemetry.ReplicaHealthCheckStarted(index, port)
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), newPID, nil); err != nil {
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), newPID, deployResolver(proc)); err != nil {
 		stopHeldProcess(ctx, proc, grace)
 		restoreReplica(state, key, old)
 		if storeErr := r.persist(state); storeErr != nil {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, storeErr,
 				"replica %s: persist restored old record after unhealthy replacement", key)
 		}
-		return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed,
-			candidateHealthFailure(binaryPath, port, err),
-			"replica %s replacement failed health check; previous instance still serving", key)
+		// when the replacement died of its cgroup memory limit, the
+		// rolling failure carries the resource-OOM reason (the health-check
+		// detail stays in the chain). The recovery is the existing one: the
+		// previous instance is restored and keeps serving.
+		return oomFailure(proc,
+			phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed,
+				candidateHealthFailure(proc, binaryPath, port, tier, tierCfg, err),
+				"replica %s replacement failed health check; previous instance still serving", key),
+			fmt.Sprintf("replica %s replacement exceeded its configured memory limit and was killed by the kernel OOM killer; previous instance still serving", key))
 	}
 
 	// 3. Membership swap FIRST: new instance in, old instance out.
@@ -393,7 +413,8 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	// membership and stop the candidate; only drain after a durable commit.
 	candidate := &Instance{
 		Slot: key, PID: newPID, Port: port, BinaryPath: binaryPath,
-		StartedAt: time.Now(), Version: targetVer, Status: "running",
+		ContainerID: containerIDOf(proc),
+		StartedAt:   time.Now(), Version: targetVer, Status: "running",
 	}
 	state.Replicas[key] = candidate
 	if err := r.persist(state); err != nil {
@@ -430,9 +451,9 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	r.Telemetry.SetProxy(r.PublicPort, primary.Label, port, upstreamHosts(primary, backends))
 	r.Telemetry.ReplicaReplaced(index, newPID, port,
 		fmt.Sprintf("proxy primary %s, %d upstream(s)", primary.Label, len(backends)+1))
-	if oldPID > 0 {
+	if old != nil && (oldPID > 0 || old.ContainerID != "") {
 		r.Telemetry.ReplicaDraining(index, oldPID)
-		report := stopByPID(ctx, oldPID, grace, r.inFlight(r.AppName), oldBinary)
+		report := stopInstance(ctx, old, grace, r.inFlight(r.AppName))
 		if report.ForceKilled {
 			log.Warnf("replica %s: old instance (pid %d) ignored SIGTERM; SIGKILL applied", key, oldPID)
 		} else if report.Exited {
@@ -529,11 +550,11 @@ func (r *Rolling) stopSurplusReplicas(ctx context.Context, surplus []*Instance, 
 	}
 	log := r.logger()
 	for _, inst := range surplus {
-		if inst == nil || inst.PID <= 0 {
+		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 			continue
 		}
 		log.Stepf("stopping surplus replica %s (pid %d) removed by shrink", inst.Slot, inst.PID)
-		report := stopByPID(ctx, inst.PID, grace, 0, inst.BinaryPath)
+		report := stopInstance(ctx, inst, grace, 0)
 		if report.ForceKilled {
 			log.Warnf("surplus replica %s ignored SIGTERM; SIGKILL applied", inst.Slot)
 		}

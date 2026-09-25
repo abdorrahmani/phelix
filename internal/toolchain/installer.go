@@ -17,7 +17,7 @@ import (
 
 // goVersion is the Go version installed by the official-tarball fallback path.
 // It is intentionally pinned so installs are reproducible; bump as needed.
-const goVersion = "1.26.3"
+const goVersion = "1.27.1"
 
 // ErrNeedsManualInstall is returned (wrapped with context) when the toolchain
 // cannot be installed automatically, e.g. due to missing privileges. Callers

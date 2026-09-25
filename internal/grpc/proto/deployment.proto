@@ -50,6 +50,12 @@ message DeploymentSlot {
   bool active = 7;          // true for the slot the proxy points at
   int64 started_at = 8;     // unix millis; 0 when unknown
   int64 healthy_at = 9;     // unix millis of the last passed health window
+  // image is the container image ref for a docker instance (e.g. "billing:v3").
+  // Absent/empty always means the CLI does not know, never native.
+  string image = 10;
+  // container_id is the docker container id backing this slot. Absent/empty
+  // always means the CLI does not know, never native.
+  string container_id = 11;
 }
 
 // DeploymentReplica is one rolling replica. Replicas are reported in index
@@ -64,6 +70,12 @@ message DeploymentReplica {
   int32 pid = 7;
   int64 started_at = 8;
   int64 healthy_at = 9;
+  // image is the container image ref for a docker replica (e.g. "billing:v3").
+  // Absent/empty always means the CLI does not know, never native.
+  string image = 10;
+  // container_id is the docker container id backing this replica. Absent/empty
+  // always means the CLI does not know, never native.
+  string container_id = 11;
 }
 
 // DeploymentProxy is the routing state of the Phelix proxy daemon for this
@@ -123,6 +135,9 @@ message DeploymentSnapshot {
   int64 updated_at = 21;          // unix millis this snapshot was produced
   // Backend command correlation id that initiated the topology change.
   string request_id = 22;
+  // runtime is how this app's instances are launched: "native" or "docker".
+  // Absent/empty always means the CLI does not know, never native.
+  string runtime = 23;
 }
 
 // DeploymentEvent is one lifecycle transition of a deployment. All events of

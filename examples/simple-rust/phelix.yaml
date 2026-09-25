@@ -1,0 +1,14 @@
+# Phelix project configuration for the simple-rust example.
+# CLI flags override these values (e.g. --port).
+name: simple-rust
+port: 8080
+watching: disable
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto
+deploy:
+  strategy: classic

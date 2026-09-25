@@ -69,6 +69,14 @@ type BlueGreen struct {
 	HealthProvider HealthConfigProvider
 	Logger         Logger
 	Notifier       Notifier
+	// Runtime records how instances are launched ("native"/"docker"). Persisted
+	// into DeployState so rollback and recovery resolve the matching launcher
+	// and rollback source. Empty is treated as native.
+	Runtime string
+	// Network is the user-defined Docker network app containers attach to
+	// (docker runtime only). Persisted into DeployState so rollback/recovery
+	// reattach to the same network. Empty means none (default bridge).
+	Network string
 	// InFlight is optional; nil reports 0 in-flight at shutdown.
 	InFlight InFlightProvider
 	// GracePeriod overrides DefaultGracePeriod when > 0.
@@ -131,6 +139,12 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state"))
 	}
 	state.AppID = bg.AppID
+	if bg.Runtime != "" {
+		state.Runtime = bg.Runtime
+	}
+	if bg.Network != "" {
+		state.Network = bg.Network
+	}
 	bg.Telemetry.Bind(state)
 	bg.Telemetry.SetVersions(activeVersionOf(state, bg.AppName), 0)
 
@@ -208,14 +222,15 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	}
 	targetVer := targetVersionFromSource(src)
 	newInst := &Instance{
-		Slot:       inactive,
-		PID:        proc.PID(),
-		Port:       port,
-		BinaryPath: binaryPath,
-		EnvPath:    envPath,
-		StartedAt:  time.Now(),
-		Status:     "starting",
-		Version:    targetVer,
+		Slot:        inactive,
+		PID:         proc.PID(),
+		Port:        port,
+		BinaryPath:  binaryPath,
+		ContainerID: containerIDOf(proc),
+		EnvPath:     envPath,
+		StartedAt:   time.Now(),
+		Status:      "starting",
+		Version:     targetVer,
 	}
 	if state.Slots == nil {
 		state.Slots = map[string]*Instance{SlotBlue: {Slot: SlotBlue}, SlotGreen: {Slot: SlotGreen}}
@@ -237,18 +252,25 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 6. Wait for healthy. On failure, abort and leave the active instance
 	//    untouched.
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), nil); err != nil {
-		err = candidateHealthFailure(binaryPath, port, err)
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), deployResolver(proc)); err != nil {
+		err = candidateHealthFailure(proc, binaryPath, port, tier, tierCfg, err)
 		log.Errorf("new instance on slot %s failed health check: %v", inactive, err)
 		// Kill the failed instance; do NOT touch the active one.
 		_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 		newInst.Status = "failed"
 		newInst.PID = 0
 		bg.storeState(state)
-		return bg.failf(phelixerr.Wrapf(
-			phelixerr.CodeHealthCheckFailed,
-			err,
-			"deploy aborted: new instance unhealthy; active instance untouched",
+		// when the candidate died of its cgroup memory limit, the
+		// deployment error carries the resource-OOM reason (the health-check
+		// detail stays in the chain); the abort itself is unchanged and the
+		// active instance keeps serving.
+		return bg.failf(oomFailure(proc,
+			phelixerr.Wrapf(
+				phelixerr.CodeHealthCheckFailed,
+				err,
+				"deploy aborted: new instance unhealthy; active instance untouched",
+			),
+			"deploy aborted: new instance exceeded its configured memory limit and was killed by the kernel OOM killer; active instance untouched",
 		))
 	}
 	newInst.Status = "running"
@@ -442,10 +464,11 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		if old := state.Slots[oldActive]; old != nil && old.PID > 0 {
 			log.Stepf("gracefully stopping old slot %s (pid %d, grace %s)", oldActive, old.PID, grace)
 			bg.Telemetry.InstanceDraining(oldActive, old.PID)
-			// We no longer hold the *os.Process for the previous instance (it
-			// was started by a prior invocation), so stop it by PID. The
-			// expected executable path guards against PID recycling.
-			report := stopByPID(ctx, old.PID, grace, bg.inFlight(bg.AppName), old.BinaryPath)
+			// We no longer hold the process handle for the previous instance (it
+			// was started by a prior invocation), so stop it by its recorded
+			// identity. Native: PID + executable path (guards PID recycling).
+			// Docker: container id + phelix.managed label. stopInstance picks.
+			report := stopInstance(ctx, old, grace, bg.inFlight(bg.AppName))
 			stoppedPID := old.PID
 			if report.ForceKilled {
 				log.Warnf("old slot %s did not exit within grace; SIGKILL applied (in-flight: %d)", oldActive, report.InFlight)
@@ -538,11 +561,14 @@ func recoverStaleSlots(ctx context.Context, state *DeployState, appName string, 
 		log = &nopLogger{}
 	}
 	for name, inst := range state.Slots {
-		if name == state.ActiveSlot || inst == nil || inst.PID <= 0 {
+		if name == state.ActiveSlot || inst == nil {
 			continue
 		}
-		proc := findVerifiedProcess(inst.PID, inst.BinaryPath)
-		if proc == nil {
+		// A native instance with no PID and no container id is nothing to reclaim.
+		if inst.PID <= 0 && inst.ContainerID == "" {
+			continue
+		}
+		if !instanceAliveViaRuntime(inst) {
 			if inst.Status == "running" || inst.Status == "starting" {
 				inst.Status = "stopped"
 				inst.PID = 0
@@ -550,7 +576,7 @@ func recoverStaleSlots(ctx context.Context, state *DeployState, appName string, 
 			continue // genuinely gone — nothing to reclaim
 		}
 		log.Stepf("recovering stale %s instance from previous deploy (slot %s, pid %d)", appName, name, inst.PID)
-		report := stopByPID(ctx, inst.PID, grace, inFlight, inst.BinaryPath)
+		report := stopInstance(ctx, inst, grace, inFlight)
 		if report.ForceKilled {
 			log.Warnf("stale slot %s ignored SIGTERM; SIGKILL applied", name)
 		}

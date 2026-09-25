@@ -94,41 +94,77 @@ func defaultTCPDial(addr string, timeout time.Duration) error {
 // PidChecker returns true if the process with the given PID is still alive.
 type PidChecker func(pid int) bool
 
-// defaultPidAlive sends signal 0 to the process; an error means it's gone.
+// defaultPidAlive reports whether pid is alive using signal 0, the standard
+// POSIX existence probe. Its result is only ever used to fast-fail a candidate
+// whose process died before a probe could succeed, so a false negative is
+// costly: it aborts a healthy deploy.
+//
+// Signal 0 returns one of three outcomes:
+//   - nil   → the process exists and we may signal it → ALIVE.
+//   - EPERM → the process exists but is owned by another uid, so we may not
+//     signal it → ALIVE. This is the docker case: the container's runtime user
+//     (USER app / uid 65532) owns the host PID while phelix runs as a different
+//     unprivileged uid. Treating EPERM as dead is what made every non-root
+//     container look like it "exited before becoming healthy".
+//   - ESRCH (or anything else) → no such process → DEAD.
 func defaultPidAlive(pid int) bool {
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	// Signal 0 is the standard POSIX "existence" check. (os.Signal(nil) here
-	// was always rejected as an unsupported signal type, which made every
-	// liveness check report the process as dead.)
-	return p.Signal(syscall.Signal(0)) == nil
+	err = p.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// tierResolver bundles the pluggable probes so tests can inject fakes. A nil
-// field falls back to the real implementation.
-type tierResolver struct {
+// Resolver bundles the pluggable probes so callers and tests can inject fakes.
+// A nil *Resolver, or any nil field, falls back to the real implementation.
+// Build one with NewResolver from another package (its fields are unexported).
+type Resolver struct {
 	httpProbe HTTPProber
 	tcpDial   TCPDialer
 	pidAlive  PidChecker
 }
 
-func (r *tierResolver) probe() HTTPProber {
+// ResolverOption configures a Resolver built by NewResolver.
+type ResolverOption func(*Resolver)
+
+// WithPidChecker overrides the liveness check WaitForHealthy uses to fast-fail
+// a candidate whose process died before it could pass a probe. Docker deploys
+// pass a container-state checker (docker inspect .State.Running) here, because a
+// host-PID signal check is wrong for a container: the PID is owned by the
+// container's user (EPERM) and under Docker-Desktop/VM or userns-remap may not
+// be on the host at all. The default is the (EPERM-safe) host-PID check.
+func WithPidChecker(pc PidChecker) ResolverOption {
+	return func(r *Resolver) { r.pidAlive = pc }
+}
+
+// NewResolver builds a health Resolver from the given options for WaitForHealthy
+// and Check. Unset probes fall back to their defaults. This is the exported
+// seam other packages use to inject a custom probe (the struct fields are
+// unexported), mirroring the HTTPProber/TCPDialer/PidChecker function seams.
+func NewResolver(opts ...ResolverOption) *Resolver {
+	r := &Resolver{}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
+}
+
+func (r *Resolver) probe() HTTPProber {
 	if r.httpProbe != nil {
 		return r.httpProbe
 	}
 	return defaultHTTPProbe
 }
 
-func (r *tierResolver) dial() TCPDialer {
+func (r *Resolver) dial() TCPDialer {
 	if r.tcpDial != nil {
 		return r.tcpDial
 	}
 	return defaultTCPDial
 }
 
-func (r *tierResolver) alive() PidChecker {
+func (r *Resolver) alive() PidChecker {
 	if r.pidAlive != nil {
 		return r.pidAlive
 	}
@@ -146,9 +182,9 @@ func (r *tierResolver) alive() PidChecker {
 //
 // The HTTP probe in step 4 is what lets us distinguish a real HTTP server from
 // a raw TCP worker. We never return TierUnknown from this function.
-func SelectTier(cfg *DeployTierConfig, host string, resolver *tierResolver) Tier {
+func SelectTier(cfg *DeployTierConfig, host string, resolver *Resolver) Tier {
 	if resolver == nil {
-		resolver = &tierResolver{}
+		resolver = &Resolver{}
 	}
 	mode := TierModeAuto
 	if cfg != nil && cfg.Mode != "" {
@@ -222,9 +258,9 @@ func resolvedConfig(cfg *DeployTierConfig) (interval time.Duration, retries int,
 // defeating the entire purpose of zero-downtime. Requiring a semantic success
 // status is reserved for Tier 1, where the user has explicitly opted into a
 // health endpoint and therefore vouches that a 2xx there is meaningful.
-func Check(ctx context.Context, tier Tier, cfg *DeployTierConfig, host string, pid int, resolver *tierResolver) bool {
+func Check(ctx context.Context, tier Tier, cfg *DeployTierConfig, host string, pid int, resolver *Resolver) bool {
 	if resolver == nil {
-		resolver = &tierResolver{}
+		resolver = &Resolver{}
 	}
 
 	switch tier {
@@ -274,10 +310,10 @@ var ErrCandidateExited = errors.New("candidate process exited before becoming he
 // or the overall `timeout` elapses. Returns nil if healthy, an error describing
 // why (timeout / process died) otherwise. The interval, retries and timeout
 // come from cfg (falling back to defaults). resolver may be nil.
-func WaitForHealthy(ctx context.Context, tier Tier, cfg *DeployTierConfig, host string, pid int, resolver *tierResolver) error {
+func WaitForHealthy(ctx context.Context, tier Tier, cfg *DeployTierConfig, host string, pid int, resolver *Resolver) error {
 	interval, retries, timeout := resolvedConfig(cfg)
 	if resolver == nil {
-		resolver = &tierResolver{}
+		resolver = &Resolver{}
 	}
 
 	// The overall deadline is the smaller of ctx's deadline and our timeout.

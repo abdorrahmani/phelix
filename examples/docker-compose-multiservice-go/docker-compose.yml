@@ -1,0 +1,36 @@
+# Multiservice — TWO independent Go apps (api, worker) that are each their own
+# Phelix app, sharing ONE network and ONE Redis. On the SERVER only Redis runs
+# from compose; each app is deployed with its own `phelix build`. The api/worker
+# services here are behind the "local" profile for one-command local dev.
+#
+#   LOCAL:  docker compose --profile local up --build   # redis + api + worker
+#   SERVER: docker compose up -d                         # ONLY redis (+ the network)
+#           (cd api    && phelix build api-demo)
+#           (cd worker && phelix build worker-demo)
+services:
+  api:
+    build: ./api
+    image: api-demo:local
+    profiles: ["local"]
+    environment: { PORT: "8080", REDIS_ADDR: "redis:6379" }
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on: [redis]
+    networks: [appnet]
+
+  worker:
+    build: ./worker
+    image: worker-demo:local
+    profiles: ["local"]
+    environment: { PORT: "8080", REDIS_ADDR: "redis:6379" }
+    ports: ["127.0.0.1:8090:8080"]
+    depends_on: [redis]
+    networks: [appnet]
+
+  redis:
+    image: redis:7-alpine
+    networks: [appnet]
+
+networks:
+  # Shared by both apps. Compose default name is <project>_appnet →
+  # docker-compose-multiservice-go_appnet, referenced by BOTH phelix.yaml files.
+  appnet: {}

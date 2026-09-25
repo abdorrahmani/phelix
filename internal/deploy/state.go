@@ -53,7 +53,15 @@ type Instance struct {
 	// Port is the internal port the instance listens on. The proxy dials this.
 	Port int `json:"port"`
 	// BinaryPath is the absolute path to the executable the instance runs.
+	// In docker runtime it carries the image reference (e.g. "billing:v3")
+	// instead of a filesystem path — the field the Docker launcher reads.
 	BinaryPath string `json:"binary_path,omitempty"`
+	// ContainerID is set only in docker runtime: the id of the container this
+	// instance runs in. When present, identity verification and stop route
+	// through Docker (a container id is never recycled like a PID, and the
+	// phelix.managed label is re-checked), so a docker instance is never
+	// mistaken for dead — nor mistaken for alive after the container is gone.
+	ContainerID string `json:"container_id,omitempty"`
 	// StartedAt records when the instance was launched.
 	StartedAt time.Time `json:"started_at,omitempty"`
 	// Status is one of: "running", "stopped", "failed", "starting".
@@ -127,6 +135,18 @@ type DeployState struct {
 	AppID string `json:"app_id,omitempty"`
 	// Mode is the active deployment strategy.
 	Mode Mode `json:"mode"`
+	// Runtime is how this app's instances are launched: "" / "native" (exec the
+	// binary as a host process) or "docker" (run each instance as a container).
+	// Persisted so rollback and recovery pick the same launcher and rollback
+	// source the forward deploy used — a docker app must roll back to an image,
+	// not to a binary path. Empty means native (every pre-docker deploy).
+	Runtime string `json:"runtime,omitempty"`
+	// Network is the user-defined Docker network this app's containers are
+	// attached to (docker runtime only). Persisted next to Runtime so rollback,
+	// recovery and monitor-restore attach containers to the same network the
+	// forward deploy used — otherwise a restored container could not resolve the
+	// backing services by their compose DNS names. Empty = none (default bridge).
+	Network string `json:"network,omitempty"`
 	// PublicPort is the externally exposed port the user asked for. It is
 	// stable for the life of the app and is the only port the client ever sees.
 	PublicPort int `json:"public_port"`

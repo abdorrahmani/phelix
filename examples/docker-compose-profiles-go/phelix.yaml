@@ -1,0 +1,18 @@
+# Phelix project config — pattern C (app in compose for local dev; Phelix runs it
+# on the server). Default "dockerfile" build strategy (no deploy.docker block).
+name: profiles-go-demo
+port: 8080
+watching: disable
+deploy:
+  runtime: docker
+  strategy: blue-green
+  # The compose default network name is <project>_appnet. This example's project
+  # dir is docker-compose-profiles-go, hence:
+  network: docker-compose-profiles-go_appnet
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto

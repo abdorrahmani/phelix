@@ -183,6 +183,14 @@ type Rollout struct {
 	Notifier       Notifier
 	InFlight       InFlightProvider
 	GracePeriod    time.Duration
+	// Runtime records how instances are launched ("native"/"docker"). Persisted
+	// into DeployState so rollback and recovery resolve the matching launcher.
+	// Empty is treated as native.
+	Runtime string
+	// Network is the user-defined Docker network app containers attach to
+	// (docker runtime only). Persisted into DeployState so rollback/recovery
+	// reattach to the same network. Empty means none (default bridge).
+	Network string
 	// PortHandoff, when set, is invoked right before the first proxy
 	// enrolment if something still owns the public port (a classic instance
 	// from before the app came under the proxy). The CLI wires this to
@@ -252,6 +260,12 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Newf(phelixerr.CodeConfiguration, "rollout: unsupported deploy mode %q for %q", state.Mode, ro.AppName))
 	}
 	state.AppID = ro.AppID
+	if ro.Runtime != "" {
+		state.Runtime = ro.Runtime
+	}
+	if ro.Network != "" {
+		state.Network = ro.Network
+	}
 	ro.Telemetry.Bind(state)
 	ro.Telemetry.SetVersions(activeVersionOf(state, ro.AppName), 0)
 
@@ -377,8 +391,8 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	tier := selectDeployHealth(ctx, tierCfg, ro.AppName, hostPort(port), log, ro.Notifier)
 	ro.Telemetry.SetHealthConfig(tierCfg, tier)
 	ro.Telemetry.HealthCheckStarted(canarySlot, port)
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), nil); err != nil {
-		err = candidateHealthFailure(binaryPath, port, err)
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), deployResolver(proc)); err != nil {
+		err = candidateHealthFailure(proc, binaryPath, port, tier, tierCfg, err)
 		stopHeldProcess(ctx, proc, grace)
 		canaryInst.Status = "failed"
 		canaryInst.PID = 0

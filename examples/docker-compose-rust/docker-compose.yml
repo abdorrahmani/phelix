@@ -1,0 +1,27 @@
+# Backing tier for the docker-compose-rust example — the services the app
+# depends on, but that Phelix does NOT own. `docker compose up -d` here creates
+# the shared network AND starts Redis; Phelix then attaches the app container to
+# that same network (deploy.network: phelix-compose-rust in phelix.yaml) and
+# reaches Redis by its service name, "redis".
+#
+# WHY the app is NOT a service here: Phelix owns the app tier so it can
+# blue-green/rolling-deploy it (start a second container, health-check, cut the
+# proxy over, drain the old one). If compose also ran the app, the two would
+# double-own it and both try to bind the public port. Compose therefore holds
+# ONLY the backing tier; `docker compose down` never touches the Phelix-managed
+# app container. See ../../docs/guides/docker-runtime.md.
+services:
+  redis:
+    image: redis:7-alpine
+    networks: [appnet]
+    restart: unless-stopped
+    # A cache needs no volume; a database (mysql/postgres) would mount one here
+    # so its state survives `docker compose down`.
+
+networks:
+  appnet:
+    # An explicit name makes the network prefix-free and stable, so
+    # deploy.network can reference it verbatim. Without `name:`, compose would
+    # prefix it with the project directory (e.g. docker-compose-rust_appnet) —
+    # check with `docker network ls`.
+    name: phelix-compose-rust
