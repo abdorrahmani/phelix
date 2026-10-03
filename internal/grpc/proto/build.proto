@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+import "internal/grpc/proto/buildreport.proto";
+import "internal/grpc/proto/matrix.proto";
+
+// BuildEvent reports one terminal build outcome (phelix build / rebuild, native,
+// docker or matrix) to the backend via ReportBuildEvent. It is best-effort
+// telemetry gated by the "build_report" capability: a backend that does not
+// implement ReportBuildEvent answers UNIMPLEMENTED and the agent disables build
+// reporting for the rest of the process, exactly like ReportDeploymentEvent.
+//
+// A build is not a deployment and not a rollback — it has its own RPC so a plain
+// `phelix build` (no deploy) and `--no-upload` builds are not forced through the
+// deployment or rollback paths. The session token is never in the body (gRPC
+// metadata only); user_id is the session id. error / stage inside the report are
+// redacted.
+message BuildEvent {
+  string server_id = 1;      // agent_id of the reporting runtime
+  string app_id = 2;         // CLI application id
+  string app_name = 3;
+  string version = 4;        // "vN"; empty when the build recorded no version
+  string tag = 5;
+  string git_commit = 6;
+  // build_mode: "classic" (single native build) | "docker" (dockerize) |
+  // "matrix" (build/dockerize --matrix). Unknown values degrade to "unknown".
+  string build_mode = 7;
+  bool success = 8;
+  // report is the single-artifact build report (classic/docker). Empty for a
+  // matrix build — see combinations.
+  BuildReport report = 9;
+  // combinations carries one entry per matrix cell (matrix builds only), each
+  // with its own report. Empty for single builds.
+  repeated MatrixCombinationState combinations = 10;
+  int64 timestamp = 11;      // unix millis
+  // user_id is the operator's session id (never the raw token — that is in
+  // gRPC metadata). Empty when the build ran without a resolvable session.
+  string user_id = 12;
+  // request_id correlates a remote-triggered build with the originating command.
+  string request_id = 13;
+  // error_code is the structured phelix code on failure (e.g. BUILD_FAILED).
+  // Empty on success and for unclassified failures.
+  string error_code = 14;
+}
