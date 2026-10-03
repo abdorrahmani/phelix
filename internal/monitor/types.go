@@ -50,6 +50,11 @@ type CommandPayload struct {
 	// override is never written back to that file.
 	Strategy string `json:"strategy,omitempty"`
 	Replicas int    `json:"replicas,omitempty"`
+	// CanaryPercent is the first-step canary traffic share for a
+	// strategy="canary" rebuild (1..99, mirroring the local `--canary N` flag).
+	// Zero means "not specified": a canary then uses the app's phelix.yaml
+	// rollout profile, and the field is ignored for every other strategy.
+	CanaryPercent int `json:"canaryPercent,omitempty"`
 
 	// Target/Reason/VerifyDuration/DryRun are remote rollback options carried
 	// by a "rollback" command. They mirror the local `phelix rollback` flags:

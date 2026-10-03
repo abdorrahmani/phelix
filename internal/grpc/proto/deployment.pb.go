@@ -361,8 +361,15 @@ type DeploymentProxy struct {
 	TargetInternalPort int32                  `protobuf:"varint,4,opt,name=target_internal_port,json=targetInternalPort,proto3" json:"target_internal_port,omitempty"`
 	Upstreams          []string               `protobuf:"bytes,5,rep,name=upstreams,proto3" json:"upstreams,omitempty"`                // every active upstream as host:port
 	InFlight           int64                  `protobuf:"varint,6,opt,name=in_flight,json=inFlight,proto3" json:"in_flight,omitempty"` // in-flight requests, when the daemon reports it
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// weighted_upstreams carries the per-target traffic weight the CLI set behind
+	// the proxy (proxy.Target.Weight) — the split a canary/progressive rollout
+	// applies (e.g. stable 90 / canary 10). The plain `upstreams` list above is
+	// unchanged (hosts only); this adds the weight it drops. Empty means the CLI
+	// established no weighted split (single backend, or an unweighted strategy),
+	// never "weight 0".
+	WeightedUpstreams []*WeightedUpstream `protobuf:"bytes,7,rep,name=weighted_upstreams,json=weightedUpstreams,proto3" json:"weighted_upstreams,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *DeploymentProxy) Reset() {
@@ -437,6 +444,77 @@ func (x *DeploymentProxy) GetInFlight() int64 {
 	return 0
 }
 
+func (x *DeploymentProxy) GetWeightedUpstreams() []*WeightedUpstream {
+	if x != nil {
+		return x.WeightedUpstreams
+	}
+	return nil
+}
+
+// WeightedUpstream is one proxy backend with its traffic share, mirroring
+// proxy.Target (internal/proxy/proxy.go). It is the structured form of a
+// canary split; the DeploymentProxy.upstreams string list carries the same
+// hosts without weights.
+type WeightedUpstream struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Host          string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`                                         // "host:port" dial address
+	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`                                       // "blue"/"green"/"replica-N"/"canary"/"stable"
+	WeightPercent int32                  `protobuf:"varint,3,opt,name=weight_percent,json=weightPercent,proto3" json:"weight_percent,omitempty"` // 1..100; 0 means unweighted (single backend)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WeightedUpstream) Reset() {
+	*x = WeightedUpstream{}
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WeightedUpstream) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WeightedUpstream) ProtoMessage() {}
+
+func (x *WeightedUpstream) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WeightedUpstream.ProtoReflect.Descriptor instead.
+func (*WeightedUpstream) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *WeightedUpstream) GetHost() string {
+	if x != nil {
+		return x.Host
+	}
+	return ""
+}
+
+func (x *WeightedUpstream) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *WeightedUpstream) GetWeightPercent() int32 {
+	if x != nil {
+		return x.WeightPercent
+	}
+	return 0
+}
+
 // DeploymentHealth is the deploy-time health-check configuration and outcome,
 // taken from the app's persisted health config and the tier actually selected.
 // No new metrics are computed for telemetry.
@@ -456,7 +534,7 @@ type DeploymentHealth struct {
 
 func (x *DeploymentHealth) Reset() {
 	*x = DeploymentHealth{}
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[4]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -468,7 +546,7 @@ func (x *DeploymentHealth) String() string {
 func (*DeploymentHealth) ProtoMessage() {}
 
 func (x *DeploymentHealth) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[4]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -481,7 +559,7 @@ func (x *DeploymentHealth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeploymentHealth.ProtoReflect.Descriptor instead.
 func (*DeploymentHealth) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{4}
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *DeploymentHealth) GetMode() string {
@@ -549,7 +627,7 @@ type DeploymentSnapshot struct {
 	AppId          string                 `protobuf:"bytes,2,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`          // CLI application id
 	AppName        string                 `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
 	DeploymentId   string                 `protobuf:"bytes,4,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`       // last/current deployment operation id
-	Strategy       string                 `protobuf:"bytes,5,opt,name=strategy,proto3" json:"strategy,omitempty"`                                   // classic | blue-green | rolling
+	Strategy       string                 `protobuf:"bytes,5,opt,name=strategy,proto3" json:"strategy,omitempty"`                                   // classic | blue-green | rolling | canary | progressive
 	Phase          string                 `protobuf:"bytes,6,opt,name=phase,proto3" json:"phase,omitempty"`                                         // see DeploymentEvent.phase
 	Status         string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`                                       // idle | in_progress | succeeded | failed | cancelled
 	CurrentVersion string                 `protobuf:"bytes,8,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"` // version actually serving traffic
@@ -572,14 +650,20 @@ type DeploymentSnapshot struct {
 	RequestId string `protobuf:"bytes,22,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// runtime is how this app's instances are launched: "native" or "docker".
 	// Absent/empty always means the CLI does not know, never native.
-	Runtime       string `protobuf:"bytes,23,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	Runtime string `protobuf:"bytes,23,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	// rollout is the canary/progressive rollout state when this deployment is a
+	// rollout; absent for classic/blue-green/rolling. A canary runs on blue-green
+	// topology, so `slots`/`active_slot` above stay truthful and `strategy` is
+	// "canary"/"progressive"; `rollout` adds the step/traffic/verification detail
+	// the slots cannot express. Absent always means "not a rollout", never step 0.
+	Rollout       *RolloutState `protobuf:"bytes,24,opt,name=rollout,proto3" json:"rollout,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeploymentSnapshot) Reset() {
 	*x = DeploymentSnapshot{}
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[5]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -591,7 +675,7 @@ func (x *DeploymentSnapshot) String() string {
 func (*DeploymentSnapshot) ProtoMessage() {}
 
 func (x *DeploymentSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[5]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -604,7 +688,7 @@ func (x *DeploymentSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeploymentSnapshot.ProtoReflect.Descriptor instead.
 func (*DeploymentSnapshot) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{5}
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DeploymentSnapshot) GetServerId() string {
@@ -768,6 +852,13 @@ func (x *DeploymentSnapshot) GetRuntime() string {
 	return ""
 }
 
+func (x *DeploymentSnapshot) GetRollout() *RolloutState {
+	if x != nil {
+		return x.Rollout
+	}
+	return nil
+}
+
 // DeploymentEvent is one lifecycle transition of a deployment. All events of
 // one deployment share deployment_id; ordering is the order of emission
 // (timestamp is monotonic within a deployment).
@@ -786,11 +877,23 @@ type DeploymentEvent struct {
 	// deployment.replica_replaced, deployment.replica_draining,
 	// deployment.replica_stopped, deployment.completed, deployment.failed,
 	// deployment.cancelled.
-	Event    string `protobuf:"bytes,5,opt,name=event,proto3" json:"event,omitempty"`
+	//
+	// Canary/progressive rollouts additionally emit:
+	// deployment.rollout_step_started, deployment.rollout_step_verified,
+	// deployment.rollout_step_promoted (final 100% step committed) and
+	// deployment.rollout_aborted (a step failed verification / regressed; the
+	// structured cause is in `rollout.abort_code` and `failure`). The structured
+	// step detail travels in the embedded snapshot's `rollout` (RolloutState);
+	// `message` is a human summary only.
+	Event string `protobuf:"bytes,5,opt,name=event,proto3" json:"event,omitempty"`
+	// strategy: classic | blue-green | rolling | canary | progressive. A rollout
+	// reports "canary"/"progressive" on its live events even though it runs on
+	// blue-green topology.
 	Strategy string `protobuf:"bytes,6,opt,name=strategy,proto3" json:"strategy,omitempty"`
 	// phase is the lifecycle phase the deployment is in at emission time:
-	// idle | building | starting | health_check | switching | promoting |
-	// draining | completed | failed | cancelled.
+	// idle | building | starting | health_check | switching | observing |
+	// promoting | draining | completed | failed | cancelled. "observing" is a
+	// rollout's per-step verification window.
 	Phase          string `protobuf:"bytes,7,opt,name=phase,proto3" json:"phase,omitempty"`
 	Status         string `protobuf:"bytes,8,opt,name=status,proto3" json:"status,omitempty"`
 	CurrentVersion string `protobuf:"bytes,9,opt,name=current_version,json=currentVersion,proto3" json:"current_version,omitempty"`
@@ -821,7 +924,7 @@ type DeploymentEvent struct {
 
 func (x *DeploymentEvent) Reset() {
 	*x = DeploymentEvent{}
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[6]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -833,7 +936,7 @@ func (x *DeploymentEvent) String() string {
 func (*DeploymentEvent) ProtoMessage() {}
 
 func (x *DeploymentEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[6]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -846,7 +949,7 @@ func (x *DeploymentEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeploymentEvent.ProtoReflect.Descriptor instead.
 func (*DeploymentEvent) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{6}
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DeploymentEvent) GetServerId() string {
@@ -1003,6 +1106,289 @@ func (x *DeploymentEvent) GetRequestId() string {
 	return ""
 }
 
+// RolloutState is the state of a canary/progressive rollout, attached to
+// DeploymentSnapshot.rollout. It mirrors the agent's deploy.CanaryState plus
+// the engine's current step/verification detail (internal/deploy/state.go,
+// rollout.go, rollout_verify.go). Every number a rollout computes locally that
+// used to live only in Event.message is a typed field here. Absent snapshot
+// `rollout` means the deployment is not a rollout.
+type RolloutState struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Strategy              string                 `protobuf:"bytes,1,opt,name=strategy,proto3" json:"strategy,omitempty"`                                                           // "canary" | "progressive"
+	StepIndex             int32                  `protobuf:"varint,2,opt,name=step_index,json=stepIndex,proto3" json:"step_index,omitempty"`                                       // 0-based index of the step in flight
+	TotalSteps            int32                  `protobuf:"varint,3,opt,name=total_steps,json=totalSteps,proto3" json:"total_steps,omitempty"`                                    // steps in the plan
+	TargetWeightPercent   int32                  `protobuf:"varint,4,opt,name=target_weight_percent,json=targetWeightPercent,proto3" json:"target_weight_percent,omitempty"`       // canary share this step intends (plan)
+	ObservedWeightPercent int32                  `protobuf:"varint,5,opt,name=observed_weight_percent,json=observedWeightPercent,proto3" json:"observed_weight_percent,omitempty"` // canary share the proxy actually set
+	// status mirrors CanaryState.Status: running | promoted | failed | aborted.
+	// Empty = unknown (older agent).
+	Status string `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
+	// decision is the engine's call after the current step's verification:
+	// continue | promote | abort | hold. Empty = not yet decided / unknown.
+	Decision string `protobuf:"bytes,7,opt,name=decision,proto3" json:"decision,omitempty"`
+	// abort_code is the phelix error code when the rollout aborted (e.g.
+	// CANARY_REGRESSION, HEALTH_CHECK_FAILED). Empty unless status == "aborted".
+	AbortCode string `protobuf:"bytes,8,opt,name=abort_code,json=abortCode,proto3" json:"abort_code,omitempty"`
+	Reason    string `protobuf:"bytes,9,opt,name=reason,proto3" json:"reason,omitempty"` // redacted human reason (CanaryState.Reason)
+	// verification is the most recent completed step's metric verdict.
+	Verification  *RolloutVerification `protobuf:"bytes,10,opt,name=verification,proto3" json:"verification,omitempty"`
+	StartedAt     int64                `protobuf:"varint,11,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"` // unix millis
+	UpdatedAt     int64                `protobuf:"varint,12,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // unix millis
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RolloutState) Reset() {
+	*x = RolloutState{}
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RolloutState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RolloutState) ProtoMessage() {}
+
+func (x *RolloutState) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RolloutState.ProtoReflect.Descriptor instead.
+func (*RolloutState) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *RolloutState) GetStrategy() string {
+	if x != nil {
+		return x.Strategy
+	}
+	return ""
+}
+
+func (x *RolloutState) GetStepIndex() int32 {
+	if x != nil {
+		return x.StepIndex
+	}
+	return 0
+}
+
+func (x *RolloutState) GetTotalSteps() int32 {
+	if x != nil {
+		return x.TotalSteps
+	}
+	return 0
+}
+
+func (x *RolloutState) GetTargetWeightPercent() int32 {
+	if x != nil {
+		return x.TargetWeightPercent
+	}
+	return 0
+}
+
+func (x *RolloutState) GetObservedWeightPercent() int32 {
+	if x != nil {
+		return x.ObservedWeightPercent
+	}
+	return 0
+}
+
+func (x *RolloutState) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *RolloutState) GetDecision() string {
+	if x != nil {
+		return x.Decision
+	}
+	return ""
+}
+
+func (x *RolloutState) GetAbortCode() string {
+	if x != nil {
+		return x.AbortCode
+	}
+	return ""
+}
+
+func (x *RolloutState) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *RolloutState) GetVerification() *RolloutVerification {
+	if x != nil {
+		return x.Verification
+	}
+	return nil
+}
+
+func (x *RolloutState) GetStartedAt() int64 {
+	if x != nil {
+		return x.StartedAt
+	}
+	return 0
+}
+
+func (x *RolloutState) GetUpdatedAt() int64 {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return 0
+}
+
+// RolloutVerification is one rollout step's metric verdict, mirroring
+// internal/deploy/rollout_verify.go (evaluateStats) and the thresholds in
+// VerificationConfig. Rates are percentages; latencies are milliseconds. A
+// non-empty skip_reason means the step passed on health alone (no comparable
+// traffic / metrics unavailable) — not a metric pass.
+type RolloutVerification struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	CanaryErrorRate   float64                `protobuf:"fixed64,1,opt,name=canary_error_rate,json=canaryErrorRate,proto3" json:"canary_error_rate,omitempty"`       // observed canary error % in the window
+	BaselineErrorRate float64                `protobuf:"fixed64,2,opt,name=baseline_error_rate,json=baselineErrorRate,proto3" json:"baseline_error_rate,omitempty"` // stable slot error % (baseline)
+	MaxErrorRate      float64                `protobuf:"fixed64,3,opt,name=max_error_rate,json=maxErrorRate,proto3" json:"max_error_rate,omitempty"`                // threshold, default 5.0
+	MaxErrorDelta     float64                `protobuf:"fixed64,4,opt,name=max_error_delta,json=maxErrorDelta,proto3" json:"max_error_delta,omitempty"`             // threshold in percentage points, default 2.0
+	CanaryP95Ms       float64                `protobuf:"fixed64,5,opt,name=canary_p95_ms,json=canaryP95Ms,proto3" json:"canary_p95_ms,omitempty"`                   // canary p95 latency
+	BaselineP95Ms     float64                `protobuf:"fixed64,6,opt,name=baseline_p95_ms,json=baselineP95Ms,proto3" json:"baseline_p95_ms,omitempty"`             // stable p95 latency
+	MaxP95Factor      float64                `protobuf:"fixed64,7,opt,name=max_p95_factor,json=maxP95Factor,proto3" json:"max_p95_factor,omitempty"`                // threshold, default 3.0 (canary p95 <= factor*baseline)
+	CanaryRequests    int64                  `protobuf:"varint,8,opt,name=canary_requests,json=canaryRequests,proto3" json:"canary_requests,omitempty"`             // sample size (window delta)
+	CanaryErrors      int64                  `protobuf:"varint,9,opt,name=canary_errors,json=canaryErrors,proto3" json:"canary_errors,omitempty"`
+	BaselineRequests  int64                  `protobuf:"varint,10,opt,name=baseline_requests,json=baselineRequests,proto3" json:"baseline_requests,omitempty"` // 0 => error-delta / p95 checks were skipped
+	Passed            bool                   `protobuf:"varint,11,opt,name=passed,proto3" json:"passed,omitempty"`                                             // window verdict
+	// skip_reason: "zero_canary_traffic" | "metrics_unavailable" | "" (compared).
+	SkipReason    string `protobuf:"bytes,12,opt,name=skip_reason,json=skipReason,proto3" json:"skip_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RolloutVerification) Reset() {
+	*x = RolloutVerification{}
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RolloutVerification) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RolloutVerification) ProtoMessage() {}
+
+func (x *RolloutVerification) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RolloutVerification.ProtoReflect.Descriptor instead.
+func (*RolloutVerification) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *RolloutVerification) GetCanaryErrorRate() float64 {
+	if x != nil {
+		return x.CanaryErrorRate
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetBaselineErrorRate() float64 {
+	if x != nil {
+		return x.BaselineErrorRate
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetMaxErrorRate() float64 {
+	if x != nil {
+		return x.MaxErrorRate
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetMaxErrorDelta() float64 {
+	if x != nil {
+		return x.MaxErrorDelta
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetCanaryP95Ms() float64 {
+	if x != nil {
+		return x.CanaryP95Ms
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetBaselineP95Ms() float64 {
+	if x != nil {
+		return x.BaselineP95Ms
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetMaxP95Factor() float64 {
+	if x != nil {
+		return x.MaxP95Factor
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetCanaryRequests() int64 {
+	if x != nil {
+		return x.CanaryRequests
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetCanaryErrors() int64 {
+	if x != nil {
+		return x.CanaryErrors
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetBaselineRequests() int64 {
+	if x != nil {
+		return x.BaselineRequests
+	}
+	return 0
+}
+
+func (x *RolloutVerification) GetPassed() bool {
+	if x != nil {
+		return x.Passed
+	}
+	return false
+}
+
+func (x *RolloutVerification) GetSkipReason() string {
+	if x != nil {
+		return x.SkipReason
+	}
+	return ""
+}
+
 var File_internal_grpc_proto_deployment_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
@@ -1041,7 +1427,7 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"healthy_at\x18\t \x01(\x03R\thealthyAt\x12\x14\n" +
 	"\x05image\x18\n" +
 	" \x01(\tR\x05image\x12!\n" +
-	"\fcontainer_id\x18\v \x01(\tR\vcontainerId\"\xda\x01\n" +
+	"\fcontainer_id\x18\v \x01(\tR\vcontainerId\"\xa3\x02\n" +
 	"\x0fDeploymentProxy\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vpublic_port\x18\x02 \x01(\x05R\n" +
@@ -1050,7 +1436,12 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"targetSlot\x120\n" +
 	"\x14target_internal_port\x18\x04 \x01(\x05R\x12targetInternalPort\x12\x1c\n" +
 	"\tupstreams\x18\x05 \x03(\tR\tupstreams\x12\x1b\n" +
-	"\tin_flight\x18\x06 \x01(\x03R\binFlight\"\xe5\x01\n" +
+	"\tin_flight\x18\x06 \x01(\x03R\binFlight\x12G\n" +
+	"\x12weighted_upstreams\x18\a \x03(\v2\x18.phelix.WeightedUpstreamR\x11weightedUpstreams\"c\n" +
+	"\x10WeightedUpstream\x12\x12\n" +
+	"\x04host\x18\x01 \x01(\tR\x04host\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12%\n" +
+	"\x0eweight_percent\x18\x03 \x01(\x05R\rweightPercent\"\xe5\x01\n" +
 	"\x10DeploymentHealth\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x18\n" +
@@ -1060,7 +1451,7 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"\x04tier\x18\x06 \x01(\x05R\x04tier\x12\x1d\n" +
 	"\n" +
 	"tier_label\x18\a \x01(\tR\ttierLabel\x12&\n" +
-	"\x0flast_healthy_at\x18\b \x01(\x03R\rlastHealthyAt\"\xdd\x06\n" +
+	"\x0flast_healthy_at\x18\b \x01(\x03R\rlastHealthyAt\"\x8d\a\n" +
 	"\x12DeploymentSnapshot\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x15\n" +
 	"\x06app_id\x18\x02 \x01(\tR\x05appId\x12\x19\n" +
@@ -1089,7 +1480,8 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"updated_at\x18\x15 \x01(\x03R\tupdatedAt\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x16 \x01(\tR\trequestId\x12\x18\n" +
-	"\aruntime\x18\x17 \x01(\tR\aruntime\"\xcc\x05\n" +
+	"\aruntime\x18\x17 \x01(\tR\aruntime\x12.\n" +
+	"\arollout\x18\x18 \x01(\v2\x14.phelix.RolloutStateR\arollout\"\xcc\x05\n" +
 	"\x0fDeploymentEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x15\n" +
 	"\x06app_id\x18\x02 \x01(\tR\x05appId\x12\x19\n" +
@@ -1115,7 +1507,41 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"\ttimestamp\x18\x14 \x01(\x03R\ttimestamp\x12\x17\n" +
 	"\auser_id\x18\x15 \x01(\tR\x06userId\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x16 \x01(\tR\trequestIdB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
+	"request_id\x18\x16 \x01(\tR\trequestId\"\xc0\x03\n" +
+	"\fRolloutState\x12\x1a\n" +
+	"\bstrategy\x18\x01 \x01(\tR\bstrategy\x12\x1d\n" +
+	"\n" +
+	"step_index\x18\x02 \x01(\x05R\tstepIndex\x12\x1f\n" +
+	"\vtotal_steps\x18\x03 \x01(\x05R\n" +
+	"totalSteps\x122\n" +
+	"\x15target_weight_percent\x18\x04 \x01(\x05R\x13targetWeightPercent\x126\n" +
+	"\x17observed_weight_percent\x18\x05 \x01(\x05R\x15observedWeightPercent\x12\x16\n" +
+	"\x06status\x18\x06 \x01(\tR\x06status\x12\x1a\n" +
+	"\bdecision\x18\a \x01(\tR\bdecision\x12\x1d\n" +
+	"\n" +
+	"abort_code\x18\b \x01(\tR\tabortCode\x12\x16\n" +
+	"\x06reason\x18\t \x01(\tR\x06reason\x12?\n" +
+	"\fverification\x18\n" +
+	" \x01(\v2\x1b.phelix.RolloutVerificationR\fverification\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\v \x01(\x03R\tstartedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\f \x01(\x03R\tupdatedAt\"\xe5\x03\n" +
+	"\x13RolloutVerification\x12*\n" +
+	"\x11canary_error_rate\x18\x01 \x01(\x01R\x0fcanaryErrorRate\x12.\n" +
+	"\x13baseline_error_rate\x18\x02 \x01(\x01R\x11baselineErrorRate\x12$\n" +
+	"\x0emax_error_rate\x18\x03 \x01(\x01R\fmaxErrorRate\x12&\n" +
+	"\x0fmax_error_delta\x18\x04 \x01(\x01R\rmaxErrorDelta\x12\"\n" +
+	"\rcanary_p95_ms\x18\x05 \x01(\x01R\vcanaryP95Ms\x12&\n" +
+	"\x0fbaseline_p95_ms\x18\x06 \x01(\x01R\rbaselineP95Ms\x12$\n" +
+	"\x0emax_p95_factor\x18\a \x01(\x01R\fmaxP95Factor\x12'\n" +
+	"\x0fcanary_requests\x18\b \x01(\x03R\x0ecanaryRequests\x12#\n" +
+	"\rcanary_errors\x18\t \x01(\x03R\fcanaryErrors\x12+\n" +
+	"\x11baseline_requests\x18\n" +
+	" \x01(\x03R\x10baselineRequests\x12\x16\n" +
+	"\x06passed\x18\v \x01(\bR\x06passed\x12\x1f\n" +
+	"\vskip_reason\x18\f \x01(\tR\n" +
+	"skipReasonB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
 
 var (
 	file_internal_grpc_proto_deployment_proto_rawDescOnce sync.Once
@@ -1129,29 +1555,35 @@ func file_internal_grpc_proto_deployment_proto_rawDescGZIP() []byte {
 	return file_internal_grpc_proto_deployment_proto_rawDescData
 }
 
-var file_internal_grpc_proto_deployment_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_internal_grpc_proto_deployment_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_internal_grpc_proto_deployment_proto_goTypes = []any{
-	(*DeploymentFailure)(nil),  // 0: phelix.DeploymentFailure
-	(*DeploymentSlot)(nil),     // 1: phelix.DeploymentSlot
-	(*DeploymentReplica)(nil),  // 2: phelix.DeploymentReplica
-	(*DeploymentProxy)(nil),    // 3: phelix.DeploymentProxy
-	(*DeploymentHealth)(nil),   // 4: phelix.DeploymentHealth
-	(*DeploymentSnapshot)(nil), // 5: phelix.DeploymentSnapshot
-	(*DeploymentEvent)(nil),    // 6: phelix.DeploymentEvent
+	(*DeploymentFailure)(nil),   // 0: phelix.DeploymentFailure
+	(*DeploymentSlot)(nil),      // 1: phelix.DeploymentSlot
+	(*DeploymentReplica)(nil),   // 2: phelix.DeploymentReplica
+	(*DeploymentProxy)(nil),     // 3: phelix.DeploymentProxy
+	(*WeightedUpstream)(nil),    // 4: phelix.WeightedUpstream
+	(*DeploymentHealth)(nil),    // 5: phelix.DeploymentHealth
+	(*DeploymentSnapshot)(nil),  // 6: phelix.DeploymentSnapshot
+	(*DeploymentEvent)(nil),     // 7: phelix.DeploymentEvent
+	(*RolloutState)(nil),        // 8: phelix.RolloutState
+	(*RolloutVerification)(nil), // 9: phelix.RolloutVerification
 }
 var file_internal_grpc_proto_deployment_proto_depIdxs = []int32{
-	1, // 0: phelix.DeploymentSnapshot.slots:type_name -> phelix.DeploymentSlot
-	2, // 1: phelix.DeploymentSnapshot.replicas:type_name -> phelix.DeploymentReplica
-	3, // 2: phelix.DeploymentSnapshot.proxy:type_name -> phelix.DeploymentProxy
-	4, // 3: phelix.DeploymentSnapshot.health:type_name -> phelix.DeploymentHealth
-	0, // 4: phelix.DeploymentSnapshot.failure:type_name -> phelix.DeploymentFailure
-	0, // 5: phelix.DeploymentEvent.failure:type_name -> phelix.DeploymentFailure
-	5, // 6: phelix.DeploymentEvent.snapshot:type_name -> phelix.DeploymentSnapshot
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	4,  // 0: phelix.DeploymentProxy.weighted_upstreams:type_name -> phelix.WeightedUpstream
+	1,  // 1: phelix.DeploymentSnapshot.slots:type_name -> phelix.DeploymentSlot
+	2,  // 2: phelix.DeploymentSnapshot.replicas:type_name -> phelix.DeploymentReplica
+	3,  // 3: phelix.DeploymentSnapshot.proxy:type_name -> phelix.DeploymentProxy
+	5,  // 4: phelix.DeploymentSnapshot.health:type_name -> phelix.DeploymentHealth
+	0,  // 5: phelix.DeploymentSnapshot.failure:type_name -> phelix.DeploymentFailure
+	8,  // 6: phelix.DeploymentSnapshot.rollout:type_name -> phelix.RolloutState
+	0,  // 7: phelix.DeploymentEvent.failure:type_name -> phelix.DeploymentFailure
+	6,  // 8: phelix.DeploymentEvent.snapshot:type_name -> phelix.DeploymentSnapshot
+	9,  // 9: phelix.RolloutState.verification:type_name -> phelix.RolloutVerification
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_deployment_proto_init() }
@@ -1165,7 +1597,7 @@ func file_internal_grpc_proto_deployment_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_deployment_proto_rawDesc), len(file_internal_grpc_proto_deployment_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

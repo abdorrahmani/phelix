@@ -12,6 +12,7 @@ import "internal/grpc/proto/health.proto";
 import "internal/grpc/proto/monitoring.proto";
 import "internal/grpc/proto/deployment.proto";
 import "internal/grpc/proto/matrix.proto";
+import "internal/grpc/proto/build.proto";
 
 // PhelixService is the main service for CLI-to-backend communication.
 service PhelixService {
@@ -89,6 +90,17 @@ service PhelixService {
   // does not implement this RPC answers UNIMPLEMENTED; the agent continues
   // the matrix build unchanged.
   rpc ReportMatrixEvent(MatrixEvent) returns (EventResponse);
+
+  // ReportBuildEvent sends one terminal build outcome (phelix build / rebuild —
+  // native, docker or matrix) to the backend, carrying the structured
+  // BuildReport (compiler, cache, duration, artifact, regression deltas) that
+  // today never leaves the host. Gated by the "build_report" capability.
+  //
+  // Backward compatibility: a backend that does not implement this RPC answers
+  // UNIMPLEMENTED. The CLI treats that as "build telemetry not consumed yet",
+  // disables it for the rest of the process, and the build/rebuild succeeds
+  // unchanged — identical to ReportDeploymentEvent's contract.
+  rpc ReportBuildEvent(BuildEvent) returns (EventResponse);
 
   // MonitorStream is the persistent, bidirectional monitoring channel that
   // replaces the legacy WebSocket monitor. The CLI monitor daemon opens this

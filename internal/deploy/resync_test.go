@@ -380,6 +380,103 @@ func TestSnapshotForApp_NativeLeavesImageAndContainerEmpty(t *testing.T) {
 	}
 }
 
+// A canary/progressive rollout runs on blue-green topology, so state.Mode stays
+// "blue-green"; while one is in flight the live stream reports strategy
+// "canary"/"progressive". A resync must agree with that stream (not fall back to
+// the topology mode) and surface the rollout step/traffic as a rollout block.
+func TestSnapshotForApp_RunningCanaryReportsRolloutStrategy(t *testing.T) {
+	resetHome(t)
+
+	self := os.Getpid()
+	now := time.Now()
+	state := &DeployState{
+		AppName: "canapp", AppID: "30", Mode: ModeBlueGreen, PublicPort: 3020,
+		ActiveSlot:    SlotGreen,
+		ActiveVersion: 7,
+		Slots: map[string]*Instance{
+			// The stable baseline keeps serving while the canary occupies blue.
+			SlotGreen: {
+				Slot: SlotGreen, Version: 7, Status: "running", Port: 49153,
+				PID: self, BinaryPath: mustSelfExe(t), StartedAt: now,
+			},
+			SlotBlue: {Slot: SlotBlue, Version: 8, Status: "starting", Port: 49152},
+		},
+		Health: &HealthSummary{Tier: 1, TierLabel: "Tier 1", HealthyAt: now},
+		Canary: &CanaryState{
+			Version: 8, Strategy: StrategyCanary, Slot: SlotBlue,
+			Step: 1, Steps: 3, TrafficPercent: 25, Status: CanaryRunning,
+			Reason: "step 2/3", StartedAt: now, UpdatedAt: now,
+		},
+	}
+	if err := Store(state); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	snap := SnapshotForApp(context.Background(), "canapp", "30", nil)
+	if snap == nil {
+		t.Fatalf("expected a snapshot")
+	}
+	if snap.Strategy != StrategyCanary {
+		t.Fatalf("strategy = %q, want %q while the canary is running", snap.Strategy, StrategyCanary)
+	}
+	if snap.Rollout == nil {
+		t.Fatalf("a running canary must carry a rollout block")
+	}
+	r := snap.Rollout
+	if r.Strategy != StrategyCanary {
+		t.Fatalf("rollout strategy = %q, want %q", r.Strategy, StrategyCanary)
+	}
+	if r.StepIndex != 1 || r.TotalSteps != 3 {
+		t.Fatalf("step = %d/%d, want 1/3", r.StepIndex, r.TotalSteps)
+	}
+	if r.TargetWeightPercent != 25 || r.ObservedWeightPercent != 25 {
+		t.Fatalf("weights target/observed = %d/%d, want 25/25", r.TargetWeightPercent, r.ObservedWeightPercent)
+	}
+	if r.Status != CanaryRunning {
+		t.Fatalf("rollout status = %q, want %q", r.Status, CanaryRunning)
+	}
+	if r.Decision != RolloutDecisionContinue {
+		t.Fatalf("decision = %q, want %q for an in-flight step", r.Decision, RolloutDecisionContinue)
+	}
+}
+
+// Regression guard: without a canary record a blue-green app reports strategy
+// "blue-green" and no rollout block, so an ordinary deploy is never dressed up
+// as a rollout.
+func TestSnapshotForApp_NoCanaryStaysBlueGreen(t *testing.T) {
+	resetHome(t)
+
+	self := os.Getpid()
+	now := time.Now()
+	state := &DeployState{
+		AppName: "plainbg", AppID: "31", Mode: ModeBlueGreen, PublicPort: 3021,
+		ActiveSlot:    SlotGreen,
+		ActiveVersion: 4,
+		Slots: map[string]*Instance{
+			SlotGreen: {
+				Slot: SlotGreen, Version: 4, Status: "running", Port: 49155,
+				PID: self, BinaryPath: mustSelfExe(t), StartedAt: now,
+			},
+		},
+		Health: &HealthSummary{Tier: 1, HealthyAt: now},
+		// No Canary record.
+	}
+	if err := Store(state); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	snap := SnapshotForApp(context.Background(), "plainbg", "31", nil)
+	if snap == nil {
+		t.Fatalf("expected a snapshot")
+	}
+	if snap.Strategy != string(ModeBlueGreen) {
+		t.Fatalf("strategy = %q, want blue-green without a canary record", snap.Strategy)
+	}
+	if snap.Rollout != nil {
+		t.Fatalf("a plain blue-green deploy must carry no rollout block, got %+v", snap.Rollout)
+	}
+}
+
 // mustSelfExe returns this test binary's path, used as an Instance.BinaryPath so
 // InstanceAlive's identity check passes for the current PID.
 func mustSelfExe(t *testing.T) string {

@@ -279,6 +279,99 @@ func TestNewDeploymentSink_NoSessionIsNil(t *testing.T) {
 	}
 }
 
+// A canary/progressive deployment carries a rollout block (step, intended vs
+// observed traffic share, verdict) and a weighted upstream split the plain
+// Upstreams host list cannot express. A non-rollout deployment carries neither.
+func TestToProtoDeploymentSnapshot_Rollout(t *testing.T) {
+	t.Run("rollout and weighted upstreams map onto the wire", func(t *testing.T) {
+		now := time.Now()
+		out := ToProtoDeploymentSnapshot(&deploy.Snapshot{
+			AppName:  "shop",
+			Strategy: "canary",
+			Proxy: &deploy.ProxyState{
+				Enabled: true, PublicPort: 3000,
+				Weighted: []deploy.WeightedUpstream{
+					{Host: "127.0.0.1:49152", Label: "blue", WeightPercent: 75},
+					{Host: "127.0.0.1:49153", Label: "green", WeightPercent: 25},
+				},
+			},
+			Rollout: &deploy.RolloutInfo{
+				Strategy:              "canary",
+				StepIndex:             1,
+				TotalSteps:            4,
+				TargetWeightPercent:   25,
+				ObservedWeightPercent: 25,
+				Status:                "running",
+				Decision:              "continue",
+				Reason:                "step 2/4",
+				Verification: &deploy.RolloutVerificationInfo{
+					CanaryErrorRate: 1.5, BaselineErrorRate: 0.5, MaxErrorRate: 5, MaxErrorDelta: 2,
+					CanaryP95Ms: 120, BaselineP95Ms: 100, MaxP95Factor: 1.5,
+					CanaryRequests: 200, CanaryErrors: 3, BaselineRequests: 800,
+					Passed: true,
+				},
+				StartedAt: now, UpdatedAt: now,
+			},
+		})
+		// __ROLLOUT_ASSERT_PLACEHOLDER__
+		r := out.GetRollout()
+		if r == nil {
+			t.Fatal("a canary deployment must carry a rollout block")
+		}
+		if r.GetStepIndex() != 1 || r.GetTotalSteps() != 4 {
+			t.Fatalf("step = %d/%d, want 1/4", r.GetStepIndex(), r.GetTotalSteps())
+		}
+		if r.GetTargetWeightPercent() != 25 || r.GetObservedWeightPercent() != 25 {
+			t.Fatalf("weights target/observed = %d/%d, want 25/25", r.GetTargetWeightPercent(), r.GetObservedWeightPercent())
+		}
+		if r.GetStatus() != "running" || r.GetDecision() != "continue" || r.GetAbortCode() != "" {
+			t.Fatalf("status/decision/abort = %q/%q/%q", r.GetStatus(), r.GetDecision(), r.GetAbortCode())
+		}
+		v := r.GetVerification()
+		if v == nil {
+			t.Fatal("verification block must be carried when metrics were evaluated")
+		}
+		if v.GetCanaryErrorRate() != 1.5 || v.GetBaselineErrorRate() != 0.5 || v.GetMaxErrorRate() != 5 || v.GetMaxErrorDelta() != 2 {
+			t.Fatalf("error-rate verification = %+v", v)
+		}
+		if v.GetCanaryP95Ms() != 120 || v.GetBaselineP95Ms() != 100 || v.GetMaxP95Factor() != 1.5 {
+			t.Fatalf("latency verification = %+v", v)
+		}
+		if v.GetCanaryRequests() != 200 || v.GetCanaryErrors() != 3 || v.GetBaselineRequests() != 800 {
+			t.Fatalf("traffic verification = %+v", v)
+		}
+		if !v.GetPassed() || v.GetSkipReason() != "" {
+			t.Fatalf("verdict = passed:%v skip:%q, want passed with no skip reason", v.GetPassed(), v.GetSkipReason())
+		}
+
+		p := out.GetProxy()
+		if p == nil {
+			t.Fatal("proxy block must be carried")
+		}
+		w := p.GetWeightedUpstreams()
+		if len(w) != 2 {
+			t.Fatalf("weighted upstreams = %d, want 2", len(w))
+		}
+		if w[0].GetHost() != "127.0.0.1:49152" || w[0].GetLabel() != "blue" || w[0].GetWeightPercent() != 75 {
+			t.Fatalf("weighted[0] = host:%q label:%q weight:%d", w[0].GetHost(), w[0].GetLabel(), w[0].GetWeightPercent())
+		}
+		if w[1].GetHost() != "127.0.0.1:49153" || w[1].GetLabel() != "green" || w[1].GetWeightPercent() != 25 {
+			t.Fatalf("weighted[1] = host:%q label:%q weight:%d", w[1].GetHost(), w[1].GetLabel(), w[1].GetWeightPercent())
+		}
+	})
+
+	t.Run("no rollout carries no rollout block", func(t *testing.T) {
+		out := ToProtoDeploymentSnapshot(&deploy.Snapshot{
+			AppName:  "web",
+			Strategy: "blue-green",
+			Slots:    []deploy.SlotState{{Slot: "blue", Status: "running"}},
+		})
+		if out.GetRollout() != nil {
+			t.Fatalf("a non-rollout deployment must carry no rollout block, got %+v", out.GetRollout())
+		}
+	})
+}
+
 // containsToken is a coarse check that a serialized message does not embed a
 // bearer-looking credential.
 func containsToken(s string) bool {

@@ -248,13 +248,13 @@ func classifyRollbackDeployState(appName string) (*deploy.DeployState, error) {
 // reverted. fromVer is the failed version, toVer the restored known-good
 // version (0 when no safe target was ever resolved); outcome nil means the
 // known-good version is serving again.
-func emitAutoRollbackEvent(appInfo *app.AppInfo, appName, mode string, fromVer, toVer int, reason string, alreadyServing bool, outcome error) {
-	buildAutoRollbackEvent(appInfo, appName, mode, fromVer, toVer, reason, alreadyServing, outcome)
+func emitAutoRollbackEvent(appInfo *app.AppInfo, appName, mode string, fromVer, toVer int, reason string, alreadyServing bool, outcome error, failedDeploymentID string) {
+	buildAutoRollbackEvent(appInfo, appName, mode, fromVer, toVer, reason, alreadyServing, outcome, failedDeploymentID)
 }
 
 // buildAutoRollbackEvent constructs and emits the terminal automatic-rollback
 // event, returning it for inspection in tests.
-func buildAutoRollbackEvent(appInfo *app.AppInfo, appName, mode string, fromVer, toVer int, reason string, alreadyServing bool, outcome error) *pb.RollbackLifecycleEvent {
+func buildAutoRollbackEvent(appInfo *app.AppInfo, appName, mode string, fromVer, toVer int, reason string, alreadyServing bool, outcome error, failedDeploymentID string) *pb.RollbackLifecycleEvent {
 	targetVer := ""
 	targetTag := ""
 	if toVer > 0 {
@@ -266,6 +266,7 @@ func buildAutoRollbackEvent(appInfo *app.AppInfo, appName, mode string, fromVer,
 	r.SetReason(reason)
 	r.SetTargetSource(rollbackTargetAutomatic)
 	r.SetSource(deploy.RollbackSourceAutomatic)
+	r.SetFailedDeploymentID(failedDeploymentID)
 	if outcome == nil {
 		msg := fmt.Sprintf("automatic rollback of v%d restored v%d", fromVer, toVer)
 		if alreadyServing {

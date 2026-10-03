@@ -273,6 +273,15 @@ var BuildCmd = &cobra.Command{
 		// Pure observability: printed after recording; never affects success.
 		emitBuildReport(name, report, gitCommit, rec, verErr)
 
+		// Structured build-report sync (best-effort; gated on the "build_report"
+		// capability and a session). The regression deltas are computed inside
+		// ReportBuildEventForApp from versions.json, mirroring emitBuildReport.
+		buildVer := 0
+		if rec != nil {
+			buildVer = rec.Version
+		}
+		phelixgrpc.ReportBuildEventForApp(id, name, "classic", true, buildVer, buildTag, gitCommit, report, "")
+
 		if !noUpload {
 			err := auth.SendAppsToServer()
 			switch {

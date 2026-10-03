@@ -83,9 +83,10 @@ message RollbackLifecycleEvent {
   string verify_error = 26;
 
   // How the rollback target was chosen: "explicit" (--to flag),
-  // "interactive" (picker selection), or "previous" (no target given — the
-  // CLI resolved current-1). Empty on non-execution events (list, preview,
-  // history). The backend must not infer this from target_version.
+  // "interactive" (picker selection), "previous" (no target given — the
+  // CLI resolved current-1), or "automatic" (post-failed-deploy recovery; the
+  // CLI resolved the last known-good version). Empty on non-execution events
+  // (list, preview, history). The backend must not infer this from target_version.
   string target_source = 27;
 
   // True for dry-run preview events. A preview event is a read-only report:
@@ -112,6 +113,14 @@ message RollbackLifecycleEvent {
   // Backend command correlation id. Typed field for new consumers; metadata
   // key "request_id" remains a compatibility fallback for older integrations.
   string request_id = 32;
+
+  // failed_deployment_id correlates an AUTOMATIC rollback (source="automatic")
+  // with the DeploymentEvent.deployment_id of the deploy that failed and
+  // triggered it. The recovery itself runs under its OWN fresh deployment_id
+  // (its DeploymentEvents are a separate operation), so this is the only link
+  // between the failed deploy and its recovery. Empty for manual rollbacks and
+  // when the failed deployment id could not be resolved.
+  string failed_deployment_id = 33;
 }
 
 // RollbackPreview is the structured dry-run output. All fields are read-only

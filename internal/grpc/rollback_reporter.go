@@ -276,6 +276,7 @@ func sanitizeEventStrings(e *pb.RollbackLifecycleEvent) {
 	e.TargetSource = sanitizeUTF8(e.TargetSource)
 	e.Source = sanitizeUTF8(e.Source)
 	e.RequestId = sanitizeUTF8(e.RequestId)
+	e.FailedDeploymentId = sanitizeUTF8(e.FailedDeploymentId)
 
 	if e.Preview != nil {
 		p := e.Preview
@@ -441,6 +442,14 @@ func (r *RollbackReporter) SetRequestID(requestID string) {
 // code from internal/errors/codes.go, never a free-form message.
 func (r *RollbackReporter) SetErrorCode(code string) {
 	r.event.ErrorCode = code
+}
+
+// SetFailedDeploymentID correlates an automatic rollback with the deployment
+// that failed and triggered it (DeploymentEvent.deployment_id). The recovery
+// runs under its own fresh deployment id, so this is the only link between the
+// failed deploy and its recovery on the wire. Empty for manual rollbacks.
+func (r *RollbackReporter) SetFailedDeploymentID(id string) {
+	r.event.FailedDeploymentId = id
 }
 
 // EmitError emits a terminal failure and derives its machine-readable code

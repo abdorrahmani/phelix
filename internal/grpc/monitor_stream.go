@@ -386,6 +386,13 @@ func (c *Client) runMonitorStream() error {
 	// history, queryable with a matrix_status command.
 	c.sendMatrixSnapshots()
 
+	// Version-history resync: the full versions.json of every watched app
+	// (including build reports), so the backend converges on the real history
+	// without depending on the per-build events it may have missed. The legacy
+	// rollback-RPC piggy-back (SendVersionListForApp) still runs on reconnect
+	// too, for backends that have not adopted VersionSync yet.
+	c.sendVersionSyncs()
+
 	recvErrCh := make(chan error, 1)
 	go func() {
 		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger, matrixLedger, webhookLedger)
@@ -425,6 +432,7 @@ func (c *Client) runMonitorStream() error {
 			}
 			c.sendDeploymentSnapshots()
 			c.sendMatrixSnapshots()
+			c.sendVersionSyncs()
 		case <-healthTicker.C:
 			if monitorStream.isPaused() {
 				continue
@@ -580,9 +588,9 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 		}
 	}
 
-	if req.GetStrategy() != "" || req.GetReplicas() != 0 {
-		logs.InfoFile("grpc", "[gRPC Monitor] one-off deployment override: strategy=%s replicas=%d",
-			req.GetStrategy(), req.GetReplicas())
+	if req.GetStrategy() != "" || req.GetReplicas() != 0 || req.GetCanaryPercent() != 0 {
+		logs.InfoFile("grpc", "[gRPC Monitor] one-off deployment override: strategy=%s replicas=%d canary_percent=%d",
+			req.GetStrategy(), req.GetReplicas(), req.GetCanaryPercent())
 	}
 
 	monitorStream.pause()
@@ -596,6 +604,7 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 			RequestID:      req.GetRequestId(),
 			Strategy:       req.GetStrategy(),
 			Replicas:       int(req.GetReplicas()),
+			CanaryPercent:  int(req.GetCanaryPercent()),
 			Target:         req.GetTarget(),
 			Reason:         req.GetReason(),
 			VerifyDuration: time.Duration(req.GetVerifyDurationMs()) * time.Millisecond,

@@ -4,6 +4,8 @@ package phelix;
 
 option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 
+import "internal/grpc/proto/buildreport.proto";
+
 // ============================================================================
 // Remote Build Matrix contract
 //
@@ -140,6 +142,10 @@ message MatrixCombinationState {
   int32 attempts = 17;    // attempt count; 1 when never retried
   repeated MatrixAttemptState attempt_log = 18;
   map<string, string> metadata = 19; // include-rule attributes
+  // report is this combination's full build report (deploy.MatrixArtifact.Report),
+  // so a matrix cell carries the same compiler/cache/duration/size detail as a
+  // single build. Absent on older agents / docker cells without a native report.
+  BuildReport report = 20;
 }
 
 // MatrixCounters is the per-status combination count snapshot of a run. It is

@@ -160,15 +160,27 @@ type statDelta struct {
 // recorded rather than failed — a canary at 5% of an idle app legitimately
 // serves zero requests.
 func (ro *Rollout) evaluateStats(sc StepContext, start, end map[string]proxy.BackendStat) error {
+	v := ro.Plan.Verification.withDefaults()
+	info := &RolloutVerificationInfo{MaxErrorRate: v.MaxErrorRate, MaxErrorDelta: v.MaxErrorDelta, MaxP95Factor: v.MaxP95Factor}
+	// report records the verdict on the tracker (observation only) and returns
+	// the verifier's error unchanged, so every exit reports its metrics.
+	report := func(err error) error {
+		info.Passed = err == nil
+		ro.Telemetry.SetRolloutVerification(info)
+		return err
+	}
 	if start == nil || end == nil {
-		return nil
+		info.SkipReason = "metrics_unavailable"
+		return report(nil)
 	}
 	log := ro.logger()
-	v := ro.Plan.Verification.withDefaults()
 
 	canaryHost, stableHost := hostPort(sc.CanaryPort), hostPort(sc.StablePort)
 	cDelta := deltaBetween(start[canaryHost], end[canaryHost])
 	sDelta := deltaBetween(start[stableHost], end[stableHost])
+	info.CanaryRequests, info.CanaryErrors, info.BaselineRequests = cDelta.requests, cDelta.errors, sDelta.requests
+	info.CanaryErrorRate, info.BaselineErrorRate = errorRate(cDelta.errors, cDelta.requests), errorRate(sDelta.errors, sDelta.requests)
+	info.CanaryP95Ms, info.BaselineP95Ms = p95Millis(cDelta), p95Millis(sDelta)
 
 	canaryVer, stableVer := versionLabel(sc.CanaryVersion), stableVersionLabel(&Instance{Version: sc.StableVersion})
 	if canaryVer == "" {
@@ -183,30 +195,31 @@ func (ro *Rollout) evaluateStats(sc StepContext, start, end map[string]proxy.Bac
 
 	if cDelta.requests <= 0 {
 		log.Infof("no canary traffic observed during the verification window; metrics comparison skipped")
-		return nil
+		info.SkipReason = "zero_canary_traffic"
+		return report(nil)
 	}
 
 	cRate := 100 * float64(cDelta.errors) / float64(cDelta.requests)
 	if cRate > v.MaxErrorRate {
-		return phelixerr.Newf(phelixerr.CodeCanaryRegression,
+		return report(phelixerr.Newf(phelixerr.CodeCanaryRegression,
 			"canary regression detected: canary error rate %.2f%% exceeds the configured maximum of %.2f%%",
-			cRate, v.MaxErrorRate)
+			cRate, v.MaxErrorRate))
 	}
 	if sDelta.requests > 0 {
 		sRate := 100 * float64(sDelta.errors) / float64(sDelta.requests)
 		if cRate-sRate > v.MaxErrorDelta {
-			return phelixerr.Newf(phelixerr.CodeCanaryRegression,
+			return report(phelixerr.Newf(phelixerr.CodeCanaryRegression,
 				"canary regression detected: error rate baseline %.2f%% vs canary %.2f%% (delta %.2f%% exceeds the allowed %.2f%%)",
-				sRate, cRate, cRate-sRate, v.MaxErrorDelta)
+				sRate, cRate, cRate-sRate, v.MaxErrorDelta))
 		}
 		cP95, sP95 := quantileFromBuckets(cDelta.buckets, 0.95), quantileFromBuckets(sDelta.buckets, 0.95)
 		if sP95 > 0 && cP95 > time.Duration(float64(sP95)*v.MaxP95Factor) {
-			return phelixerr.Newf(phelixerr.CodeCanaryRegression,
+			return report(phelixerr.Newf(phelixerr.CodeCanaryRegression,
 				"canary regression detected: p95 latency %s vs baseline %s (exceeds the configured %.1fx factor)",
-				cP95.Round(time.Millisecond), sP95.Round(time.Millisecond), v.MaxP95Factor)
+				cP95.Round(time.Millisecond), sP95.Round(time.Millisecond), v.MaxP95Factor))
 		}
 	}
-	return nil
+	return report(nil)
 }
 
 // deltaBetween computes the windowed traffic between two cumulative snapshots
@@ -291,6 +304,12 @@ func p95Label(d statDelta) string {
 		return "n/a"
 	}
 	return p95.Round(time.Millisecond).String()
+}
+
+// p95Millis is the window p95 latency in milliseconds, for telemetry. 0 when
+// no latency histogram was available.
+func p95Millis(d statDelta) float64 {
+	return float64(quantileFromBuckets(d.buckets, 0.95)) / float64(time.Millisecond)
 }
 
 // humanCount renders a request count with thousands separators for the
