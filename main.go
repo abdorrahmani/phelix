@@ -77,6 +77,8 @@ func main() {
 	rootCmd.AddCommand(cmd.WebhookCmd)
 	rootCmd.AddCommand(cmd.MatrixCmd)
 	rootCmd.AddCommand(cmd.OperationCmd)
+	rootCmd.AddCommand(cmd.InspectCmd)
+	rootCmd.AddCommand(cmd.ContextCmd)
 
 	rootCmd.AddCommand(cmd.VersionCmd)
 	rootCmd.AddCommand(cmd.UpdateCmd)

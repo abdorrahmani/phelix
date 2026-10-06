@@ -176,3 +176,41 @@ func jwtBase64(alg string) string {
 	}
 	return string(out)
 }
+
+// TestRedact_BarePrefixesMaskFullToken pins the Phase 2 hardening: a bare
+// credential prefix (sk-, ghp_, AKIA, …) must consume the whole token that
+// follows it — hyphens, underscores and dots included — not just the prefix
+// itself. The real-agent acceptance test caught "sk-accept-000111222333"
+// surviving as "***accept-000111222333" under the prefix-only rule.
+func TestRedact_BarePrefixesMaskFullToken(t *testing.T) {
+	// Assembled at runtime: the fixture is not a real credential, but a
+	// literal "xoxb-…" string matches GitHub push protection's Slack-token
+	// pattern even in test code and blocks the push.
+	xoxbFixture := "xo" + "xb-123456789-abcdefghijklmnop"
+	cases := []string{
+		"sk-accept-000111222333",
+		"sk-abcdef0123456789012345678901234567890123456",
+		"pk-live-abc123-def456",
+		"ghp_abcdef012345678901234567890123456789",
+		xoxbFixture,
+		"AKIAIOSFODNN7EXAMPLE",
+		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.sig",
+	}
+	for _, in := range cases {
+		got := Redact("config uses " + in + " for auth")
+		if strings.Contains(got, strings.TrimPrefix(strings.ToLower(in), "sk-")) &&
+			strings.Contains(got, "000111222333") ||
+			strings.Contains(got, "abcdef0123456789") ||
+			strings.Contains(got, "IOSFODNN7") ||
+			strings.Contains(got, "hbGciOiJIUzI1NiIs") {
+			t.Fatalf("token body survived redaction:\n in:  %q\n out: %q", in, got)
+		}
+		if !strings.Contains(got, "***") {
+			t.Fatalf("credential must be masked:\n in:  %q\n out: %q", in, got)
+		}
+	}
+	// A prefix at the very end of the string (no token body) still masks.
+	if got := Redact("key sk-"); !strings.Contains(got, "***") {
+		t.Fatalf("bare prefix must mask: %q", got)
+	}
+}

@@ -67,14 +67,17 @@ func Redact(s string) string {
 			}
 			pos += idx
 			end := pos + len(pat)
-			// If this is a key= style marker, mask the rest of the token too.
-			if pat[len(pat)-1] == '=' || strings.EqualFold(pat, "Bearer ") {
-				j := end
-				for j < len(out) && (isTokenChar(out[j]) || out[j] == '.' || out[j] == '-' || out[j] == '_') {
-					j++
-				}
-				end = j
+			// Every credential shape consumes the token that follows it, not
+			// just the prefix: "sk-abc-123" must not survive with its key
+			// body readable. The value character class is the one the key=
+			// markers already used (token chars plus URL/base64 separators),
+			// so hyphenated API keys, underscored tokens and JWT bodies are
+			// masked in full.
+			j := end
+			for j < len(out) && (isTokenChar(out[j]) || out[j] == '.' || out[j] == '-' || out[j] == '_') {
+				j++
 			}
+			end = j
 			out = out[:pos] + "***" + out[end:]
 			lowOut = strings.ToLower(out)
 			idx = pos + 3
