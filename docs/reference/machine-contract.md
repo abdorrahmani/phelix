@@ -51,6 +51,10 @@ Exit codes are unchanged by `--json`.
 | `health list` / `health status` | — | endpoints / check results |
 | `log [app] --json` | — | `{source, app, path, items[], count, truncated}` |
 | `operation status <id>` / `operation list` | the queried id | operation view / `{operations[], count}` |
+| `inspect project` / `runtime` / `config` | — | targeted inspection (see below) |
+| `inspect app/deployment/versions/health <app>` | — | app-scoped targeted inspection |
+| `inspect capabilities` / `operations` | — | registry + bounded operation list |
+| `context [app]` | — | one bounded composite snapshot |
 
 ## Errors
 
@@ -159,6 +163,45 @@ resume/retry lineage.
 All displayed log lines — human or JSON — pass through the centralized
 redactor: credential-shaped content is masked on display. Backend
 `[REDACTED:*]` sentinels are ordinary text, never parsed or un-redacted.
+
+## Inspection & context (Phase 2)
+
+`phelix inspect <topic> --json` answers one question;
+`phelix context [app] --json` composes the sections into one bounded snapshot.
+All sections are projections over the state Phelix already maintains — facts
+only, never recommendations (decision-making belongs to a future layer).
+
+| Section | Fields (selected) | Source | Source freshness |
+|---|---|---|---|
+| `project` | root, name, language, config_path, config_found, config_valid, config_error, port, reads_port, hardcoded_port | project loader + doctor primitives | on-disk |
+| `runtime` | os, architecture, go/rust/docker `{installed, version}` | toolchain lookups + docker availability check | live |
+| `config` | name, port, deploy `{strategy, replicas, runtime, network}`, resources, health endpoints, watching, matrix, webhook `{branch, secret_env}` | phelix.yaml (selected fields, never a dump) | on-disk |
+| `application` | reconciled status, pid, resources, version, deploy mode, replicas, proxy | status reconciliation path | **live** (`source: "live"`) |
+| `deployment` | deployment_id, status, strategy, active_version, op_lock, canary, last_rollback, serving_alive | deploy.json | **persisted** (`source: "persisted"`); `serving_alive` is the one live fact |
+| `versions` | current + bounded available list | versions.json | on-disk |
+| `health` | status: `healthy\|degraded\|unhealthy\|unknown`, checks sorted by name, deploy tier | running daemon or one-shot checker (`source` field says which) | live probe |
+| `capabilities` | the agent build's capability registry (sorted) | capability registry | build-level |
+| `operations` | Phase 1 operation records, newest first | operation records | persisted |
+| `logs` | bounded, redacted lines + `count`/`truncated` | app/self log file | on-disk |
+
+Bounds and semantics:
+
+- Defaults: versions 20, operations 20, log lines 100. Flags
+  (`--limit`, `--versions`, `--operations`, `--log-lines`) may lower them;
+  values above the caps (100/100/1000) are rejected with `INVALID_ARGUMENT`
+  rather than clamped.
+- Every bounded section carries `truncated`; the composite carries a
+  top-level `truncated` that is true when ANY section dropped data — a false
+  there means the context is complete.
+- `deployment.status` maps onto the operation lifecycle vocabulary: an
+  in-flight op lock is `running`, a persisted topology is `succeeded`, no
+  deploy state is `pending`. Health uses its own vocabulary
+  (`healthy/degraded/unhealthy/unknown`) because it is not an operation.
+- Secrets are structurally absent: the webhook section carries only the NAME
+  of the env var holding the HMAC secret; log and health-failure text passes
+  through the centralized redactor.
+- App-scoped sections are included only when an app is named; the composite
+  never guesses which app is meant.
 
 ## Actor metadata
 
