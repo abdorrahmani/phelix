@@ -30,12 +30,21 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 		return nil
 	}
 
+	// A rollout runs on blue-green topology, so state.Mode is "blue-green"; while
+	// one is in flight the live events report strategy "canary"/"progressive".
+	// Report the same here so the resync snapshot does not disagree with the
+	// live stream the backend already received.
+	strategy := string(state.Mode)
+	if c := state.Canary; c != nil && c.Status == CanaryRunning && c.Strategy != "" {
+		strategy = c.Strategy
+	}
+
 	s := &Snapshot{
 		AppID:          appID,
 		AppName:        appName,
 		DeploymentID:   state.LastDeploymentID,
 		RequestID:      state.LastRequestID,
-		Strategy:       string(state.Mode),
+		Strategy:       strategy,
 		Runtime:        state.Runtime,
 		CurrentVersion: versionLabel(state.ActiveVersion),
 		TargetVersion:  versionLabel(state.ActiveVersion),
@@ -151,8 +160,42 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 		s.Status = StatusIdle
 	}
 
+	// Rollout state is reported whenever a canary record exists, so the backend
+	// sees an in-flight rollout (status running) and the outcome of the last one
+	// (promoted/failed/aborted). Verification metrics are a live-window result
+	// and are not persisted, so they are absent on a resync.
+	if c := state.Canary; c != nil {
+		s.Rollout = &RolloutInfo{
+			Strategy:              c.Strategy,
+			StepIndex:             c.Step,
+			TotalSteps:            c.Steps,
+			TargetWeightPercent:   c.TrafficPercent,
+			ObservedWeightPercent: c.TrafficPercent,
+			Status:                c.Status,
+			Decision:              rolloutDecisionForStatus(c.Status),
+			Reason:                c.Reason,
+			StartedAt:             c.StartedAt,
+			UpdatedAt:             c.UpdatedAt,
+		}
+	}
+
 	s.Proxy = proxyStateOf(ctx, pc, appName, state.PublicPort)
 	return s
+}
+
+// rolloutDecisionForStatus maps a persisted CanaryState.Status to the rollout
+// decision a resync can infer (a running rollout is mid-flight → continue).
+func rolloutDecisionForStatus(status string) string {
+	switch status {
+	case CanaryPromoted:
+		return RolloutDecisionPromote
+	case CanaryFailed, CanaryAborted:
+		return RolloutDecisionAbort
+	case CanaryRunning:
+		return RolloutDecisionContinue
+	default:
+		return ""
+	}
 }
 
 // proxyStateOf asks the proxy daemon what it actually routes for this app.
@@ -175,6 +218,7 @@ func proxyStateOf(ctx context.Context, pc ProxyClient, appName string, publicPor
 			PublicPort:  st.PublicPort,
 			TargetLabel: st.Primary.Label,
 			Upstreams:   upstreamHosts(st.Primary, st.Backends),
+			Weighted:    weightedUpstreams(st.Primary, st.Backends),
 			InFlight:    st.InFlight,
 		}
 		if ps.PublicPort == 0 {

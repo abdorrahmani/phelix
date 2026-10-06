@@ -66,7 +66,7 @@ func resolveApp(identifier string) (*resolvedApp, error) {
 // deploying something else. The checks mirror project.Config.validate() —
 // replicas belong to rolling only.
 func rebuildOverrideArgs(payload CommandPayload) ([]string, error) {
-	if payload.Strategy == "" && payload.Replicas == 0 {
+	if payload.Strategy == "" && payload.Replicas == 0 && payload.CanaryPercent == 0 {
 		return nil, nil
 	}
 	if payload.Type != "rebuild" {
@@ -81,13 +81,33 @@ func rebuildOverrideArgs(payload CommandPayload) ([]string, error) {
 		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"replicas requires the rolling strategy, got strategy %q", payload.Strategy)
 	}
+	// A canary traffic share is canary-only and bounded 1..99, exactly like the
+	// local --canary flag; anything else is rejected rather than deployed.
+	if payload.CanaryPercent != 0 {
+		if payload.Strategy != project.StrategyCanary {
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"canary_percent requires the canary strategy, got strategy %q", payload.Strategy)
+		}
+		if payload.CanaryPercent < 1 || payload.CanaryPercent > 99 {
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"invalid canary_percent %d: must be between 1 and 99", payload.CanaryPercent)
+		}
+	}
 
 	switch payload.Strategy {
-	case project.StrategyClassic, project.StrategyBlueGreen,
-		project.StrategyCanary, project.StrategyProgressive:
+	case project.StrategyClassic, project.StrategyBlueGreen, project.StrategyProgressive:
 		// Canary/progressive resolve their rollout plan from the app's
 		// phelix.yaml (deploy.rollout.*), the same file a local rebuild in
 		// that directory reads; no extra payload fields are needed.
+		return []string{"--strategy", payload.Strategy}, nil
+	case project.StrategyCanary:
+		// A custom first-step share maps to --canary N. Locally --canary and
+		// --strategy are mutually exclusive (both name a canary rollout), so a
+		// percent REPLACES --strategy rather than adding to it. With no percent
+		// the canary resolves its plan from phelix.yaml like the others.
+		if payload.CanaryPercent > 0 {
+			return []string{"--canary", strconv.Itoa(payload.CanaryPercent)}, nil
+		}
 		return []string{"--strategy", payload.Strategy}, nil
 	case project.StrategyRolling:
 		args := []string{"--strategy", payload.Strategy}

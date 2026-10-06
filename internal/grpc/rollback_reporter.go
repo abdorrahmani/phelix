@@ -254,6 +254,12 @@ func cloneRollbackEvent(e *pb.RollbackLifecycleEvent) *pb.RollbackLifecycleEvent
 // of the event with the Unicode replacement character (U+FFFD). This prevents
 // the backend from rejecting the request with "string field contains invalid
 // UTF-8" or "cannot parse invalid wire-format data".
+//
+// The free-text fields (message, error, reason, verify_error) additionally
+// pass through the centralized redactor: callers hand in raw err.Error()
+// chains, and this is the single chokepoint that stops an embedded
+// credential from reaching the backend — the same guarantee every other
+// reporter applies at its own wire boundary.
 func sanitizeEventStrings(e *pb.RollbackLifecycleEvent) {
 	e.ServerId = sanitizeUTF8(e.ServerId)
 	e.CliAppId = sanitizeUTF8(e.CliAppId)
@@ -265,17 +271,18 @@ func sanitizeEventStrings(e *pb.RollbackLifecycleEvent) {
 	e.TargetVersion = sanitizeUTF8(e.TargetVersion)
 	e.TargetTag = sanitizeUTF8(e.TargetTag)
 	e.CurrentStep = sanitizeUTF8(e.CurrentStep)
-	e.Message = sanitizeUTF8(e.Message)
-	e.Error = sanitizeUTF8(e.Error)
+	e.Message = sanitizeUTF8(phelixerr.Redact(e.Message))
+	e.Error = sanitizeUTF8(phelixerr.Redact(e.Error))
 	e.UserId = sanitizeUTF8(e.UserId)
 	e.SessionToken = sanitizeUTF8(e.SessionToken)
 	e.ErrorCode = sanitizeUTF8(e.ErrorCode)
-	e.Reason = sanitizeUTF8(e.Reason)
+	e.Reason = sanitizeUTF8(phelixerr.Redact(e.Reason))
 	e.VerifyStatus = sanitizeUTF8(e.VerifyStatus)
-	e.VerifyError = sanitizeUTF8(e.VerifyError)
+	e.VerifyError = sanitizeUTF8(phelixerr.Redact(e.VerifyError))
 	e.TargetSource = sanitizeUTF8(e.TargetSource)
 	e.Source = sanitizeUTF8(e.Source)
 	e.RequestId = sanitizeUTF8(e.RequestId)
+	e.FailedDeploymentId = sanitizeUTF8(e.FailedDeploymentId)
 
 	if e.Preview != nil {
 		p := e.Preview
@@ -441,6 +448,14 @@ func (r *RollbackReporter) SetRequestID(requestID string) {
 // code from internal/errors/codes.go, never a free-form message.
 func (r *RollbackReporter) SetErrorCode(code string) {
 	r.event.ErrorCode = code
+}
+
+// SetFailedDeploymentID correlates an automatic rollback with the deployment
+// that failed and triggered it (DeploymentEvent.deployment_id). The recovery
+// runs under its own fresh deployment id, so this is the only link between the
+// failed deploy and its recovery on the wire. Empty for manual rollbacks.
+func (r *RollbackReporter) SetFailedDeploymentID(id string) {
+	r.event.FailedDeploymentId = id
 }
 
 // EmitError emits a terminal failure and derives its machine-readable code

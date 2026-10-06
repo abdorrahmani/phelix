@@ -129,7 +129,7 @@ func TestBuildAutoRollbackEvent(t *testing.T) {
 	seedRollbackPreviewApp(t, "shop", deploy.ModeBlueGreen)
 	appInfo := &app.AppInfo{ID: "app-uuid-1", Name: "shop"}
 
-	ok := buildAutoRollbackEvent(appInfo, "shop", "blue-green", 3, 2, "Deployment v3 failed: health check", false, nil)
+	ok := buildAutoRollbackEvent(appInfo, "shop", "blue-green", 3, 2, "Deployment v3 failed: health check", false, nil, "dep-abc123")
 	if ok.GetSource() != "automatic" || ok.GetTargetSource() != "automatic" {
 		t.Errorf("success event source wrong: source=%q target_source=%q", ok.GetSource(), ok.GetTargetSource())
 	}
@@ -139,8 +139,11 @@ func TestBuildAutoRollbackEvent(t *testing.T) {
 	if !ok.GetSuccess() {
 		t.Error("restored recovery must be a success event")
 	}
+	if ok.GetFailedDeploymentId() != "dep-abc123" {
+		t.Errorf("auto-rollback must carry the failed deployment id, got %q", ok.GetFailedDeploymentId())
+	}
 
-	serving := buildAutoRollbackEvent(appInfo, "shop", "blue-green", 3, 2, "Deployment v3 failed", true, nil)
+	serving := buildAutoRollbackEvent(appInfo, "shop", "blue-green", 3, 2, "Deployment v3 failed", true, nil, "")
 	if !serving.GetSuccess() || serving.GetMessage() == "" {
 		t.Errorf("already-serving event wrong: %+v", serving)
 	}
@@ -148,7 +151,7 @@ func TestBuildAutoRollbackEvent(t *testing.T) {
 	// The empty mode case (deploy state unreadable) still records the mode
 	// honestly as empty rather than a fabricated value.
 	failed := buildAutoRollbackEvent(appInfo, "shop", "", 3, 0, "Deployment v3 failed", false,
-		phelixerr.New(phelixerr.CodeRollbackTargetNotFound, "no known-good version"))
+		phelixerr.New(phelixerr.CodeRollbackTargetNotFound, "no known-good version"), "")
 	if failed.GetSuccess() || failed.GetErrorCode() != string(phelixerr.CodeRollbackTargetNotFound) {
 		t.Errorf("failure event wrong: success=%v error_code=%q", failed.GetSuccess(), failed.GetErrorCode())
 	}

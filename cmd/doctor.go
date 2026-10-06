@@ -8,6 +8,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/builder"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
@@ -23,6 +24,26 @@ type checkResult struct {
 	message string // extra explanation block for failures
 }
 
+// doctorJSONView is the machine-contract view of one doctor check. status is
+// the external lifecycle vocabulary: pass -> succeeded, warn -> pending
+// (usable, attention recommended), fail -> failed.
+type doctorJSONView struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type doctorJSONResult struct {
+	Checks  []doctorJSONView  `json:"checks"`
+	Summary doctorJSONSummary `json:"summary"`
+}
+
+type doctorJSONSummary struct {
+	Passed   int `json:"passed"`
+	Warnings int `json:"warnings"`
+	Failed   int `json:"failed"`
+}
+
 var DoctorCmd = &cobra.Command{
 	Use:           "doctor",
 	Short:         "Diagnoses whether the current project is configured to run under Phelix",
@@ -31,6 +52,13 @@ var DoctorCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Machine mode: check lines detour to stderr for the whole command so
+		// the JSON envelope stays alone on stdout.
+		if doctorJSON {
+			restore := machine.EnterJSON()
+			defer restore()
+		}
+
 		dir, err := os.Getwd()
 		if err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
@@ -70,16 +98,46 @@ var DoctorCmd = &cobra.Command{
 		if failed > 0 {
 			fmt.Println()
 			fmt.Println("Your application is not currently Phelix-compatible.")
+			// Machine mode emits ONLY the boundary's single error envelope
+			// (VALIDATION_ERROR, exit 3) — writing a checks envelope here
+			// too would put two JSON documents on one stdout.
 			return phelixerr.New(phelixerr.CodeValidation, "doctor found failing checks")
 		}
-		return nil
+		return writeEnvelopeResult(machine.Success("", buildDoctorResult(results, passed, warned, failed)))
 	},
+}
+
+// buildDoctorResult projects the check results onto the machine contract.
+func buildDoctorResult(results []checkResult, passed, warned, failed int) *doctorJSONResult {
+	views := make([]doctorJSONView, 0, len(results))
+	for _, r := range results {
+		status := machine.StatusSucceeded
+		switch {
+		case r.warn:
+			status = machine.StatusPending
+		case !r.pass:
+			status = machine.StatusFailed
+		}
+		views = append(views, doctorJSONView{Name: r.name, Status: status, Detail: r.detail})
+	}
+	return &doctorJSONResult{
+		Checks: views,
+		Summary: doctorJSONSummary{
+			Passed:   passed,
+			Warnings: warned,
+			Failed:   failed,
+		},
+	}
 }
 
 func init() {
 	DoctorCmd.Flags().BoolVar(&buildDebug, "debug", false, "Show verbose diagnostics")
 	_ = buildDebug // shared flag var; no extra behavior yet
+	DoctorCmd.Flags().BoolVar(&doctorJSON, "json", false,
+		"Output machine-readable JSON (stdout carries only the result envelope; check output moves to stderr)")
 }
+
+var doctorJSON bool
 
 func runDoctorChecks(dir string) []checkResult {
 	var results []checkResult

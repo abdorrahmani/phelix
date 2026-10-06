@@ -264,6 +264,14 @@ func (r *Report) PrintTerminal() {
 	fmt.Println()
 }
 
+// ReportPathFor returns the path where the run-level report.json for a
+// project root is (or would be) written. The machine contract exposes it so
+// an agent can read the full per-combination detail without that detail
+// traversing the CLI envelope.
+func ReportPathFor(projectRoot string) string {
+	return filepath.Join(projectRoot, "builds", "matrix", "report.json")
+}
+
 // WriteJSON writes the report as a JSON file next to the build artifacts.
 func (r *Report) WriteJSON(projectRoot string) (string, error) {
 	reportDir := filepath.Join(projectRoot, "builds", "matrix")

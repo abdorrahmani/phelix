@@ -10,10 +10,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/fatih/color"
@@ -247,6 +249,20 @@ func completeMatrixSession(run *matrix.Run, tag string) {
 		return
 	}
 	fmt.Printf("  %s Matrix build recorded in version history (v%d)\n", color.GreenString("✓"), rec.Version)
+
+	// Structured build-report sync for the matrix build: each combination
+	// carries its own report (deploy.MatrixArtifact.Report). Best-effort and
+	// gated inside the reporter on the app being watched; a matrix build of an
+	// app with no registered entry is simply not synced.
+	matrixAppID := ""
+	for _, a := range app.Manager.ListApplications() {
+		if a.Name == run.AppName {
+			matrixAppID = a.ID
+			break
+		}
+	}
+	phelixgrpc.ReportMatrixBuildEventForApp(matrixAppID, run.AppName,
+		run.Status == matrix.RunStatusSucceeded, rec.Version, tag, gitCommit, artifacts, "")
 
 	// The release manifest describes this run's artifact set under the
 	// logical version just recorded. Only finished runs with successful

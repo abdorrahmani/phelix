@@ -16,6 +16,7 @@ import (
 	grpcClient "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/spf13/cobra"
 )
 
@@ -391,12 +392,22 @@ var healthRemoveCmd = &cobra.Command{
 	},
 }
 
+// healthJSONList / healthJSONStatus gate the machine-readable envelopes of
+// the read-only health subcommands.
+var healthJSONList bool
+var healthJSONStatus bool
+
 // health list <AppID|AppName>
 var healthListCmd = &cobra.Command{
 	Use:   "list [ID|AppName]",
 	Short: "List health check endpoints for an app",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if healthJSONList {
+			restore := machine.EnterJSON()
+			defer restore()
+		}
+
 		if len(args) == 0 {
 			if !IsInteractive() {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix health %s <ID|AppName>", cmd.Name())
@@ -431,12 +442,12 @@ var healthListCmd = &cobra.Command{
 		config := configMgr.GetConfig(appID)
 		if config == nil {
 			fmt.Printf("No health checks configured for '%s'\n", appInfo.Name)
-			return nil
+			return writeEnvelopeResult(machine.Success("", healthListResult{App: appInfo.Name, AppID: appID, Endpoints: []healthEndpointView{}}))
 		}
 
 		if len(config.Endpoints) == 0 {
 			fmt.Printf("No endpoints configured for '%s'\n", appInfo.Name)
-			return nil
+			return writeEnvelopeResult(machine.Success("", healthListResult{App: appInfo.Name, AppID: appID, Endpoints: []healthEndpointView{}}))
 		}
 
 		fmt.Printf("Health Checks for '%s' (ID: %s)\n", appInfo.Name, appID)
@@ -452,8 +463,80 @@ var healthListCmd = &cobra.Command{
 		}
 
 		fmt.Println()
-		return nil
+
+		views := make([]healthEndpointView, 0, len(config.Endpoints))
+		for endpointName, endpoint := range config.Endpoints {
+			views = append(views, healthEndpointView{
+				Name:          endpointName,
+				URL:           endpoint.URL,
+				Interval:      string(endpoint.Interval),
+				Retries:       endpoint.Retries,
+				Timeout:       string(endpoint.Timeout),
+				ExpectedCodes: endpoint.ExpectedCodes,
+			})
+		}
+		return writeEnvelopeResult(machine.Success("", healthListResult{
+			App:       appInfo.Name,
+			AppID:     appID,
+			Endpoints: views,
+		}))
 	},
+}
+
+// healthEndpointView is one configured health endpoint in the machine
+// contract.
+type healthEndpointView struct {
+	Name          string `json:"name"`
+	URL           string `json:"url"`
+	Interval      string `json:"interval,omitempty"`
+	Retries       int    `json:"retries,omitempty"`
+	Timeout       string `json:"timeout,omitempty"`
+	ExpectedCodes string `json:"expected_codes,omitempty"`
+}
+
+type healthListResult struct {
+	App       string               `json:"app"`
+	AppID     string               `json:"app_id"`
+	Endpoints []healthEndpointView `json:"endpoints"`
+}
+
+// healthCheckView is one health check result in the machine contract.
+type healthCheckView struct {
+	Name       string  `json:"name"`
+	URL        string  `json:"url,omitempty"`
+	Status     string  `json:"status"`
+	HTTPStatus *int    `json:"http_status,omitempty"`
+	LatencyMs  *int64  `json:"latency_ms,omitempty"`
+	Error      *string `json:"error,omitempty"`
+	CheckedAt  int64   `json:"checked_at_ms,omitempty"`
+}
+
+type healthStatusResult struct {
+	App    string            `json:"app"`
+	AppID  string            `json:"app_id"`
+	Source string            `json:"source"` // "daemon" | "oneshot"
+	Checks []healthCheckView `json:"checks"`
+}
+
+// healthCheckViewsFrom converts stored check results onto the machine
+// contract.
+func healthCheckViewsFrom(statuses map[string]*health.HealthCheckResult) []healthCheckView {
+	views := make([]healthCheckView, 0, len(statuses))
+	for name, r := range statuses {
+		if r == nil {
+			continue
+		}
+		views = append(views, healthCheckView{
+			Name:       name,
+			URL:        r.URL,
+			Status:     r.Status,
+			HTTPStatus: r.StatusCode,
+			LatencyMs:  r.LatencyMs,
+			Error:      r.Error,
+			CheckedAt:  r.CheckedAt.UnixMilli(),
+		})
+	}
+	return views
 }
 
 // health status <AppID|AppName>
@@ -462,6 +545,11 @@ var healthStatusCmd = &cobra.Command{
 	Short: "Show current health status for an app",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if healthJSONStatus {
+			restore := machine.EnterJSON()
+			defer restore()
+		}
+
 		if len(args) == 0 {
 			if !IsInteractive() {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix health %s <ID|AppName>", cmd.Name())
@@ -517,7 +605,12 @@ var healthStatusCmd = &cobra.Command{
 		} else {
 			// One-time status display
 			health.PrintStatusTable(appID, appInfo.Name, daemon)
-			return nil
+			return writeEnvelopeResult(machine.Success("", healthStatusResult{
+				App:    appInfo.Name,
+				AppID:  appID,
+				Source: "daemon",
+				Checks: healthCheckViewsFrom(daemon.GetStatus(appID)),
+			}))
 		}
 	},
 }
@@ -826,7 +919,9 @@ func runOneShotHealthCheck(appID string, appInfo *app.AppListItem) error {
 	config := configMgr.GetConfig(appID)
 	if config == nil || len(config.Endpoints) == 0 {
 		fmt.Printf("No health checks configured for '%s'\n", appInfo.Name)
-		return nil
+		return writeEnvelopeResult(machine.Success("", healthStatusResult{
+			App: appInfo.Name, AppID: appID, Source: "oneshot", Checks: []healthCheckView{},
+		}))
 	}
 
 	checker := health.NewChecker()
@@ -834,6 +929,7 @@ func runOneShotHealthCheck(appID string, appInfo *app.AppListItem) error {
 	fmt.Printf("Health Checks for '%s' (ID: %s)\n", appInfo.Name, appID)
 	fmt.Println(strings.Repeat("=", 80))
 
+	views := make([]healthCheckView, 0, len(config.Endpoints))
 	for name, ep := range config.Endpoints {
 		result := checker.Check(ep)
 		statusIcon := "✓"
@@ -853,10 +949,24 @@ func runOneShotHealthCheck(appID string, appInfo *app.AppListItem) error {
 		if result.Error != nil {
 			fmt.Printf("  Error: %s\n", *result.Error)
 		}
+		views = append(views, healthCheckView{
+			Name:       name,
+			URL:        result.URL,
+			Status:     result.Status,
+			HTTPStatus: result.StatusCode,
+			LatencyMs:  result.LatencyMs,
+			Error:      result.Error,
+			CheckedAt:  result.CheckedAt.UnixMilli(),
+		})
 	}
 
 	fmt.Println()
-	return nil
+	return writeEnvelopeResult(machine.Success("", healthStatusResult{
+		App:    appInfo.Name,
+		AppID:  appID,
+		Source: "oneshot",
+		Checks: views,
+	}))
 }
 
 // healthDaemonPIDPath returns ~/.phelix/health_daemon.pid
@@ -905,6 +1015,12 @@ func init() {
 	healthSetCmd.Flags().StringVar(&healthMode, "mode", "auto", "Deploy health tier: auto, http, tcp-only, none")
 	healthSetCmd.Flags().StringVar(&httpMetricsDomain, "domain", "", "Public Host label used for optional HTTP metrics")
 	healthSetCmd.Flags().StringVar(&caddyAdminURL, "caddy-admin", "", "Caddy admin API base URL (default http://localhost:2019)")
+
+	// health read-subcommand machine flags
+	healthListCmd.Flags().BoolVar(&healthJSONList, "json", false,
+		"Output machine-readable JSON (stdout carries only the result envelope; output moves to stderr)")
+	healthStatusCmd.Flags().BoolVar(&healthJSONStatus, "json", false,
+		"Output machine-readable JSON (stdout carries only the result envelope; output moves to stderr)")
 
 	// health add flags
 	healthAddCmd.Flags().StringVar(&healthName, "name", "", "Endpoint name (required)")

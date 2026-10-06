@@ -8,6 +8,7 @@ import (
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/errreport"
+	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/fatih/color"
 )
 
@@ -32,12 +33,14 @@ func RenderError(err error, debug bool) int {
 }
 
 // CLI exit codes. These are part of the CLI's external contract for scripts,
-// so they are documented in the README and must remain stable. They are
-// derived from the structured error category, never from arbitrary internals.
+// so they are documented in README and docs/reference/exit-codes.md and must
+// remain stable. They are derived from the structured error category, never
+// from arbitrary internals.
 const (
 	ExitOK             = 0  // success
 	ExitFailure        = 1  // generic failure
-	ExitUsage          = 2  // invalid usage / invalid arguments
+	ExitUsage          = 2  // invalid usage / invalid arguments (bad invocation)
+	ExitValidation     = 3  // execution-side validation failure (e.g. doctor checks)
 	ExitAuth           = 10 // authentication failure
 	ExitPermission     = 11 // permission denied
 	ExitNotFound       = 12 // resource not found
@@ -83,8 +86,13 @@ func ExitCodeFor(err error) int {
 	switch phelixerr.CodeOf(err) {
 	case phelixerr.CodeOK:
 		return ExitOK
-	case phelixerr.CodeInvalidArgument, phelixerr.CodeValidation:
+	// Invalid arguments are invocation errors (exit 2); a validation failure
+	// is an execution result (exit 3) — doctor failing its checks must not be
+	// indistinguishable from a malformed command line.
+	case phelixerr.CodeInvalidArgument:
 		return ExitUsage
+	case phelixerr.CodeValidation:
+		return ExitValidation
 	case phelixerr.CodeUnauthenticated, phelixerr.CodeInvalidCredentials, phelixerr.CodeSessionExpired:
 		return ExitAuth
 	case phelixerr.CodeUnauthorized, phelixerr.CodePermissionDenied:
@@ -97,7 +105,8 @@ func ExitCodeFor(err error) int {
 		phelixerr.CodeGitSyncFailed:
 		return ExitBuild
 	case phelixerr.CodeDeployFailed, phelixerr.CodeInstanceStartFailed,
-		phelixerr.CodeHealthCheckFailed, phelixerr.CodeDeployLocked:
+		phelixerr.CodeHealthCheckFailed, phelixerr.CodeDeployLocked,
+		phelixerr.CodeCanaryRegression, phelixerr.CodeResourceOOM:
 		return ExitDeploy
 	case phelixerr.CodeRollbackFailed:
 		return ExitRollback
@@ -216,6 +225,16 @@ func renderCLIError(err error, debug bool) int {
 		}
 	}
 	fmt.Fprintln(errOut)
+
+	// Machine mode: the human block above stays on stderr as diagnostics;
+	// stdout receives exactly one structured error envelope. The exit code
+	// is unchanged — --json never alters failure semantics.
+	if machine.Active() {
+		if envErr := machine.WriteEnvelope(machine.Failure(err, exitCode, machine.ActiveOperation())); envErr != nil {
+			// stdout is broken; the human stderr block above is the fallback.
+			fmt.Fprintf(errOut, "  %s\n", color.HiBlackString(fmt.Sprintf("could not write JSON error envelope: %v", envErr)))
+		}
+	}
 
 	return exitCode
 }

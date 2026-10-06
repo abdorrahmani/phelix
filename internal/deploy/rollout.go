@@ -471,6 +471,8 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		if !switched {
 			ro.undoMigration(state, pre)
 		}
+		ro.Telemetry.RolloutAborted(canarySlot, canaryInst.Port,
+			truncateReason(reason.Error()), string(phelixerr.CodeOf(reason)))
 		return ro.failf(reason)
 	}
 
@@ -485,6 +487,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		if step.Duration > 0 {
 			desc += fmt.Sprintf(" for %s", step.Duration)
 		}
+		ro.Telemetry.BeginRolloutStep(ro.Plan.Strategy, i, total, step.TrafficPercent)
 		ro.Telemetry.RolloutStepStarted(canarySlot, canaryInst.Port, desc)
 		log.Stepf("%s", desc)
 
@@ -509,6 +512,8 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		ro.Telemetry.ProxySwitched(canarySlot, canaryInst.Port,
 			fmt.Sprintf("public port %d now splits traffic %d%%/%d%%", ro.PublicPort, 100-step.TrafficPercent, step.TrafficPercent))
 		ro.Telemetry.SetProxy(ro.PublicPort, primary.Label, primaryPort(primary), upstreamHosts(primary, backends))
+		ro.Telemetry.SetRolloutUpstreams(weightedUpstreams(primary, backends))
+		ro.Telemetry.SetRolloutObservedWeight(step.TrafficPercent)
 		if step.TrafficPercent >= 100 {
 			log.Successf("traffic switched fully to slot %s (zero downtime)", canarySlot)
 		} else {
@@ -633,6 +638,9 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	}
 	ro.Telemetry.PromoteCurrentVersion()
 	ro.Telemetry.SetProxy(ro.PublicPort, canarySlot, canaryInst.Port, []string{hostPort(canaryInst.Port)})
+	ro.Telemetry.SetRolloutUpstreams(weightedUpstreams(proxy.Target{Host: hostPort(canaryInst.Port), Label: canarySlot}, nil))
+	ro.Telemetry.RolloutStepPromoted(canarySlot, canaryInst.Port,
+		fmt.Sprintf("%s promoted to 100%% of traffic on slot %s", stableVersionLabel(canaryInst), canarySlot))
 
 	// 10. The promotion is durable; the old stable instance can drain.
 	if oldInst != nil && oldInst.PID > 0 {

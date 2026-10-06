@@ -9,6 +9,7 @@ import "internal/grpc/proto/deployment.proto";
 import "internal/grpc/proto/health.proto";
 import "internal/grpc/proto/matrix.proto";
 import "internal/grpc/proto/webhook.proto";
+import "internal/grpc/proto/buildreport.proto";
 
 // ============================================================================
 // Monitoring data messages
@@ -263,8 +264,17 @@ message MonitorCommandRequest {
   // degrading silently when it cannot honor the override exactly: a strategy
   // it does not implement, replicas on a non-rolling strategy, or either
   // field set on a command other than "rebuild".
-  string strategy = 4;  // "classic" | "blue-green" | "rolling"
+  string strategy = 4;  // "classic" | "blue-green" | "rolling" | "canary" | "progressive"
   int32 replicas = 5;   // rolling only; >= 1
+  // canary_percent is the first-step canary traffic share for a
+  // strategy="canary" rebuild (1..100), mirroring the local `--canary N` flag:
+  // the agent builds the same canary plan canaryPlanFromFlag produces. Ignored
+  // for other strategies. 0 means "not specified" — for strategy="progressive"
+  // the agent uses the app's phelix.yaml rollout profile, exactly as a local
+  // `phelix rebuild --strategy progressive` does. The agent rejects the command
+  // via MonitorCommandResult when canary_percent is set on a non-canary
+  // strategy or is out of range, rather than degrading silently.
+  int32 canary_percent = 12;
 
   // Remote rollback options, carried by type="rollback" commands only
   // (additive; older agents ignore them). Reuse the existing rollback engine —
@@ -405,6 +415,13 @@ message MonitorEvent {
     // are not executing are not resynced — query them with a matrix_status
     // command.
     MatrixRunState matrix_run = 19;
+    // version_sync resyncs one app's full version history (versions.json),
+    // pushed on reconnect and periodically like deployment_snapshot. It
+    // replaces the legacy piggy-back of version lists on the rollback RPC
+    // (SendVersionListForApp): richer per-version detail (deploy mode/time,
+    // docker image, the build report) and no false coupling to rollback. An
+    // older backend ignores the unknown oneof case.
+    VersionSync version_sync = 20;
   }
 }
 
@@ -416,4 +433,32 @@ message MonitorControl {
     MonitorCommandRequest command = 1;
     Ping ping = 2;
   }
+}
+
+// VersionSync is one app's complete, idempotent version history (every retained
+// version in versions.json). The monitor daemon pushes it on every (re)connect
+// and periodically, so the backend converges on the real history without
+// depending on events it may have missed. A full list every time means
+// prunes/deletions propagate (a version absent from the list is gone).
+message VersionSync {
+  string app_id = 1;
+  string app_name = 2;
+  repeated VersionEntry versions = 3;
+}
+
+// VersionEntry mirrors deploy.VersionMeta — the superset of the legacy
+// RollbackVersionEntry, carrying deploy lifecycle (deployed_at/deploy_mode),
+// the docker image ref, and the full build report. Timestamps are unix millis.
+message VersionEntry {
+  int32 version = 1;
+  string tag = 2;
+  string git_commit = 3;
+  int64 built_at = 4;        // unix millis
+  int64 size_bytes = 5;
+  bool is_current = 6;       // the version currently serving traffic
+  bool prune_soon = 7;       // would be pruned on the next build (retention)
+  int64 deployed_at = 8;     // unix millis; 0 = never promoted
+  string deploy_mode = 9;    // strategy that promoted it; empty = never promoted
+  string docker_image = 10;  // image ref for a dockerized version; empty = native
+  BuildReport build_report = 11; // the build's metrics; absent on pre-report versions
 }

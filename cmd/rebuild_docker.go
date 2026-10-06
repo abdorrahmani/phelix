@@ -227,8 +227,7 @@ func warnIfComposeManaged(ctx context.Context, log deploy.Logger, appName, svc s
 	}
 }
 
-// runDockerInitialBuild is the first-deploy path for a docker-runtime app.
-//
+// runDockerInitialBuild is the first-deploy path for a docker-runtime app.//
 // `phelix build` normally compiles a native binary and starts it as a classic
 // host process — which is exactly wrong for a docker-runtime app (it would run
 // a native process instead of a container, and classic is not even a valid
@@ -240,7 +239,7 @@ func warnIfComposeManaged(ctx context.Context, log deploy.Logger, appName, svc s
 //
 // The host Go/Rust toolchain is not required here — the image is built with the
 // toolchain inside the container — so this checks for Docker instead.
-func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name string, publicPort int, currentDir string, lang builder.Language, noUpload bool) error {
+func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name string, publicPort int, currentDir string, lang builder.Language, noUpload bool, op *opRun) error {
 	if err := docker.CheckDockerAvailable(); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeDockerDaemonUnavailable, err,
 			"docker runtime: Docker is required to build and run %q as a container", name)
@@ -280,5 +279,5 @@ func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name str
 	if err != nil {
 		return err
 	}
-	return runZeroDowntimeDeploy(appInfo, name, publicPort, currentDir)
+	return runZeroDowntimeDeploy(appInfo, name, publicPort, currentDir, op)
 }

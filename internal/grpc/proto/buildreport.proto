@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// Build-report telemetry: the structured metrics a `phelix build` / `rebuild`
+// (and each matrix combination) captures locally in buildreport.Report. Carried
+// to the backend by ReportBuildEvent (BuildEvent), embedded in MatrixCombinationState,
+// and in a version's VersionEntry. All enum-like fields are strings that degrade
+// to "unknown"; absent/zero always means "the CLI does not know".
+
+// BuildReport mirrors internal/buildreport.Report 1:1. Timestamps are unix
+// millis; a zero timestamp means unknown (not the 1970 epoch).
+message BuildReport {
+  string language = 1;          // "go" | "rust"
+  string compiler = 2;          // "go" | "rust/cargo"
+  string compiler_version = 3;  // normalized "major.minor" (e.g. "1.27"); empty = undetermined
+  int64 started_at = 4;         // unix millis; 0 = unknown
+  int64 ended_at = 5;           // unix millis; 0 = unknown
+  int64 duration_ms = 6;        // wall-clock build duration
+  repeated string build_args = 7;
+
+  // cache_status is the compiler-cache classification: "cold" | "hit" |
+  // "unknown". cache_source names the mechanism when known
+  // ("go-build-cache" | "cargo-incremental" | "docker-layer"); empty otherwise.
+  string cache_status = 8;
+  string cache_source = 9;
+
+  // artifact_type: "binary" | "docker-image". size in bytes (0 for images /
+  // unknown). platform is "os/arch" (e.g. "linux/amd64") when applicable.
+  string artifact_type = 10;
+  int64 artifact_size_bytes = 11;
+  string artifact_platform = 12;
+
+  // Failure info. Successful builds leave failed=false; a failed build is
+  // reported with the stage ("compile") and a redacted error summary. Failed
+  // single builds never become versions, but the shape stays future-proof.
+  bool failed = 13;
+  string stage = 14;
+  string error = 15;
+
+  // regression is the comparison against this app's recent comparable builds,
+  // when one could be computed. Absent means no baseline / not comparable.
+  BuildRegression regression = 16;
+}
+
+// BuildRegression mirrors internal/buildreport.Analyze output (Analysis +
+// MetricComparison). A metric that is not comparable degrades to
+// comparable=false + a skip_reason, never a misleading percentage. The regression
+// booleans reflect the CLI-side thresholds (binary size >=1MB OR >=5%; duration
+// >=25% AND >=2s) — persist them, do not recompute.
+message BuildRegression {
+  bool size_comparable = 1;
+  int64 size_previous_bytes = 2;
+  int64 size_current_bytes = 3;
+  int64 size_delta_bytes = 4;      // signed
+  double size_percent_delta = 5;   // NaN when undefined (render "-")
+  bool size_regression = 6;
+
+  bool duration_comparable = 7;
+  int64 duration_previous_ms = 8;
+  int64 duration_current_ms = 9;
+  int64 duration_delta_ms = 10;    // signed
+  double duration_percent_delta = 11;
+  bool duration_regression = 12;
+
+  int32 history_used = 13;         // comparable builds in the window (<= 5)
+  int64 baseline_size_bytes = 14;  // window average
+  int64 baseline_duration_ms = 15; // window average
+  string skip_reason = 16;         // why a metric was not comparable; empty when both compared
+}

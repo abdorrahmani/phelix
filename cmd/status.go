@@ -13,17 +13,27 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 )
 
+var statusJSON bool
+
 var StatusCmd = &cobra.Command{
 	Use:   "status [ID|AppName]",
 	Short: "Displays the status of a specific application by its ID or AppName",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Machine mode: tables and sections detour to stderr for the whole
+		// command so the JSON envelope stays alone on stdout.
+		if statusJSON {
+			restore := machine.EnterJSON()
+			defer restore()
+		}
+
 		if len(args) == 0 {
 			if !IsInteractive() {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix status <ID|AppName>")
@@ -57,8 +67,171 @@ var StatusCmd = &cobra.Command{
 		displayStatus(status)
 		displayHTTPMetrics(status.ID)
 		displayDeployAndProxy(status.Name)
-		return nil
+
+		return writeEnvelopeResult(machine.Success("", buildStatusResult(status)))
 	},
+}
+
+// --- machine-contract view ----------------------------------------------------
+
+type statusAppView struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Language   string  `json:"language,omitempty"`
+	Status     string  `json:"status"`
+	Watching   bool    `json:"watching"`
+	PID        int     `json:"pid,omitempty"`
+	Uptime     string  `json:"uptime,omitempty"`
+	RAMUsageMB float64 `json:"ram_usage_mb"`
+	CPUUsage   float64 `json:"cpu_usage_percent"`
+}
+
+type statusVersionView struct {
+	Version    int                   `json:"version"`
+	Tag        string                `json:"tag,omitempty"`
+	Commit     string                `json:"commit,omitempty"`
+	BuiltAt    int64                 `json:"built_at_ms,omitempty"`
+	DeployedAt int64                 `json:"deployed_at_ms,omitempty"`
+	SizeBytes  int64                 `json:"size_bytes,omitempty"`
+	Recent     []statusRecentVersion `json:"recent,omitempty"`
+}
+
+type statusRecentVersion struct {
+	Version int    `json:"version"`
+	Tag     string `json:"tag,omitempty"`
+	Current bool   `json:"current"`
+}
+
+type statusInstanceView struct {
+	Slot    string `json:"slot"`
+	Status  string `json:"status"`
+	PID     int    `json:"pid,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	Version int    `json:"version,omitempty"`
+}
+
+type statusRollbackView struct {
+	FromVersion int   `json:"from_version"`
+	ToVersion   int   `json:"to_version"`
+	At          int64 `json:"at_ms"`
+}
+
+type statusDeployView struct {
+	Mode          string               `json:"mode,omitempty"`
+	ActiveSlot    string               `json:"active_slot,omitempty"`
+	ActiveVersion int                  `json:"active_version,omitempty"`
+	PublicPort    int                  `json:"public_port,omitempty"`
+	HealthTier    string               `json:"health_tier,omitempty"`
+	Slots         []statusInstanceView `json:"slots,omitempty"`
+	Replicas      []statusInstanceView `json:"replicas,omitempty"`
+	LastRollback  *statusRollbackView  `json:"last_rollback,omitempty"`
+}
+
+type statusProxyView struct {
+	Running    bool   `json:"running"`
+	Enrolled   bool   `json:"enrolled"`
+	PublicPort int    `json:"public_port,omitempty"`
+	Primary    string `json:"primary,omitempty"`
+	InFlight   int64  `json:"in_flight,omitempty"`
+}
+
+type statusResult struct {
+	App     statusAppView      `json:"app"`
+	Version *statusVersionView `json:"version,omitempty"`
+	Deploy  *statusDeployView  `json:"deploy,omitempty"`
+	Proxy   *statusProxyView   `json:"proxy,omitempty"`
+}
+
+// buildStatusResult projects the reconciled app status, version history,
+// deployment state and proxy routing onto the machine contract. The same
+// sources the human renderer reads (versions.json, deploy.json, proxy
+// daemon) feed it — no second state read path.
+func buildStatusResult(status app.AppStatus) *statusResult {
+	res := &statusResult{
+		App: statusAppView{
+			ID:         status.ID,
+			Name:       status.Name,
+			Language:   status.Language,
+			Status:     status.Status,
+			Watching:   status.Watching,
+			PID:        status.PID,
+			Uptime:     status.Uptime,
+			RAMUsageMB: float64(status.RAMUsage) / (1024 * 1024),
+			CPUUsage:   status.CPUUsage,
+		},
+	}
+
+	if meta, err := deploy.CurrentVersionMeta(status.Name); err == nil && meta != nil {
+		vv := &statusVersionView{
+			Version:   meta.Version,
+			Tag:       meta.Tag,
+			Commit:    meta.GitCommit,
+			BuiltAt:   meta.BuiltAt.UnixMilli(),
+			SizeBytes: meta.SizeBytes,
+		}
+		if meta.DeployedAt != nil {
+			vv.DeployedAt = meta.DeployedAt.UnixMilli()
+		}
+		if recent, rerr := deploy.RecentVersions(status.Name, 3); rerr == nil {
+			vv.Recent = make([]statusRecentVersion, 0, len(recent))
+			for _, v := range recent {
+				vv.Recent = append(vv.Recent, statusRecentVersion{Version: v.Version, Tag: v.Tag, Current: v.IsCurrent})
+			}
+		}
+		res.Version = vv
+	}
+
+	state, err := deploy.Load(status.Name)
+	if err == nil && state != nil && state.Mode != "" {
+		dv := &statusDeployView{
+			Mode:          string(state.Mode),
+			ActiveSlot:    state.ActiveSlot,
+			ActiveVersion: state.ActiveVersion,
+			PublicPort:    state.PublicPort,
+		}
+		if state.Health != nil {
+			dv.HealthTier = state.Health.TierLabel
+		}
+		for _, slot := range []string{deploy.SlotBlue, deploy.SlotGreen} {
+			if inst := state.Slots[slot]; inst != nil {
+				dv.Slots = append(dv.Slots, statusInstanceView{
+					Slot: inst.Slot, Status: inst.Status, PID: inst.PID, Port: inst.Port, Version: inst.Version,
+				})
+			}
+		}
+		for _, key := range sortedReplicaKeysForDisplay(state.Replicas) {
+			if inst := state.Replicas[key]; inst != nil {
+				dv.Replicas = append(dv.Replicas, statusInstanceView{
+					Slot: key, Status: inst.Status, PID: inst.PID, Port: inst.Port, Version: inst.Version,
+				})
+			}
+		}
+		if state.LastRollback != nil {
+			dv.LastRollback = &statusRollbackView{
+				FromVersion: state.LastRollback.FromVersion,
+				ToVersion:   state.LastRollback.ToVersion,
+				At:          state.LastRollback.At.UnixMilli(),
+			}
+		}
+		res.Deploy = dv
+	}
+
+	proxyUp, proxyByApp := loadProxySnapshot()
+	pv := &statusProxyView{Running: proxyUp}
+	if ps, ok := proxyByApp[status.Name]; ok {
+		pv.Enrolled = true
+		pv.PublicPort = ps.PublicPort
+		pv.Primary = ps.Primary.Label
+		pv.InFlight = ps.InFlight
+	}
+	res.Proxy = pv
+
+	return res
+}
+
+func init() {
+	StatusCmd.Flags().BoolVar(&statusJSON, "json", false,
+		"Output machine-readable JSON (stdout carries only the result envelope; tables move to stderr)")
 }
 
 // displayHTTPMetrics samples an optionally configured Caddy endpoint. Two

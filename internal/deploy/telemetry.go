@@ -72,11 +72,15 @@ const (
 	EventReplicaStopped            = "deployment.replica_stopped"
 
 	// Canary / progressive rollout steps. The step's traffic share and its
-	// place in the plan travel in the event Message; a step that fails needs
-	// no dedicated event because the deployment's terminal failure event
-	// carries the regression reason.
+	// place in the plan travel in the event Message AND as typed fields on the
+	// snapshot's RolloutInfo (Tracker.rollout). rollout_step_promoted marks the
+	// final 100% step committing; rollout_aborted marks a step failing
+	// verification/regressing (the structured cause is in the snapshot's
+	// RolloutInfo.AbortCode and the terminal failure event's Failure).
 	EventRolloutStepStarted  = "deployment.rollout_step_started"
 	EventRolloutStepVerified = "deployment.rollout_step_verified"
+	EventRolloutStepPromoted = "deployment.rollout_step_promoted"
+	EventRolloutAborted      = "deployment.rollout_aborted"
 
 	EventCompleted = "deployment.completed"
 	EventFailed    = "deployment.failed"
@@ -148,7 +152,67 @@ type ProxyState struct {
 	TargetInternalPort int
 	Upstreams          []string
 	InFlight           int64
+	// Weighted carries the per-backend traffic split (proxy.Target.Weight) a
+	// canary/progressive rollout establishes. Empty for unweighted routing
+	// (single backend, blue-green, rolling). Upstreams above stays the plain
+	// host list; this adds the weight it drops.
+	Weighted []WeightedUpstream
 }
+
+// WeightedUpstream is one proxy backend and its traffic share, mirroring
+// proxy.Target. weight 0 means unweighted (single backend).
+type WeightedUpstream struct {
+	Host          string
+	Label         string
+	WeightPercent int
+}
+
+// RolloutVerificationInfo is one rollout step's metric verdict, mirroring
+// rollout_verify.go (evaluateStats) and the plan's VerificationConfig
+// thresholds. Rates are percentages; latencies milliseconds. SkipReason set
+// means the step passed on health alone (no comparable traffic / metrics
+// unavailable), not a metric comparison.
+type RolloutVerificationInfo struct {
+	CanaryErrorRate   float64
+	BaselineErrorRate float64
+	MaxErrorRate      float64
+	MaxErrorDelta     float64
+	CanaryP95Ms       float64
+	BaselineP95Ms     float64
+	MaxP95Factor      float64
+	CanaryRequests    int64
+	CanaryErrors      int64
+	BaselineRequests  int64
+	Passed            bool
+	SkipReason        string
+}
+
+// RolloutInfo is the canary/progressive rollout state attached to a Snapshot.
+// It mirrors deploy.CanaryState plus the engine's live step/verification detail
+// so every number a rollout computes locally is a typed field, not buried in a
+// human message.
+type RolloutInfo struct {
+	Strategy              string // "canary" | "progressive"
+	StepIndex             int    // 0-based step in flight
+	TotalSteps            int
+	TargetWeightPercent   int    // share this step intends
+	ObservedWeightPercent int    // share the proxy actually set
+	Status                string // CanaryState.Status: running|promoted|failed|aborted
+	Decision              string // continue|promote|abort|hold
+	AbortCode             string // phelix code when aborted
+	Reason                string
+	Verification          *RolloutVerificationInfo
+	StartedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+// Rollout decision values (RolloutInfo.Decision).
+const (
+	RolloutDecisionContinue = "continue"
+	RolloutDecisionPromote  = "promote"
+	RolloutDecisionAbort    = "abort"
+	RolloutDecisionHold     = "hold"
+)
 
 // HealthState is the deploy-time health configuration and the tier actually
 // selected for this deployment. No metric is computed for telemetry alone.
@@ -187,9 +251,14 @@ type Snapshot struct {
 	ReplicasReady   int
 	ReplicasHealthy int
 
-	Proxy     *ProxyState
-	Health    *HealthState
-	Failure   *Failure
+	Proxy   *ProxyState
+	Health  *HealthState
+	Failure *Failure
+	// Rollout is the canary/progressive rollout state; nil for
+	// classic/blue-green/rolling. A rollout runs on blue-green topology, so the
+	// slots above stay truthful and Rollout carries the step/traffic/verification
+	// detail they cannot express.
+	Rollout   *RolloutInfo
 	StartedAt time.Time
 	UpdatedAt time.Time
 }
@@ -254,6 +323,7 @@ type Tracker struct {
 	proxy   *ProxyState
 	health  *HealthState
 	failure *Failure
+	rollout *RolloutInfo
 
 	// healthy records which instances passed their health window during THIS
 	// deployment, keyed by slot name / replica index.
@@ -634,6 +704,13 @@ func (t *Tracker) RolloutStepStarted(slot string, port int, message string) {
 	if t == nil {
 		return
 	}
+	t.mu.Lock()
+	if t.rollout != nil {
+		t.rollout.Status = CanaryRunning
+		t.rollout.Decision = RolloutDecisionHold
+		t.rollout.UpdatedAt = time.Now()
+	}
+	t.mu.Unlock()
 	t.transition(PhaseSwitching, StatusInProgress)
 	t.emit(EventRolloutStepStarted, eventOpts{slot: slot, internalPort: port, message: message})
 }
@@ -644,8 +721,134 @@ func (t *Tracker) RolloutStepVerified(slot string, port int, message string) {
 	if t == nil {
 		return
 	}
+	t.mu.Lock()
+	if t.rollout != nil {
+		// The final (100%) step verified means promotion is next; earlier steps
+		// continue to the next share.
+		if t.rollout.TargetWeightPercent >= 100 {
+			t.rollout.Decision = RolloutDecisionPromote
+		} else {
+			t.rollout.Decision = RolloutDecisionContinue
+		}
+		t.rollout.UpdatedAt = time.Now()
+	}
+	t.mu.Unlock()
 	t.transition(PhaseObserving, StatusInProgress)
 	t.emit(EventRolloutStepVerified, eventOpts{slot: slot, internalPort: port, message: message})
+}
+
+// BeginRolloutStep records the structured identity of the step about to run
+// (0-based index, total steps, the traffic share it intends). Observation only:
+// it never changes a rollout decision. Call it before RolloutStepStarted.
+func (t *Tracker) BeginRolloutStep(strategy string, index, total, targetPercent int) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	r := t.ensureRolloutLocked(strategy)
+	r.StepIndex = index
+	r.TotalSteps = total
+	r.TargetWeightPercent = targetPercent
+	r.Status = CanaryRunning
+	r.Decision = RolloutDecisionHold
+	r.UpdatedAt = time.Now()
+	t.mu.Unlock()
+}
+
+// SetRolloutObservedWeight records the canary share the proxy actually serves
+// after a step's switch (CanaryState.TrafficPercent).
+func (t *Tracker) SetRolloutObservedWeight(percent int) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.rollout != nil {
+		t.rollout.ObservedWeightPercent = percent
+		t.rollout.UpdatedAt = time.Now()
+	}
+	t.mu.Unlock()
+}
+
+// SetRolloutVerification attaches the most recent step's metric verdict. nil is
+// ignored. Observation only.
+func (t *Tracker) SetRolloutVerification(v *RolloutVerificationInfo) {
+	if t == nil || v == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.rollout != nil {
+		cp := *v
+		t.rollout.Verification = &cp
+		t.rollout.UpdatedAt = time.Now()
+	}
+	t.mu.Unlock()
+}
+
+// SetRolloutUpstreams records the weighted traffic split behind the proxy for
+// this step (the per-backend proxy.Target weights). It augments the proxy
+// state's plain host list; call it after SetProxy.
+func (t *Tracker) SetRolloutUpstreams(weighted []WeightedUpstream) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.proxy == nil {
+		t.proxy = &ProxyState{}
+	}
+	t.proxy.Weighted = append([]WeightedUpstream(nil), weighted...)
+	t.mu.Unlock()
+}
+
+// RolloutStepPromoted reports the final 100% step committing: the canary is now
+// the serving version. Distinct from deployment.completed so the backend sees
+// promotion as a first-class rollout transition.
+func (t *Tracker) RolloutStepPromoted(slot string, port int, message string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.rollout != nil {
+		t.rollout.Status = CanaryPromoted
+		t.rollout.Decision = RolloutDecisionPromote
+		t.rollout.ObservedWeightPercent = 100
+		t.rollout.UpdatedAt = time.Now()
+	}
+	t.mu.Unlock()
+	t.transition(PhasePromoting, StatusInProgress)
+	t.emit(EventRolloutStepPromoted, eventOpts{slot: slot, internalPort: port, message: message})
+}
+
+// RolloutAborted reports a rollout stopping before promotion (regression,
+// verification failure, cancellation). abortCode is the phelix error code
+// (e.g. CANARY_REGRESSION). The deployment's terminal failure/cancel event
+// still follows; this marks the rollout-specific abort with its structured
+// cause. Observation only — it does not itself end the deployment.
+func (t *Tracker) RolloutAborted(slot string, port int, reason, abortCode string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.rollout != nil {
+		t.rollout.Status = CanaryAborted
+		t.rollout.Decision = RolloutDecisionAbort
+		t.rollout.AbortCode = abortCode
+		t.rollout.Reason = reason
+		t.rollout.UpdatedAt = time.Now()
+	}
+	t.mu.Unlock()
+	t.emit(EventRolloutAborted, eventOpts{slot: slot, internalPort: port, message: reason})
+}
+
+// ensureRolloutLocked returns the tracker's rollout record, creating it on first
+// use. Caller holds t.mu.
+func (t *Tracker) ensureRolloutLocked(strategy string) *RolloutInfo {
+	if t.rollout == nil {
+		t.rollout = &RolloutInfo{Strategy: strategy, StartedAt: time.Now()}
+	}
+	if strategy != "" {
+		t.rollout.Strategy = strategy
+	}
+	return t.rollout
 }
 
 // Completed marks the deployment successful. Callers invoke it only once the
@@ -774,11 +977,20 @@ func (t *Tracker) snapshotLocked() *Snapshot {
 	if t.proxy != nil {
 		cp := *t.proxy
 		cp.Upstreams = append([]string(nil), t.proxy.Upstreams...)
+		cp.Weighted = append([]WeightedUpstream(nil), t.proxy.Weighted...)
 		s.Proxy = &cp
 	}
 	if t.health != nil {
 		cp := *t.health
 		s.Health = &cp
+	}
+	if t.rollout != nil {
+		cp := *t.rollout
+		if t.rollout.Verification != nil {
+			vp := *t.rollout.Verification
+			cp.Verification = &vp
+		}
+		s.Rollout = &cp
 	}
 	if t.state == nil {
 		return s
@@ -895,29 +1107,17 @@ func versionLabel(v int) string {
 	return "v" + strconv.Itoa(v)
 }
 
-// retryableCodes are the failure categories where repeating the same
-// deployment could plausibly succeed without a code or configuration change.
-var retryableCodes = map[phelixerr.Code]bool{
-	phelixerr.CodeHealthCheckFailed:   true,
-	phelixerr.CodeInstanceStartFailed: true,
-	phelixerr.CodeProxy:               true,
-	phelixerr.CodeConnection:          true,
-	phelixerr.CodeTimeout:             true,
-	phelixerr.CodePortUnavailable:     true,
-	phelixerr.CodeDeployLocked:        true,
-	phelixerr.CodeNetwork:             true,
-	phelixerr.CodeProcessFailed:       true,
-}
-
 // failureFromError maps a deployment error onto the wire failure shape using
 // the existing structured error model. The message is redacted so a cause that
-// embedded a credential cannot reach the backend.
+// embedded a credential cannot reach the backend. Retryability comes from the
+// shared classification in internal/errors so the wire field can never
+// disagree with the CLI's machine-readable error contract.
 func failureFromError(err error) *Failure {
 	code := phelixerr.CodeOf(err)
 	return &Failure{
 		Code:      code.String(),
 		Message:   phelixerr.Redact(err.Error()),
-		Retryable: retryableCodes[code],
+		Retryable: phelixerr.Retryable(code),
 	}
 }
 
@@ -971,6 +1171,24 @@ func upstreamHosts(primary proxy.Target, backends []proxy.Target) []string {
 		if b.Host != "" {
 			out = append(out, b.Host)
 		}
+	}
+	return out
+}
+
+// weightedUpstreams renders proxy targets as weighted upstreams for telemetry,
+// preserving the per-backend traffic share (proxy.Target.Weight) a rollout step
+// establishes. Hosts with an empty address are skipped.
+func weightedUpstreams(primary proxy.Target, backends []proxy.Target) []WeightedUpstream {
+	out := make([]WeightedUpstream, 0, len(backends)+1)
+	add := func(t proxy.Target) {
+		if t.Host == "" {
+			return
+		}
+		out = append(out, WeightedUpstream{Host: t.Host, Label: t.Label, WeightPercent: t.Weight})
+	}
+	add(primary)
+	for _, b := range backends {
+		add(b)
 	}
 	return out
 }

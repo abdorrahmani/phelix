@@ -40,6 +40,10 @@ const (
 	// (matrix_* MonitorStream commands driving the existing matrix engine,
 	// ReportMatrixEvent lifecycle events, and run-state resync).
 	CapabilityBuildMatrix = "build_matrix"
+	// CapabilityBuildReport: the agent implements structured build-report sync
+	// (ReportBuildEvent with compiler/cache/duration/artifact metrics and
+	// regression deltas for build/rebuild and matrix builds).
+	CapabilityBuildReport = "build_report"
 	// CapabilityWebhookManagement: the agent implements remote webhook
 	// management (webhook_* MonitorStream commands reading and mutating the
 	// existing webhook subsystem — durable jobs, delivery ledger, and the

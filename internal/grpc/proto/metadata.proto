@@ -41,6 +41,9 @@ message CLIMetadata {
   //                          idempotency ledger.
   //   "build_matrix"       — matrix_* commands, matrix events, run-state
   //                          resync.
+  //   "build_report"       — ReportBuildEvent: structured build reports
+  //                          (compiler, cache, duration, artifact size, and
+  //                          regression deltas) for build/rebuild and matrix.
   //   "webhook_management" — webhook_* commands over the existing webhook
   //                          subsystem (jobs, deliveries, configuration).
   //

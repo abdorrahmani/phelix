@@ -118,6 +118,13 @@ func ToProtoDeploymentSnapshot(s *deploy.Snapshot) *pb.DeploymentSnapshot {
 			Upstreams:          append([]string(nil), p.Upstreams...),
 			InFlight:           p.InFlight,
 		}
+		for _, w := range p.Weighted {
+			out.Proxy.WeightedUpstreams = append(out.Proxy.WeightedUpstreams, &pb.WeightedUpstream{
+				Host:          w.Host,
+				Label:         w.Label,
+				WeightPercent: int32(w.WeightPercent),
+			})
+		}
 	}
 	if h := s.Health; h != nil {
 		out.Health = &pb.DeploymentHealth{
@@ -131,7 +138,50 @@ func ToProtoDeploymentSnapshot(s *deploy.Snapshot) *pb.DeploymentSnapshot {
 			LastHealthyAt: unixMilli(h.LastHealthyAt),
 		}
 	}
+	out.Rollout = toProtoRolloutState(s.Rollout)
 	return out
+}
+
+// toProtoRolloutState maps the canary/progressive rollout state onto the wire.
+// nil in, nil out — a non-rollout deployment carries no rollout block.
+func toProtoRolloutState(r *deploy.RolloutInfo) *pb.RolloutState {
+	if r == nil {
+		return nil
+	}
+	return &pb.RolloutState{
+		Strategy:              r.Strategy,
+		StepIndex:             int32(r.StepIndex),
+		TotalSteps:            int32(r.TotalSteps),
+		TargetWeightPercent:   int32(r.TargetWeightPercent),
+		ObservedWeightPercent: int32(r.ObservedWeightPercent),
+		Status:                r.Status,
+		Decision:              r.Decision,
+		AbortCode:             r.AbortCode,
+		Reason:                sanitizeUTF8(r.Reason),
+		Verification:          toProtoRolloutVerification(r.Verification),
+		StartedAt:             unixMilli(r.StartedAt),
+		UpdatedAt:             unixMilli(r.UpdatedAt),
+	}
+}
+
+func toProtoRolloutVerification(v *deploy.RolloutVerificationInfo) *pb.RolloutVerification {
+	if v == nil {
+		return nil
+	}
+	return &pb.RolloutVerification{
+		CanaryErrorRate:   v.CanaryErrorRate,
+		BaselineErrorRate: v.BaselineErrorRate,
+		MaxErrorRate:      v.MaxErrorRate,
+		MaxErrorDelta:     v.MaxErrorDelta,
+		CanaryP95Ms:       v.CanaryP95Ms,
+		BaselineP95Ms:     v.BaselineP95Ms,
+		MaxP95Factor:      v.MaxP95Factor,
+		CanaryRequests:    v.CanaryRequests,
+		CanaryErrors:      v.CanaryErrors,
+		BaselineRequests:  v.BaselineRequests,
+		Passed:            v.Passed,
+		SkipReason:        v.SkipReason,
+	}
 }
 
 func toProtoDeploymentFailure(f *deploy.Failure) *pb.DeploymentFailure {

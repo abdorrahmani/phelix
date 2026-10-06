@@ -32,7 +32,14 @@ func TestExitCodeFor(t *testing.T) {
 		{"timeout", phelixerr.New(phelixerr.CodeTimeout, "to"), ExitTimeout},
 		{"encryption", phelixerr.New(phelixerr.CodeEncryption, "enc"), ExitEncryption},
 		{"invalidarg", phelixerr.New(phelixerr.CodeInvalidArgument, "arg"), ExitUsage},
-		{"validation", phelixerr.New(phelixerr.CodeValidation, "v"), ExitUsage},
+		// A validation failure is an execution result (doctor's checks), not
+		// a malformed invocation — it must stay distinguishable from usage.
+		{"validation", phelixerr.New(phelixerr.CodeValidation, "v"), ExitValidation},
+		{"canaryregression", phelixerr.New(phelixerr.CodeCanaryRegression, "canary"), ExitDeploy},
+		{"resourceoom", phelixerr.New(phelixerr.CodeResourceOOM, "oom"), ExitDeploy},
+		{"idempotencyconflict", phelixerr.New(phelixerr.CodeIdempotencyConflict, "key reused"), ExitFailure},
+		{"unauthorized", phelixerr.New(phelixerr.CodeUnauthorized, "nope"), ExitPermission},
+		{"gitsync", phelixerr.New(phelixerr.CodeGitSyncFailed, "git"), ExitBuild},
 		{"wrapped", phelixerr.Wrap(phelixerr.CodeBuildFailed, "wrap", errors.New("root")), ExitBuild},
 	}
 	for _, tc := range cases {

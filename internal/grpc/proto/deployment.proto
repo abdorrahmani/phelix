@@ -90,6 +90,23 @@ message DeploymentProxy {
   int32 target_internal_port = 4;
   repeated string upstreams = 5;   // every active upstream as host:port
   int64 in_flight = 6;             // in-flight requests, when the daemon reports it
+  // weighted_upstreams carries the per-target traffic weight the CLI set behind
+  // the proxy (proxy.Target.Weight) — the split a canary/progressive rollout
+  // applies (e.g. stable 90 / canary 10). The plain `upstreams` list above is
+  // unchanged (hosts only); this adds the weight it drops. Empty means the CLI
+  // established no weighted split (single backend, or an unweighted strategy),
+  // never "weight 0".
+  repeated WeightedUpstream weighted_upstreams = 7;
+}
+
+// WeightedUpstream is one proxy backend with its traffic share, mirroring
+// proxy.Target (internal/proxy/proxy.go). It is the structured form of a
+// canary split; the DeploymentProxy.upstreams string list carries the same
+// hosts without weights.
+message WeightedUpstream {
+  string host = 1;            // "host:port" dial address
+  string label = 2;           // "blue"/"green"/"replica-N"/"canary"/"stable"
+  int32 weight_percent = 3;   // 1..100; 0 means unweighted (single backend)
 }
 
 // DeploymentHealth is the deploy-time health-check configuration and outcome,
@@ -114,7 +131,7 @@ message DeploymentSnapshot {
   string app_id = 2;         // CLI application id
   string app_name = 3;
   string deployment_id = 4;  // last/current deployment operation id
-  string strategy = 5;       // classic | blue-green | rolling
+  string strategy = 5;       // classic | blue-green | rolling | canary | progressive
   string phase = 6;          // see DeploymentEvent.phase
   string status = 7;         // idle | in_progress | succeeded | failed | cancelled
   string current_version = 8; // version actually serving traffic
@@ -138,6 +155,12 @@ message DeploymentSnapshot {
   // runtime is how this app's instances are launched: "native" or "docker".
   // Absent/empty always means the CLI does not know, never native.
   string runtime = 23;
+  // rollout is the canary/progressive rollout state when this deployment is a
+  // rollout; absent for classic/blue-green/rolling. A canary runs on blue-green
+  // topology, so `slots`/`active_slot` above stay truthful and `strategy` is
+  // "canary"/"progressive"; `rollout` adds the step/traffic/verification detail
+  // the slots cannot express. Absent always means "not a rollout", never step 0.
+  RolloutState rollout = 24;
 }
 
 // DeploymentEvent is one lifecycle transition of a deployment. All events of
@@ -157,11 +180,23 @@ message DeploymentEvent {
   // deployment.replica_replaced, deployment.replica_draining,
   // deployment.replica_stopped, deployment.completed, deployment.failed,
   // deployment.cancelled.
+  //
+  // Canary/progressive rollouts additionally emit:
+  // deployment.rollout_step_started, deployment.rollout_step_verified,
+  // deployment.rollout_step_promoted (final 100% step committed) and
+  // deployment.rollout_aborted (a step failed verification / regressed; the
+  // structured cause is in `rollout.abort_code` and `failure`). The structured
+  // step detail travels in the embedded snapshot's `rollout` (RolloutState);
+  // `message` is a human summary only.
   string event = 5;
+  // strategy: classic | blue-green | rolling | canary | progressive. A rollout
+  // reports "canary"/"progressive" on its live events even though it runs on
+  // blue-green topology.
   string strategy = 6;
   // phase is the lifecycle phase the deployment is in at emission time:
-  // idle | building | starting | health_check | switching | promoting |
-  // draining | completed | failed | cancelled.
+  // idle | building | starting | health_check | switching | observing |
+  // promoting | draining | completed | failed | cancelled. "observing" is a
+  // rollout's per-step verification window.
   string phase = 7;
   string status = 8;
   string current_version = 9;
@@ -186,4 +221,53 @@ message DeploymentEvent {
   string user_id = 21;
   // Backend command correlation id that initiated this deployment.
   string request_id = 22;
+}
+
+// RolloutState is the state of a canary/progressive rollout, attached to
+// DeploymentSnapshot.rollout. It mirrors the agent's deploy.CanaryState plus
+// the engine's current step/verification detail (internal/deploy/state.go,
+// rollout.go, rollout_verify.go). Every number a rollout computes locally that
+// used to live only in Event.message is a typed field here. Absent snapshot
+// `rollout` means the deployment is not a rollout.
+message RolloutState {
+  string strategy = 1;                 // "canary" | "progressive"
+  int32 step_index = 2;                // 0-based index of the step in flight
+  int32 total_steps = 3;               // steps in the plan
+  int32 target_weight_percent = 4;     // canary share this step intends (plan)
+  int32 observed_weight_percent = 5;   // canary share the proxy actually set
+  // status mirrors CanaryState.Status: running | promoted | failed | aborted.
+  // Empty = unknown (older agent).
+  string status = 6;
+  // decision is the engine's call after the current step's verification:
+  // continue | promote | abort | hold. Empty = not yet decided / unknown.
+  string decision = 7;
+  // abort_code is the phelix error code when the rollout aborted (e.g.
+  // CANARY_REGRESSION, HEALTH_CHECK_FAILED). Empty unless status == "aborted".
+  string abort_code = 8;
+  string reason = 9;                   // redacted human reason (CanaryState.Reason)
+  // verification is the most recent completed step's metric verdict.
+  RolloutVerification verification = 10;
+  int64 started_at = 11;               // unix millis
+  int64 updated_at = 12;               // unix millis
+}
+
+// RolloutVerification is one rollout step's metric verdict, mirroring
+// internal/deploy/rollout_verify.go (evaluateStats) and the thresholds in
+// VerificationConfig. Rates are percentages; latencies are milliseconds. A
+// non-empty skip_reason means the step passed on health alone (no comparable
+// traffic / metrics unavailable) — not a metric pass.
+message RolloutVerification {
+  double canary_error_rate = 1;    // observed canary error % in the window
+  double baseline_error_rate = 2;  // stable slot error % (baseline)
+  double max_error_rate = 3;       // threshold, default 5.0
+  double max_error_delta = 4;      // threshold in percentage points, default 2.0
+  double canary_p95_ms = 5;        // canary p95 latency
+  double baseline_p95_ms = 6;      // stable p95 latency
+  double max_p95_factor = 7;       // threshold, default 3.0 (canary p95 <= factor*baseline)
+  int64 canary_requests = 8;       // sample size (window delta)
+  int64 canary_errors = 9;
+  int64 baseline_requests = 10;    // 0 => error-delta / p95 checks were skipped
+  bool passed = 11;                // window verdict
+  // skip_reason: "zero_canary_traffic" | "metrics_unavailable" | "" (compared).
+  string skip_reason = 12;
 }

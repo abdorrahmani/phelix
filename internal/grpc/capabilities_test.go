@@ -20,6 +20,7 @@ import (
 //	deployment         → deployment_reporter.go
 //	rollback           → rollback_command.go
 //	build_matrix       → matrix_command.go
+//	build_report       → build_reporter.go
 //	webhook_management → webhook_command.go
 //
 // Adding a remote feature means adding its RegisterCapability call AND its
@@ -27,6 +28,7 @@ import (
 var expectedBuildCapabilities = []string{
 	CapabilityDeployment,
 	CapabilityBuildMatrix,
+	CapabilityBuildReport,
 	CapabilityMonitoring,
 	CapabilityRollback,
 	CapabilityWebhookManagement,

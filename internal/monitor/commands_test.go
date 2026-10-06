@@ -140,6 +140,18 @@ func TestRebuildOverrideArgs(t *testing.T) {
 		{name: "replicas without a strategy", payload: CommandPayload{Type: "rebuild", Replicas: 2}, wantErr: true},
 		{name: "negative replicas", payload: CommandPayload{Type: "rebuild", Strategy: "rolling", Replicas: -1}, wantErr: true},
 		{name: "override on restart", payload: CommandPayload{Type: "restart", Strategy: "rolling", Replicas: 2}, wantErr: true},
+
+		// canary_percent is the remote twin of the local --canary N flag: canary-
+		// only, bounded 1..99. Because --canary and --strategy are mutually
+		// exclusive locally, a percent REPLACES --strategy canary rather than
+		// adding to it; percent 0 means "unspecified" and keeps --strategy canary.
+		{name: "canary percent maps to --canary", payload: CommandPayload{Type: "rebuild", Strategy: "canary", CanaryPercent: 10}, want: []string{"--canary", "10"}},
+		{name: "canary without percent keeps --strategy", payload: CommandPayload{Type: "rebuild", Strategy: "canary", CanaryPercent: 0}, want: []string{"--strategy", "canary"}},
+		{name: "canary percent at upper bound", payload: CommandPayload{Type: "rebuild", Strategy: "canary", CanaryPercent: 99}, want: []string{"--canary", "99"}},
+		{name: "canary percent on progressive", payload: CommandPayload{Type: "rebuild", Strategy: "progressive", CanaryPercent: 5}, wantErr: true},
+		{name: "canary percent on blue-green", payload: CommandPayload{Type: "rebuild", Strategy: "blue-green", CanaryPercent: 10}, wantErr: true},
+		{name: "canary percent above range", payload: CommandPayload{Type: "rebuild", Strategy: "canary", CanaryPercent: 100}, wantErr: true},
+		{name: "canary percent without a strategy", payload: CommandPayload{Type: "rebuild", CanaryPercent: 10}, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
