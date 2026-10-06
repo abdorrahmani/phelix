@@ -76,6 +76,7 @@ func main() {
 	rootCmd.AddCommand(cmd.MonitorCmd)
 	rootCmd.AddCommand(cmd.WebhookCmd)
 	rootCmd.AddCommand(cmd.MatrixCmd)
+	rootCmd.AddCommand(cmd.OperationCmd)
 
 	rootCmd.AddCommand(cmd.VersionCmd)
 	rootCmd.AddCommand(cmd.UpdateCmd)

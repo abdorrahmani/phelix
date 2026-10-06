@@ -121,8 +121,16 @@ func RecordRollbackResultSource(appName string, fromVer, toVer int, mode, reason
 	}
 	if runErr != nil {
 		rec.Status = RollbackStatusFailed
-		rec.Error = runErr.Error()
+		// The history file feeds both human rendering and the machine
+		// contract, so the raw cause chain is redacted at write time through
+		// the centralized redactor — a cause that embedded a credential can
+		// never be persisted for later output paths to leak.
+		rec.Error = phelixerr.Redact(runErr.Error())
 	}
+	if rec.Verification != nil && rec.Verification.Error != "" {
+		rec.Verification.Error = phelixerr.Redact(rec.Verification.Error)
+	}
+	rec.Reason = phelixerr.Redact(rec.Reason)
 	rec.Verification = verification
 	data, err := json.Marshal(rec)
 	if err != nil {

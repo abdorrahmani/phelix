@@ -14,7 +14,9 @@ import (
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/matrix"
+	"github.com/abdorrahmani/phelix/internal/ops"
 	phelixport "github.com/abdorrahmani/phelix/internal/port"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
@@ -44,6 +46,7 @@ var (
 	// matrixResume selects resume mode: "" (off), "latest", or a run ID.
 	matrixResume string
 	buildDebug   bool
+	buildJSON    bool
 )
 
 var BuildCmd = &cobra.Command{
@@ -51,7 +54,14 @@ var BuildCmd = &cobra.Command{
 	Short: "Builds and runs an application (Go/Rust) with a specified name",
 	Long:  "Compiles an application from the current directory (auto-detects language) with the given name and starts it immediately",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		// Machine mode: progress detours to stderr for the whole command so
+		// the JSON envelope stays alone on stdout.
+		if buildJSON {
+			restore := machine.EnterJSON()
+			defer restore()
+		}
+
 		// Project configuration (phelix.yaml) supplies name/port defaults.
 		// A missing file is fine; a present-but-invalid file fails fast here
 		// so a broken config can never silently affect the build.
@@ -179,6 +189,19 @@ var BuildCmd = &cobra.Command{
 		// Matrix builds compile artifacts for an existing application just as
 		// much as for a new one — they never register an app entry or start an
 		// instance, so the unique-name check below does not apply here.
+		//
+		// Operation identity: a matrix build already owns a durable identity —
+		// the mx_ run record — so no second ID is minted; the JSON envelope
+		// exposes the run ID as the operation identity. Request-key
+		// idempotency is deliberately not offered on build (naturally
+		// repeatable, version-minting; matrix runs carry their own resume and
+		// retry lineage) — see docs/reference/machine-contract.md.
+		var op *opRun
+		if !isMatrix {
+			op = newOpRun(ops.KindBuild, name, "")
+			op.beginRecord()
+			defer func() { op.finish(&err) }()
+		}
 		if isMatrix {
 			prof, rerr := resolveMatrixProfile(cmd, projCfg, lang)
 			if rerr != nil {
@@ -199,7 +222,7 @@ var BuildCmd = &cobra.Command{
 		// classic start. Hand off to the zero-downtime engine (image build →
 		// container → health → proxy enrol); the host toolchain is not needed.
 		if projCfg.DeployRuntime() == project.RuntimeDocker {
-			return runDockerInitialBuild(cmd, projCfg, name, buildPort, currentDir, lang, noUpload)
+			return runDockerInitialBuild(cmd, projCfg, name, buildPort, currentDir, lang, noUpload, op)
 		}
 
 		// Check toolchain; prompt to install if missing
@@ -237,6 +260,7 @@ var BuildCmd = &cobra.Command{
 		binPath := filepath.Join(currentDir, fmt.Sprintf("app_%s", id))
 		tracker, flushTelemetry := classicTracker(id, name, buildPort, 0)
 		defer flushTelemetry()
+		op.setDeploymentID(tracker)
 
 		tracker.Building("classic build")
 		report, err := buildApplication(id, buildArgs, buildMgr, binPath)
@@ -325,7 +349,18 @@ var BuildCmd = &cobra.Command{
 		// Report build event
 		phelixgrpc.ReportEvent(id, name, "build", true, "", 0, "classic", "")
 		phelixgrpc.SendVersionListForApp(id, name, currentDir)
-		return nil
+
+		buildResVer := 0
+		if rec != nil {
+			buildResVer = rec.Version
+		}
+		op.setResult(&ops.Result{Version: buildResVer, Port: buildPort, Strategy: "classic"})
+		return op.writeResultEnv(machine.Success(op.operationID(), buildResult{
+			App:     name,
+			AppID:   id,
+			Version: buildResVer,
+			Path:    binPath,
+		}))
 	},
 }
 
@@ -336,6 +371,8 @@ func init() {
 	BuildCmd.Flags().StringVar(&buildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
 
 	// Matrix build flags.
+	BuildCmd.Flags().BoolVar(&buildJSON, "json", false,
+		"Output machine-readable JSON (stdout carries only the result envelope; progress moves to stderr)")
 	BuildCmd.Flags().BoolVar(&matrixFlag, "matrix", false, "Enable matrix build mode (cross-product of versions × platforms)")
 	BuildCmd.Flags().StringSliceVar(&goVersions, "go-versions", nil, "Go versions to build with (e.g. 1.21,1.22,1.23)")
 	BuildCmd.Flags().StringSliceVar(&rustVersions, "rust-versions", nil, "Rust versions to build with (e.g. 1.77,1.78)")
@@ -545,6 +582,9 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 	// persisted immediately, and updated as combinations complete.
 	runID := matrix.NewUniqueRunID(time.Now())
 	fmt.Printf("%s Matrix Run: %s\n", color.BlueString("→"), color.CyanString(string(runID)))
+	// The run ID is the operation identity of this build — register it before
+	// any outcome so a failure envelope is correlatable too.
+	machine.SetActiveOperation(string(runID))
 
 	run := matrix.NewRun(runID, name, projectRoot, prof, time.Now())
 	run.Config.BuildArgs = append([]string(nil), extraArgs...)
@@ -563,7 +603,9 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 
 	// Return an error when combinations failed or the run was interrupted, so
 	// the CLI exit code is non-zero. The user sees the full report above —
-	// this just ensures scripts can detect failures.
+	// this just ensures scripts can detect failures. On failure paths the
+	// error boundary emits the single JSON error envelope (the run ID is the
+	// registered operation identity); a success envelope is written here.
 	switch {
 	case interrupted:
 		return phelixerr.Newf(
@@ -579,6 +621,17 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 		)
 	}
 
+	if machine.Active() {
+		return writeEnvelopeResult(machine.Success(string(runID), matrixBuildResult{
+			RunID:      string(runID),
+			App:        name,
+			Total:      run.Total,
+			Succeeded:  run.Succeeded,
+			Failed:     run.Failed,
+			Skipped:    run.Skipped,
+			ReportPath: matrix.ReportPathFor(projectRoot),
+		}))
+	}
 	return nil
 }
 

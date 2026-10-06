@@ -1107,29 +1107,17 @@ func versionLabel(v int) string {
 	return "v" + strconv.Itoa(v)
 }
 
-// retryableCodes are the failure categories where repeating the same
-// deployment could plausibly succeed without a code or configuration change.
-var retryableCodes = map[phelixerr.Code]bool{
-	phelixerr.CodeHealthCheckFailed:   true,
-	phelixerr.CodeInstanceStartFailed: true,
-	phelixerr.CodeProxy:               true,
-	phelixerr.CodeConnection:          true,
-	phelixerr.CodeTimeout:             true,
-	phelixerr.CodePortUnavailable:     true,
-	phelixerr.CodeDeployLocked:        true,
-	phelixerr.CodeNetwork:             true,
-	phelixerr.CodeProcessFailed:       true,
-}
-
 // failureFromError maps a deployment error onto the wire failure shape using
 // the existing structured error model. The message is redacted so a cause that
-// embedded a credential cannot reach the backend.
+// embedded a credential cannot reach the backend. Retryability comes from the
+// shared classification in internal/errors so the wire field can never
+// disagree with the CLI's machine-readable error contract.
 func failureFromError(err error) *Failure {
 	code := phelixerr.CodeOf(err)
 	return &Failure{
 		Code:      code.String(),
 		Message:   phelixerr.Redact(err.Error()),
-		Retryable: retryableCodes[code],
+		Retryable: phelixerr.Retryable(code),
 	}
 }
 

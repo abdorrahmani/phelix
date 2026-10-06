@@ -161,6 +161,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Data Directory](docs/reference/data-directory.md)
 - [Error Codes](docs/reference/error-codes.md)
 - [Exit Codes](docs/reference/exit-codes.md)
+- [Machine Contract (`--json`)](docs/reference/machine-contract.md)
 
 ### Architecture
 - [Overview](docs/architecture/overview.md)

@@ -15,6 +15,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	"github.com/abdorrahmani/phelix/internal/machine"
+	"github.com/abdorrahmani/phelix/internal/ops"
 	phelixport "github.com/abdorrahmani/phelix/internal/port"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/proxy"
@@ -33,6 +35,8 @@ var rebuildTag string
 var rebuildAutoRollback bool
 var rebuildCanary int
 var rebuildSourceDir string
+var rebuildJSON bool
+var rebuildRequestKey string
 
 // rolloutPlan is non-nil when this rebuild takes the canary/progressive path.
 // It is resolved by applyConfigDeployStrategy from --canary, --strategy or
@@ -48,7 +52,14 @@ var RebuildCmd = &cobra.Command{
 	// run are noise.
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		// Machine mode: progress detours to stderr for the whole command so
+		// the JSON envelope stays alone on stdout.
+		if rebuildJSON {
+			restore := machine.EnterJSON()
+			defer restore()
+		}
+
 		// Project configuration (phelix.yaml) supplies name/port/strategy
 		// defaults. Missing file is fine; an invalid file fails fast.
 		projCfg, err := loadProjectConfig()
@@ -144,6 +155,37 @@ var RebuildCmd = &cobra.Command{
 			return err
 		}
 
+		// Operation identity + request-key idempotency. The fingerprint covers
+		// the mutation-defining inputs, so reusing a key for a materially
+		// different operation conflicts instead of replaying the wrong result.
+		// Created after validation but before any mutation; every failure and
+		// success path below is closed out by the deferred finish.
+		effectiveStrategy := "classic"
+		switch {
+		case rolloutPlan != nil:
+			effectiveStrategy = rolloutPlan.Strategy
+		case rebuildBlueGreen:
+			effectiveStrategy = "blue-green"
+		case rebuildReplicas > 0:
+			effectiveStrategy = "rolling"
+		}
+		op := newOpRun(ops.KindRebuild, name, rebuildRequestKey)
+		defer func() { op.finish(&err) }()
+		replayed, idemErr := op.beginIdempotency(map[string]string{
+			"strategy":   effectiveStrategy,
+			"replicas":   fmt.Sprintf("%d", rebuildReplicas),
+			"canary":     fmt.Sprintf("%d", rebuildCanary),
+			"port":       fmt.Sprintf("%d", portToUse),
+			"source_dir": rebuildSourceDir,
+			"tag":        rebuildTag,
+		})
+		if idemErr != nil {
+			return idemErr
+		}
+		if replayed {
+			return nil
+		}
+
 		// Detect and validate language (from the source being built)
 		buildMgr := builder.NewBuildManager()
 		lang := builder.ParseLanguage(appInfo.Language)
@@ -197,7 +239,7 @@ var RebuildCmd = &cobra.Command{
 		// switches the proxy target — so the public port never drops a
 		// connection.
 		if rebuildBlueGreen || rebuildReplicas > 0 || rolloutPlan != nil {
-			return runZeroDowntimeDeploy(appInfo, name, portToUse, buildSource)
+			return runZeroDowntimeDeploy(appInfo, name, portToUse, buildSource, op)
 		}
 
 		// A classic rebuild of an app still managed by blue-green/rolling is
@@ -221,6 +263,7 @@ var RebuildCmd = &cobra.Command{
 		currentVer, _ := deploy.CurrentVersion(name)
 		tracker, flushTelemetry := classicTracker(appInfo.ID, name, portToUse, currentVer)
 		defer flushTelemetry()
+		op.setDeploymentID(tracker)
 
 		if err := stopExistingApp(appInfo); err != nil {
 			tracker.Failed(err)
@@ -298,7 +341,15 @@ var RebuildCmd = &cobra.Command{
 			rbVer = rec.Version
 		}
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true, rbVer, rebuildTag, gitCommit, rebuildReport, "")
-		return nil
+
+		op.setResult(&ops.Result{Version: rbVer, Port: portToUse, Strategy: "classic"})
+		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
+			App:      name,
+			AppID:    appInfo.ID,
+			Version:  rbVer,
+			Port:     portToUse,
+			Strategy: "classic",
+		}))
 	},
 }
 
@@ -407,6 +458,10 @@ func init() {
 		"On a deploy-phase failure (start, health check, traffic switch), automatically restore the previous known-good version")
 	RebuildCmd.Flags().StringVar(&rebuildSourceDir, "source-dir", "",
 		"Build from this source directory instead of the app's directory (used by the webhook's isolated Git source); the app identity, output binary and deployment state stay with the app")
+	RebuildCmd.Flags().BoolVar(&rebuildJSON, "json", false,
+		"Output machine-readable JSON (stdout carries only the result envelope; progress moves to stderr)")
+	RebuildCmd.Flags().StringVar(&rebuildRequestKey, "request-key", "",
+		"Idempotency key: retrying with the same key and same inputs replays the recorded result instead of executing again; reusing a key with different inputs fails with IDEMPOTENCY_CONFLICT")
 }
 
 // runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a
@@ -414,8 +469,10 @@ func init() {
 // for the control socket, and a colorised logger, then runs BlueGreen or
 // Rolling depending on which flag was set. buildSource is the directory to
 // compile (the app's directory, or an isolated --source-dir); the output
-// binary and deployment state always stay with the app.
-func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, buildSource string) error {
+// binary and deployment state always stay with the app. op carries the
+// operation identity: the deployment telemetry ID is correlated into the
+// record and the terminal envelope is written per strategy.
+func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, buildSource string, op *opRun) error {
 	socket, err := proxy.DefaultSocketPath()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
@@ -552,6 +609,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		strategy = rolloutPlan.Strategy
 	}
 	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, strategy)
+	op.setDeploymentID(tracker)
 	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
 
 	// Canary/progressive rollouts run step windows that can take minutes; a
@@ -598,7 +656,15 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
 			deploy.TargetVersionOf(deploySource), rebuildTag, gitCommit, lastReport, "")
-		return nil
+		ver := deploy.TargetVersionOf(deploySource)
+		op.setResult(&ops.Result{Version: ver, Port: publicPort, Strategy: rolloutPlan.Strategy})
+		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
+			App:      name,
+			AppID:    appInfo.ID,
+			Version:  ver,
+			Port:     publicPort,
+			Strategy: rolloutPlan.Strategy,
+		}))
 	}
 
 	if rebuildBlueGreen {
@@ -637,7 +703,15 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
 			deploy.TargetVersionOf(deploySource), rebuildTag, gitCommit, lastReport, "")
-		return nil
+		bgVer := deploy.TargetVersionOf(deploySource)
+		op.setResult(&ops.Result{Version: bgVer, Port: publicPort, Strategy: "blue-green"})
+		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
+			App:      name,
+			AppID:    appInfo.ID,
+			Version:  bgVer,
+			Port:     publicPort,
+			Strategy: "blue-green",
+		}))
 	}
 
 	// Rolling deploy.
@@ -672,7 +746,15 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
 		deploy.TargetVersionOf(deploySource), rebuildTag, gitCommit, lastReport, "")
-	return nil
+	rollVer := deploy.TargetVersionOf(deploySource)
+	op.setResult(&ops.Result{Version: rollVer, Port: publicPort, Strategy: "rolling"})
+	return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
+		App:      name,
+		AppID:    appInfo.ID,
+		Version:  rollVer,
+		Port:     publicPort,
+		Strategy: "rolling",
+	}))
 }
 
 // autoRollbackAfterFailedDeploy responds to one failed zero-downtime deploy

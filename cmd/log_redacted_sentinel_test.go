@@ -5,12 +5,18 @@ package cmd
 // storage, so any log history the CLI reads back may contain
 // "[REDACTED*]"-style sentinels even for lines the CLI itself did not
 // redact. The CLI's log-history read path (phelix log) must treat them as
-// normal opaque text — passed through verbatim, never parsed, never treated
-// as an error condition.
+// normal opaque text — never parsed, never treated as an error condition.
 //
-// Note: the CLI currently has no REMOTE log-history read path (phelix log
-// tails local files only); this test pins the local history reader so the
-// invariant holds when a remote reader is ever added on top of it.
+// Since the Phase 1 machine contract, the display path additionally passes
+// every line through the centralized redactor (phelixerr.Redact): managed
+// apps can print anything, so display must not become a secret-leak path.
+// Standalone sentinels are preserved verbatim by Redact (pinned by
+// TestRedact_HandlesBackendSentinelsSafely); a sentinel occupying a
+// credential slot (e.g. a URL password) may be re-masked, which is equally
+// safe.
+//
+// Note: the CLI has no REMOTE log-history read path (phelix log reads local
+// files only); these tests pin the local history reader and display path.
 
 import (
 	"os"
@@ -21,11 +27,11 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
-// TestGetLastNLines_PassesRedactedSentinelsThrough feeds the local
+// TestReadLogHistory_PassesRedactedSentinelsThrough feeds the local
 // log-history reader a file containing backend-style redaction sentinels and
 // asserts they come back verbatim, without error and without any attempt to
 // parse or transform them.
-func TestGetLastNLines_PassesRedactedSentinelsThrough(t *testing.T) {
+func TestReadLogHistory_PassesRedactedSentinelsThrough(t *testing.T) {
 	sentinelLines := []string{
 		"2026/09/11 10:00:01 [INFO] [app] connected to database",
 		"2026/09/11 10:00:02 [ERROR] [app] db connect failed: [REDACTED:password] for user admin",
@@ -46,12 +52,15 @@ func TestGetLastNLines_PassesRedactedSentinelsThrough(t *testing.T) {
 	}
 	defer f.Close()
 
-	got, err := getLastNLines(f, len(sentinelLines))
+	got, total, err := readLogHistory(f, len(sentinelLines), nil)
 	if err != nil {
-		t.Fatalf("getLastNLines must not error on redaction sentinels: %v", err)
+		t.Fatalf("readLogHistory must not error on redaction sentinels: %v", err)
 	}
 	if len(got) != len(sentinelLines) {
 		t.Fatalf("got %d lines, want %d", len(got), len(sentinelLines))
+	}
+	if total != len(sentinelLines) {
+		t.Fatalf("total = %d, want %d", total, len(sentinelLines))
 	}
 	for i, want := range sentinelLines {
 		if got[i] != want {
@@ -60,11 +69,11 @@ func TestGetLastNLines_PassesRedactedSentinelsThrough(t *testing.T) {
 	}
 }
 
-// TestDisplayHistoricalLogs_RendersSentinelsAsOpaqueText runs the full
-// display path (the one `phelix log` uses before tailing) against a sentinel
-// file and asserts the sentinels reach stdout exactly as stored — no error,
-// no un-redaction attempt, no swallowing.
-func TestDisplayHistoricalLogs_RendersSentinelsAsOpaqueText(t *testing.T) {
+// TestShowLogView_RendersSentinelsAsOpaqueText runs the full display path
+// (the one `phelix log` uses before tailing) against a sentinel file and
+// asserts the sentinels survive as normal redacted text — no error, no
+// un-redaction attempt, no swallowing, no new secret exposure.
+func TestShowLogView_RendersSentinelsAsOpaqueText(t *testing.T) {
 	line := "2026/09/11 10:00:02 [ERROR] [app] secret was [REDACTED:password] and [REDACTED]"
 
 	path := filepath.Join(t.TempDir(), "app.log")
@@ -72,15 +81,13 @@ func TestDisplayHistoricalLogs_RendersSentinelsAsOpaqueText(t *testing.T) {
 		t.Fatalf("write log file: %v", err)
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("open log file: %v", err)
-	}
-	defer f.Close()
+	prevNoFollow := logNoFollow
+	logNoFollow = true
+	defer func() { logNoFollow = prevNoFollow }()
 
 	out := captureStdout(t, func() {
-		if err := displayHistoricalLogs(f); err != nil {
-			t.Errorf("displayHistoricalLogs must not error on sentinels: %v", err)
+		if err := showLogView(logViewSpec{Source: "app", Name: "testapp", Path: path}, nil); err != nil {
+			t.Errorf("showLogView must not error on sentinels: %v", err)
 		}
 	})
 
@@ -89,6 +96,40 @@ func TestDisplayHistoricalLogs_RendersSentinelsAsOpaqueText(t *testing.T) {
 	}
 	if strings.Contains(out, "hunter2") || strings.Contains(out, "password=secret") {
 		t.Fatalf("history reader unexpectedly transformed content:\n%s", out)
+	}
+}
+
+// TestShowLogView_RedactsCredentialShapedLines pins the display-path
+// redaction: a raw credential that the log file itself contains (an app
+// printing its env, for instance) must be masked before it reaches the
+// terminal or a JSON consumer.
+func TestShowLogView_RedactsCredentialShapedLines(t *testing.T) {
+	lines := []string{
+		"2026/09/11 10:00:01 [INFO] [app] starting with password=supersecret123",
+		"2026/09/11 10:00:02 [INFO] [app] using token ghp_abcdef0123456789012345678901234567890",
+		"2026/09/11 10:00:03 [INFO] [app] ready on :8080",
+	}
+
+	path := filepath.Join(t.TempDir(), "app.log")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatalf("write log file: %v", err)
+	}
+
+	prevNoFollow := logNoFollow
+	logNoFollow = true
+	defer func() { logNoFollow = prevNoFollow }()
+
+	out := captureStdout(t, func() {
+		if err := showLogView(logViewSpec{Source: "app", Name: "testapp", Path: path}, nil); err != nil {
+			t.Errorf("showLogView: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "supersecret123") || strings.Contains(out, "ghp_abcdef") {
+		t.Fatalf("credential-shaped log content must be redacted on display, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ready on :8080") {
+		t.Fatalf("benign log content must survive redaction, got:\n%s", out)
 	}
 }
 

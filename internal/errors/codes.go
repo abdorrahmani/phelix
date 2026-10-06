@@ -28,6 +28,12 @@ const (
 	CodeConfiguration Code = "CONFIGURATION_ERROR"
 	CodeValidation    Code = "VALIDATION_ERROR"
 
+	// CodeIdempotencyConflict: a request key was reused for a materially
+	// different operation. The key's original result stands; the caller must
+	// supply a fresh key for the new operation. Phase 1 introduced this for
+	// the CLI's request-key idempotency on deploy/rebuild/rollback.
+	CodeIdempotencyConflict Code = "IDEMPOTENCY_CONFLICT"
+
 	// Build.
 	CodeBuildFailed        Code = "BUILD_FAILED"
 	CodeToolchainNotFound  Code = "TOOLCHAIN_NOT_FOUND"

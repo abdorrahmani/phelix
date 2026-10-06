@@ -85,9 +85,9 @@ func RemoteRollback(payload monitor.CommandPayload) error {
 		return deployErr
 	}
 	if state == nil {
-		return rollbackClassic(appInfo, name, target, targetTag, targetSource, reason, verifyDuration, requestID)
+		return rollbackClassic(appInfo, name, target, targetTag, targetSource, reason, verifyDuration, requestID, nil)
 	}
 
 	// --- Zero-downtime rollback path (blue-green / rolling) ---
-	return rollbackZeroDowntime(appInfo, name, target, targetTag, targetSource, state, reason, verifyDuration, requestID)
+	return rollbackZeroDowntime(appInfo, name, target, targetTag, targetSource, state, reason, verifyDuration, requestID, nil)
 }
