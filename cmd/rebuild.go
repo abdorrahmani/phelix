@@ -17,10 +17,8 @@ import (
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/ops"
-	phelixport "github.com/abdorrahmani/phelix/internal/port"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/proxy"
-	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -60,99 +58,12 @@ var RebuildCmd = &cobra.Command{
 			defer restore()
 		}
 
-		// Project configuration (phelix.yaml) supplies name/port/strategy
-		// defaults. Missing file is fine; an invalid file fails fast.
-		projCfg, err := loadProjectConfig()
-		if err != nil {
-			return err
-		}
-
-		if err := app.Manager.LoadState(); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
-		}
-
-		if len(args) == 0 && projCfg != nil && projCfg.Name != "" {
-			// phelix.yaml names the app; use it when that app exists so
-			// rebuild inside the project directory needs no argument.
-			if _, err := GetAppInfo(projCfg.Name); err == nil {
-				args = []string{projCfg.Name}
-			}
-		}
-		if len(args) == 0 {
-			if !IsInteractive() {
-				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix rebuild <ID|AppName> --port <PORT>")
-			}
-			identifier, err := PromptApp(false, "Select application to rebuild")
-			if err != nil {
-				return err
-			}
-			args = []string{identifier}
-		}
-
-		identifier := args[0]
-
-		appInfo, err := GetAppInfo(identifier)
-		if err != nil {
-			return err
-		}
-
-		// --source-dir builds from an isolated source directory (the webhook's
-		// exact-commit Git worktree) instead of the app's directory. The app
-		// identity, output binary path, deployment state and ports stay with
-		// the app; only the compiled source and the git metadata come from
-		// this directory. phelix.yaml is read from it too, so a push that
-		// changes the project configuration deploys with its own config.
-		buildSource := appInfo.Directory
-		if rebuildSourceDir != "" {
-			abs, err := filepath.Abs(rebuildSourceDir)
-			if err != nil {
-				return phelixerr.Wrapf(phelixerr.CodeInvalidArgument, err, "--source-dir %q could not be resolved", rebuildSourceDir)
-			}
-			if st, serr := os.Stat(abs); serr != nil || !st.IsDir() {
-				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "--source-dir %q is not an existing directory", rebuildSourceDir)
-			}
-			buildSource = abs
-			// The project configuration governs the deploy; with an isolated
-			// source that is the configuration as pushed, not the one in the
-			// daemon's working directory.
-			sourceCfg, serr := loadProjectConfigFrom(buildSource)
-			if serr != nil {
-				return serr
-			}
-			if sourceCfg != nil {
-				projCfg = sourceCfg
-			}
-		}
-
-		// Resource policy follows this app's source, never the invoking directory.
-		resourceCfg, err := loadProjectConfigFrom(buildSource)
-		if err != nil {
-			return err
-		}
-		if err := syncProjectResources(resourceCfg, appInfo.ID); err != nil {
-			return err
-		}
-
-		name, portToUse := DetermineAppParameters(appInfo, cmd, rebuildPort)
-
-		// Precedence: CLI flag > persisted app port > phelix.yaml. The yaml is
-		// consulted only when neither the flag nor the app's recorded port
-		// applies, so existing managed apps keep their behavior.
-		if !cmd.Flags().Changed("port") && (appInfo.Port == 0) && projCfg != nil && projCfg.Port != 0 {
-			portToUse = projCfg.Port
-		}
-
-		// Deployment strategy: --strategy (one-off, e.g. a backend-issued
-		// rebuild) beats phelix.yaml, explicit --blue-green/--replicas beat
-		// both, and an app already running blue-green/rolling keeps that
-		// strategy when nothing names one. Classic stays the default for apps
-		// with no deployment.
-		if err := applyConfigDeployStrategy(cmd, projCfg, name); err != nil {
-			return err
-		}
-
-		if err := phelixport.Validate(portToUse); err != nil {
-			return err
+		// Resolution (pure reads): project config, app identity, port
+		// precedence, deployment strategy, language. Shared with the plan
+		// subsystem so plans capture exactly what this command would execute.
+		spec, specErr := buildRebuildSpec(cmd, args)
+		if specErr != nil {
+			return specErr
 		}
 
 		// Operation identity + request-key idempotency. The fingerprint covers
@@ -160,22 +71,13 @@ var RebuildCmd = &cobra.Command{
 		// different operation conflicts instead of replaying the wrong result.
 		// Created after validation but before any mutation; every failure and
 		// success path below is closed out by the deferred finish.
-		effectiveStrategy := "classic"
-		switch {
-		case rolloutPlan != nil:
-			effectiveStrategy = rolloutPlan.Strategy
-		case rebuildBlueGreen:
-			effectiveStrategy = "blue-green"
-		case rebuildReplicas > 0:
-			effectiveStrategy = "rolling"
-		}
-		op := newOpRun(ops.KindRebuild, name, rebuildRequestKey)
+		op := newOpRun(ops.KindRebuild, spec.Name, rebuildRequestKey)
 		defer func() { op.finish(&err) }()
 		replayed, idemErr := op.beginIdempotency(map[string]string{
-			"strategy":   effectiveStrategy,
-			"replicas":   fmt.Sprintf("%d", rebuildReplicas),
-			"canary":     fmt.Sprintf("%d", rebuildCanary),
-			"port":       fmt.Sprintf("%d", portToUse),
+			"strategy":   spec.Strategy,
+			"replicas":   fmt.Sprintf("%d", spec.Replicas),
+			"canary":     fmt.Sprintf("%d", spec.Canary),
+			"port":       fmt.Sprintf("%d", spec.Port),
 			"source_dir": rebuildSourceDir,
 			"tag":        rebuildTag,
 		})
@@ -186,171 +88,117 @@ var RebuildCmd = &cobra.Command{
 			return nil
 		}
 
-		// Detect and validate language (from the source being built)
-		buildMgr := builder.NewBuildManager()
-		lang := builder.ParseLanguage(appInfo.Language)
-		if !lang.IsSupported() {
-			lang = buildMgr.DetectLanguage(buildSource)
-		}
-
-		if !lang.IsSupported() {
-			return phelixerr.Newf(
-				phelixerr.CodeUnsupportedProject,
-				"unsupported or unknown project language: %s",
-				lang,
-			)
-		}
-
-		// Check toolchain; prompt to install if missing
-		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
-		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
-		}
-
-		fmt.Printf("%s Rebuilding application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID))
-		fmt.Printf("  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
-
-		// If user set no-upload flag, update the app info
-		if rebuildNoUpload {
-			appInfo.NoUpload = true
-			_ = app.Manager.SaveState()
-		}
-
-		// Apply the watching value declared in phelix.yaml (desired state) so
-		// a project that declares enable/disable converges on every rebuild.
-		// A file without the key leaves the persisted flag untouched.
-		if serr := syncProjectWatching(projCfg, appInfo.ID); serr != nil {
-			fmt.Printf("  %s Warning: could not apply watching from %s: %v\n",
-				color.YellowString("⚠"), project.FileName, serr)
-		}
-
-		// Apply health endpoints declared in phelix.yaml (desired state) so
-		// both the classic start and the zero-downtime deploy tiers see them.
-		if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil {
-			fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
-				color.YellowString("⚠"), project.FileName, serr)
-		}
-
-		// Zero-downtime deploy paths. When --blue-green, --replicas or a
-		// canary/progressive rollout is selected we hand off to the deploy
-		// package instead of the stop->build->start flow below. The deploy
-		// package builds via the same builder, starts the new instance on an
-		// internal port, runs the tiered health check, then atomically
-		// switches the proxy target — so the public port never drops a
-		// connection.
-		if rebuildBlueGreen || rebuildReplicas > 0 || rolloutPlan != nil {
-			return runZeroDowntimeDeploy(appInfo, name, portToUse, buildSource, op)
-		}
-
-		// A classic rebuild of an app still managed by blue-green/rolling is
-		// the documented migration to classic: tear the deployment down first
-		// so no replica survives as an orphan and no proxy route fights the
-		// new classic process for the public port.
-		if err := migrateToClassic(name); err != nil {
-			return phelixerr.Wrapf(phelixerr.CodeDeployFailed, err, "could not migrate %q to classic deployment", name)
-		}
-
-		// Acquire deploy lock FIRST so two concurrent rebuilds cannot race on
-		// versions.json or double-assign version numbers; previously the old
-		// process was stopped before locking, letting a concurrent rebuild
-		// interleave between the stop and the lock.
-		release, lockErr := deploy.AcquireDeployLock(name, "rebuild")
-		if lockErr != nil {
-			return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lockErr)
-		}
-		defer release()
-
-		currentVer, _ := deploy.CurrentVersion(name)
-		tracker, flushTelemetry := classicTracker(appInfo.ID, name, portToUse, currentVer)
-		defer flushTelemetry()
-		op.setDeploymentID(tracker)
-
-		if err := stopExistingApp(appInfo); err != nil {
-			tracker.Failed(err)
-			return err
-		}
-
-		tracker.Building("classic rebuild")
-		rebuildReport, rerr := rebuildApp(appInfo.ID, rebuildArgs, buildMgr, buildSource)
-		if rerr != nil {
-			tracker.Failed(rerr)
-			return rerr
-		}
-
-		// --- Version recording ------------------------------------------------
-		// Same two-phase invariant as build: record with is_current=false,
-		// promote only after the start succeeds. The git commit is detected
-		// from the source that was actually compiled, so version metadata
-		// never claims a commit the binary was not built from.
-		gitCommit := deploy.DetectGitCommit(buildSource)
-		logger := &colorLogger{}
-		rec, verErr := deploy.RecordFreshBuild(
-			name, appInfo.ID,
-			filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID)),
-			gitCommit, rebuildTag,
-			rebuildReport,
-			deploy.DefaultRetention{Max: 5}, logger,
-		)
-		if verErr != nil {
-			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
-		} else {
-			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
-			tracker.SetTargetVersion(rec.Version)
-		}
-
-		// --- Build Report + regression analysis ---------------------------------
-		emitBuildReport(name, rebuildReport, gitCommit, rec, verErr)
-
-		fmt.Printf("  %s Starting application on port %d...\n", color.BlueString("→"), portToUse)
-		if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
-			// Deploy failed. Version exists on disk but is_current is
-			// false and PromoteVersion was never called.
-			startErr := phelixerr.Wrapf(
-				phelixerr.CodeProcessFailed,
-				err,
-				"failed to start rebuilt application %q (ID: %s)",
-				name,
-				appInfo.ID,
-			)
-			tracker.Failed(startErr)
-			if rec != nil && rebuildAutoRollback {
-				// The version was recorded but never promoted; the previous
-				// classic process was stopped above, so the old version must
-				// be restarted to restore service. Brief downtime is
-				// unavoidable here — classic has no second slot.
-				runClassicAutoRollback(name, appInfo, rec.Version, portToUse, startErr)
-			}
-			return startErr
-		}
-		tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
-
-		// Deploy succeeded — promote the version.
-		if rec != nil {
-			if err := deploy.PromoteVersion(name, rec.Version, "classic"); err != nil {
-				fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
-			}
-		}
-		tracker.PromoteCurrentVersion()
-		tracker.Completed(fmt.Sprintf("running on port %d", portToUse))
-
-		fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
-		phelixgrpc.ReportEvent(appInfo.ID, name, "rebuild", true, "", 0, "", "")
-		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
-		rbVer := 0
-		if rec != nil {
-			rbVer = rec.Version
-		}
-		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true, rbVer, rebuildTag, gitCommit, rebuildReport, "")
-
-		op.setResult(&ops.Result{Version: rbVer, Port: portToUse, Strategy: "classic"})
-		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
-			App:      name,
-			AppID:    appInfo.ID,
-			Version:  rbVer,
-			Port:     portToUse,
-			Strategy: "classic",
-		}))
+		return runRebuildExec(spec, op)
 	},
+}
+
+// runClassicRebuild executes the classic stop -> build -> start -> promote
+// path for a resolved rebuild spec. It is the tail of the original rebuild
+// command body, unchanged except for taking the spec as its input.
+func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
+	appInfo, name, portToUse, buildSource := spec.AppInfo, spec.Name, spec.Port, spec.SourceDir
+	buildMgr := spec.BuildMgr
+
+	// Acquire deploy lock FIRST so two concurrent rebuilds cannot race on
+	// versions.json or double-assign version numbers; previously the old
+	// process was stopped before locking, letting a concurrent rebuild
+	// interleave between the stop and the lock.
+	release, lockErr := deploy.AcquireDeployLock(name, "rebuild")
+	if lockErr != nil {
+		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lockErr)
+	}
+	defer release()
+
+	currentVer, _ := deploy.CurrentVersion(name)
+	tracker, flushTelemetry := classicTracker(appInfo.ID, name, portToUse, currentVer)
+	defer flushTelemetry()
+	op.setDeploymentID(tracker)
+
+	if err := stopExistingApp(appInfo); err != nil {
+		tracker.Failed(err)
+		return err
+	}
+
+	tracker.Building("classic rebuild")
+	rebuildReport, rerr := rebuildApp(appInfo.ID, rebuildArgs, buildMgr, buildSource)
+	if rerr != nil {
+		tracker.Failed(rerr)
+		return rerr
+	}
+
+	// --- Version recording ------------------------------------------------
+	// Same two-phase invariant as build: record with is_current=false,
+	// promote only after the start succeeds. The git commit is detected
+	// from the source that was actually compiled, so version metadata
+	// never claims a commit the binary was not built from.
+	gitCommit := deploy.DetectGitCommit(buildSource)
+	logger := &colorLogger{}
+	rec, verErr := deploy.RecordFreshBuild(
+		name, appInfo.ID,
+		filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID)),
+		gitCommit, rebuildTag,
+		rebuildReport,
+		deploy.DefaultRetention{Max: 5}, logger,
+	)
+	if verErr != nil {
+		fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
+	} else {
+		fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
+		tracker.SetTargetVersion(rec.Version)
+	}
+
+	// --- Build Report + regression analysis ---------------------------------
+	emitBuildReport(name, rebuildReport, gitCommit, rec, verErr)
+
+	fmt.Printf("  %s Starting application on port %d...\n", color.BlueString("→"), portToUse)
+	if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
+		// Deploy failed. Version exists on disk but is_current is
+		// false and PromoteVersion was never called.
+		startErr := phelixerr.Wrapf(
+			phelixerr.CodeProcessFailed,
+			err,
+			"failed to start rebuilt application %q (ID: %s)",
+			name,
+			appInfo.ID,
+		)
+		tracker.Failed(startErr)
+		if rec != nil && rebuildAutoRollback {
+			// The version was recorded but never promoted; the previous
+			// classic process was stopped above, so the old version must
+			// be restarted to restore service. Brief downtime is
+			// unavoidable here — classic has no second slot.
+			runClassicAutoRollback(name, appInfo, rec.Version, portToUse, startErr)
+		}
+		return startErr
+	}
+	tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
+
+	// Deploy succeeded — promote the version.
+	if rec != nil {
+		if err := deploy.PromoteVersion(name, rec.Version, "classic"); err != nil {
+			fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
+		}
+	}
+	tracker.PromoteCurrentVersion()
+	tracker.Completed(fmt.Sprintf("running on port %d", portToUse))
+
+	fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
+	phelixgrpc.ReportEvent(appInfo.ID, name, "rebuild", true, "", 0, "", "")
+	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
+	rbVer := 0
+	if rec != nil {
+		rbVer = rec.Version
+	}
+	phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true, rbVer, rebuildTag, gitCommit, rebuildReport, "")
+
+	op.setResult(&ops.Result{Version: rbVer, Port: portToUse, Strategy: "classic"})
+	return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
+		App:      name,
+		AppID:    appInfo.ID,
+		Version:  rbVer,
+		Port:     portToUse,
+		Strategy: "classic",
+	}))
 }
 
 // applyConfigDeployStrategy resolves which deployment path this rebuild takes

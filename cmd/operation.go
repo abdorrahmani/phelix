@@ -98,6 +98,8 @@ type operationView struct {
 	InternalStatus string          `json:"internal_status,omitempty"`
 	Source         string          `json:"source"` // "operation_record" | "webhook_job" | "matrix_run" | "deployment_state"
 	DeploymentID   string          `json:"deployment_id,omitempty"`
+	PlanID         string          `json:"plan_id,omitempty"`
+	PlanHash       string          `json:"plan_hash,omitempty"`
 	RequestKey     string          `json:"request_key,omitempty"`
 	Actor          *machine.Actor  `json:"actor,omitempty"`
 	PID            int             `json:"pid,omitempty"`
@@ -122,6 +124,8 @@ func operationViewFromRecord(rec *ops.Record) operationView {
 		InternalStatus: rec.Status,
 		Source:         "operation_record",
 		DeploymentID:   rec.DeploymentID,
+		PlanID:         rec.PlanID,
+		PlanHash:       rec.PlanHash,
 		RequestKey:     rec.RequestKey,
 		Actor:          rec.Actor,
 		PID:            rec.PID,

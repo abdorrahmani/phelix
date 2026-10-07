@@ -34,6 +34,17 @@ const (
 	// the CLI's request-key idempotency on deploy/rebuild/rollback.
 	CodeIdempotencyConflict Code = "IDEMPOTENCY_CONFLICT"
 
+	// Plan codes (Phase 3). Plans fail closed: a plan whose semantic content
+	// changed after creation, whose preconditions no longer hold, or whose
+	// required capability disappeared is never executed. PLAN_STALE is
+	// deliberately not retryable — the remedy is creating a new plan, not
+	// repeating the request.
+	CodePlanInvalid           Code = "PLAN_INVALID"
+	CodePlanCorrupt           Code = "PLAN_CORRUPT"
+	CodePlanHashMismatch      Code = "PLAN_HASH_MISMATCH"
+	CodePlanStale             Code = "PLAN_STALE"
+	CodePlanCapabilityMissing Code = "PLAN_CAPABILITY_MISSING"
+
 	// Build.
 	CodeBuildFailed        Code = "BUILD_FAILED"
 	CodeToolchainNotFound  Code = "TOOLCHAIN_NOT_FOUND"
