@@ -93,6 +93,13 @@ func ExitCodeFor(err error) int {
 		return ExitUsage
 	case phelixerr.CodeValidation:
 		return ExitValidation
+	// Plan validation failures (Phase 3): stale plans, corrupted or tampered
+	// plan content, unsupported schemas and vanished capabilities are
+	// validation results — the plan was not executed. Execution failures of
+	// an applied plan keep their own codes (BUILD_FAILED -> 20 and so on).
+	case phelixerr.CodePlanStale, phelixerr.CodePlanInvalid, phelixerr.CodePlanCorrupt,
+		phelixerr.CodePlanHashMismatch, phelixerr.CodePlanCapabilityMissing:
+		return ExitValidation
 	case phelixerr.CodeUnauthenticated, phelixerr.CodeInvalidCredentials, phelixerr.CodeSessionExpired:
 		return ExitAuth
 	case phelixerr.CodeUnauthorized, phelixerr.CodePermissionDenied:

@@ -88,6 +88,15 @@ func (o *opRun) setDeploymentID(tracker *deploy.Tracker) {
 	o.rec.DeploymentID = tracker.DeploymentID()
 }
 
+// setPlanCorrelation records the plan that produced this operation.
+func (o *opRun) setPlanCorrelation(planID, planHash string) {
+	if o == nil || o.rec == nil {
+		return
+	}
+	o.rec.PlanID = planID
+	o.rec.PlanHash = planHash
+}
+
 // setResult stages the terminal result written to the record on success.
 func (o *opRun) setResult(res *ops.Result) {
 	if o == nil {

@@ -67,6 +67,11 @@ type Record struct {
 	// DeploymentID correlates the record with the deployment telemetry stream
 	// (dep-…) so an agent can join the operation to its event timeline.
 	DeploymentID string `json:"deployment_id,omitempty"`
+	// PlanID/PlanHash correlate the operation with the Phase 3 plan that
+	// produced it (empty for direct command invocations). Additive metadata:
+	// the operation model is unchanged.
+	PlanID   string `json:"plan_id,omitempty"`
+	PlanHash string `json:"plan_hash,omitempty"`
 	// PID of the CLI process that owned the operation. A record stuck in
 	// running with a dead PID was interrupted by a crash; the status is left
 	// untouched (the outcome is unknown, and honesty beats guessing).

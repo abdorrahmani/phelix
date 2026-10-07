@@ -55,6 +55,124 @@ Exit codes are unchanged by `--json`.
 | `inspect app/deployment/versions/health <app>` | — | app-scoped targeted inspection |
 | `inspect capabilities` / `operations` | — | registry + bounded operation list |
 | `context [app]` | — | one bounded composite snapshot |
+| `plan create rebuild/rollback` | — (the plan itself is the artifact) | immutable execution plan |
+| `plan show <plan-id>` | — | plan content + fresh applicability |
+| `plan list` | — | `{plans[], count}` |
+| `plan apply <plan-id>` | the produced `op_…` | execution result + correlation |
+
+## Plans (Phase 3)
+
+Plans are first-class, immutable, content-addressed execution artifacts. The
+invariant: **the thing that was planned is the thing that gets executed, or
+execution fails closed.**
+
+### Plan schema
+
+```json
+{
+  "plan_id": "pln_1a2b3c4d5e6f7081",
+  "plan_hash": "sha256:…",
+  "schema_version": "1",
+  "created_at_ms": 0,
+  "status": "created",
+  "action":     { "type": "rebuild|rollback", "application": "…" },
+  "target":     { "app_id": "…", "app_name": "…", "language": "…" },
+  "inputs":     { "source_dir": "…", "port": 0, "tag": "…", … },
+  "execution":  { "strategy": "…", "steps": ["…"], … },
+  "preconditions": [ { "type": "…", "expected": "…", "source": "…" } ],
+  "capabilities": ["deployment"],
+  "correlation": { "operation_id": "op_…", "deployment_id": "dep-…" },
+  "applicability": { "state": "applicable|stale", "checked_at_ms": 0,
+                     "failed_preconditions": [], "missing_capabilities": [] }
+}
+```
+
+### Plan identity
+
+- **plan_id**: `pln_` + 16 hex chars, minted at creation, durable.
+- **plan_hash**: `sha256:` over a canonical preimage of EXACTLY the
+  execution-relevant fields (schema_version, action, target, inputs,
+  execution, preconditions, capabilities). Deliberately excluded:
+  `plan_id`, `created_at_ms`, `status`, `correlation` — two plans differing
+  only in metadata hash identically. The preimage is a typed struct
+  serialized with `encoding/json` (deterministic field order); collections
+  inside it are sorted at creation (Canonicalize), so no map ordering can
+  leak in. Every load recomputes and verifies the hash — a mismatch fails
+  closed with `PLAN_HASH_MISMATCH` before anything is inspected further.
+
+### Lifecycle and immutability
+
+`created → applied | failed` are the only stored statuses; **staleness is
+never stored** — it is computed from current state at show/apply time. Plan
+files are created exactly once (atomic create-only write under
+`<data-dir>/plans/`); re-saving is `ALREADY_EXISTS`. There is no plan edit:
+a different plan means a new plan. Status transitions verify the semantic
+hash before and after, so they can never smuggle in an execution change.
+
+### Preconditions (what makes a plan stale)
+
+Typed, narrowly scoped facts re-derived at apply time:
+
+| Type | Checked against |
+|---|---|
+| `app_exists` | the app still exists with the same ID |
+| `current_version` | the currently deployed version is unchanged |
+| `version_exists` | the target artifact still exists (retention!) |
+| `deploy_mode` | the deployment mode (classic/blue-green/rolling) is unchanged |
+| `config_fingerprint` | execution-relevant config (deploy block, resources, ports) hashes to the planned value |
+| `source_commit` | the git commit of the source is unchanged |
+| `toolchain_available` | the required toolchain is still installed |
+
+The config fingerprint deliberately excludes logs, timestamps, health and
+metrics: a plan goes stale because **execution semantics changed**, not
+because an unrelated log line appeared. Unknown precondition types fail
+closed (`unchecked`).
+
+### Apply semantics
+
+```text
+plan apply
+  → load + parse (PLAN_CORRUPT on garbage) + schema (PLAN_INVALID) + hash
+    (PLAN_HASH_MISMATCH) — all fail closed
+  → status already applied → return the recorded correlation (no mutation)
+  → evaluate preconditions → any failure = PLAN_STALE, exit 3, NO MUTATION
+  → evaluate capabilities  → missing   = PLAN_CAPABILITY_MISSING, exit 3
+  → re-resolve execution inputs through the SAME resolver the command uses;
+    any drift from the plan = PLAN_STALE
+  → execute through the existing engine (rebuild path / rollback engine)
+  → mark plan applied|failed; correlate plan_id + plan_hash ↔ operation_id
+    ↔ deployment_id
+```
+
+There is no silent replanning: an agent that wants a new plan must create
+one explicitly.
+
+### Idempotency
+
+Plan application reuses the Phase 1 request-key ledger with the derived key
+`pln:<plan-id>` (fingerprint = the plan hash):
+
+1. **First apply** — executes; the terminal envelope is recorded.
+2. **Repeat after success** — the stored correlation is returned
+   (`already_applied: true`), never a second mutation.
+3. **Concurrent apply** — in-process applies serialize; exactly one
+   execution. Cross-process duplicates are rejected `UNAVAILABLE` while
+   one is in flight.
+4. **Apply after process restart** — an interrupted key replays its
+   indeterminate result; the plan is never re-executed under an unknown
+   outcome.
+5. **Apply after failure** — the recorded failure envelope replays
+   deterministically; create a NEW plan to retry.
+6. **Apply after staleness** — `PLAN_STALE`, no mutation, no regeneration.
+
+### Security
+
+Plans never contain secrets: the schema has no environment-value fields —
+rebuilds inject env at execution time from the encrypted store, and the
+rollback reason is the only free-text field (validated and redacted as in
+Phase 1). Plan JSON passes through the same envelope/redaction chokepoints
+as every other machine response.
+
 
 ## Errors
 
