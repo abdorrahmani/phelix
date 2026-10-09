@@ -100,6 +100,8 @@ type operationView struct {
 	DeploymentID   string          `json:"deployment_id,omitempty"`
 	PlanID         string          `json:"plan_id,omitempty"`
 	PlanHash       string          `json:"plan_hash,omitempty"`
+	AuthzDecision  string          `json:"authz_decision_id,omitempty"`
+	ApprovalID     string          `json:"approval_id,omitempty"`
 	RequestKey     string          `json:"request_key,omitempty"`
 	Actor          *machine.Actor  `json:"actor,omitempty"`
 	PID            int             `json:"pid,omitempty"`
@@ -126,6 +128,8 @@ func operationViewFromRecord(rec *ops.Record) operationView {
 		DeploymentID:   rec.DeploymentID,
 		PlanID:         rec.PlanID,
 		PlanHash:       rec.PlanHash,
+		AuthzDecision:  rec.AuthzDecisionID,
+		ApprovalID:     rec.ApprovalID,
 		RequestKey:     rec.RequestKey,
 		Actor:          rec.Actor,
 		PID:            rec.PID,

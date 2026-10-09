@@ -12,7 +12,7 @@ code for a given outcome — the JSON error envelope carries the same code in
 | 2 | invalid usage / arguments (bad invocation) | `INVALID_ARGUMENT` |
 | 3 | validation failure (execution result, e.g. `doctor` checks) | `VALIDATION_ERROR` |
 | 10 | authentication | `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `SESSION_EXPIRED` |
-| 11 | permission | `PERMISSION_DENIED`, `UNAUTHORIZED` |
+| 11 | permission | `PERMISSION_DENIED`, `UNAUTHORIZED`, `AUTHZ_DENIED`, `AUTHZ_UNAVAILABLE`, `AUTHZ_INVALID`, `APPROVAL_REQUIRED`, `APPROVAL_STALE`, `APPROVAL_INVALID` |
 | 12 | not found | `NOT_FOUND`, `VERSION_NOT_FOUND`, `ROLLBACK_TARGET_NOT_FOUND` |
 | 20 | build | `BUILD_FAILED`, `BUILD_TIMEOUT`, `TOOLCHAIN_NOT_FOUND`, `UNSUPPORTED_PROJECT`, `GIT_SYNC_FAILED` |
 | 21 | deploy | `DEPLOY_FAILED`, `INSTANCE_START_FAILED`, `HEALTH_CHECK_FAILED`, `DEPLOY_LOCKED`, `CANARY_REGRESSION`, `RESOURCE_OOM` |
@@ -28,6 +28,15 @@ code for a given outcome — the JSON error envelope carries the same code in
 The 2/3 split keeps invocation failures distinguishable from execution
 results: `phelix status` (missing required argument) exits **2**, while
 `phelix doctor` (failing checks) exits **3**.
+
+For the Phase 4 authorization codes, exit **11** uniformly means *the
+execution authorization boundary refused or could not decide, and nothing
+mutated*. The JSON `error.code` distinguishes denied / unavailable / invalid
+/ approval states, and `error.retryable` says whether repeating could help
+(only `AUTHZ_UNAVAILABLE` is retryable). Plan staleness keeps exit **3** and
+its own `PLAN_*` codes, so "not authorized" and "the world moved on" are
+never the same signal. See the
+[authorization guide](../guides/authorization.md#error-codes).
 
 Examples: `phelix status no-such-app` exits **12** (`NOT_FOUND`).
 

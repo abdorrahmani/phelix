@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
@@ -153,6 +154,15 @@ var RollbackCmd = &cobra.Command{
 				targetSource = rollbackTargetInteractive
 			}
 			return renderRollbackPreview(appInfo, name, target, targetTag, targetSource, reason, verifyDuration)
+		}
+
+		// The execution authorization boundary (Phase 4). The read-only paths
+		// above (--list, --dry-run) are deliberately not gated: they mutate
+		// nothing. Everything below this line can, so the gate sits here —
+		// before the operation record and the request-key ledger, so a
+		// refusal consumes no idempotency key.
+		if authzErr := authorizeDirectExecution(authz.ActionRollback, name, appInfo.ID); authzErr != nil {
+			return authzErr
 		}
 
 		// Operation identity + request-key idempotency (execution only).

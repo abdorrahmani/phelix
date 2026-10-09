@@ -104,6 +104,14 @@ func ExitCodeFor(err error) int {
 		return ExitAuth
 	case phelixerr.CodeUnauthorized, phelixerr.CodePermissionDenied:
 		return ExitPermission
+	// Execution authorization failures (Phase 4) all share the permission
+	// exit code, because to a script they mean one thing: the authorization
+	// boundary refused and NOTHING mutated. The JSON envelope's `code`
+	// distinguishes denied / unavailable / invalid / approval states, and
+	// `retryable` says whether repeating could help.
+	case phelixerr.CodeAuthzDenied, phelixerr.CodeAuthzUnavailable, phelixerr.CodeAuthzInvalid,
+		phelixerr.CodeApprovalRequired, phelixerr.CodeApprovalStale, phelixerr.CodeApprovalInvalid:
+		return ExitPermission
 	case phelixerr.CodeNotFound, phelixerr.CodeVersionNotFound,
 		phelixerr.CodeRollbackTargetNotFound:
 		return ExitNotFound
@@ -160,6 +168,17 @@ func hintFor(err error) string {
 		return "Re-run:\n  phelix update\nOr reinstall with the one-line installer:\n  curl -fsSL https://phelix.anophel.com/install.sh | bash"
 	case phelixerr.CodeDocker, phelixerr.CodeDockerDaemonUnavailable:
 		return "Make sure Docker is installed and running, then try again."
+	// Authorization hints point at the authorization boundary, never at
+	// `phelix auth login`: the backend session has nothing to do with whether
+	// this host permits an execution.
+	case phelixerr.CodeAuthzDenied:
+		return "Inspect the boundary's answer for this plan:\n  phelix authz check <plan-id>"
+	case phelixerr.CodeApprovalRequired:
+		return "Approve this exact plan, then apply it:\n  phelix authz approve <plan-id>"
+	case phelixerr.CodeApprovalStale, phelixerr.CodeApprovalInvalid:
+		return "Revoke the stale approval and approve the plan you are applying:\n  phelix authz revoke <plan-id>"
+	case phelixerr.CodeAuthzUnavailable, phelixerr.CodeAuthzInvalid:
+		return "Check the host authorization policy:\n  phelix authz status"
 	default:
 		return ""
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	"github.com/abdorrahmani/phelix/internal/deploy"
@@ -64,6 +65,19 @@ var RebuildCmd = &cobra.Command{
 		spec, specErr := buildRebuildSpec(cmd, args)
 		if specErr != nil {
 			return specErr
+		}
+
+		// The execution authorization boundary (Phase 4). Placed after pure
+		// resolution and before the operation record, the request-key ledger
+		// and every engine call, so a refusal mutates nothing and consumes no
+		// idempotency key.
+		//
+		// This gate also covers the webhook queue and the monitor daemon's
+		// remote rebuild: both execute deployments by re-invoking this very
+		// command as a subprocess, so neither can reach the engine without
+		// passing here.
+		if authzErr := authorizeDirectExecution(authz.ActionRebuild, spec.Name, spec.AppInfo.ID); authzErr != nil {
+			return authzErr
 		}
 
 		// Operation identity + request-key idempotency. The fingerprint covers

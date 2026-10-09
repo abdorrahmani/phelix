@@ -72,6 +72,15 @@ type Record struct {
 	// the operation model is unchanged.
 	PlanID   string `json:"plan_id,omitempty"`
 	PlanHash string `json:"plan_hash,omitempty"`
+	// AuthzDecisionID/ApprovalID correlate the operation with the Phase 4
+	// authorization decision that permitted it, and with the approval that
+	// satisfied it when one was required. Both are empty on a host that does
+	// not enforce authorization, which keeps every pre-Phase-4 record valid.
+	// They point BACKWARD on purpose: the decision is made before the
+	// operation record exists, so a denied execution can never leave an
+	// operation behind to point forward from.
+	AuthzDecisionID string `json:"authz_decision_id,omitempty"`
+	ApprovalID      string `json:"approval_id,omitempty"`
 	// PID of the CLI process that owned the operation. A record stuck in
 	// running with a dead PID was interrupted by a crash; the status is left
 	// untouched (the outcome is unknown, and honesty beats guessing).

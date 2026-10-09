@@ -59,6 +59,10 @@ Exit codes are unchanged by `--json`.
 | `plan show <plan-id>` | — | plan content + fresh applicability |
 | `plan list` | — | `{plans[], count}` |
 | `plan apply <plan-id>` | the produced `op_…` | execution result + correlation |
+| `authz status` | — | host authorization posture |
+| `authz check <plan-id>` | — | the boundary's decision for that plan (no mutation) |
+| `authz approve <plan-id>` | — | the approval artifact |
+| `authz revoke <plan-id>` | — | `{plan_id, revoked}` |
 
 ## Plans (Phase 3)
 
@@ -172,6 +176,197 @@ rebuilds inject env at execution time from the encrypted store, and the
 rollback reason is the only free-text field (validated and redacted as in
 Phase 1). Plan JSON passes through the same envelope/redaction chokepoints
 as every other machine response.
+
+
+## Execution authorization (Phase 4)
+
+Phase 4 introduces the **execution authorization boundary** — one gate
+between a validated plan and the execution engine:
+
+```text
+request → plan → authorization → (approval) → execution
+```
+
+and never `request → execution` for a protected path. The full model is in the
+[authorization guide](../guides/authorization.md); this section is the machine
+contract for it.
+
+### Posture
+
+Two modes, selected by a host-owned policy file at
+`<data-dir>/authz/policy.json`:
+
+| Policy file | Mode | Behavior |
+|---|---|---|
+| **absent** | `legacy_local` | local CLI execution permitted — pre-Phase-4 behavior, preserved |
+| present, `enforced` | `enforced` | plan-bound execution only; no matching allow rule means deny |
+| present, unreadable | — | `AUTHZ_UNAVAILABLE`, fail closed |
+| present, invalid | — | `AUTHZ_INVALID`, fail closed |
+
+Once a host has a policy, no form of brokenness degrades into "allow
+everything". There is no `missing config → allow` path for an enforcing host.
+
+### Where the gate runs
+
+```text
+plan apply
+  → load + hash-verify the plan      (Phase 3 checks, unchanged)
+  → already applied → recorded correlation, no mutation
+  → preconditions / capabilities     PLAN_STALE / PLAN_CAPABILITY_MISSING
+  → re-resolve + verify equivalence  PLAN_STALE
+  → AUTHORIZE                        AUTHZ_* / APPROVAL_*   ← no mutation yet
+  → request-key idempotency
+  → execute → correlate operation
+```
+
+Authorization is the **last gate before mutation** (so the decision cannot go
+stale before it is acted on) and runs **before** the request-key ledger (so a
+refusal consumes no idempotency key — the same plan applies once approved).
+When a refusal is returned, no operation record, no ledger entry and no
+engine call exist.
+
+Plan validity and authorization are independent and both required: an
+approved but stale plan is still `PLAN_STALE` with zero mutation.
+
+### Plan binding
+
+Authorization binds to `plan_id` **and** `plan_hash`. A decision or approval
+for plan A can never permit plan B, even when the action and target are
+identical, and a plan whose content hash differs from the approved one no
+longer matches that approval. There is no reusable authorization token: the
+decision is re-evaluated against the exact plan on every attempt.
+
+### Protected paths
+
+`plan apply`, `rebuild`, `rollback`, and the remote rollback command.
+Webhook deployments and the monitor daemon's remote rebuild are covered
+transitively — both deploy by re-invoking `phelix rebuild`. Under enforced
+authorization, planless execution (`rebuild`/`rollback` directly) is denied
+even by the most permissive rule set: the plan binding is the boundary's
+shape, not a rule. Read-only paths (`plan create/show/list`, `inspect`,
+`context`, `rollback --dry-run`, `--list`) are never gated; `build` and the
+`start`/`stop`/`restart` lifecycle commands are out of Phase 4's scope
+because they cannot promote a deployed version.
+
+### `authz status`
+
+```json
+{
+  "mode": "enforced",
+  "policy_path": "/home/u/.phelix/authz/policy.json",
+  "policy_loaded": true,
+  "policy_error": null,
+  "enforced": true,
+  "rules": 1,
+  "approvals_dir": "/home/u/.phelix/authz/approvals",
+  "decision_log_path": "/home/u/.phelix/authz/decisions.jsonl",
+  "actor": { "type": "cli", "id": null, "authenticated": false }
+}
+```
+
+With a broken policy, `mode` is `"unknown"`, `enforced` is `true` (protected
+execution is failing closed) and `policy_error` carries `{code, message}`.
+
+### `authz check <plan-id>`
+
+The boundary's answer without executing anything. It runs the *same*
+evaluation an apply would, so the two cannot disagree. It is a read-only
+query and writes **no** audit record — the decision log is bounded, so a
+probe must not be able to evict real execution decisions.
+
+```json
+{
+  "plan_id": "pln_…", "plan_hash": "sha256:…",
+  "action": "rebuild", "target": "billing",
+  "actor": { "type": "cli", "id": null, "authenticated": false },
+  "decision": "allow | deny | approval_required",
+  "code": "AUTHZ_ALLOWED | AUTHZ_DENIED | APPROVAL_REQUIRED | APPROVAL_STALE | …",
+  "reason": "…", "mode": "enforced", "rule_index": 0,
+  "approval_id": "apr_…",
+  "approval": { "approval_id": "apr_…", "plan_id": "pln_…", "plan_hash": "sha256:…",
+                "action": "rebuild", "target": "billing", "decision": "approved",
+                "approver_type": "cli", "approver_authenticated": false,
+                "approver_source": "local_host", "approved_at_ms": 0 }
+}
+```
+
+`rule_index` is the 0-based index of the rule that decided, or `-1` when the
+default posture decided.
+
+### `authz approve <plan-id> [--expect-hash sha256:…]`
+
+Records an immutable approval bound to the plan's id, content hash, action
+and target.
+
+```json
+{ "approval_id": "apr_…", "plan_id": "pln_…", "plan_hash": "sha256:…",
+  "action": "rebuild", "target": "billing", "decision": "approved",
+  "approver_type": "cli", "approver_authenticated": false,
+  "approver_source": "local_host", "approved_at_ms": 0 }
+```
+
+`approver_authenticated` is `false` in this release: a Phase 4 approval
+records filesystem authority over the host's data directory, not a verified
+principal. It is reported rather than hidden so a consumer is never misled
+about what was proven.
+
+`--expect-hash` asserts the hash the caller inspected; a mismatch is
+`APPROVAL_INVALID` rather than an approval. **Machine callers should always
+pass it**, so an approval is never granted to content the approver did not
+see. Re-approving a plan is `ALREADY_EXISTS` — approvals are immutable;
+revoke and approve again.
+
+Nothing else in Phelix creates an approval. No execution path produces one as
+a side effect of being asked to execute, so an agent cannot approve its own
+action.
+
+### Correlation
+
+An authorized operation records the decision that permitted it:
+
+```json
+{ "operation_id": "op_…", "plan_id": "pln_…", "plan_hash": "sha256:…",
+  "authz_decision_id": "azd_…", "approval_id": "apr_…",
+  "deployment_id": "dep-…" }
+```
+
+closing the chain `actor → decision → approval → plan → operation →
+deployment`. Both new fields are optional and empty on a host that does not
+enforce authorization, so every pre-Phase-4 record stays valid.
+
+Every decision, allow and refuse alike, is appended to
+`<data-dir>/authz/decisions.jsonl` (bounded to the 512 newest records) with
+actor, action, target, plan id, plan hash, decision, code, mode, rule index,
+approval id and timestamp. A decision record never carries an operation ID:
+authorization precedes the operation record, which is why a refusal cannot
+leave one behind.
+
+### Authorization errors
+
+| Code | Exit | Retryable | Meaning |
+|---|---:|---|---|
+| `AUTHZ_DENIED` | 11 | no | this caller may not execute this |
+| `AUTHZ_UNAVAILABLE` | 11 | **yes** | the boundary could not be consulted |
+| `AUTHZ_INVALID` | 11 | no | the policy or the request is malformed |
+| `APPROVAL_REQUIRED` | 11 | no | a plan-bound approval is required and absent |
+| `APPROVAL_STALE` | 11 | no | an approval exists but no longer matches this plan |
+| `APPROVAL_INVALID` | 11 | no | the approval artifact is corrupt or was edited |
+
+Exit 11 uniformly means *the boundary refused or could not decide, and
+nothing mutated*. `AUTHZ_UNAVAILABLE` is the only retryable one — an agent
+must never be told to repeat a denied action, and an approval requirement is
+not a transient failure. Plan staleness keeps its own `PLAN_*` codes and exit
+3, so "not authorized" and "the world moved on" never arrive as one signal.
+
+### Security
+
+The authorization request carries metadata and references only: there is
+nowhere in it, in an approval artifact, or in a decision record to put a
+password, token, key or environment value. Free-text fields pass through the
+existing centralized redactor — no new secret-handling mechanism was added.
+See the guide's [security guarantees](../guides/authorization.md#security-guarantees)
+for the full list, including the honest limit (the data directory is the
+trust boundary; approval hashes detect tampering, they are not signatures).
 
 
 ## Errors
@@ -329,7 +524,17 @@ Operation records and views include:
 { "actor": { "type": "cli", "id": null, "authenticated": false } }
 ```
 
-This is provenance metadata, **not** authenticated identity — Phase 1 has no
-authenticated actor model and deliberately accepts no forgeable
-`--actor` value. A later security phase may populate it from real
-credentials.
+This is provenance metadata, **not** authenticated identity — Phelix has no
+authenticated actor model for execution and deliberately accepts no
+forgeable `--actor` value, nor any other flag or environment variable
+through which a caller could name itself an authorized principal.
+
+Phase 4 did not change this block. It made it load-bearing: the
+[authorization boundary](#execution-authorization-phase-4) receives exactly
+this actor, and the invariant `id != null ⇒ authenticated` means an
+unauthenticated caller can never match a rule that names an identity. The
+`Authenticator` seam inside `internal/authz` is where a future phase
+populates `id`/`authenticated` from real credentials — an authenticated
+non-CLI caller is then authorized by the same rules through the same gate,
+with no change to the execution path.
+

@@ -505,8 +505,20 @@ var planApplyCmd = &cobra.Command{
 }
 
 // applyPlan is the fail-closed application pipeline. NOTHING mutates before
-// every validation step has passed; execution dispatches through the seam
-// variables (the real engine in production, a counting stub in tests).
+// every validation step has passed AND the authorization boundary has allowed
+// the execution; execution dispatches through the seam variables (the real
+// engine in production, a counting stub in tests).
+//
+// The order is the Phase 4 security contract:
+//
+//	load plan → verify hash → preconditions → capabilities →
+//	resolve execution spec → verify plan/spec equivalence →
+//	AUTHORIZE → idempotency → execute → correlate
+//
+// Authorization is deliberately the last gate before mutation (so the
+// decision cannot go stale before it is acted on) and deliberately BEFORE the
+// request-key ledger (so a refusal consumes no idempotency key — the same
+// plan applies cleanly once it is approved).
 func applyPlan(planID string) (err error) {
 	planApplyMu.Lock()
 	defer planApplyMu.Unlock()
@@ -517,7 +529,11 @@ func applyPlan(planID string) (err error) {
 	}
 
 	// An already-applied plan is never executed twice: return the recorded
-	// operation correlation instead (documented repeat-apply semantics).
+	// operation correlation instead (documented repeat-apply semantics). This
+	// precedes authorization on purpose — it is a read of durable correlation
+	// with zero mutation by construction, and Phase 3's repeat-apply contract
+	// must not change meaning because a policy or approval was edited after
+	// the execution that already happened.
 	if plan.Status == plans.StatusApplied {
 		return emitAlreadyApplied(plan)
 	}
@@ -558,6 +574,14 @@ func applyPlan(planID string) (err error) {
 				"resolved execution drifted from the plan (%s); create a new plan", drift)
 		}
 
+		// The authorization boundary. Last gate before mutation: no operation
+		// record, no ledger entry and no engine call exists yet, so a refusal
+		// here is provably a zero-mutation outcome.
+		authzOutcome, authzErr := authorizePlanExecution(plan)
+		if authzErr != nil {
+			return authzErr
+		}
+
 		op := newOpRun(ops.KindRebuild, spec.Name, planRequestKey(plan.PlanID))
 		defer func() { op.finish(&err) }()
 		replayed, idemErr := op.beginIdempotency(map[string]string{
@@ -574,12 +598,21 @@ func applyPlan(planID string) (err error) {
 		// The operation record exists only after beginIdempotency (a replayed
 		// plan must not mint one), so correlation is stamped here.
 		op.setPlanCorrelation(plan.PlanID, plan.PlanHash)
+		op.setAuthzCorrelation(authzOutcome.DecisionID, authzOutcome.Decision.ApprovalID)
 
 		execErr := planExecRebuild(spec, op)
 		recordPlanTerminal(plan, op, execErr)
 		return execErr
 
 	case plans.ActionRollback:
+		// Same boundary, same position: the rollback path re-resolves nothing
+		// before execution, so the gate sits immediately before the operation
+		// record and the ledger.
+		authzOutcome, authzErr := authorizePlanExecution(plan)
+		if authzErr != nil {
+			return authzErr
+		}
+
 		op := newOpRun(ops.KindRollback, plan.Action.Application, planRequestKey(plan.PlanID))
 		defer func() { op.finish(&err) }()
 		replayed, idemErr := op.beginIdempotency(map[string]string{
@@ -593,6 +626,7 @@ func applyPlan(planID string) (err error) {
 		}
 		// Correlation is stamped after the record exists (see rebuild branch).
 		op.setPlanCorrelation(plan.PlanID, plan.PlanHash)
+		op.setAuthzCorrelation(authzOutcome.DecisionID, authzOutcome.Decision.ApprovalID)
 
 		execErr := planExecRollback(plan, op)
 		recordPlanTerminal(plan, op, execErr)

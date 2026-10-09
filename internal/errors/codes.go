@@ -45,6 +45,34 @@ const (
 	CodePlanStale             Code = "PLAN_STALE"
 	CodePlanCapabilityMissing Code = "PLAN_CAPABILITY_MISSING"
 
+	// Execution authorization codes (Phase 4). The authorization boundary sits
+	// between a validated Plan and the execution engine; every one of these
+	// means the boundary refused and NOTHING mutated. They deliberately
+	// distinguish the four different truths an agent must not confuse:
+	// "you may not do this" (AUTHZ_DENIED), "the boundary could not decide"
+	// (AUTHZ_UNAVAILABLE), "the host's authorization configuration is broken"
+	// (AUTHZ_INVALID) and the approval states. Plan staleness keeps its own
+	// PLAN_* codes — a valid authorization never resurrects a stale plan.
+	//
+	// There is deliberately no ACTOR_UNAUTHENTICATED code: an actor that
+	// cannot satisfy a rule's authentication requirement simply matches no
+	// allow rule, which is AUTHZ_DENIED. A separate code would describe why a
+	// rule did not match, not a distinct outcome.
+	CodeAuthzDenied      Code = "AUTHZ_DENIED"
+	CodeAuthzUnavailable Code = "AUTHZ_UNAVAILABLE"
+	CodeAuthzInvalid     Code = "AUTHZ_INVALID"
+	// CodeApprovalRequired: the decision requires an approval bound to this
+	// exact plan and none was found. Not a transient failure — the remedy is
+	// an explicit approval, not a retry.
+	CodeApprovalRequired Code = "APPROVAL_REQUIRED"
+	// CodeApprovalStale: an approval exists but its execution binding
+	// (plan id, plan hash, action, target) no longer matches the plan being
+	// applied. Approvals are never reusable across plans.
+	CodeApprovalStale Code = "APPROVAL_STALE"
+	// CodeApprovalInvalid: the approval artifact itself is unusable — corrupt,
+	// foreign schema, or content that no longer hashes to its stored value.
+	CodeApprovalInvalid Code = "APPROVAL_INVALID"
+
 	// Build.
 	CodeBuildFailed        Code = "BUILD_FAILED"
 	CodeToolchainNotFound  Code = "TOOLCHAIN_NOT_FOUND"
