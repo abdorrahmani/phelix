@@ -80,6 +80,11 @@ exactly as in every Phelix release before this one. Non-CLI callers (`api`,
 `agent`, `mcp`, `service`) are denied — those paths did not exist before and
 must not inherit a trusted-by-default posture.
 
+The `mcp` caller is produced by `phelix mcp serve` (the MCP adapter for coding
+agents). To let an agent apply plans, add an `enforced` rule for the `mcp`
+caller — ideally with `require_approval` — as described in
+[the MCP guide](mcp.md#authorization-and-approvals).
+
 ### `enforced` — the protected machine path
 
 Every deployment mutation must be **bound to an immutable plan** and

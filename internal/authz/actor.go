@@ -107,6 +107,28 @@ func (LocalCLIAuthenticator) Authenticate() (Actor, error) {
 	return Actor{Type: CallerCLI, Authenticated: false}, nil
 }
 
+// LocalMCPAuthenticator is the authenticator the local MCP adapter installs on
+// its gate (see the `phelix mcp serve` command). It reports the honest truth
+// about a tool call arriving over the local stdio MCP transport: a local
+// process acting for whoever launched the server, with no verified identity.
+//
+// It is deliberately NOT the CLI authenticator. An MCP caller is a distinct
+// transport that must not inherit the legacy-local trust the bare `phelix` CLI
+// has (see [PolicyAuthorizer.Authorize]): on a host that has not configured
+// authorization, an MCP-originated protected execution is denied until an
+// explicit policy rule allows the `mcp` caller. The adapter can therefore
+// never gain more privilege than the local CLI, and by default has less.
+//
+// Like [LocalCLIAuthenticator] it takes no input, so there is nothing an MCP
+// client could pass to influence the actor it produces — identity cannot be
+// self-asserted over the wire.
+type LocalMCPAuthenticator struct{}
+
+// Authenticate returns the unauthenticated local MCP actor.
+func (LocalMCPAuthenticator) Authenticate() (Actor, error) {
+	return Actor{Type: CallerMCP, Authenticated: false}, nil
+}
+
 // LocalProvenance returns the host login name of the current process, for
 // audit records only. It is not an identity: it is unverified, it is not
 // placed on the Actor, and no authorization rule can match it.
