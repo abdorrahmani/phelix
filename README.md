@@ -138,6 +138,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 ### Guides
 - [Authentication](docs/guides/authentication.md)
 - [Authorization](docs/guides/authorization.md)
+- [MCP Adapter for Coding Agents](docs/guides/mcp.md)
 - [Interactive Usage](docs/guides/interactive-usage.md)
 - [Zero-Downtime Deployments](docs/guides/zero-downtime-deployments.md)
 - [Canary & Progressive Rollouts](docs/guides/canary-and-progressive-rollouts.md)

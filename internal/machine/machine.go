@@ -204,6 +204,39 @@ func LeaveJSON() {
 // error boundary consults it to emit the structured error contract.
 func Active() bool { return active }
 
+// EnterCapture puts the process into machine mode with the envelope directed
+// to w — an in-process buffer — instead of the real stdout, and progress
+// output detoured to stderr. It exists for non-CLI hosts (the MCP adapter in
+// internal/mcp) that must keep os.Stdout reserved for their own protocol
+// stream while still reusing the exact command code paths that emit machine
+// envelopes.
+//
+// It is the capture counterpart of EnterJSON: EnterJSON pins the envelope
+// writer to the real stdout (the CLI's output channel), whereas EnterCapture
+// pins it to w and never writes an envelope to the real stdout. The returned
+// restore func must be deferred by the caller; machine mode must not outlive
+// one captured command, so restore also clears the active-operation
+// registration.
+//
+// Like EnterJSON it redirects the process-wide os.Stdout to os.Stderr for the
+// duration, so stray human progress prints land on the diagnostics stream and
+// never corrupt the host's protocol stream. The os.Stdout and envelope-writer
+// globals are process-wide, so a host that handles several commands must
+// serialize the captured calls.
+func EnterCapture(w io.Writer) (restore func()) {
+	active = true
+	prevEnv := envelopeWriter
+	envelopeWriter = w
+	prevStdout := os.Stdout
+	os.Stdout = os.Stderr
+	return func() {
+		os.Stdout = prevStdout
+		envelopeWriter = prevEnv
+		active = false
+		activeOperationID = ""
+	}
+}
+
 // MarshalEnvelope serializes an envelope exactly as WriteEnvelope prints it
 // (pretty-printed, no trailing newline). The idempotency ledger stages this
 // same byte string so a replay is byte-identical to the fresh response —

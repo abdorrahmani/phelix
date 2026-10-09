@@ -36,6 +36,12 @@ compatibility.
 
 Exit codes are unchanged by `--json`.
 
+The **MCP adapter** (`phelix mcp serve`, see [the MCP guide](../guides/mcp.md))
+reuses this exact envelope: each tool returns one envelope as its result
+content, keeping the process's real stdout reserved for the MCP protocol
+instead. Status vocabulary, error bodies, operation ids and idempotency are
+identical to the CLI.
+
 ## Commands
 
 | Command | `operation_id` | result |
