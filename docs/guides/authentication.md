@@ -69,6 +69,9 @@ retrying earlier only extends it.
 
 ## Related
 
+- [Authorization](authorization.md) — **a different thing**: whether a caller
+  may *execute* a deployment on this host. A dashboard session grants no
+  execution rights, and the authorization boundary never consults it.
 - [Monitoring](monitoring.md) — what the monitor daemon transmits, and per-app
   watching.
 - [Security](security.md) — session storage and transport security.

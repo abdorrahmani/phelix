@@ -74,6 +74,20 @@ entry point), and secrets reach containers via a `0600` `--env-file` rather than
 the command line. Mounting the Docker socket into a containerized Phelix grants
 host-root — do it only deliberately. See [Docker runtime](docker-runtime.md).
 
+## Execution authorization
+
+Deployment execution can be gated at a single boundary between a validated
+plan and the engine: `request → plan → authorization → (approval) →
+execution`. It is **off by default** — a host with no
+`~/.phelix/authz/policy.json` behaves exactly as before — and fails closed
+once configured: a broken policy denies rather than degrading to "allow
+everything", and every refusal is a zero-mutation outcome. Authorization
+binds to the plan's content hash, so a grant for one plan can never execute
+another. See [Authorization](authorization.md).
+
+Note that `phelix auth login` authenticates you to the **dashboard backend**
+and grants no execution rights on the host; the two are independent.
+
 ## Transport security
 
 The agent gRPC channel's transport-security model, certificate renewal, and SPKI
@@ -85,7 +99,8 @@ other mode forces TLS with no insecure fallback — see
 
 ## Related
 
-- [Authentication](authentication.md), [Environment variables](environment-variables.md),
+- [Authentication](authentication.md), [Authorization](authorization.md),
+  [Environment variables](environment-variables.md),
   [Webhooks](webhooks.md), [Docker runtime](docker-runtime.md).
 - Backend contracts:
   [TLS & certificate policy](../architecture/backend-contracts/tls-cert-policy.md),

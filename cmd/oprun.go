@@ -97,6 +97,19 @@ func (o *opRun) setPlanCorrelation(planID, planHash string) {
 	o.rec.PlanHash = planHash
 }
 
+// setAuthzCorrelation records the authorization decision (and the approval
+// that satisfied it, when one was required) that permitted this operation.
+// It closes the Phase 4 correlation chain:
+//
+//	actor → decision → approval → plan → operation → deployment
+func (o *opRun) setAuthzCorrelation(decisionID, approvalID string) {
+	if o == nil || o.rec == nil {
+		return
+	}
+	o.rec.AuthzDecisionID = decisionID
+	o.rec.ApprovalID = approvalID
+}
+
 // setResult stages the terminal result written to the record on success.
 func (o *opRun) setResult(res *ops.Result) {
 	if o == nil {

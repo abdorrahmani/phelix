@@ -79,6 +79,7 @@ func main() {
 	rootCmd.AddCommand(cmd.OperationCmd)
 	rootCmd.AddCommand(cmd.InspectCmd)
 	rootCmd.AddCommand(cmd.PlanCmd)
+	rootCmd.AddCommand(cmd.AuthzCmd)
 	rootCmd.AddCommand(cmd.ContextCmd)
 
 	rootCmd.AddCommand(cmd.VersionCmd)

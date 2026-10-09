@@ -18,6 +18,12 @@ var retryableCodes = map[Code]bool{
 	CodeProcessFailed:       true,
 	CodeRateLimited:         true,
 	CodeUnavailable:         true,
+	// The authorization backend could not be consulted (I/O failure reading
+	// the host policy). The decision itself may succeed once it is readable
+	// again. AUTHZ_DENIED / AUTHZ_INVALID / APPROVAL_* are deliberately NOT
+	// retryable: an agent must never be told to repeat a denied action, and a
+	// broken policy or a missing approval needs an operator, not a retry.
+	CodeAuthzUnavailable: true,
 }
 
 // Retryable reports whether retrying an operation that failed with this code

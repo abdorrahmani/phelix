@@ -15,6 +15,10 @@ All state lives under `~/.phelix/` (relocatable with `PHELIX_DATA_DIR` — see t
 │   ├── <app>.log            # per-app logs
 │   └── deploy_*.log         # deploy instance logs
 ├── registry/<slug>.enc      # encrypted registry credentials
+├── authz/                    # execution authorization state (see Authorization)
+│   ├── policy.json            # host authorization policy (0600; absent = legacy local mode)
+│   ├── approvals/             # immutable per-plan approvals (<plan-id>.json, 0600)
+│   └── decisions.jsonl        # authorization decision log (bounded to 512 records, 0600)
 ├── matrix/
 │   └── runs/                 # Matrix Run history: <id>.json records,
 │                             #   <id>.lock execution locks, <id>.manifest.json
@@ -61,3 +65,5 @@ inside Docker (detected via `/.dockerenv`), else `~/.phelix`. See the
   meaning of and relationship between `apps.json`, `deploy.json`, and
   `versions.json`.
 - [Configuration](configuration.md), [Environment](environment.md).
+- [Authorization](../guides/authorization.md) — the `authz/` policy, approval
+  and decision-log files.

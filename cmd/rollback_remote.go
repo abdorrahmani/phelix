@@ -3,6 +3,7 @@ package cmd
 import (
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/monitor"
@@ -78,6 +79,15 @@ func RemoteRollback(payload monitor.CommandPayload) error {
 
 	if payload.DryRun {
 		return renderRollbackPreviewWithRequestID(appInfo, name, target, targetTag, targetSource, reason, verifyDuration, requestID)
+	}
+
+	// The execution authorization boundary (Phase 4). The remote rollback
+	// runs in-process inside the monitor daemon rather than re-invoking the
+	// CLI, so it needs its own gate call — otherwise a backend-issued
+	// rollback would be the one deployment mutation that bypasses the
+	// boundary. The dry-run path above is read-only and stays ungated.
+	if authzErr := authorizeDirectExecution(authz.ActionRollback, name, appInfo.ID); authzErr != nil {
+		return authzErr
 	}
 
 	state, deployErr := classifyRollbackDeployState(name)
