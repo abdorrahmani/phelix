@@ -102,6 +102,3 @@ other mode forces TLS with no insecure fallback — see
 - [Authentication](authentication.md), [Authorization](authorization.md),
   [Environment variables](environment-variables.md),
   [Webhooks](webhooks.md), [Docker runtime](docker-runtime.md).
-- Backend contracts:
-  [TLS & certificate policy](../architecture/backend-contracts/tls-cert-policy.md),
-  [CLI changes required](../architecture/backend-contracts/CLI_CHANGES_REQUIRED.md).

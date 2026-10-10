@@ -87,15 +87,4 @@ implications are in the
 
 - [Monitoring guide](../guides/monitoring.md), [Health checks](../guides/health-checks.md).
 - [Authentication](../guides/authentication.md) — the session the stream requires.
-- Backend contracts:
-  [agent capabilities](backend-contracts/agent-capabilities-backend-contract.md),
-  [docker-runtime telemetry](backend-contracts/docker-runtime-telemetry-backend-contract.md),
-  [remote webhook](backend-contracts/remote-webhook-backend-contract.md),
-  [TLS policy](backend-contracts/tls-cert-policy.md),
-  [CLI changes required](backend-contracts/CLI_CHANGES_REQUIRED.md).
 
-> The historical `DEVELOPMENT.md` referenced a
-> `docs/backend-app-health-transport.md` file for the `AppHealthSnapshot`
-> transport; that file does not exist in the repository. The snapshot contract is
-> summarized above and in the backend contracts; the dangling reference is recorded
-> as an issue for Phase 3.
