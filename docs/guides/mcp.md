@@ -96,7 +96,7 @@ args = ["mcp", "serve", "--stdio"]
 ### Verifying
 
 - With the official **MCP Inspector**: point it at the command above; it should
-  list the seven `phelix_*` tools and let you call `phelix_inspect`
+  list the thirteen `phelix_*` tools and let you call `phelix_inspect`
   `{"resource":"capabilities"}`.
 - From the client: ask it to list tools, then call `phelix_context`. A clean
   JSON envelope with `"status": "succeeded"` confirms the wiring.
@@ -115,6 +115,12 @@ args = ["mcp", "serve", "--stdio"]
 | `phelix_operation_status` | no | `operation_id` | — |
 | `phelix_plan_create` | writes a plan artifact only | `action` (`rebuild`\|`rollback`), `app` | rebuild: `port`, `strategy`, `blue_green`, `replicas`, `canary`, `tag`, `auto_rollback`, `no_upload` · rollback: `to`, `verify`, `reason` |
 | `phelix_plan_apply` | **yes** (executes) | `plan_id` | — |
+| `phelix_session_create` | writes a tracking record only | — | `title`, `app`, `project` |
+| `phelix_session_show` | no | `session_id` | `no_resolve` |
+| `phelix_session_list` | no | — | `status`, `app`, `limit` (≤100) |
+| `phelix_session_checkpoint` | writes a tracking record only | `session_id` | `note`, `step`, `plans`, `operations`, `deployments` |
+| `phelix_session_complete` | writes a tracking record only | `session_id` | `result`, `plans`, `operations`, `deployments` |
+| `phelix_session_fail` | writes a tracking record only | `session_id` | `reason`, `plans`, `operations`, `deployments` |
 
 `phelix_inspect` resources: `project`, `runtime`, `config`, `capabilities`,
 `operations`, `app`, `deployment`, `versions`, `health`.
@@ -124,6 +130,15 @@ immutable, content-addressed plan (hash included) — it never executes.
 `phelix_plan_apply` executes a previously created plan, and only after it passes
 the full pipeline. There is no single-step "deploy" or "rollback" tool, by
 design.
+
+**Session tools.** The six `phelix_session_*` tools track one unit of agent work
+(create → checkpoint → complete/fail) and reuse the exact CLI logic. They are
+tracking only: none executes, authorizes, or mutates a deployment, and linking a
+plan to a session never authorizes it — `phelix_plan_apply` remains the only
+execution path, behind the unchanged authorization boundary. An MCP-created
+session records the `mcp` caller as provenance. Session cancellation and the
+`--if-rev` optimistic-concurrency guard are CLI-only. See the
+[agent sessions guide](agent-sessions.md).
 
 ### Result contract
 

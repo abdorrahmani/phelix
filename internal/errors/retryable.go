@@ -24,6 +24,11 @@ var retryableCodes = map[Code]bool{
 	// retryable: an agent must never be told to repeat a denied action, and a
 	// broken policy or a missing approval needs an operator, not a retry.
 	CodeAuthzUnavailable: true,
+	// A session optimistic-concurrency conflict clears by re-reading the
+	// session (another writer advanced its revision) and retrying against the
+	// current revision — so repeating, after a fresh read, can plausibly
+	// succeed. The session itself was left unchanged.
+	CodeSessionConflict: true,
 }
 
 // Retryable reports whether retrying an operation that failed with this code

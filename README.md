@@ -43,6 +43,10 @@ until you opt in, per application.
 - **Git webhook deploys** — HMAC-authenticated push webhooks deploy the exact
   pushed commit through the normal rebuild pipeline.
 - **Monitoring** — optional, per-app opt-in gRPC stream to the dashboard.
+- **Agent sessions** — durable, auditable tracking of one unit of agent work
+  across inspect → plan → apply → verify, so an interrupted agent can resume by
+  reading state. Tracking only — it grants no authorization and executes
+  nothing. See [Agent Execution Sessions](docs/guides/agent-sessions.md).
 
 See the [documentation index](#documentation) for details on any of these.
 
@@ -139,6 +143,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Authentication](docs/guides/authentication.md)
 - [Authorization](docs/guides/authorization.md)
 - [MCP Adapter for Coding Agents](docs/guides/mcp.md)
+- [Agent Execution Sessions](docs/guides/agent-sessions.md)
 - [Interactive Usage](docs/guides/interactive-usage.md)
 - [Zero-Downtime Deployments](docs/guides/zero-downtime-deployments.md)
 - [Canary & Progressive Rollouts](docs/guides/canary-and-progressive-rollouts.md)

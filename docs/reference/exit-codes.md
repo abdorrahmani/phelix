@@ -8,9 +8,9 @@ code for a given outcome — the JSON error envelope carries the same code in
 | Exit | Category | Typical codes |
 |-----:|----------|---------------|
 | 0 | success | — |
-| 1 | generic failure | `UNKNOWN`, `SERVER_ERROR`, `UPDATE_FAILED`, `IDEMPOTENCY_CONFLICT`, plain errors |
+| 1 | generic failure | `UNKNOWN`, `SERVER_ERROR`, `UPDATE_FAILED`, `IDEMPOTENCY_CONFLICT`, `SESSION_CONFLICT`, plain errors |
 | 2 | invalid usage / arguments (bad invocation) | `INVALID_ARGUMENT` |
-| 3 | validation failure (execution result, e.g. `doctor` checks) | `VALIDATION_ERROR` |
+| 3 | validation failure (execution result, e.g. `doctor` checks) | `VALIDATION_ERROR`, `PLAN_*`, `SESSION_INVALID`, `SESSION_CORRUPT`, `SESSION_INVALID_TRANSITION` |
 | 10 | authentication | `UNAUTHENTICATED`, `INVALID_CREDENTIALS`, `SESSION_EXPIRED` |
 | 11 | permission | `PERMISSION_DENIED`, `UNAUTHORIZED`, `AUTHZ_DENIED`, `AUTHZ_UNAVAILABLE`, `AUTHZ_INVALID`, `APPROVAL_REQUIRED`, `APPROVAL_STALE`, `APPROVAL_INVALID` |
 | 12 | not found | `NOT_FOUND`, `VERSION_NOT_FOUND`, `ROLLBACK_TARGET_NOT_FOUND` |
@@ -37,6 +37,13 @@ mutated*. The JSON `error.code` distinguishes denied / unavailable / invalid
 its own `PLAN_*` codes, so "not authorized" and "the world moved on" are
 never the same signal. See the
 [authorization guide](../guides/authorization.md#error-codes).
+
+Agent-session (Phase 6) record and transition failures are validation results
+(exit **3**: `SESSION_INVALID`, `SESSION_CORRUPT`, `SESSION_INVALID_TRANSITION`)
+— the tracking layer refused and nothing changed. A `SESSION_CONFLICT`
+(optimistic-concurrency) is a generic retryable failure (exit **1**). Sessions
+never gate execution, so these never collide with the `PLAN_*`/`AUTHZ_*` codes.
+See the [agent sessions guide](../guides/agent-sessions.md).
 
 Examples: `phelix status no-such-app` exits **12** (`NOT_FOUND`).
 

@@ -100,6 +100,14 @@ func ExitCodeFor(err error) int {
 	case phelixerr.CodePlanStale, phelixerr.CodePlanInvalid, phelixerr.CodePlanCorrupt,
 		phelixerr.CodePlanHashMismatch, phelixerr.CodePlanCapabilityMissing:
 		return ExitValidation
+	// Agent session (Phase 6) record/transition failures are validation
+	// results — the tracking layer refused and nothing in it changed. A
+	// session never gates deployment, so these never collide with PLAN_*/
+	// AUTHZ_*/DEPLOY_* exit codes. SESSION_CONFLICT (optimistic-concurrency)
+	// is a generic retryable failure (exit 1), handled with CodeUpdateFailed.
+	case phelixerr.CodeSessionInvalid, phelixerr.CodeSessionCorrupt,
+		phelixerr.CodeSessionInvalidTransition:
+		return ExitValidation
 	case phelixerr.CodeUnauthenticated, phelixerr.CodeInvalidCredentials, phelixerr.CodeSessionExpired:
 		return ExitAuth
 	case phelixerr.CodeUnauthorized, phelixerr.CodePermissionDenied:
@@ -130,6 +138,11 @@ func ExitCodeFor(err error) int {
 	case phelixerr.CodeAutoRollbackFailed:
 		return ExitAutoRollback
 	case phelixerr.CodeUpdateFailed:
+		return ExitFailure
+	// A session optimistic-concurrency conflict is a generic, retryable
+	// failure: re-read the session and retry. Exit 1 keeps it distinct from a
+	// validation refusal (3) and a not-found (12).
+	case phelixerr.CodeSessionConflict:
 		return ExitFailure
 	case phelixerr.CodeNetwork, phelixerr.CodeConnection, phelixerr.CodeGRPC,
 		phelixerr.CodePortUnavailable:
@@ -179,6 +192,11 @@ func hintFor(err error) string {
 		return "Revoke the stale approval and approve the plan you are applying:\n  phelix authz revoke <plan-id>"
 	case phelixerr.CodeAuthzUnavailable, phelixerr.CodeAuthzInvalid:
 		return "Check the host authorization policy:\n  phelix authz status"
+	// Session hints point at the session's own record, never at execution:
+	// a tracking-layer refusal is resolved by inspecting the session, not by
+	// deploying or authorizing anything.
+	case phelixerr.CodeSessionInvalidTransition, phelixerr.CodeSessionConflict:
+		return "Inspect the session's current state:\n  phelix session show <session-id>"
 	default:
 		return ""
 	}

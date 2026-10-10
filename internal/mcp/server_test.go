@@ -29,6 +29,8 @@ type stubServices struct {
 	block bool // block until the handler ctx is cancelled
 
 	ctxN, inspectN, showN, listN, opN, createN, applyN atomic.Int32
+
+	sesCreateN, sesShowN, sesListN, sesCheckpointN, sesCompleteN, sesFailN atomic.Int32
 }
 
 func (s *stubServices) ret(ctx context.Context) (*machine.Envelope, error) {
@@ -69,6 +71,30 @@ func (s *stubServices) PlanCreate(ctx context.Context, _ PlanCreateInput) (*mach
 }
 func (s *stubServices) PlanApply(ctx context.Context, _ PlanApplyInput) (*machine.Envelope, error) {
 	s.applyN.Add(1)
+	return s.ret(ctx)
+}
+func (s *stubServices) SessionCreate(ctx context.Context, _ SessionCreateInput) (*machine.Envelope, error) {
+	s.sesCreateN.Add(1)
+	return s.ret(ctx)
+}
+func (s *stubServices) SessionShow(ctx context.Context, _ SessionShowInput) (*machine.Envelope, error) {
+	s.sesShowN.Add(1)
+	return s.ret(ctx)
+}
+func (s *stubServices) SessionList(ctx context.Context, _ SessionListInput) (*machine.Envelope, error) {
+	s.sesListN.Add(1)
+	return s.ret(ctx)
+}
+func (s *stubServices) SessionCheckpoint(ctx context.Context, _ SessionCheckpointInput) (*machine.Envelope, error) {
+	s.sesCheckpointN.Add(1)
+	return s.ret(ctx)
+}
+func (s *stubServices) SessionComplete(ctx context.Context, _ SessionCompleteInput) (*machine.Envelope, error) {
+	s.sesCompleteN.Add(1)
+	return s.ret(ctx)
+}
+func (s *stubServices) SessionFail(ctx context.Context, _ SessionFailInput) (*machine.Envelope, error) {
+	s.sesFailN.Add(1)
 	return s.ret(ctx)
 }
 
@@ -121,6 +147,9 @@ func TestNewRegistersStableToolSurface(t *testing.T) {
 	wantReadOnly := map[string]bool{
 		ToolContext: true, ToolInspect: true, ToolPlanShow: true, ToolPlanList: true,
 		ToolOperationStatus: true, ToolPlanCreate: false, ToolPlanApply: false,
+		ToolSessionShow: true, ToolSessionList: true,
+		ToolSessionCreate: false, ToolSessionCheckpoint: false,
+		ToolSessionComplete: false, ToolSessionFail: false,
 	}
 	if len(res.Tools) != len(wantReadOnly) {
 		names := make([]string, 0, len(res.Tools))

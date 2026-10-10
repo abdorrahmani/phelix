@@ -73,6 +73,30 @@ const (
 	// foreign schema, or content that no longer hashes to its stored value.
 	CodeApprovalInvalid Code = "APPROVAL_INVALID"
 
+	// Agent session codes (Phase 6). A session is a durable, auditable
+	// tracking record that groups one unit of agent work; it is NOT an
+	// execution principal and confers no authorization. These codes describe
+	// failures of the tracking layer only — they never gate deployment, which
+	// keeps its own PLAN_*/AUTHZ_*/DEPLOY_* codes.
+	//
+	// CodeSessionInvalid: a persisted session record is malformed — a foreign
+	// schema_version, a malformed stored id, or an unknown lifecycle status.
+	// Distinct from SESSION_CORRUPT (unparseable bytes) so a consumer can tell
+	// "not a session this build understands" from "not JSON at all".
+	CodeSessionInvalid Code = "SESSION_INVALID"
+	// CodeSessionCorrupt: a session record's bytes are not a parseable session.
+	CodeSessionCorrupt Code = "SESSION_CORRUPT"
+	// CodeSessionInvalidTransition: the requested lifecycle transition is not
+	// legal from the session's current state (e.g. completing a session that is
+	// already terminal). Fail-safe: the session is left exactly as it was. A
+	// terminal session never silently becomes active again.
+	CodeSessionInvalidTransition Code = "SESSION_INVALID_TRANSITION"
+	// CodeSessionConflict: an optimistic-concurrency check failed — the caller
+	// supplied an expected revision that no longer matches the session, because
+	// another writer advanced it. Retryable: re-read the session and retry
+	// against the current revision.
+	CodeSessionConflict Code = "SESSION_CONFLICT"
+
 	// Build.
 	CodeBuildFailed        Code = "BUILD_FAILED"
 	CodeToolchainNotFound  Code = "TOOLCHAIN_NOT_FOUND"
