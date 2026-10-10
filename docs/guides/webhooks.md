@@ -242,8 +242,6 @@ commit).
 - [Configuration](../reference/configuration.md) — the `webhook` block.
 - [Rollback](rollback.md) — the `--auto-rollback` behavior a job records as
   `rolled_back`.
-- [Remote webhook management contract](../architecture/backend-contracts/remote-webhook-backend-contract.md)
-  — dashboard-issued webhook management.
 - [Security](security.md) — HMAC authentication, secret handling, `127.0.0.1`
   binding.
 - [Command reference](../reference/commands.md#other-commands).

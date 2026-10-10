@@ -101,4 +101,3 @@ internal/
 - [Identity](identity.md), [Deployment](deployment.md),
   [State management](state-management.md), [Build system](build-system.md),
   [Monitoring](monitoring.md).
-- [Development setup](../development/development-setup.md) — building from source.

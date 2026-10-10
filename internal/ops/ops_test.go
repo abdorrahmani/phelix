@@ -2,11 +2,13 @@ package ops
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/machine"
@@ -272,6 +274,19 @@ func TestLedger_RestartInterrupted_IsIndeterminateNeverReExecuted(t *testing.T) 
 		t.Fatalf("expected one in_progress entry, got %+v", disk.Entries)
 	}
 
+	// A real crash leaves the entry owned by a process that no longer exists.
+	// Clear the recorded owner so the fresh instance sees a genuine orphan — a
+	// still-live owner is deliberately left in_progress (reported UNAVAILABLE)
+	// so a concurrent operation is never clobbered.
+	disk.Entries[0].PID = 0
+	rewrite, err := json.MarshalIndent(disk, "", "  ")
+	if err != nil {
+		t.Fatalf("re-encode ledger: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "request-key-ledger.json"), rewrite, 0o600); err != nil {
+		t.Fatalf("rewrite ledger: %v", err)
+	}
+
 	// Fresh instance (new process semantics): the in_progress entry must be
 	// closed as indeterminate and the key must replay that result — never
 	// re-execute.
@@ -382,6 +397,58 @@ func TestLedger_ConcurrentKeysAreSafe(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestPruneKeepsInFlightProtectedAndNewest proves operation-record retention
+// keeps every in-flight record, every id in the protected set, and the newest
+// max terminal records, pruning only older unprotected terminal ones. (Task 5.)
+func TestPruneKeepsInFlightProtectedAndNewest(t *testing.T) {
+	setDataDir(t)
+	mk := func(app string) *Record {
+		r, err := Begin(KindRebuild, app, "")
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		return r
+	}
+	var terminal []*Record
+	for i := 0; i < 5; i++ {
+		r := mk(fmt.Sprintf("t%d", i))
+		if err := r.MarkSucceeded(&Result{Version: i}); err != nil {
+			t.Fatalf("MarkSucceeded: %v", err)
+		}
+		terminal = append(terminal, r)
+		time.Sleep(2 * time.Millisecond)
+	}
+	inflight := mk("live")
+	if err := inflight.MarkRunning(); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	protected := map[string]bool{terminal[0].ID: true} // the OLDEST, explicitly pinned
+	pruned, err := Prune(2, protected)
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if pruned != 2 {
+		t.Fatalf("pruned = %d, want 2", pruned)
+	}
+	if _, err := Load(inflight.ID); err != nil {
+		t.Fatalf("in-flight record must never be pruned: %v", err)
+	}
+	if _, err := Load(terminal[0].ID); err != nil {
+		t.Fatalf("protected record must never be pruned: %v", err)
+	}
+	for _, r := range terminal[3:] { // newest two terminal
+		if _, err := Load(r.ID); err != nil {
+			t.Fatalf("newest terminal %s must be kept: %v", r.ID, err)
+		}
+	}
+	for _, r := range []*Record{terminal[1], terminal[2]} { // old, unprotected, over budget
+		if _, err := Load(r.ID); !phelixerr.IsCode(err, phelixerr.CodeNotFound) {
+			t.Fatalf("old terminal %s should be pruned, got %v", r.ID, err)
+		}
+	}
 }
 
 func TestFingerprint_IsDeterministicAndSensitive(t *testing.T) {

@@ -55,7 +55,9 @@ var (
 
 // inProcLock returns the per-id in-process mutex, locked. The map grows by at
 // most one entry per distinct session id touched in this process — negligible
-// for the one-shot CLI and bounded for the MCP server.
+// for the one-shot CLI and, for the long-lived MCP server, bounded by the
+// session retention sweep, which drops a pruned session's entry via
+// dropInProcLock.
 func inProcLock(id string) func() {
 	locksMu.Lock()
 	m := idLocks[id]
@@ -66,6 +68,17 @@ func inProcLock(id string) func() {
 	locksMu.Unlock()
 	m.Lock()
 	return m.Unlock
+}
+
+// dropInProcLock removes the in-process lock for a session that has been
+// removed from disk (pruned). It bounds the idLocks map over a long-lived
+// host's lifetime. Safe because a pruned session is terminal and never mutated
+// again; were it ever touched later, inProcLock simply recreates the entry.
+// The cross-process file lock remains the authority across processes.
+func dropInProcLock(id string) {
+	locksMu.Lock()
+	delete(idLocks, id)
+	locksMu.Unlock()
 }
 
 // lockSession acquires the in-process and cross-process locks for id and
@@ -248,8 +261,61 @@ func List(status, app string, limit int) (sessions []*Session, skipped int, trun
 	return found, skipped, truncated, nil
 }
 
-// encodeSession marshals a session deterministically (no maps) and enforces
-// the total size bound.
+// DefaultSessionRetention bounds how many TERMINAL sessions are kept on disk.
+// Active sessions are never pruned — they are the session store's equivalent of
+// the version store's is_current guard, so an in-flight unit of work (and every
+// plan/operation it references) survives. Mirrors deploy.PruneVersions and the
+// authz decision log's bounded history.
+const DefaultSessionRetention = 100
+
+// PruneTerminal deletes the oldest terminal (completed/failed/cancelled)
+// sessions beyond max, keeping ALL active sessions and the newest max terminal
+// ones. It is best-effort and self-contained: it needs no cross-store
+// knowledge because only terminal sessions are ever removed, and a terminal
+// session's references are no longer needed by any live work. max <= 0 uses
+// DefaultSessionRetention. Each removed session's lock file is removed with it,
+// so terminal sessions leave nothing behind.
+func PruneTerminal(max int) (int, error) {
+	if max <= 0 {
+		max = DefaultSessionRetention
+	}
+	all, _, _, err := List("", "", 0) // newest-first
+	if err != nil {
+		return 0, err
+	}
+	kept, pruned := 0, 0
+	for _, s := range all { // newest-first
+		if !IsTerminal(s.Status) {
+			continue // active sessions are always kept and never counted
+		}
+		if kept < max {
+			kept++
+			continue
+		}
+		pruned += removeSessionArtifacts(s.SessionID)
+	}
+	return pruned, nil
+}
+
+// removeSessionArtifacts deletes a session's record and its lock file. It is
+// idempotent (a missing file is not an error) and returns 1 when the record
+// was removed. A terminal session is never mutated, so there is no writer to
+// race; a concurrent reader keeps its open fd on Unix.
+func removeSessionArtifacts(id string) int {
+	removed := 0
+	if path, err := sessionPath(id); err == nil {
+		if rmErr := os.Remove(path); rmErr == nil || errors.Is(rmErr, os.ErrNotExist) {
+			if rmErr == nil {
+				removed = 1
+			}
+		}
+	}
+	if lp, err := lockFilePath(id); err == nil {
+		_ = os.Remove(lp)
+		dropInProcLock(id)
+	}
+	return removed
+}
 func encodeSession(s *Session) ([]byte, error) {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {

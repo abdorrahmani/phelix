@@ -123,7 +123,3 @@ override the dashboard sends is the same one `--strategy` applies locally; see
 - [Health checks](health-checks.md) — how health snapshots are configured.
 - [Monitoring architecture](../architecture/monitoring.md) — the gRPC stream,
   health-daemon reconcile loop, and snapshot semantics.
-- Backend contracts:
-  [agent capabilities](../architecture/backend-contracts/agent-capabilities-backend-contract.md),
-  [docker-runtime telemetry](../architecture/backend-contracts/docker-runtime-telemetry-backend-contract.md).
-- [Command reference](../reference/commands.md#lifecycle).

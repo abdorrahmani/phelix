@@ -67,6 +67,9 @@ var sessionCreateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// Bound the session store (best-effort). Only terminal sessions are
+		// pruned, so the active session just created is never removed.
+		pruneSessions()
 		return emitSession(s, "created")
 	},
 }

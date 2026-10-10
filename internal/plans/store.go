@@ -110,6 +110,46 @@ func Save(p *Plan) error {
 	return nil
 }
 
+// DefaultPlanRetention bounds how many plans are kept on disk. Any id in the
+// protected set (e.g. referenced by an active session, or carrying an approval)
+// is always kept and never counted against the budget. Mirrors
+// deploy.PruneVersions and the authz decision log's bounded history.
+const DefaultPlanRetention = 100
+
+// Prune deletes the oldest plans beyond max, keeping every id in protected and
+// the newest max of the rest. Plans are immutable artifacts; pruning is
+// retention/GC (as with deploy.PruneVersions), not a content mutation, so it
+// does not weaken plan immutability. It is best-effort and self-contained
+// except for the caller-supplied protected set (plans must not import the
+// session or authz packages). max <= 0 uses DefaultPlanRetention.
+func Prune(max int, protected map[string]bool) (int, error) {
+	if max <= 0 {
+		max = DefaultPlanRetention
+	}
+	list, _, err := List("", 0) // newest-first
+	if err != nil {
+		return 0, err
+	}
+	kept, pruned := 0, 0
+	for _, p := range list { // newest-first
+		if protected[p.PlanID] {
+			continue // always kept; does not consume the budget
+		}
+		if kept < max {
+			kept++
+			continue
+		}
+		path, perr := planPath(p.PlanID)
+		if perr != nil {
+			continue
+		}
+		if rmErr := os.Remove(path); rmErr == nil || errors.Is(rmErr, os.ErrNotExist) {
+			pruned++
+		}
+	}
+	return pruned, nil
+}
+
 // Load reads a plan by ID and fails closed on any integrity problem:
 // unparseable content is PLAN_CORRUPT, a foreign schema version or malformed
 // identity is PLAN_INVALID, and content that no longer hashes to its stored

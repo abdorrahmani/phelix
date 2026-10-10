@@ -391,6 +391,104 @@ func TestPlanApply_RestartLedgerReplay(t *testing.T) {
 	}
 }
 
+// TestPlanApply_FailedPlanIsSingleUseRegardlessOfLedger proves Task 4/10: a
+// plan whose first apply fails is single-use. The first apply surfaces the real
+// execution error; every retry is refused with a plan-appropriate PLAN_STALE
+// ("already ran; create a new plan"), and that refusal is driven by the plan's
+// own durable status — so it is IDENTICAL whether or not the request-key ledger
+// entry still exists (here: deleted to simulate eviction). It never flips from
+// "replay" to "re-execute".
+func TestPlanApply_FailedPlanIsSingleUseRegardlessOfLedger(t *testing.T) {
+	dir := planTestDataDir(t)
+	info := withAppStore(t)
+	plan := manualRebuildPlan(t, info.Name, info.ID, nil)
+
+	var count atomic.Int32
+	prev := planExecRebuild
+	planExecRebuild = func(spec *rebuildSpec, op *opRun) error {
+		count.Add(1)
+		return phelixerr.New(phelixerr.CodeDeployFailed, "boom")
+	}
+	t.Cleanup(func() { planExecRebuild = prev; machine.LeaveJSON() })
+
+	// First apply: the real execution error surfaces, and the plan becomes
+	// terminally failed.
+	if err := applyPlan(plan.PlanID); !phelixerr.IsCode(err, phelixerr.CodeDeployFailed) {
+		t.Fatalf("first apply = %v, want DEPLOY_FAILED", err)
+	}
+	if count.Load() != 1 {
+		t.Fatalf("first apply exec count = %d, want 1", count.Load())
+	}
+	if p, _ := plans.Load(plan.PlanID); p.Status != plans.StatusFailed {
+		t.Fatalf("plan status after failed apply = %q, want failed", p.Status)
+	}
+
+	// (a) retry: refused as single-use, no re-execution.
+	if err := applyPlan(plan.PlanID); !phelixerr.IsCode(err, phelixerr.CodePlanStale) {
+		t.Fatalf("retry (a) = %v, want PLAN_STALE", err)
+	}
+	if count.Load() != 1 {
+		t.Fatalf("retry (a) re-executed: count=%d", count.Load())
+	}
+
+	// (b) retry after the ledger entry is gone (eviction simulated by deleting
+	// the ledger file): identical refusal, still no re-execution.
+	if err := os.Remove(filepath.Join(dir, "ops", "request-key-ledger.json")); err != nil {
+		t.Fatalf("remove ledger: %v", err)
+	}
+	if err := applyPlan(plan.PlanID); !phelixerr.IsCode(err, phelixerr.CodePlanStale) {
+		t.Fatalf("retry (b) after eviction = %v, want PLAN_STALE (identical)", err)
+	}
+	if count.Load() != 1 {
+		t.Fatalf("retry (b) re-executed after eviction: count=%d", count.Load())
+	}
+}
+
+// TestPlanApply_IndeterminateReplayReconcilesToFailed proves the crash path of
+// Task 4: when the ledger replays an indeterminate/failed outcome for a plan
+// still marked created (its process crashed mid-apply), the apply reconciles
+// the plan to failed WITHOUT executing, so the next apply is gated by the
+// durable status and never re-executes even if the ledger entry is later gone.
+func TestPlanApply_IndeterminateReplayReconcilesToFailed(t *testing.T) {
+	planTestDataDir(t)
+	info := withAppStore(t)
+	plan := manualRebuildPlan(t, info.Name, info.ID, nil)
+
+	// Seed a COMPLETE failure (indeterminate-style) ledger entry for the plan's
+	// derived key, as a crashed prior apply would have left after recovery.
+	key := planRequestKey(plan.PlanID)
+	fp := ops.Fingerprint(ops.KindRebuild, plan.Action.Application, map[string]string{"plan_hash": plan.PlanHash})
+	if _, _, err := ops.BeginKey(key, fp, ops.KindRebuild, plan.Action.Application); err != nil {
+		t.Fatalf("seed BeginKey: %v", err)
+	}
+	failEnv, _ := machine.MarshalEnvelope(machine.Failure(phelixerr.New(phelixerr.CodeUnavailable, "indeterminate"), 1, ""))
+	if err := ops.CompleteKeyData(key, "", failEnv); err != nil {
+		t.Fatalf("seed CompleteKeyData: %v", err)
+	}
+
+	count := withExecutionSeam(t)
+
+	// Apply: the ledger replays (no execution), and the plan is reconciled to
+	// failed.
+	if err := applyPlan(plan.PlanID); err != nil {
+		t.Fatalf("apply over replayed failure = %v, want nil (deterministic replay)", err)
+	}
+	if n := count.Load(); n != 0 {
+		t.Fatalf("replay must not execute: seam ran %d time(s)", n)
+	}
+	if p, _ := plans.Load(plan.PlanID); p.Status != plans.StatusFailed {
+		t.Fatalf("plan not reconciled: status = %q, want failed", p.Status)
+	}
+
+	// The next apply is now gated by the durable status.
+	if err := applyPlan(plan.PlanID); !phelixerr.IsCode(err, phelixerr.CodePlanStale) {
+		t.Fatalf("post-reconcile retry = %v, want PLAN_STALE", err)
+	}
+	if n := count.Load(); n != 0 {
+		t.Fatalf("post-reconcile retry executed: count=%d", n)
+	}
+}
+
 func TestPlanStale_ExitCodeIsValidation(t *testing.T) {
 	for _, code := range []phelixerr.Code{
 		phelixerr.CodePlanStale, phelixerr.CodePlanCorrupt, phelixerr.CodePlanHashMismatch,
@@ -520,5 +618,25 @@ func TestPlanCLI_EndToEnd(t *testing.T) {
 	}
 	if fresh.Result.Applicability.State != "applicable" {
 		t.Fatalf("fresh plan after drift = %q, want applicable", fresh.Result.Applicability.State)
+	}
+}
+
+// TestPlanApplicability_SourceDriftUnprotectedForNonGit proves Task 9: a
+// rebuild plan with no source_commit precondition (non-git source) reports
+// source_drift_unprotected, while a git-backed plan does not.
+func TestPlanApplicability_SourceDriftUnprotectedForNonGit(t *testing.T) {
+	planTestDataDir(t)
+	info := withAppStore(t)
+
+	nonGit := manualRebuildPlan(t, info.Name, info.ID, nil)
+	if a := computeApplicability(nonGit); !a.SourceDriftUnprotected {
+		t.Fatal("non-git rebuild plan must report source_drift_unprotected")
+	}
+
+	gitBacked := manualRebuildPlan(t, info.Name, info.ID, []plans.Precondition{
+		{Type: plans.PreconditionSourceCommit, Expected: "abc123", Source: "git"},
+	})
+	if a := computeApplicability(gitBacked); a.SourceDriftUnprotected {
+		t.Fatal("git-backed plan must NOT report source_drift_unprotected")
 	}
 }

@@ -160,6 +160,27 @@ the result's text content (and mirrored into `structuredContent`):
 - `operation_id` and plan/deployment/authz correlation are preserved exactly as
   in the CLI envelope, so an agent can join a plan → operation → deployment.
 
+### Concurrency
+
+A single `plan apply` can run for minutes (build + deploy + health). While it
+runs, the server keeps serving tool calls, but with one deliberate limit:
+
+- `phelix_session_show` and `phelix_session_list` are served off the capture
+  lock, so an agent can keep reading its session (and the plans/operations it
+  references) *while its own apply is in flight*.
+- Every other tool — the other reads (`phelix_context`, `phelix_inspect`,
+  `phelix_plan_show`, `phelix_plan_list`, `phelix_operation_status`) and all
+  mutations — is serialized behind the running apply. This is because the
+  command code they run consults process-global state (the application manager
+  and the plan-applicability evaluator) that is not yet concurrency-safe, and a
+  mutation additionally redirects the process `os.Stdout`. Calls queue and
+  drain in order; none is dropped or corrupted.
+
+So an agent polling progress during its own apply should prefer
+`phelix_session_show` (tracking its session) over `phelix_operation_status`,
+which will block until the apply returns. Lifting this limit — making every
+read concurrent — is tracked at the `mcpCaptureMu` ceiling in `cmd/mcp.go`.
+
 ## Authorization and approvals
 
 The MCP server authorizes as a distinct, **unauthenticated local MCP caller**
@@ -245,6 +266,16 @@ human actions (`phelix authz approve|revoke|check|status`). See
 ## Limitations
 
 - Local stdio only; no remote/network transport.
+- **Non-app project context is scoped to the server's working directory.** The
+  `project`, `config` and `runtime` sections of `phelix_context` and
+  `phelix_inspect` describe the directory the `phelix mcp serve` process was
+  launched in — over MCP that is the agent host's launch directory, not a
+  per-call project path (the tool inputs deliberately expose no filesystem
+  path, so the adapter never reopens the filesystem-access surface it closed).
+  Launch the server from your project root to get meaningful project context,
+  or run one server per project. App-scoped reads (`app`, `deployment`,
+  `versions`, `health`, and the app sections of `phelix_context`) are
+  unaffected — they resolve the named app's own recorded directory.
 - `phelix_plan_create` deliberately omits filesystem/build-arg inputs
   (`--source-dir`, `--build-arg`): no arbitrary paths or build arguments over
   MCP. Create such plans with the CLI if needed.

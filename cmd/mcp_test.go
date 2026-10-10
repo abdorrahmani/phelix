@@ -15,12 +15,15 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/abdorrahmani/phelix/internal/authz"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/machine"
 	phelixmcp "github.com/abdorrahmani/phelix/internal/mcp"
+	"github.com/abdorrahmani/phelix/internal/ops"
 	"github.com/abdorrahmani/phelix/internal/plans"
+	"github.com/abdorrahmani/phelix/internal/session"
 )
 
 // withMCPAuthenticator installs the MCP authenticator on the process-wide gate
@@ -323,6 +326,65 @@ func TestMCPServices_RejectsTamperedPlan(t *testing.T) {
 	}
 	if n := count.Load(); n != 0 {
 		t.Fatalf("MUTATION HAPPENED: seam ran %d time(s) on a tampered plan", n)
+	}
+}
+
+// TestMCPServices_ReadRunsDuringLongApply proves Task 3: a read-only session
+// tool returns while a long mutating plan_apply is still in flight on the same
+// process, instead of blocking behind it on the capture lock.
+func TestMCPServices_ReadRunsDuringLongApply(t *testing.T) {
+	planTestDataDir(t)
+	info := withAppStore(t)
+	plan := manualRebuildPlan(t, info.Name, info.ID, nil)
+	withMCPAuthenticator(t)
+	writeEnforcedPolicy(t, info.Name, false) // allow, no approval required
+
+	// A session to read, created before the apply starts.
+	s, err := session.Create(session.CreateOpts{Title: "track", Actor: machine.CLIActor()})
+	if err != nil {
+		t.Fatalf("session.Create: %v", err)
+	}
+
+	// A blocking execution seam: the apply parks inside it, holding the capture
+	// lock, until the test releases it.
+	started := make(chan struct{})
+	release := make(chan struct{})
+	prev := planExecRebuild
+	planExecRebuild = func(spec *rebuildSpec, op *opRun) error {
+		close(started)
+		<-release
+		op.setResult(&ops.Result{Version: 1})
+		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{App: spec.Name, Version: 1}))
+	}
+	t.Cleanup(func() { planExecRebuild = prev; machine.LeaveJSON() })
+
+	ctx := context.Background()
+	applyDone := make(chan *machine.Envelope, 1)
+	go func() {
+		env, _ := cmdServices{}.PlanApply(ctx, phelixmcp.PlanApplyInput{PlanID: plan.PlanID})
+		applyDone <- env
+	}()
+	<-started // the apply is now parked inside the seam, holding mcpCaptureMu
+
+	readDone := make(chan *machine.Envelope, 1)
+	go func() {
+		env, _ := cmdServices{}.SessionShow(ctx, phelixmcp.SessionShowInput{SessionID: s.SessionID})
+		readDone <- env
+	}()
+	select {
+	case env := <-readDone:
+		if env == nil || env.Status != machine.StatusSucceeded {
+			t.Fatalf("session_show during apply = %+v, want succeeded", env)
+		}
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("session_show blocked behind the in-flight apply (Task 3 regression)")
+	}
+
+	close(release)
+	applyEnv := <-applyDone
+	if applyEnv == nil || applyEnv.Status != machine.StatusSucceeded {
+		t.Fatalf("apply = %+v, want succeeded", applyEnv)
 	}
 }
 

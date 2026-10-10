@@ -356,3 +356,51 @@ func TestPlanSize_Bounded(t *testing.T) {
 		t.Fatalf("oversized plan must be INVALID_ARGUMENT, got %v", err)
 	}
 }
+
+// TestPrune_KeepsProtectedAndNewest proves plan retention keeps every id in the
+// protected set and the newest max of the rest, pruning only older unprotected
+// plans. (Task 5.)
+func TestPrune_KeepsProtectedAndNewest(t *testing.T) {
+	planDataDir(t)
+	mkPlan := func(createdAt int64) *Plan {
+		p := &Plan{
+			Status:    StatusCreated,
+			Action:    Action{Type: ActionRebuild, Application: "demo"},
+			Target:    Target{AppName: "demo"},
+			CreatedAt: createdAt,
+		}
+		if err := p.Finalize(); err != nil {
+			t.Fatalf("Finalize: %v", err)
+		}
+		if err := Save(p); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		return p
+	}
+	var ps []*Plan
+	for i := 0; i < 5; i++ {
+		ps = append(ps, mkPlan(int64(1000+i))) // increasing CreatedAt; newest = ps[4]
+	}
+
+	protected := map[string]bool{ps[0].PlanID: true} // pin the OLDEST
+	pruned, err := Prune(2, protected)
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if pruned != 2 {
+		t.Fatalf("pruned = %d, want 2", pruned)
+	}
+	if _, err := Load(ps[0].PlanID); err != nil {
+		t.Fatalf("protected plan must never be pruned: %v", err)
+	}
+	for _, p := range ps[3:] { // newest two
+		if _, err := Load(p.PlanID); err != nil {
+			t.Fatalf("newest plan %s must be kept: %v", p.PlanID, err)
+		}
+	}
+	for _, p := range []*Plan{ps[1], ps[2]} { // old, unprotected, over budget
+		if _, err := Load(p.PlanID); !phelixerr.IsCode(err, phelixerr.CodeNotFound) {
+			t.Fatalf("old plan %s should be pruned, got %v", p.PlanID, err)
+		}
+	}
+}

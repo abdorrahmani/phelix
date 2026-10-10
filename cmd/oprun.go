@@ -26,8 +26,14 @@ type opRun struct {
 	key         string
 	fingerprint string
 	replayed    bool
-	result      *ops.Result
-	successEnv  *machine.Envelope
+	// replayedStatus/replayedOpID carry the terminal outcome of a replayed
+	// idempotency entry so the plan path can reconcile the plan's own status
+	// with what the ledger already recorded (see applyPlan). Empty unless a
+	// replay occurred.
+	replayedStatus string
+	replayedOpID   string
+	result         *ops.Result
+	successEnv     *machine.Envelope
 }
 
 // newOpRun prepares the operation runner. No durable state is touched yet:
@@ -56,6 +62,13 @@ func (o *opRun) beginIdempotency(material map[string]string) (replayed bool, err
 		}
 		if outcome == ops.BeginReplay {
 			o.replayed = true
+			// Record the replayed terminal outcome so a derived-key caller (plan
+			// apply) can reconcile its own durable status with the ledger's,
+			// making retry semantics independent of ledger eviction.
+			if env, perr := machine.ParseEnvelope(entry.Result); perr == nil {
+				o.replayedStatus = env.Status
+				o.replayedOpID = env.OperationID
+			}
 			if werr := machine.WriteRawEnvelope(entry.Result); werr != nil {
 				return false, phelixerr.Wrap(phelixerr.CodeFilesystem, "replay idempotent result", werr)
 			}
@@ -78,6 +91,9 @@ func (o *opRun) beginRecord() {
 	if err := rec.MarkRunning(); err != nil {
 		logs.WarningFile("ops", "operation %s not marked running: %v", rec.ID, err)
 	}
+	// Bound the operation-record store (best-effort). The record just created
+	// is in-flight, so ops.Prune's in-flight guard never prunes it.
+	pruneOperationRecords()
 }
 
 // setDeploymentID correlates the record with the deployment telemetry stream.

@@ -304,9 +304,44 @@ func List(app string, limit int) ([]*Record, int, error) {
 	return recs, skipped, nil
 }
 
-// FindByDeploymentID scans the records for one correlating with a dep-…
-// deployment telemetry ID. Deployment records only keep the last deployment
-// ID in deploy.json, so this lookup walks the bounded record list instead.
+// DefaultOpRetention bounds how many terminal operation records are kept on
+// disk. In-flight records (pending/running) and any id in the protected set are
+// always kept and never counted against the budget, so a live operation — or
+// one a live session or plan still references — is never pruned. Mirrors
+// deploy.PruneVersions and the authz decision log's bounded history.
+const DefaultOpRetention = 200
+
+// Prune deletes the oldest terminal operation records beyond max, keeping every
+// in-flight (pending/running) record, every id in protected (e.g. referenced by
+// an active session or named as a plan's correlation), and the newest max of
+// the remaining terminal records. It is best-effort — like the record writes
+// themselves, a prune failure must never break a mutation — and self-contained
+// except for the caller-supplied protected set (ops must not import the session
+// or plan packages). max <= 0 uses DefaultOpRetention.
+func Prune(max int, protected map[string]bool) (int, error) {
+	if max <= 0 {
+		max = DefaultOpRetention
+	}
+	recs, _, err := List("", 0) // newest-first
+	if err != nil {
+		return 0, err
+	}
+	kept, pruned := 0, 0
+	for _, rec := range recs { // newest-first
+		inFlight := rec.Status == machine.StatusPending || rec.Status == machine.StatusRunning
+		if inFlight || protected[rec.ID] {
+			continue // always kept; does not consume the budget
+		}
+		if kept < max {
+			kept++
+			continue
+		}
+		if rmErr := os.Remove(filepath.Join(Dir(), rec.ID+".json")); rmErr == nil || os.IsNotExist(rmErr) {
+			pruned++
+		}
+	}
+	return pruned, nil
+}
 func FindByDeploymentID(deploymentID string) (*Record, error) {
 	if deploymentID == "" {
 		return nil, phelixerr.New(phelixerr.CodeInvalidArgument, "empty deployment id")

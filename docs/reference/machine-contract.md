@@ -142,6 +142,14 @@ metrics: a plan goes stale because **execution semantics changed**, not
 because an unrelated log line appeared. Unknown precondition types fail
 closed (`unchecked`).
 
+`source_commit` is created only when the source is a **git work tree**; the
+config fingerprint covers configuration, not source *content*. A rebuild plan
+built from a non-git source therefore has no source-content precondition, so
+its applicability carries `source_drift_unprotected: true` — a signal that the
+source tree may change between create and apply without the plan going stale.
+Git-backed plans never carry it. (`plan show` prints a matching "not
+drift-protected" line.)
+
 ### Apply semantics
 
 ```text
@@ -170,13 +178,19 @@ Plan application reuses the Phase 1 request-key ledger with the derived key
 2. **Repeat after success** — the stored correlation is returned
    (`already_applied: true`), never a second mutation.
 3. **Concurrent apply** — in-process applies serialize; exactly one
-   execution. Cross-process duplicates are rejected `UNAVAILABLE` while
-   one is in flight.
+   execution. A cross-process begin/complete file lock makes this true across
+   independent `phelix` invocations too: a duplicate started while the first is
+   in flight is rejected `UNAVAILABLE`; one started after it completed replays.
 4. **Apply after process restart** — an interrupted key replays its
    indeterminate result; the plan is never re-executed under an unknown
-   outcome.
-5. **Apply after failure** — the recorded failure envelope replays
-   deterministically; create a NEW plan to retry.
+   outcome, and the apply reconciles the plan's durable status to `failed` so
+   later retries are refused by status rather than by a ledger entry.
+5. **Apply after failure** — the plan is marked `failed`; re-applying it is
+   refused with `PLAN_STALE` ("plan already ran; create a new plan to retry").
+   This gate is driven by the plan's durable status, so it is deterministic and
+   independent of ledger eviction — a failed plan can never silently
+   re-execute later. The FIRST apply still surfaces the real execution error
+   (`BUILD_FAILED`, `DEPLOY_FAILED`, …).
 6. **Apply after staleness** — `PLAN_STALE`, no mutation, no regeneration.
 
 ### Security
