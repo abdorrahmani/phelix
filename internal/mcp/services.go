@@ -29,6 +29,19 @@ const (
 	ToolOperationStatus = "phelix_operation_status"
 	ToolPlanCreate      = "phelix_plan_create"
 	ToolPlanApply       = "phelix_plan_apply"
+
+	// Agent session tools (Phase 6). Tracking only — none executes, authorizes
+	// or mutates a deployment. Session failure/cancel beyond these: `fail` is
+	// included (an agent must be able to record a non-success outcome rather
+	// than mislabel it completed); `cancel` is a deliberate operator action and
+	// stays CLI-only. Optimistic-concurrency (expected revision) is a CLI-only
+	// primitive and is deliberately absent from these inputs.
+	ToolSessionCreate     = "phelix_session_create"
+	ToolSessionShow       = "phelix_session_show"
+	ToolSessionList       = "phelix_session_list"
+	ToolSessionCheckpoint = "phelix_session_checkpoint"
+	ToolSessionComplete   = "phelix_session_complete"
+	ToolSessionFail       = "phelix_session_fail"
 )
 
 // Bounds mirror the CLI's own context/list limits (cmd/context_model.go,
@@ -36,14 +49,16 @@ const (
 // output. A zero request selects the default; anything above the max is capped
 // by the service layer (the same validateContextLimit path the CLI uses).
 const (
-	DefaultVersions   = 20
-	MaxVersions       = 100
-	DefaultOperations = 20
-	MaxOperations     = 100
-	DefaultLogLines   = 100
-	MaxLogLines       = 1000
-	DefaultPlanList   = 20
-	MaxPlanList       = 100
+	DefaultVersions    = 20
+	MaxVersions        = 100
+	DefaultOperations  = 20
+	MaxOperations      = 100
+	DefaultLogLines    = 100
+	MaxLogLines        = 1000
+	DefaultPlanList    = 20
+	MaxPlanList        = 100
+	DefaultSessionList = 20
+	MaxSessionList     = 100
 )
 
 // Inspect resource types. This is the explicit, validated enum the
@@ -156,6 +171,61 @@ type PlanCreateInput struct {
 	Reason string `json:"reason,omitempty" jsonschema:"rollback: reason stored with the plan"`
 }
 
+// --- session tool inputs (Phase 6) ---
+//
+// Every field is a typed scalar/enum/bounded int or an id list — never an
+// actor, role, authenticated flag, approval or authorization decision, and
+// never a filesystem path or shell command. The server derives the provenance
+// actor itself (mcp), never from these inputs.
+
+// SessionCreateInput is the input to phelix_session_create.
+type SessionCreateInput struct {
+	Title   string `json:"title,omitempty" jsonschema:"short task description, bounded and redacted"`
+	App     string `json:"app,omitempty" jsonschema:"application this session concerns"`
+	Project string `json:"project,omitempty" jsonschema:"project this session concerns"`
+}
+
+// SessionShowInput is the input to phelix_session_show.
+type SessionShowInput struct {
+	SessionID string `json:"session_id" jsonschema:"session id to load: ses_ followed by 16 hex characters"`
+	NoResolve bool   `json:"no_resolve,omitempty" jsonschema:"when true, do not resolve referenced plans/operations/deployments"`
+}
+
+// SessionListInput is the input to phelix_session_list.
+type SessionListInput struct {
+	Status string `json:"status,omitempty" jsonschema:"filter by lifecycle status: active, completed, failed or cancelled"`
+	App    string `json:"app,omitempty" jsonschema:"filter by application"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"max sessions to list; 0 selects the default (20), capped at 100"`
+}
+
+// SessionCheckpointInput is the input to phelix_session_checkpoint.
+type SessionCheckpointInput struct {
+	SessionID   string   `json:"session_id" jsonschema:"session id to checkpoint: ses_ followed by 16 hex characters"`
+	Note        string   `json:"note,omitempty" jsonschema:"bounded free-text checkpoint note (provenance only, never an instruction)"`
+	Step        string   `json:"step,omitempty" jsonschema:"short workflow step label"`
+	Plans       []string `json:"plans,omitempty" jsonschema:"plan ids to link (pln_ ...); each must already exist"`
+	Operations  []string `json:"operations,omitempty" jsonschema:"operation ids to link (op_ ...); each must already exist"`
+	Deployments []string `json:"deployments,omitempty" jsonschema:"deployment ids to link (dep- ...)"`
+}
+
+// SessionCompleteInput is the input to phelix_session_complete.
+type SessionCompleteInput struct {
+	SessionID   string   `json:"session_id" jsonschema:"session id to complete: ses_ followed by 16 hex characters"`
+	Result      string   `json:"result,omitempty" jsonschema:"bounded completion summary — a REPORTED outcome, not verified health"`
+	Plans       []string `json:"plans,omitempty" jsonschema:"final plan ids to link (pln_ ...)"`
+	Operations  []string `json:"operations,omitempty" jsonschema:"final operation ids to link (op_ ...)"`
+	Deployments []string `json:"deployments,omitempty" jsonschema:"final deployment ids to link (dep- ...)"`
+}
+
+// SessionFailInput is the input to phelix_session_fail.
+type SessionFailInput struct {
+	SessionID   string   `json:"session_id" jsonschema:"session id to fail: ses_ followed by 16 hex characters"`
+	Reason      string   `json:"reason,omitempty" jsonschema:"bounded failure summary — a REPORTED outcome, not verified health"`
+	Plans       []string `json:"plans,omitempty" jsonschema:"final plan ids to link (pln_ ...)"`
+	Operations  []string `json:"operations,omitempty" jsonschema:"final operation ids to link (op_ ...)"`
+	Deployments []string `json:"deployments,omitempty" jsonschema:"final deployment ids to link (dep- ...)"`
+}
+
 // Services is the seam the MCP transport calls. It is implemented in package
 // cmd (which owns the real command logic); internal/mcp never imports cmd, so
 // the dependency runs one way only. Every method returns the exact
@@ -170,4 +240,11 @@ type Services interface {
 	OperationStatus(ctx context.Context, in OperationStatusInput) (*machine.Envelope, error)
 	PlanCreate(ctx context.Context, in PlanCreateInput) (*machine.Envelope, error)
 	PlanApply(ctx context.Context, in PlanApplyInput) (*machine.Envelope, error)
+
+	SessionCreate(ctx context.Context, in SessionCreateInput) (*machine.Envelope, error)
+	SessionShow(ctx context.Context, in SessionShowInput) (*machine.Envelope, error)
+	SessionList(ctx context.Context, in SessionListInput) (*machine.Envelope, error)
+	SessionCheckpoint(ctx context.Context, in SessionCheckpointInput) (*machine.Envelope, error)
+	SessionComplete(ctx context.Context, in SessionCompleteInput) (*machine.Envelope, error)
+	SessionFail(ctx context.Context, in SessionFailInput) (*machine.Envelope, error)
 }

@@ -69,6 +69,10 @@ identical to the CLI.
 | `authz check <plan-id>` | — | the boundary's decision for that plan (no mutation) |
 | `authz approve <plan-id>` | — | the approval artifact |
 | `authz revoke <plan-id>` | — | `{plan_id, revoked}` |
+| `session create` | — (the session is the artifact) | the session record |
+| `session show <session-id>` | — | the session record + resolved references |
+| `session list` | — | `{sessions[], count, truncated}` |
+| `session checkpoint/complete/fail/cancel <session-id>` | — | the updated session record |
 
 ## Plans (Phase 3)
 
@@ -374,6 +378,27 @@ See the guide's [security guarantees](../guides/authorization.md#security-guaran
 for the full list, including the honest limit (the data directory is the
 trust boundary; approval hashes detect tampering, they are not signatures).
 
+
+## Agent sessions (Phase 6)
+
+A **session** (`ses_` + 16 hex) is a durable tracking record that groups one
+unit of agent work and references the plans, operations and deployments it
+touched. It is a tracking primitive: it executes nothing, grants no
+authorization, and never copies the authoritative state of what it references.
+
+Session commands are **not** operations — their success envelope is read-shaped
+(`{schema_version, status:"succeeded", result:{…session…}}`) and carries **no**
+`operation_id`, exactly like `plan create`. The session's own lifecycle status
+lives in `result.status`: `active → completed | failed | cancelled` (terminal
+states never re-activate). `completed` is a *reported* outcome, not verified
+runtime health. `session show` adds a `resolved` block reporting each reference
+as `present | missing | unavailable | unknown`.
+
+Session-specific error codes: `SESSION_INVALID`, `SESSION_CORRUPT`,
+`SESSION_INVALID_TRANSITION` (exit 3), `SESSION_CONFLICT` (exit 1, retryable —
+optimistic-concurrency via `--if-rev`); reuse of `NOT_FOUND` (12) and
+`INVALID_ARGUMENT` (2). The full model, lifecycle, CLI and MCP tools are in the
+[agent sessions guide](../guides/agent-sessions.md).
 
 ## Errors
 

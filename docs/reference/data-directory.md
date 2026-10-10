@@ -30,6 +30,9 @@ All state lives under `~/.phelix/` (relocatable with `PHELIX_DATA_DIR` — see t
 │   │                         #   job, removed after the deploy; swept at startup)
 │   └── jobs/                 # durable deployment-job records (wh_<id>.json;
 │                             #   bounded to the 200 most recent finished jobs)
+├── sessions/                 # agent execution sessions (see Agent Sessions)
+│   ├── <session-id>.json      # one durable tracking record (ses_<16 hex>.json, 0600)
+│   └── <session-id>.lock      # per-session advisory lock serializing updates
 └── apps/<AppName>/          # per-app data
     ├── versions.json        # version metadata index (incl. per-version build reports + per-combo matrix reports)
     ├── deploy.json           # blue-green / rolling state
@@ -67,3 +70,5 @@ inside Docker (detected via `/.dockerenv`), else `~/.phelix`. See the
 - [Configuration](configuration.md), [Environment](environment.md).
 - [Authorization](../guides/authorization.md) — the `authz/` policy, approval
   and decision-log files.
+- [Agent Sessions](../guides/agent-sessions.md) — the `sessions/` tracking
+  records (distinct from the top-level `session.json` dashboard auth session).

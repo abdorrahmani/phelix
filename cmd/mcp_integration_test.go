@@ -77,6 +77,8 @@ func TestMCPStdioServer_AcceptanceWorkflow(t *testing.T) {
 		phelixmcp.ToolContext, phelixmcp.ToolInspect, phelixmcp.ToolPlanShow,
 		phelixmcp.ToolPlanList, phelixmcp.ToolOperationStatus,
 		phelixmcp.ToolPlanCreate, phelixmcp.ToolPlanApply,
+		phelixmcp.ToolSessionCreate, phelixmcp.ToolSessionShow, phelixmcp.ToolSessionList,
+		phelixmcp.ToolSessionCheckpoint, phelixmcp.ToolSessionComplete, phelixmcp.ToolSessionFail,
 	}
 	got := map[string]bool{}
 	for _, tl := range lt.Tools {
@@ -127,8 +129,54 @@ func TestMCPStdioServer_AcceptanceWorkflow(t *testing.T) {
 		t.Fatal("unknown resource must be a tool error")
 	}
 
+	// 6. The session tools work over the real protocol (tracking is ungated),
+	//    recording mcp provenance: create → checkpoint → complete.
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: phelixmcp.ToolSessionCreate, Arguments: map[string]any{"title": "itest", "app": "demo"}})
+	if err != nil {
+		t.Fatalf("session create: %v", err)
+	}
+	env := mcpStdioEnvelope(t, res)
+	if env.Status != machine.StatusSucceeded {
+		t.Fatalf("session create status = %q, want succeeded", env.Status)
+	}
+	sid, actorType := sessionIDAndActor(t, env)
+	if actorType != "mcp" {
+		t.Fatalf("mcp-created session actor type = %q, want mcp (never cli, never client-supplied)", actorType)
+	}
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: phelixmcp.ToolSessionCheckpoint, Arguments: map[string]any{"session_id": sid, "note": "halfway"}})
+	if err != nil {
+		t.Fatalf("session checkpoint: %v", err)
+	}
+	if env := mcpStdioEnvelope(t, res); env.Status != machine.StatusSucceeded {
+		t.Fatalf("session checkpoint status = %q, want succeeded", env.Status)
+	}
+	res, err = cs.CallTool(ctx, &mcpsdk.CallToolParams{Name: phelixmcp.ToolSessionComplete, Arguments: map[string]any{"session_id": sid, "result": "done"}})
+	if err != nil {
+		t.Fatalf("session complete: %v", err)
+	}
+	if env := mcpStdioEnvelope(t, res); env.Status != machine.StatusSucceeded {
+		t.Fatalf("session complete status = %q, want succeeded", env.Status)
+	}
+
 	// Diagnostics went to stderr, never stdout (stdout decoded cleanly above).
 	if !strings.Contains(stderr.String(), "serving on stdio") {
 		t.Fatalf("expected a readiness diagnostic on stderr, got: %q", stderr.String())
 	}
+}
+
+// sessionIDAndActor extracts the session id and provenance actor type from a
+// session tool's result envelope.
+func sessionIDAndActor(t *testing.T, env *machine.Envelope) (string, string) {
+	t.Helper()
+	raw, _ := json.Marshal(env.Result)
+	var v struct {
+		SessionID string `json:"session_id"`
+		Actor     struct {
+			Type string `json:"type"`
+		} `json:"actor"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatalf("decode session result: %v", err)
+	}
+	return v.SessionID, v.Actor.Type
 }

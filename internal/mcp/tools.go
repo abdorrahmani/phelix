@@ -66,6 +66,53 @@ func (s *Server) registerTools() {
 		Description: "Validate a plan against current state and execute it through the existing pipeline: hash verification, staleness and capability checks, the authorization boundary (which may require a plan-bound approval), request-key idempotency, and operation correlation. Fails closed. Repeating with the same plan is idempotent.",
 		Annotations: &mcpsdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
 	}, s.handlePlanApply)
+
+	// Agent session tools (Phase 6). Tracking only: none executes, authorizes,
+	// or mutates a deployment. show/list are read-only; create/checkpoint/
+	// complete/fail write only the session record (additive, non-destructive).
+	sessionWrite := &mcpsdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: false, OpenWorldHint: ptr(false)}
+
+	mcpsdk.AddTool(s.sdk, &mcpsdk.Tool{
+		Name:        ToolSessionCreate,
+		Title:       "Phelix session create",
+		Description: "Create a durable agent session to track one unit of work. Writes only a tracking record — it executes nothing, creates no deployment and grants no authorization.",
+		Annotations: sessionWrite,
+	}, s.handleSessionCreate)
+
+	mcpsdk.AddTool(s.sdk, &mcpsdk.Tool{
+		Name:        ToolSessionShow,
+		Title:       "Phelix session show",
+		Description: "Load a session and resolve its referenced plans/operations/deployments through the existing read APIs, reporting each honestly (present/missing/unavailable/unknown). Read-only.",
+		Annotations: readOnly,
+	}, s.handleSessionShow)
+
+	mcpsdk.AddTool(s.sdk, &mcpsdk.Tool{
+		Name:        ToolSessionList,
+		Title:       "Phelix session list",
+		Description: "List sessions (newest first), optionally filtered by status and app, bounded by limit. Read-only.",
+		Annotations: readOnly,
+	}, s.handleSessionList)
+
+	mcpsdk.AddTool(s.sdk, &mcpsdk.Tool{
+		Name:        ToolSessionCheckpoint,
+		Title:       "Phelix session checkpoint",
+		Description: "Record a bounded workflow checkpoint on an active session and/or attach references to existing plans/operations/deployments. Linking a plan does NOT authorize it. Tracking only.",
+		Annotations: sessionWrite,
+	}, s.handleSessionCheckpoint)
+
+	mcpsdk.AddTool(s.sdk, &mcpsdk.Tool{
+		Name:        ToolSessionComplete,
+		Title:       "Phelix session complete",
+		Description: "Mark an active session completed with a bounded, REPORTED outcome summary. A tracking statement, not verified runtime health; it stops/redeploys nothing.",
+		Annotations: sessionWrite,
+	}, s.handleSessionComplete)
+
+	mcpsdk.AddTool(s.sdk, &mcpsdk.Tool{
+		Name:        ToolSessionFail,
+		Title:       "Phelix session fail",
+		Description: "Mark an active session failed with a bounded, REPORTED reason, so an unsuccessful unit of work is never mislabelled completed. It stops/cancels/redeploys nothing.",
+		Annotations: sessionWrite,
+	}, s.handleSessionFail)
 }
 
 // toolResult renders a machine envelope as the tool's result: exactly one JSON
@@ -141,4 +188,28 @@ func (s *Server) handlePlanCreate(ctx context.Context, _ *mcpsdk.CallToolRequest
 
 func (s *Server) handlePlanApply(ctx context.Context, _ *mcpsdk.CallToolRequest, in PlanApplyInput) (*mcpsdk.CallToolResult, any, error) {
 	return serviceResult(s.services.PlanApply(ctx, in))
+}
+
+func (s *Server) handleSessionCreate(ctx context.Context, _ *mcpsdk.CallToolRequest, in SessionCreateInput) (*mcpsdk.CallToolResult, any, error) {
+	return serviceResult(s.services.SessionCreate(ctx, in))
+}
+
+func (s *Server) handleSessionShow(ctx context.Context, _ *mcpsdk.CallToolRequest, in SessionShowInput) (*mcpsdk.CallToolResult, any, error) {
+	return serviceResult(s.services.SessionShow(ctx, in))
+}
+
+func (s *Server) handleSessionList(ctx context.Context, _ *mcpsdk.CallToolRequest, in SessionListInput) (*mcpsdk.CallToolResult, any, error) {
+	return serviceResult(s.services.SessionList(ctx, in))
+}
+
+func (s *Server) handleSessionCheckpoint(ctx context.Context, _ *mcpsdk.CallToolRequest, in SessionCheckpointInput) (*mcpsdk.CallToolResult, any, error) {
+	return serviceResult(s.services.SessionCheckpoint(ctx, in))
+}
+
+func (s *Server) handleSessionComplete(ctx context.Context, _ *mcpsdk.CallToolRequest, in SessionCompleteInput) (*mcpsdk.CallToolResult, any, error) {
+	return serviceResult(s.services.SessionComplete(ctx, in))
+}
+
+func (s *Server) handleSessionFail(ctx context.Context, _ *mcpsdk.CallToolRequest, in SessionFailInput) (*mcpsdk.CallToolResult, any, error) {
+	return serviceResult(s.services.SessionFail(ctx, in))
 }

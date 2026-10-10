@@ -334,3 +334,91 @@ func mcpSyntheticRollbackCreateCmd(in phelixmcp.PlanCreateInput) *cobra.Command 
 	}
 	return synth
 }
+
+// mcpSessionListLimit bounds the session-list limit (session.List treats <= 0
+// as "everything"); 0 -> default, over-cap -> rejected, mirroring plan list.
+func mcpSessionListLimit(v int) (int, error) {
+	if v < 0 {
+		return 0, phelixerr.Newf(phelixerr.CodeInvalidArgument, "limit must be >= 0 (0 = default %d), got %d", phelixmcp.DefaultSessionList, v)
+	}
+	if v > phelixmcp.MaxSessionList {
+		return 0, phelixerr.Newf(phelixerr.CodeInvalidArgument, "limit must be <= %d, got %d", phelixmcp.MaxSessionList, v)
+	}
+	if v == 0 {
+		return phelixmcp.DefaultSessionList, nil
+	}
+	return v, nil
+}
+
+// The session Services methods drive the real session cobra commands under
+// capture, exactly like the plan/context methods. Optimistic-concurrency
+// (if-rev) is a CLI-only primitive, so every MCP mutation sets it to -1 (no
+// check). The provenance actor is resolved server-side as the mcp caller.
+func (cmdServices) SessionCreate(_ context.Context, in phelixmcp.SessionCreateInput) (*machine.Envelope, error) {
+	return captureEnvelope(func() error {
+		sessionCreateJSON = false
+		sessionCreateTitle = in.Title
+		sessionCreateApp = in.App
+		sessionCreateProject = in.Project
+		return sessionCreateCmd.RunE(sessionCreateCmd, nil)
+	})
+}
+
+func (cmdServices) SessionShow(_ context.Context, in phelixmcp.SessionShowInput) (*machine.Envelope, error) {
+	return captureEnvelope(func() error {
+		sessionShowJSON = false
+		sessionShowNoResolve = in.NoResolve
+		return sessionShowCmd.RunE(sessionShowCmd, []string{in.SessionID})
+	})
+}
+
+func (cmdServices) SessionList(_ context.Context, in phelixmcp.SessionListInput) (*machine.Envelope, error) {
+	return captureEnvelope(func() error {
+		limit, err := mcpSessionListLimit(in.Limit)
+		if err != nil {
+			return err
+		}
+		sessionListJSON = false
+		sessionListStatus = in.Status
+		sessionListApp = in.App
+		sessionListLimit = limit
+		return sessionListCmd.RunE(sessionListCmd, nil)
+	})
+}
+
+func (cmdServices) SessionCheckpoint(_ context.Context, in phelixmcp.SessionCheckpointInput) (*machine.Envelope, error) {
+	return captureEnvelope(func() error {
+		sessionCheckpointJSON = false
+		sessionCheckpointNote = in.Note
+		sessionCheckpointStep = in.Step
+		sessionCheckpointPlans = in.Plans
+		sessionCheckpointOps = in.Operations
+		sessionCheckpointDeploys = in.Deployments
+		sessionCheckpointIfRev = -1
+		return sessionCheckpointCmd.RunE(sessionCheckpointCmd, []string{in.SessionID})
+	})
+}
+
+func (cmdServices) SessionComplete(_ context.Context, in phelixmcp.SessionCompleteInput) (*machine.Envelope, error) {
+	return captureEnvelope(func() error {
+		sessionCompleteJSON = false
+		sessionCompleteResult = in.Result
+		sessionCompletePlans = in.Plans
+		sessionCompleteOps = in.Operations
+		sessionCompleteDeploys = in.Deployments
+		sessionCompleteIfRev = -1
+		return sessionCompleteCmd.RunE(sessionCompleteCmd, []string{in.SessionID})
+	})
+}
+
+func (cmdServices) SessionFail(_ context.Context, in phelixmcp.SessionFailInput) (*machine.Envelope, error) {
+	return captureEnvelope(func() error {
+		sessionFailJSON = false
+		sessionFailReason = in.Reason
+		sessionFailPlans = in.Plans
+		sessionFailOps = in.Operations
+		sessionFailDeploys = in.Deployments
+		sessionFailIfRev = -1
+		return sessionFailCmd.RunE(sessionFailCmd, []string{in.SessionID})
+	})
+}
