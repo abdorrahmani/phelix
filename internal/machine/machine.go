@@ -245,6 +245,17 @@ func MarshalEnvelope(env *Envelope) ([]byte, error) {
 	return json.MarshalIndent(env, "", "  ")
 }
 
+// ParseEnvelope decodes envelope bytes (e.g. a stored idempotency result) back
+// into an Envelope, so a caller can inspect the recorded terminal outcome
+// (status, operation id) without re-emitting it.
+func ParseEnvelope(data []byte) (*Envelope, error) {
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, phelixerr.Wrap(phelixerr.CodeUnavailable, "parse machine envelope", err)
+	}
+	return &env, nil
+}
+
 // WriteEnvelope writes exactly one envelope document to the real stdout,
 // pretty-printed with a trailing newline — the same formatting discipline
 // the existing matrix/webhook JSON commands use.

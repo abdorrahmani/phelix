@@ -375,6 +375,9 @@ func emitPlanCreated(plan *plans.Plan) error {
 	if err := plans.Save(plan); err != nil {
 		return err
 	}
+	// Bound the plan store (best-effort). The plan just created is the newest,
+	// so plan retention never prunes it.
+	prunePlans()
 	if machine.Active() {
 		return writeEnvelopeResult(machine.Success("", &planView{Plan: plan, Applicability: computeApplicability(plan)}))
 	}
@@ -416,6 +419,13 @@ type planApplicability struct {
 	CheckedAtMs         int64                      `json:"checked_at_ms"`
 	FailedPreconditions []plans.FailedPrecondition `json:"failed_preconditions,omitempty"`
 	MissingCapabilities []string                   `json:"missing_capabilities,omitempty"`
+	// SourceDriftUnprotected is true for a rebuild plan built from a NON-git
+	// source: there is no source_commit precondition, so the source tree can
+	// change between plan create and apply without the plan going stale. The
+	// plan still verifies config and version preconditions; this flag tells an
+	// agent that "what was planned" is only guaranteed to equal "what gets
+	// built" for git-backed sources. Git-backed plans never carry it.
+	SourceDriftUnprotected bool `json:"source_drift_unprotected,omitempty"`
 }
 
 func computeApplicability(plan *plans.Plan) *planApplicability {
@@ -425,10 +435,28 @@ func computeApplicability(plan *plans.Plan) *planApplicability {
 	}
 	app.FailedPreconditions = plan.Evaluate()
 	app.MissingCapabilities = plans.EvaluateCapabilities(plan, phelixgrpc.AgentCapabilities())
+	app.SourceDriftUnprotected = planSourceDriftUnprotected(plan)
 	if len(app.FailedPreconditions) > 0 || len(app.MissingCapabilities) > 0 {
 		app.State = "stale"
 	}
 	return app
+}
+
+// planSourceDriftUnprotected reports whether a plan's source is not drift-
+// protected: a rebuild plan with no source_commit precondition was created from
+// a source directory that is not a git work tree, so its content can change
+// undetected between create and apply (RebuildConfigFingerprint covers config,
+// not source content). Rollback plans build nothing and are never affected.
+func planSourceDriftUnprotected(plan *plans.Plan) bool {
+	if plan == nil || plan.Action.Type != plans.ActionRebuild {
+		return false
+	}
+	for _, pre := range plan.Preconditions {
+		if pre.Type == plans.PreconditionSourceCommit {
+			return false
+		}
+	}
+	return true
 }
 
 // planView is the machine representation of a plan plus its fresh
@@ -538,6 +566,17 @@ func applyPlan(planID string) (err error) {
 		return emitAlreadyApplied(plan)
 	}
 
+	// A plan that already reached a terminal FAILED state is single-use and is
+	// never silently re-executed. This gate is driven by the plan's own durable
+	// status, so it does not depend on the request-key ledger still holding the
+	// entry — eviction can never flip a failed plan back into a re-executable
+	// one. The first apply surfaces the real execution error (BUILD_FAILED,
+	// DEPLOY_FAILED, …); only RE-applies land here, and the remedy is a new
+	// plan. See docs/reference/machine-contract.md (plan idempotency).
+	if plan.Status == plans.StatusFailed {
+		return emitAlreadyFailed(plan)
+	}
+
 	// Staleness and capability validation happen BEFORE any execution input
 	// is touched. A stale plan is never re-planned, never substituted, never
 	// partially executed.
@@ -593,6 +632,10 @@ func applyPlan(planID string) (err error) {
 		if replayed {
 			// The ledger replayed the terminal envelope of a previous
 			// application (success or failure) — deterministic, no mutation.
+			// Reconcile the plan's own status with that outcome so a future
+			// retry is gated by the durable plan status, not by a ledger entry
+			// eviction could remove (crash-interrupted applies land here).
+			reconcilePlanAfterReplay(plan, op)
 			return nil
 		}
 		// The operation record exists only after beginIdempotency (a replayed
@@ -622,6 +665,7 @@ func applyPlan(planID string) (err error) {
 			return idemErr
 		}
 		if replayed {
+			reconcilePlanAfterReplay(plan, op)
 			return nil
 		}
 		// Correlation is stamped after the record exists (see rebuild branch).
@@ -685,6 +729,38 @@ func emitAlreadyApplied(plan *plans.Plan) error {
 	fmt.Printf("Plan %s was already applied (operation %s). No mutation performed.\n",
 		plan.PlanID, plan.CorrelationOperationID())
 	return nil
+}
+
+// emitAlreadyFailed refuses re-execution of a plan that already reached a
+// terminal failed state. Plans are single-use: the remedy is a new plan, never
+// a silent re-run. No mutation and no ledger consult — the refusal is driven by
+// the plan's own durable status, so it stays identical no matter how many
+// unrelated operations have evicted the ledger entry since. The code reuses
+// PLAN_STALE (exit 3, not retryable, remedy = create a new plan); the message
+// states plainly that the plan already ran.
+func emitAlreadyFailed(plan *plans.Plan) error {
+	return phelixerr.Newf(phelixerr.CodePlanStale,
+		"plan %s already ran and failed — plans are single-use; create a new plan to retry", plan.PlanID)
+}
+
+// reconcilePlanAfterReplay makes a plan's durable status reflect the terminal
+// outcome the request-key ledger just replayed. It runs only when the ledger
+// replayed an entry for a plan still marked `created` — a previous apply was
+// interrupted (crash → indeterminate) or its best-effort status write failed.
+// Reconciling here means the NEXT apply is gated by the plan's own status, so
+// retry semantics stay deterministic even if the ledger entry is later evicted.
+// Best-effort: a reconcile write failure leaves the ledger as the authority for
+// the remainder of this process's lifetime.
+func reconcilePlanAfterReplay(plan *plans.Plan, op *opRun) {
+	if plan == nil || op == nil || plan.Status != plans.StatusCreated {
+		return
+	}
+	switch op.replayedStatus {
+	case machine.StatusSucceeded:
+		_, _ = plans.MarkApplied(plan.PlanID, op.replayedOpID, "")
+	case machine.StatusFailed:
+		_, _ = plans.MarkFailed(plan.PlanID)
+	}
 }
 
 // syntheticRebuildCommand builds an internal cobra command carrying rebuild's
@@ -812,6 +888,9 @@ func printPlanDetail(plan *plans.Plan, app *planApplicability) {
 		fmt.Printf("  %s %s (expected %s)\n", marker, pre.Type, pre.Expected)
 	}
 	fmt.Printf("Applicable: %s\n", app.State)
+	if app.SourceDriftUnprotected {
+		fmt.Println("Source:    not drift-protected (non-git source; content may change before apply)")
+	}
 	if plan.Correlation != nil {
 		fmt.Printf("Operation: %s\n", plan.Correlation.OperationID)
 	}

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -31,6 +32,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/machine"
 	phelixmcp "github.com/abdorrahmani/phelix/internal/mcp"
+	"github.com/abdorrahmani/phelix/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -94,7 +96,42 @@ type cmdServices struct{}
 // mcpCaptureMu serializes captured command execution. machine mode and the
 // per-command flag globals are process-wide, so only one captured command may
 // run at a time; this also fronts applyPlan's own mutex without reordering.
+//
+// ponytail: this serializes EVERY tool that runs through captureEnvelope,
+// including read-only ones, behind a long phelix_plan_apply (minutes). Reads
+// whose command path touches no shared mutable process state (session_show,
+// session_list — pure session/plan/ops file-store reads) are served off this
+// lock via captureReadEnvelope, so an agent can poll them while its own apply
+// runs. The remaining reads (context, inspect, plan_show/list, operation_status)
+// stay on this lock because the code they run consults the process-global
+// internal/app AppManager and the plan-applicability evaluator, which are NOT
+// concurrency-safe (AppManager.LoadState mutates a shared map outside its
+// lock). The upgrade path is to make the AppManager read path concurrency-safe
+// (or thread the machine envelope writer through a per-call context instead of
+// the os.Stdout/envelopeWriter globals) and then route those reads through
+// captureReadEnvelope too. See docs/guides/mcp.md (Concurrency).
 var mcpCaptureMu sync.Mutex
+
+// captureReadEnvelope serves a read-only tool WITHOUT the process-wide capture
+// lock or the os.Stdout swap: it calls build (which must touch no shared
+// mutable process state — only idempotent file-store reads) and turns the
+// result into the same machine envelope the CLI would emit. Because it never
+// mutates machine mode, os.Stdout or any flag global, it is safe to run
+// concurrently with a long mutating tool on another connection. The error path
+// builds the failure envelope directly rather than through machine.Failure, so
+// a concurrent mutation's registered operation id can never leak into a read's
+// failure envelope.
+func captureReadEnvelope(build func() (any, error)) (*machine.Envelope, error) {
+	result, err := build()
+	if err != nil {
+		return &machine.Envelope{
+			SchemaVersion: machine.SchemaVersion,
+			Status:        machine.StatusFailed,
+			Error:         machine.ErrorBodyFor(err, ExitCodeFor(err), ""),
+		}, nil
+	}
+	return machine.Success("", result), nil
+}
 
 // captureEnvelope runs fn — a real command code path — under machine capture
 // and returns the machine envelope it produced. fn must leave every `--json`
@@ -365,24 +402,30 @@ func (cmdServices) SessionCreate(_ context.Context, in phelixmcp.SessionCreateIn
 }
 
 func (cmdServices) SessionShow(_ context.Context, in phelixmcp.SessionShowInput) (*machine.Envelope, error) {
-	return captureEnvelope(func() error {
-		sessionShowJSON = false
-		sessionShowNoResolve = in.NoResolve
-		return sessionShowCmd.RunE(sessionShowCmd, []string{in.SessionID})
+	// Read-only and free of shared mutable process state (session + plan/ops
+	// file-store reads), so it is served off the capture lock and can run while
+	// a long plan_apply is in flight on the same connection.
+	return captureReadEnvelope(func() (any, error) {
+		return session.Show(strings.TrimSpace(in.SessionID), !in.NoResolve)
 	})
 }
 
 func (cmdServices) SessionList(_ context.Context, in phelixmcp.SessionListInput) (*machine.Envelope, error) {
-	return captureEnvelope(func() error {
+	// Read-only, no shared mutable process state — served off the capture lock.
+	return captureReadEnvelope(func() (any, error) {
 		limit, err := mcpSessionListLimit(in.Limit)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		sessionListJSON = false
-		sessionListStatus = in.Status
-		sessionListApp = in.App
-		sessionListLimit = limit
-		return sessionListCmd.RunE(sessionListCmd, nil)
+		if in.Status != "" && !session.ValidStatus(in.Status) {
+			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"invalid status %q: expected active, completed, failed or cancelled", in.Status)
+		}
+		list, _, truncated, err := session.List(in.Status, in.App, limit)
+		if err != nil {
+			return nil, err
+		}
+		return session.ListResult{Sessions: list, Count: len(list), Truncated: truncated}, nil
 	})
 }
 

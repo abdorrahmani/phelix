@@ -21,14 +21,14 @@ func (s *Server) registerTools() {
 	mcpsdk.AddTool(s.sdk, &mcpsdk.Tool{
 		Name:        ToolContext,
 		Title:       "Phelix context",
-		Description: "Read a single bounded, structured snapshot of the Phelix environment (project, runtime, config, capabilities and, when an app is named, its deployment/versions/health/operations/logs). Read-only. Returns the Phelix machine envelope.",
+		Description: "Read a single bounded, structured snapshot of the Phelix environment (project, runtime, config, capabilities and, when an app is named, its deployment/versions/health/operations/logs). Read-only. Returns the Phelix machine envelope. NOTE: the project/runtime/config sections describe the directory the server was launched in (its working directory), not a per-call path — launch the server from your project root; app-scoped sections instead use the named app's own recorded directory.",
 		Annotations: readOnly,
 	}, s.handleContext)
 
 	mcpsdk.AddTool(s.sdk, &mcpsdk.Tool{
 		Name:        ToolInspect,
 		Title:       "Phelix inspect",
-		Description: "Inspect one resource: " + strings.Join(InspectResources(), ", ") + ". Read-only, structured, bounded. Returns the Phelix machine envelope.",
+		Description: "Inspect one resource: " + strings.Join(InspectResources(), ", ") + ". Read-only, structured, bounded. Returns the Phelix machine envelope. NOTE: the project/runtime/config resources describe the server's launch directory (its working directory), not a per-call path; app/deployment/versions/health use the named app's recorded directory.",
 		Annotations: readOnly,
 	}, s.handleInspect)
 

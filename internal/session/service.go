@@ -289,6 +289,12 @@ func nonEmpty(vals ...string) []string {
 	return out
 }
 
+// opsListForResolve is the seam Resolve uses to enumerate operation records
+// for deployment correlation. It exists so a test can assert that resolving K
+// deployment references performs exactly ONE operation scan, not K. Production
+// never replaces it.
+var opsListForResolve = ops.List
+
 // Resolve reports the current state of a session's references through the
 // existing read APIs. It is bounded (reference sets are capped) and never
 // fabricates state.
@@ -312,17 +318,41 @@ func Resolve(s *Session) *Resolved {
 			r.Operations = append(r.Operations, refErr(id, err))
 		}
 	}
+
+	// Deployment references have no standalone store; each correlates with an
+	// operation record by deployment id. Build that index with a SINGLE
+	// operation scan and resolve every reference against it, instead of one
+	// full scan per reference (K refs ⇒ K scans).
+	var depByID map[string]*ops.Record
+	var depScanErr error
+	if len(s.DeploymentIDs) > 0 {
+		recs, _, err := opsListForResolve("", 0)
+		if err != nil {
+			depScanErr = err
+		} else {
+			depByID = make(map[string]*ops.Record, len(recs))
+			for _, rec := range recs {
+				// List is newest-first; keep the first (newest) match, matching
+				// ops.FindByDeploymentID's result.
+				if rec.DeploymentID != "" {
+					if _, seen := depByID[rec.DeploymentID]; !seen {
+						depByID[rec.DeploymentID] = rec
+					}
+				}
+			}
+		}
+	}
 	for _, id := range s.DeploymentIDs {
-		rec, err := ops.FindByDeploymentID(id)
 		switch {
-		case err == nil:
+		case depScanErr != nil:
+			r.Deployments = append(r.Deployments, refErr(id, depScanErr))
+		case depByID[id] != nil:
+			rec := depByID[id]
 			r.Deployments = append(r.Deployments, RefView{ID: id, Present: true, State: RefPresent, Status: rec.Status, Detail: "operation " + rec.ID})
-		case phelixerr.CodeOf(err) == phelixerr.CodeNotFound:
-			// No standalone deployment-id store exists; absence of a correlating
-			// operation means we cannot confirm it by id — report unknown.
-			r.Deployments = append(r.Deployments, RefView{ID: id, Present: false, State: RefUnknown})
 		default:
-			r.Deployments = append(r.Deployments, refErr(id, err))
+			// No correlating operation record: existence cannot be confirmed by
+			// id (no standalone deployment-id store) — report unknown.
+			r.Deployments = append(r.Deployments, RefView{ID: id, Present: false, State: RefUnknown})
 		}
 	}
 	return r
