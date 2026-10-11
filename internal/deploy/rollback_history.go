@@ -188,6 +188,16 @@ func ReadRollbackHistory(appName string) (records []RollbackHistoryRecord, skipp
 // unbounded strings can never reach the history file or table output.
 const MaxRollbackReasonLength = 500
 
+// MaxRollbackVerifyDuration is the single upper bound on a post-rollback
+// stability verification window (--verify locally, verify_duration_ms on the
+// wire). It is the one authoritative cap for both the local CLI and the remote
+// command path, so the two can never drift. A window of 0 means "no
+// verification"; a negative value is invalid.
+// ponytail: fixed 30-minute ceiling. Raise it (or make it per-app
+// configurable) only if an operator ever needs to observe stability for
+// longer than half an hour.
+const MaxRollbackVerifyDuration = 30 * time.Minute
+
 // ValidateRollbackReason normalizes a rollback reason for persistence. The
 // value is trimmed; internal runs of whitespace (newlines, tabs) collapse to
 // single spaces so the text can never inject lines into the JSONL history or

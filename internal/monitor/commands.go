@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -9,6 +10,33 @@ import (
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/project"
 )
+
+// ErrRemoteCommandNotStarted marks an error raised in a remote command's
+// pre-flight phase — argument validation, app/target resolution, or the
+// authorization gate — i.e. before any state was mutated. The gRPC dispatcher
+// checks errors.Is(err, ErrRemoteCommandNotStarted) to RELEASE the durable
+// idempotency key for a refused or never-started command, so a corrected retry
+// under the same request_id executes instead of replaying the refusal (the
+// local CLI gets the same guarantee by gating authz before the ledger). The
+// wrapped cause — and its phelix error code — is preserved for the result the
+// backend receives.
+var ErrRemoteCommandNotStarted = errors.New("remote command did not start")
+
+type notStartedError struct{ cause error }
+
+func (e *notStartedError) Error() string        { return e.cause.Error() }
+func (e *notStartedError) Unwrap() error        { return e.cause }
+func (e *notStartedError) Is(target error) bool { return target == ErrRemoteCommandNotStarted }
+
+// NotStarted wraps a pre-flight error so errors.Is(err,
+// ErrRemoteCommandNotStarted) reports true while errors.As and phelixerr still
+// reach the underlying typed cause (code and message unchanged). nil stays nil.
+func NotStarted(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &notStartedError{cause: err}
+}
 
 // appCommandExecutor executes lifecycle commands issued by the backend.
 type appCommandExecutor struct{}

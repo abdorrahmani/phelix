@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"time"
-
 	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -24,9 +22,14 @@ import (
 // through RollbackReporter events, exactly as it does for local and automatic
 // rollbacks; the backend must not treat the command result as the only signal
 // that a rollback finished.
-
-// Local defense until the deploy package exposes its equivalent shared bound.
-const maxRemoteRollbackVerifyDuration = 30 * time.Minute
+//
+// Idempotency ordering: every error raised BEFORE the rollback engine commits
+// (reason/verify validation, app and target resolution, and the authorization
+// gate) is wrapped with monitor.NotStarted so the gRPC dispatcher releases the
+// durable idempotency key — a refused or never-started command consumes none,
+// so a corrected retry under the same request_id executes rather than
+// replaying the refusal. This gives the remote path the same guarantee the
+// local CLI gets by gating authz before its request-key ledger.
 
 // RemoteRollback executes a backend-issued rollback command for the
 // application named (or identified by ID) in payload.AppName. The payload's
@@ -36,29 +39,26 @@ func RemoteRollback(payload monitor.CommandPayload) error {
 	requestID := payload.RequestID
 	name := payload.AppName
 	if name == "" {
-		return phelixerr.New(phelixerr.CodeInvalidArgument, "rollback command requires an app")
+		return monitor.NotStarted(phelixerr.New(phelixerr.CodeInvalidArgument, "rollback command requires an app"))
 	}
 
 	// Reason: same validation rules as the local --reason flag. A remote
 	// reason is always "explicit" — the backend sent it on purpose.
 	reason, err := deploy.ValidateRollbackReason(payload.Reason, payload.Reason != "")
 	if err != nil {
-		return err
+		return monitor.NotStarted(err)
 	}
 
-	// Verification: the wire unit is milliseconds (30000 = 30s), converted
-	// once at this boundary into the time.Duration the rollback engine uses
-	// everywhere else. Zero means "no verification"; negative is invalid.
-	var verifyDuration time.Duration
+	// Verification: the wire unit is milliseconds, converted to this
+	// time.Duration once at the transport boundary (handleMonitorCommand),
+	// which is also the single authoritative point that range-checks it
+	// against deploy.MaxRollbackVerifyDuration. Only a defensive sign check
+	// remains here for direct callers; the upper bound is not re-validated.
 	if payload.VerifyDuration < 0 {
-		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-			"invalid verify_duration_ms %d: must be >= 0", payload.VerifyDuration)
+		return monitor.NotStarted(phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid verify duration %s: must be >= 0", payload.VerifyDuration))
 	}
-	if payload.VerifyDuration > maxRemoteRollbackVerifyDuration {
-		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-			"invalid verify_duration_ms %d: maximum is %s", payload.VerifyDuration, maxRemoteRollbackVerifyDuration)
-	}
-	verifyDuration = payload.VerifyDuration
+	verifyDuration := payload.VerifyDuration
 
 	// App identity: the same resolution every remote command uses — the
 	// daemon's in-memory manager (loaded at startup, kept fresh by the
@@ -66,7 +66,7 @@ func RemoteRollback(payload monitor.CommandPayload) error {
 	// lookup mechanism.
 	appInfo, err := GetAppInfo(name)
 	if err != nil {
-		return err
+		return monitor.NotStarted(err)
 	}
 	name = appInfo.Name
 
@@ -74,7 +74,7 @@ func RemoteRollback(payload monitor.CommandPayload) error {
 	// "7", tag name) or previous version, plus the rollback-to-current guard.
 	target, targetTag, targetSource, err := resolveRollbackTarget(name, payload.Target)
 	if err != nil {
-		return err
+		return monitor.NotStarted(err)
 	}
 
 	if payload.DryRun {
@@ -85,15 +85,18 @@ func RemoteRollback(payload monitor.CommandPayload) error {
 	// runs in-process inside the monitor daemon rather than re-invoking the
 	// CLI, so it needs its own gate call — otherwise a backend-issued
 	// rollback would be the one deployment mutation that bypasses the
-	// boundary. The dry-run path above is read-only and stays ungated.
+	// boundary. The dry-run path above is read-only and stays ungated. A
+	// denial is wrapped NotStarted so it consumes no idempotency key.
 	if authzErr := authorizeDirectExecution(authz.ActionRollback, name, appInfo.ID); authzErr != nil {
-		return authzErr
+		return monitor.NotStarted(authzErr)
 	}
 
 	state, deployErr := classifyRollbackDeployState(name)
 	if deployErr != nil {
-		return deployErr
+		return monitor.NotStarted(deployErr)
 	}
+	// From here on the rollback engine takes the deploy lock and may mutate
+	// state: its errors are NOT NotStarted — a retry must replay, not re-run.
 	if state == nil {
 		return rollbackClassic(appInfo, name, target, targetTag, targetSource, reason, verifyDuration, requestID, nil)
 	}

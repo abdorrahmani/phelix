@@ -190,23 +190,26 @@ func rollbackSenderLoop() {
 // goroutine to finish. It returns after all queued events have been sent or
 // the timeout expires. Safe to call even if no sender was started.
 func StopRollbackSender(timeout time.Duration) {
+	// All mutations of the sender's package vars happen under the mutex, in
+	// lockstep with enqueueRollbackEvent's guarded send, so a concurrent
+	// enqueue can never observe a half-torn-down sender or send on the closed
+	// channel. The drain wait below is done OUTSIDE the lock so it never blocks
+	// an enqueue for the whole timeout.
 	rollbackSenderMu.Lock()
 	ch := rollbackEventCh
 	done := rollbackSenderDone
-	rollbackSenderMu.Unlock()
-
 	if ch == nil || done == nil {
+		rollbackSenderMu.Unlock()
 		logs.InfoFile("grpc", "[gRPC] Rollback sender: no sender to stop")
 		return
 	}
-
-	// Close the channel so the loop exits after draining.
+	// Close so the loop exits after draining, then clear the vars and re-arm
+	// the Once so a future rollback can start a fresh sender.
 	close(ch)
 	rollbackEventCh = nil
 	rollbackSenderDone = nil
-
-	// Reset the Once so a future rollback can start a new sender.
 	rollbackEventOnce = sync.Once{}
+	rollbackSenderMu.Unlock()
 
 	logs.InfoFile("grpc", "[gRPC] Rollback sender: flushing (timeout=%s)...", timeout)
 
@@ -220,13 +223,22 @@ func StopRollbackSender(timeout time.Duration) {
 
 // enqueueRollbackEvent sends an event to the background sender. Non-blocking:
 // if the buffer is full the event is dropped (the local log still records
-// grpc=dropped).
+// grpc=dropped). The channel reference is read under the sender mutex and the
+// send happens while holding it (the select has a default, so it never
+// blocks), so a concurrent StopRollbackSender can neither tear the channel out
+// from under the send nor close it mid-send.
 func enqueueRollbackEvent(event *pb.RollbackLifecycleEvent) bool {
 	initRollbackSender()
 
 	// Deep-copy the event so the caller can safely mutate its proto after return.
 	cp := cloneRollbackEvent(event)
 
+	rollbackSenderMu.Lock()
+	defer rollbackSenderMu.Unlock()
+	if rollbackEventCh == nil {
+		logs.WarningFile("grpc", "[gRPC] Rollback event channel closed, DROPPED step=%s app=%s", event.GetCurrentStep(), event.GetAppName())
+		return false
+	}
 	select {
 	case rollbackEventCh <- cp:
 		logs.InfoFile("grpc", "[gRPC] Rollback event queued: step=%s app=%s", event.GetCurrentStep(), event.GetAppName())
@@ -317,8 +329,13 @@ func sanitizeEventStrings(e *pb.RollbackLifecycleEvent) {
 		h.VerifyError = sanitizeUTF8(h.VerifyError)
 	}
 
+	// Metadata values are user- or environment-derived free text, so they go
+	// through the same redactor as message/error/reason/verify_error — the one
+	// chokepoint that stops an embedded credential from reaching the backend.
+	// (Agent-internal filesystem paths are already kept out of metadata by the
+	// emitters; this is the belt-and-suspenders redaction rule.)
 	for k, v := range e.Metadata {
-		e.Metadata[k] = sanitizeUTF8(v)
+		e.Metadata[k] = sanitizeUTF8(phelixerr.Redact(v))
 	}
 
 	for _, v := range e.Versions {
@@ -609,18 +626,44 @@ func (r *RollbackReporter) writeLocalLog(step string, success bool, msg string, 
 // Automatic version list sync
 // ---------------------------------------------------------------------------
 
+// rollbackVersionEntries maps retained versions onto the wire message,
+// including the prune-soon flag under the given retention policy. Shared by the
+// automatic version sync (SendVersionListForApp) and the remote rollback_list
+// query (handleRollbackQueryCommand) so the two never drift.
+func rollbackVersionEntries(appName string, vers []deploy.VersionMeta, policy deploy.RetentionPolicy) []*pb.RollbackVersionEntry {
+	out := make([]*pb.RollbackVersionEntry, 0, len(vers))
+	for _, v := range vers {
+		out = append(out, &pb.RollbackVersionEntry{
+			Version:        int32(v.Version),
+			Tag:            v.Tag,
+			GitCommit:      v.GitCommit,
+			BuildTimestamp: v.BuiltAt.UnixMilli(),
+			BinarySize:     v.SizeBytes,
+			Current:        v.IsCurrent,
+			PruneSoon:      deploy.WouldPruneOnNextBuild(appName, v.Version, policy),
+		})
+	}
+	return out
+}
+
 // SendVersionListForApp loads the version list for the given app and sends it
 // to the backend as a rollback lifecycle event. This is called automatically
 // after successful deploys and periodically by the monitor — the user never
 // needs to run `phelix rollback --list` manually.
+//
+// appDir is accepted for call-site compatibility; it is deliberately NOT placed
+// on the wire — agent-internal filesystem paths have no backend use and widen
+// the exposure surface (the same reason the dry-run preview omits them).
 func SendVersionListForApp(appID, appName, appDir string) {
+	_ = appDir
 	// Not logged in → skip the sync; the version history is still on disk and
 	// will be uploaded once the user authenticates.
 	if !sessionAvailable() {
 		return
 	}
 
-	vers, err := deploy.ListVersionsForDisplay(appName, deploy.DefaultRetention{Max: 5})
+	policy := deploy.DefaultRetention{Max: 5}
+	vers, err := deploy.ListVersionsForDisplay(appName, policy)
 	if err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Version sync: failed to list versions for %s: %v", appName, err)
 		return
@@ -628,20 +671,6 @@ func SendVersionListForApp(appID, appName, appDir string) {
 
 	if len(vers) == 0 {
 		return
-	}
-
-	// Build proto version entries.
-	pbVersions := make([]*pb.RollbackVersionEntry, 0, len(vers))
-	for _, v := range vers {
-		pbVersions = append(pbVersions, &pb.RollbackVersionEntry{
-			Version:        int32(v.Version),
-			Tag:            v.Tag,
-			GitCommit:      v.GitCommit,
-			BuildTimestamp: v.BuiltAt.UnixMilli(),
-			BinarySize:     v.SizeBytes,
-			Current:        v.IsCurrent,
-			PruneSoon:      deploy.WouldPruneOnNextBuild(appName, v.Version, deploy.DefaultRetention{Max: 5}),
-		})
 	}
 
 	event := &pb.RollbackLifecycleEvent{
@@ -653,9 +682,8 @@ func SendVersionListForApp(appID, appName, appDir string) {
 		Message:       fmt.Sprintf("synced %d versions", len(vers)),
 		Timestamp:     time.Now().UnixMilli(),
 		Pid:           int32(os.Getpid()),
-		Versions:      pbVersions,
+		Versions:      rollbackVersionEntries(appName, vers, policy),
 		Metadata: map[string]string{
-			"app_directory": appDir,
 			"sync_mode":     "automatic",
 			"version_count": fmt.Sprintf("%d", len(vers)),
 		},
