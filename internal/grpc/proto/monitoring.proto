@@ -278,7 +278,9 @@ message MonitorCommandRequest {
 
   // Remote rollback options, carried by type="rollback" commands only
   // (additive; older agents ignore them). Reuse the existing rollback engine —
-  // never a second implementation. See docs/remote-rollback-command-contract.md.
+  // never a second implementation. The read-only rollback_list /
+  // rollback_history query commands reuse the limit field (13) instead. See
+  // docs/architecture/backend-contracts/rollback-remote-control-backend-contract.md.
   //
   // target follows the local `phelix rollback --to` semantics exactly: "vN",
   // "N", or a tag name, resolved on the agent via ResolveVersionOrTag. There is
@@ -316,6 +318,17 @@ message MonitorCommandRequest {
   // command. The HMAC secret value is never carried in any field. See
   // docs/remote-webhook-backend-contract.md.
   WebhookOptions webhook = 11;
+
+  // Read-only query bound, carried by the rollback_list and rollback_history
+  // commands only (additive; older agents ignore it). It mirrors the local
+  // `rollback --list --limit` / `rollback history --limit` flags: for
+  // rollback_list, <= 0 means "every retained version"; for rollback_history,
+  // <= 0 means the default (20). Both are hard-capped by the agent. The query
+  // answer travels as a RollbackLifecycleEvent (list_versions / history step)
+  // correlated by request_id, exactly like a local --list / history sync.
+  // Rejected (INVALID_ARGUMENT) when set on any other command type. See
+  // docs/architecture/backend-contracts/rollback-remote-control-backend-contract.md.
+  int32 limit = 13;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
