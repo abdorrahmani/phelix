@@ -409,3 +409,53 @@ func TestMonitorStream_PlainExecutorErrorUsesUnknownCode(t *testing.T) {
 		t.Fatalf("status=%q error_code=%q, want error with UNKNOWN", result.GetStatus(), result.GetErrorCode())
 	}
 }
+
+// TestMonitorStream_RollbackDryRunTakesNoLedgerEntry pins that a remote
+// dry-run is read-only all the way down: it still runs (the preview path) but
+// consumes no durable idempotency slot, consistent with the local --dry-run.
+func TestMonitorStream_RollbackDryRunTakesNoLedgerEntry(t *testing.T) {
+	exec := &recordingExecutor{}
+	result := runRollbackCommand(t, exec, &pb.MonitorCommandRequest{
+		RequestId: "req-dry", Type: "rollback", AppName: "shop", Target: "v2", DryRun: true,
+	}, 3*time.Second)
+	if result.GetStatus() != "success" {
+		t.Fatalf("dry-run status=%q error=%q", result.GetStatus(), result.GetError())
+	}
+	if exec.count() != 1 {
+		t.Fatalf("executor called %d times, want 1 (dry-run still runs the read-only preview path)", exec.count())
+	}
+	rollbackResults.mu.Lock()
+	n := len(rollbackResults.entries)
+	rollbackResults.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("dry-run created %d ledger entries, want 0 (a read-only preview consumes no idempotency key)", n)
+	}
+}
+
+// TestMonitorStream_RollbackNotStartedReleasesKey pins the authz/ledger
+// ordering fix: a command refused before it mutated anything (a NotStarted
+// error, e.g. an authorization denial) consumes no durable key — the ledger is
+// left empty and the same request_id is free to execute on a corrected retry.
+func TestMonitorStream_RollbackNotStartedReleasesKey(t *testing.T) {
+	denied := monitor.NotStarted(phelixerr.New(phelixerr.CodeAuthzDenied, "not authorized"))
+	exec := &recordingExecutor{fail: denied}
+	result := runRollbackCommand(t, exec, &pb.MonitorCommandRequest{
+		RequestId: "req-denied", Type: "rollback", AppName: "shop", Target: "v2",
+	}, 3*time.Second)
+	if result.GetStatus() != "error" || result.GetErrorCode() != string(phelixerr.CodeAuthzDenied) {
+		t.Fatalf("refused result status=%q code=%q, want error / AUTHZ_DENIED", result.GetStatus(), result.GetErrorCode())
+	}
+	rollbackResults.mu.Lock()
+	n := len(rollbackResults.entries)
+	rollbackResults.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("refused rollback left %d ledger entries, want 0 (no spent key)", n)
+	}
+	// The released key is free: the same request_id begins fresh (execute, not replay).
+	outcome, _, err := rollbackResults.begin(&pb.MonitorCommandRequest{
+		RequestId: "req-denied", Type: "rollback", AppName: "shop", Target: "v2",
+	})
+	if err != nil || outcome != rollbackBeginExecute {
+		t.Fatalf("retry after release = %v, %v; want execute (key was released)", outcome, err)
+	}
+}

@@ -18,7 +18,18 @@ import (
 )
 
 const (
-	rollbackLedgerVersion  = 1
+	rollbackLedgerVersion = 1
+	// rollbackLedgerCapacity bounds the durable idempotency ledger. It is a
+	// sliding dedup WINDOW, not a lifetime quota: once the window is full,
+	// begin evicts the oldest already-DELIVERED entries to admit a new command
+	// (see evictOldestDeliveredLocked). Only entries whose terminal result the
+	// backend has already received are evictable, so a reused request_id is
+	// still de-duplicated for as long as it stays within the most-recent
+	// `rollbackLedgerCapacity` commands.
+	// ponytail: a 256-command window. Raise it if a backend legitimately
+	// retries request_ids from further back than that; the only cost is a
+	// larger on-disk ledger. In-flight and undelivered entries are never
+	// evicted, so a window full of those still fails closed by design.
 	rollbackLedgerCapacity = 256
 	rollbackLedgerFile     = "remote-rollback-ledger.json"
 	ledgerStateInProgress  = "in_progress"
@@ -230,8 +241,14 @@ func (l *rollbackLedger) begin(req *pb.MonitorCommandRequest) (rollbackBeginOutc
 		}
 		return rollbackBeginReplay, cloneMonitorCommandResult(existing.Result), nil
 	}
+	// Make room within the sliding dedup window by evicting the oldest
+	// delivered entries. Only entries the backend has already received are
+	// dropped; in-flight and undelivered-terminal entries are protected, so a
+	// window saturated with those still fails closed below.
+	l.evictOldestDeliveredLocked()
 	if len(l.entries) >= l.max {
-		return 0, nil, phelixerr.Newf(phelixerr.CodeUnavailable, "remote rollback ledger capacity %d reached", l.max)
+		return 0, nil, phelixerr.Newf(phelixerr.CodeUnavailable,
+			"remote rollback ledger window full (%d in-flight or undelivered commands); retry once results drain", l.max)
 	}
 	now := time.Now().UnixMilli()
 	entry := &rollbackLedgerEntry{
@@ -309,6 +326,63 @@ func (l *rollbackLedger) markDelivered(requestID string) error {
 	}
 	delete(l.pending, requestID)
 	return nil
+}
+
+// evictOldestDeliveredLocked drops the oldest entries whose terminal result
+// the backend has already received (complete + delivered), oldest first, until
+// the ledger is below capacity. It is the sliding-window half of the dedup
+// contract: delivered entries survive only to de-duplicate a late retry, so
+// they are the only ones safe to evict. In-flight entries (a command still
+// executing) and complete-but-undelivered entries (a durable result the
+// backend has not yet confirmed receiving) are never evicted — losing either
+// would break a guarantee. Caller holds l.mu.
+func (l *rollbackLedger) evictOldestDeliveredLocked() {
+	if len(l.entries) < l.max {
+		return
+	}
+	kept := make([]string, 0, len(l.order))
+	for _, id := range l.order {
+		e := l.entries[id]
+		if len(l.entries) >= l.max && e != nil && e.State == ledgerStateComplete && e.Delivered {
+			delete(l.entries, id)
+			delete(l.pending, id)
+			continue
+		}
+		kept = append(kept, id)
+	}
+	l.order = kept
+}
+
+// release drops an in-progress entry so a command that never legitimately
+// started — one refused by validation or the authorization gate, before any
+// state mutation — consumes no durable idempotency key. A corrected retry
+// under the same request_id then executes instead of replaying the refusal.
+// It refuses to drop a completed entry (that is a durable result, replayed on
+// reconnect) and treats a missing entry as already released. Caller must NOT
+// hold l.mu.
+func (l *rollbackLedger) release(requestID string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.ready || l.err != nil {
+		return l.unavailableLocked()
+	}
+	e := l.entries[requestID]
+	if e == nil {
+		return nil
+	}
+	if e.State != ledgerStateInProgress {
+		return phelixerr.New(phelixerr.CodeUnavailable,
+			"remote rollback ledger entry is not in progress; refusing to release a recorded result")
+	}
+	delete(l.entries, requestID)
+	delete(l.pending, requestID)
+	for i, id := range l.order {
+		if id == requestID {
+			l.order = append(l.order[:i], l.order[i+1:]...)
+			break
+		}
+	}
+	return l.persistLocked()
 }
 
 // commandNoun names the command an entry belongs to for error messages

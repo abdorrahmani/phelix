@@ -134,6 +134,17 @@ func (o *opRun) setResult(res *ops.Result) {
 	o.result = res
 }
 
+// setVerification stamps the verification outcome onto the staged result, when
+// there is one. Nil-safe on BOTH the runner and the staged result: the remote
+// rollback path carries no opRun (and writes no ops record), so there is
+// nothing to stamp — reading o.result directly there is a nil dereference.
+func (o *opRun) setVerification(status string) {
+	if o == nil || o.result == nil {
+		return
+	}
+	o.result.Verification = status
+}
+
 // setSuccessEnv stages the success envelope the command wrote (or is about
 // to write) so finish can persist it as the key's replayable result.
 func (o *opRun) setSuccessEnv(env *machine.Envelope) {
@@ -219,8 +230,11 @@ func writeEnvelopeResult(env *machine.Envelope) error {
 
 // requestIdForEvents returns the correlation ID for rollback/deployment
 // events: the operation record ID when one exists, falling back to the raw
-// request key.
+// request key. Nil-safe (the remote path carries no opRun).
 func (o *opRun) requestIdForEvents() string {
+	if o == nil {
+		return ""
+	}
 	if id := o.operationID(); id != "" {
 		return id
 	}

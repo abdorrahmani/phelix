@@ -2,12 +2,14 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
@@ -51,7 +53,13 @@ var monitorStreamNoSessionDelay = 15 * time.Second
 // (not a const) so tests can shorten it.
 var monitorStreamNoWatchDelay = 5 * time.Second
 
-const maxRemoteVerifyDurationMS = int64((30 * time.Minute) / time.Millisecond)
+// maxRemoteVerifyDurationMS is the wire representation (milliseconds) of the
+// single shared verify-window cap, deploy.MaxRollbackVerifyDuration. This is
+// the one authoritative range check for a remote rollback's verify window:
+// handleMonitorCommand validates the raw ms against it (overflow-safe, before
+// the single ms→time.Duration conversion), so RemoteRollback never re-checks
+// the upper bound. Local --verify is capped against the same deploy constant.
+const maxRemoteVerifyDurationMS = int64(deploy.MaxRollbackVerifyDuration / time.Millisecond)
 
 // monitorStreamManager owns the single, long-lived MonitorStream and
 // serializes writes to it (gRPC streams do not support concurrent Send
@@ -474,6 +482,15 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 				c.handleWebhookCommand(p.Command, webhookLedger)
 				continue
 			}
+			// Read-only rollback queries (version list, history) have their own
+			// dispatch: synchronous, no ledger entry, no authorization gate.
+			// Their answer travels as a RollbackLifecycleEvent correlated by
+			// request_id, exactly like a local --list / history sync — the
+			// command result is only an acknowledgement.
+			if isRollbackQueryCommand(p.Command.GetType()) {
+				c.handleRollbackQueryCommand(p.Command)
+				continue
+			}
 			c.handleMonitorCommand(p.Command, executor, ledger)
 		case *pb.MonitorControl_Ping:
 			c.handleMonitorPing(p.Ping)
@@ -559,12 +576,19 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 	logs.InfoFile("grpc", "[gRPC Monitor] received command: type=%s app=%s", req.GetType(), req.GetAppName())
 
 	isRollback := req.GetType() == monitor.CommandRollback
+	// A rollback dry-run is a read-only preview: it mutates nothing, so it
+	// takes no durable idempotency slot (consistent with how RemoteRollback
+	// leaves it ungated, and with the local --dry-run path). ledgerGuarded is
+	// therefore rollback-execute only.
+	ledgerGuarded := isRollback && !req.GetDryRun()
 	if isRollback {
 		if req.GetRequestId() == "" {
 			_ = sendCommandResultLogged(commandErrorResult(req,
 				phelixerr.New(phelixerr.CodeInvalidArgument, "rollback command requires a request_id")))
 			return
 		}
+		// The one authoritative verify-window range check, on the raw ms before
+		// the single conversion below (overflow-safe). RemoteRollback trusts it.
 		rawMS := req.GetVerifyDurationMs()
 		if rawMS < 0 || rawMS > maxRemoteVerifyDurationMS {
 			_ = sendCommandResultLogged(commandErrorResult(req, phelixerr.Newf(
@@ -573,6 +597,8 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 				rawMS, maxRemoteVerifyDurationMS)))
 			return
 		}
+	}
+	if ledgerGuarded {
 		outcome, replay, err := ledger.begin(req)
 		if err != nil {
 			_ = sendCommandResultLogged(commandErrorResult(req, err))
@@ -619,12 +645,28 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 		Status:    "success",
 		Timestamp: time.Now().UnixMilli(),
 	}
-	if err := executor.Execute(cmd); err != nil {
-		result = commandErrorResult(req, err)
-		logs.ErrorFile("grpc", "[gRPC Monitor] command execution failed: %v", err)
+	execErr := executor.Execute(cmd)
+	if execErr != nil {
+		result = commandErrorResult(req, execErr)
+		logs.ErrorFile("grpc", "[gRPC Monitor] command execution failed: %v", execErr)
 	}
 
-	if isRollback {
+	switch {
+	case !ledgerGuarded:
+		// Dry-run and non-rollback commands keep no durable result.
+		_ = sendCommandResultLogged(result)
+	case execErr != nil && errors.Is(execErr, monitor.ErrRemoteCommandNotStarted):
+		// Pre-flight refusal (validation, app/target resolution, or the authz
+		// gate) — nothing mutated. Release the key so a corrected retry under
+		// the same request_id executes instead of replaying the refusal; still
+		// report why to the backend.
+		if relErr := ledger.release(req.GetRequestId()); relErr != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to release never-started rollback key: %v", relErr)
+		}
+		_ = sendCommandResultLogged(result)
+	default:
+		// Committed outcome (success, or an execution failure after state could
+		// have changed): persist the terminal result durably and replay-protect.
 		if err := ledger.complete(req.GetRequestId(), result); err != nil {
 			result = commandErrorResult(req, phelixerr.Wrap(phelixerr.CodeUnavailable,
 				"rollback completed but its durable result could not be recorded", err))
@@ -634,8 +676,6 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 				logs.ErrorFile("grpc", "[gRPC Monitor] failed to mark rollback result delivered: %v", err)
 			}
 		}
-	} else {
-		_ = sendCommandResultLogged(result)
 	}
 
 	// Give the command a moment to fully settle before resuming metrics,

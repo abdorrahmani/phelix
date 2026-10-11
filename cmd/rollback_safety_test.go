@@ -8,7 +8,6 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
-	"github.com/abdorrahmani/phelix/internal/monitor"
 )
 
 func TestClassifyRollbackDeployStateStrict(t *testing.T) {
@@ -90,13 +89,39 @@ func TestReplaceBinaryBackupRestore(t *testing.T) {
 	}
 }
 
-func TestRemoteRollbackVerifyBound(t *testing.T) {
-	err := RemoteRollback(monitor.CommandPayload{
-		AppName:        "shop",
-		VerifyDuration: maxRemoteRollbackVerifyDuration + time.Millisecond,
-	})
-	if !phelixerr.IsCode(err, phelixerr.CodeInvalidArgument) {
-		t.Fatalf("error=%v, want INVALID_ARGUMENT", err)
+// TestOpRunNilSafeForRemoteRollback guards the remote-rollback crash: the
+// remote path passes a nil *opRun into rollbackClassic / rollbackZeroDowntime,
+// so every opRun method those paths reach must be nil-safe. Before the fix,
+// rollbackClassic read op.result directly and panicked (nil dereference) right
+// after a successful classic rollback.
+func TestOpRunNilSafeForRemoteRollback(t *testing.T) {
+	var op *opRun // the remote rollback path's opRun is nil
+
+	// None of these may panic.
+	op.setResult(nil)
+	op.setVerification("passed")
+	op.setDeploymentID(nil)
+	if got := op.operationID(); got != "" {
+		t.Fatalf("nil opRun operationID = %q, want empty", got)
+	}
+	if got := op.requestIdForEvents(); got != "" {
+		t.Fatalf("nil opRun requestIdForEvents = %q, want empty", got)
+	}
+}
+
+// local --verify flag is bounded by the SAME shared constant
+// (deploy.MaxRollbackVerifyDuration) that the remote verify_duration_ms is held
+// to at the wire boundary, so the two can never diverge.
+func TestRollbackVerifyFlagCapped(t *testing.T) {
+	over := (deploy.MaxRollbackVerifyDuration + time.Millisecond).String()
+	if _, err := parseRollbackVerify(over, true); !phelixerr.IsCode(err, phelixerr.CodeInvalidArgument) {
+		t.Fatalf("over-cap --verify error=%v, want INVALID_ARGUMENT", err)
+	}
+	if d, err := parseRollbackVerify(deploy.MaxRollbackVerifyDuration.String(), true); err != nil || d != deploy.MaxRollbackVerifyDuration {
+		t.Fatalf("at-cap --verify = %s, %v; want %s, nil", d, err, deploy.MaxRollbackVerifyDuration)
+	}
+	if d, err := parseRollbackVerify("", false); err != nil || d != 0 {
+		t.Fatalf("unset --verify = %s, %v; want 0, nil", d, err)
 	}
 }
 

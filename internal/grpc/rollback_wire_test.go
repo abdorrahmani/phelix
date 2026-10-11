@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -110,7 +111,26 @@ func TestRollbackEvent_AdditiveFieldsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRollbackEvent_OldAgentShapeDecodesWithZeroValues is the other compat
+// TestRollbackEvent_MetadataRedacted pins that event metadata values are held
+// to the same redaction rule as the free-text fields: a credential that ends
+// up in a metadata value (connection string, bearer token) must be masked
+// before the event reaches the wire. Agent-internal filesystem paths are kept
+// out of metadata by the emitters; this covers the belt-and-suspenders rule.
+func TestRollbackEvent_MetadataRedacted(t *testing.T) {
+	ev := &pb.RollbackLifecycleEvent{
+		Metadata: map[string]string{
+			"db":  "postgres://user:supersecret@db.internal:5432/app",
+			"hdr": "Authorization: Bearer ghp_abcdefabcdefabcdefabcdef0123456789",
+		},
+	}
+	sanitizeEventStrings(ev)
+	for k, v := range ev.GetMetadata() {
+		if strings.Contains(v, "supersecret") || strings.Contains(v, "ghp_abcdefabcdefabcdefabcdef") {
+			t.Fatalf("metadata %q reached the wire unredacted: %q", k, v)
+		}
+	}
+}
+
 // direction: an agent built before the additive fields existed sends an event
 // the new contract must still interpret — verification absent, not "failed".
 func TestRollbackEvent_OldAgentShapeDecodesWithZeroValues(t *testing.T) {

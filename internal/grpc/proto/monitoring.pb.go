@@ -1646,7 +1646,9 @@ type MonitorCommandRequest struct {
 	CanaryPercent int32 `protobuf:"varint,12,opt,name=canary_percent,json=canaryPercent,proto3" json:"canary_percent,omitempty"`
 	// Remote rollback options, carried by type="rollback" commands only
 	// (additive; older agents ignore them). Reuse the existing rollback engine —
-	// never a second implementation. See docs/remote-rollback-command-contract.md.
+	// never a second implementation. The read-only rollback_list /
+	// rollback_history query commands reuse the limit field (13) instead. See
+	// docs/architecture/backend-contracts/rollback-remote-control-backend-contract.md.
 	//
 	// target follows the local `phelix rollback --to` semantics exactly: "vN",
 	// "N", or a tag name, resolved on the agent via ResolveVersionOrTag. There is
@@ -1681,7 +1683,17 @@ type MonitorCommandRequest struct {
 	// Every field is command-scoped and rejected when set on the wrong
 	// command. The HMAC secret value is never carried in any field. See
 	// docs/remote-webhook-backend-contract.md.
-	Webhook       *WebhookOptions `protobuf:"bytes,11,opt,name=webhook,proto3" json:"webhook,omitempty"`
+	Webhook *WebhookOptions `protobuf:"bytes,11,opt,name=webhook,proto3" json:"webhook,omitempty"`
+	// Read-only query bound, carried by the rollback_list and rollback_history
+	// commands only (additive; older agents ignore it). It mirrors the local
+	// `rollback --list --limit` / `rollback history --limit` flags: for
+	// rollback_list, <= 0 means "every retained version"; for rollback_history,
+	// <= 0 means the default (20). Both are hard-capped by the agent. The query
+	// answer travels as a RollbackLifecycleEvent (list_versions / history step)
+	// correlated by request_id, exactly like a local --list / history sync.
+	// Rejected (INVALID_ARGUMENT) when set on any other command type. See
+	// docs/architecture/backend-contracts/rollback-remote-control-backend-contract.md.
+	Limit         int32 `protobuf:"varint,13,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1798,6 +1810,13 @@ func (x *MonitorCommandRequest) GetWebhook() *WebhookOptions {
 		return x.Webhook
 	}
 	return nil
+}
+
+func (x *MonitorCommandRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -2720,7 +2739,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05level\x18\x06 \x01(\tR\x05level\x12)\n" +
 	"\x06source\x18\a \x01(\x0e2\x11.phelix.LogSourceR\x06source\x12)\n" +
 	"\x06stream\x18\b \x01(\x0e2\x11.phelix.LogStreamR\x06stream\x12\x1c\n" +
-	"\tcomponent\x18\t \x01(\tR\tcomponent\"\x9c\x03\n" +
+	"\tcomponent\x18\t \x01(\tR\tcomponent\"\xb2\x03\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -2735,7 +2754,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\adry_run\x18\t \x01(\bR\x06dryRun\x12-\n" +
 	"\x06matrix\x18\n" +
 	" \x01(\v2\x15.phelix.MatrixOptionsR\x06matrix\x120\n" +
-	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\"\xb0\x05\n" +
+	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\x12\x14\n" +
+	"\x05limit\x18\r \x01(\x05R\x05limit\"\xb0\x05\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +

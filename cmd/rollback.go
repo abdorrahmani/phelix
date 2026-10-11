@@ -74,23 +74,15 @@ var RollbackCmd = &cobra.Command{
 			return err
 		}
 
-		// Verify: parse strictly as a Go duration ("30s", "1m", "2m30s").
-		// Bare numbers ("30") are rejected — Phelix has been bitten before by
-		// unitless values silently meaning something else. The flag stays a
-		// real time.Duration end to end.
+		// Verify: parse strictly as a Go duration ("30s", "1m", "2m30s") and
+		// bound it by the shared cap so --verify and the remote
+		// verify_duration_ms can never diverge. Bare numbers ("30") are
+		// rejected — Phelix has been bitten before by unitless values silently
+		// meaning something else. The flag stays a real time.Duration end to end.
 		verifyExplicit := cmd.Flags().Changed("verify")
-		var verifyDuration time.Duration
-		if verifyExplicit {
-			d, parseErr := time.ParseDuration(rollbackVerify)
-			if parseErr != nil {
-				return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-					"invalid --verify duration %q: use a Go duration like 30s, 1m or 2m30s", rollbackVerify)
-			}
-			if d <= 0 {
-				return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-					"invalid --verify duration %q: must be positive", rollbackVerify)
-			}
-			verifyDuration = d
+		verifyDuration, verifyErr := parseRollbackVerify(rollbackVerify, verifyExplicit)
+		if verifyErr != nil {
+			return verifyErr
 		}
 
 		fromPicker := false
@@ -236,6 +228,31 @@ const (
 	rollbackTargetPrevious    = "previous"    // no target given; CLI resolved current-1
 	rollbackTargetAutomatic   = "automatic"   // post-failed-deploy recovery (last known good)
 )
+
+// parseRollbackVerify parses and bounds the --verify flag. An unset flag
+// (explicit=false) yields a zero window (no verification). A set flag must be a
+// positive Go duration no longer than deploy.MaxRollbackVerifyDuration — the
+// SAME ceiling the remote verify_duration_ms is held to at the wire boundary,
+// so the local and remote verify windows can never diverge.
+func parseRollbackVerify(raw string, explicit bool) (time.Duration, error) {
+	if !explicit {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid --verify duration %q: use a Go duration like 30s, 1m or 2m30s", raw)
+	}
+	if d <= 0 {
+		return 0, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid --verify duration %q: must be positive", raw)
+	}
+	if d > deploy.MaxRollbackVerifyDuration {
+		return 0, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid --verify duration %q: maximum is %s", raw, deploy.MaxRollbackVerifyDuration)
+	}
+	return d, nil
+}
 
 // resolveRollbackTarget is the single target-resolution path shared by the
 // local CLI rollback and the remote (MonitorStream) rollback command: an
@@ -496,9 +513,11 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, targ
 		r.SetVerification(verifyDuration)
 	}
 
-	// Populate metadata the backend needs for context.
+	// Populate metadata the backend needs for context. Agent-internal
+	// filesystem paths (app directory, binary paths) are deliberately NOT put
+	// on the wire — the backend has no use for them and they widen the
+	// exposure surface, matching the dry-run preview's omission.
 	r.SetMetadata("public_port", fmt.Sprintf("%d", state.PublicPort))
-	r.SetMetadata("app_directory", appInfo.Directory)
 	r.SetMetadata("app_port", fmt.Sprintf("%d", appInfo.Port))
 	r.SetMetadata("app_status", appInfo.Status)
 	r.SetMetadata("app_pid", fmt.Sprintf("%d", appInfo.PID))
@@ -575,6 +594,15 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, targ
 	if requestID != "" {
 		tracker.SetRequestID(requestID)
 	}
+	// A rollback's target version is known up front (unlike a forward deploy,
+	// whose version is minted during the build), so record it before the deploy
+	// emits its first event. Otherwise the started/building events carry an
+	// empty target_version and a backend that captures the deployment's version
+	// from them shows the from-version (current) instead of the rolled-back-to
+	// target. The deploy's own SetTargetVersion still re-states it after the
+	// build; a non-zero target set here is simply not erased in between
+	// (SetVersions ignores a 0 target).
+	tracker.SetTargetVersion(target)
 	op.setDeploymentID(tracker)
 	// Signal cancellation is wired only when verification is requested: the
 	// observation window is interruptible (Ctrl+C cancels verification, the
@@ -761,8 +789,10 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 		return fail(terminal)
 	}
 
-	// Populate metadata the backend needs for context.
-	r.SetMetadata("app_directory", appInfo.Directory)
+	// Populate metadata the backend needs for context. Agent-internal
+	// filesystem paths are deliberately kept off the wire (see
+	// rollbackZeroDowntime); the local stdout trace below still shows them to
+	// the operator.
 	r.SetMetadata("app_port", fmt.Sprintf("%d", appInfo.Port))
 	r.SetMetadata("app_status", appInfo.Status)
 	r.SetMetadata("app_pid", fmt.Sprintf("%d", appInfo.PID))
@@ -780,8 +810,9 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to resolve version paths", time.Since(totalStart), terminal.Error())
 		return fail(terminal)
 	}
-	r.SetMetadata("binary_path", binPath)
-	r.Emit(phelixgrpc.RollbackStepVersionResolved, true, fmt.Sprintf("binary path: %s", binPath), time.Since(stepStart), "")
+	// The resolved binary path is agent-internal: keep it off the wire (the
+	// stdout trace below shows it to the operator), reporting only the version.
+	r.Emit(phelixgrpc.RollbackStepVersionResolved, true, fmt.Sprintf("resolved target binary for v%d", target), time.Since(stepStart), "")
 
 	fmt.Printf("%s Rolling back %s to v%d (classic stop→start)\n",
 		color.BlueString("→"), color.CyanString("'%s'", appName), target)
@@ -806,7 +837,6 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 	stepStart = time.Now()
 	destBin := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
 	fmt.Printf("  %s Copying v%d binary to %s...\n", color.BlueString("→"), target, destBin)
-	r.SetMetadata("dest_binary", destBin)
 	backup, err := replaceBinaryForRollback(binPath, destBin)
 	if err != nil {
 		terminal := phelixerr.Wrap(phelixerr.CodeRollbackFailed, "failed to replace versioned binary", err)
@@ -820,7 +850,7 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 			_ = backup.Discard()
 		}
 	}()
-	r.Emit(phelixgrpc.RollbackStepBinaryCopied, true, fmt.Sprintf("binary copied to %s", destBin), time.Since(stepStart), "")
+	r.Emit(phelixgrpc.RollbackStepBinaryCopied, true, fmt.Sprintf("v%d binary copied into place", target), time.Since(stepStart), "")
 
 	// Determine the port.
 	port := appInfo.Port
@@ -884,15 +914,11 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 			verifyStatus = string(verification.Status)
 		}
 		if verr != nil {
-			if res := op.result; res != nil {
-				res.Verification = verifyStatus
-			}
+			op.setVerification(verifyStatus)
 			return verr
 		}
 	}
-	if res := op.result; res != nil {
-		res.Verification = verifyStatus
-	}
+	op.setVerification(verifyStatus)
 	return op.writeResultEnv(machine.Success(op.operationID(), rollbackResult{
 		App:          appName,
 		FromVersion:  currentVer,
@@ -1220,7 +1246,6 @@ func listRollbackVersions(appName string, policy deploy.RetentionPolicy, appInfo
 	totalStart := time.Now()
 
 	r := phelixgrpc.NewRollbackReporter("", appInfo.ID, appInfo.ID, appName, "list", "list", "", "", "")
-	r.SetMetadata("app_directory", appInfo.Directory)
 	r.SetMetadata("app_status", appInfo.Status)
 	r.SetMetadata("app_language", appInfo.Language)
 

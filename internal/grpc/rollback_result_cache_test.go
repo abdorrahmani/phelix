@@ -65,7 +65,7 @@ func TestRollbackLedgerSameIDDifferentPayloadRejected(t *testing.T) {
 	}
 }
 
-func TestRollbackLedgerCapacityRejectsWithoutEviction(t *testing.T) {
+func TestRollbackLedgerCapacityEvictsOldestDelivered(t *testing.T) {
 	l := testRollbackLedger(t, 1)
 	if _, _, err := l.begin(rollbackRequest("r1", "v2")); err != nil {
 		t.Fatal(err)
@@ -73,12 +73,90 @@ func TestRollbackLedgerCapacityRejectsWithoutEviction(t *testing.T) {
 	if err := l.complete("r1", &pb.MonitorCommandResult{RequestId: "r1", Status: "success"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := l.markDelivered("r1"); err != nil {
+		t.Fatal(err)
+	}
+	// At capacity with r1 delivered: a new command evicts the oldest delivered
+	// entry to make room instead of bricking the channel at a lifetime cap.
+	outcome, _, err := l.begin(rollbackRequest("r2", "v3"))
+	if err != nil || outcome != rollbackBeginExecute {
+		t.Fatalf("begin r2 = %v, %v; want execute, nil", outcome, err)
+	}
+	if l.entries["r1"] != nil {
+		t.Fatal("oldest delivered entry was not evicted")
+	}
+	if l.entries["r2"] == nil {
+		t.Fatal("new entry was not admitted after eviction")
+	}
+}
+
+func TestRollbackLedgerCapacityFailsClosedWhenInFlight(t *testing.T) {
+	l := testRollbackLedger(t, 1)
+	if _, _, err := l.begin(rollbackRequest("r1", "v2")); err != nil {
+		t.Fatal(err)
+	}
+	// r1 is in progress (still executing): it must never be evicted, so a new
+	// command at capacity fails closed rather than dropping an in-flight entry.
 	_, _, err := l.begin(rollbackRequest("r2", "v3"))
 	if !phelixerr.IsCode(err, phelixerr.CodeUnavailable) {
 		t.Fatalf("error = %v, want UNAVAILABLE", err)
 	}
 	if l.entries["r1"] == nil {
-		t.Fatal("capacity rejection silently evicted existing entry")
+		t.Fatal("in-flight entry was evicted")
+	}
+}
+
+func TestRollbackLedgerCapacityProtectsUndelivered(t *testing.T) {
+	l := testRollbackLedger(t, 1)
+	if _, _, err := l.begin(rollbackRequest("r1", "v2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.complete("r1", &pb.MonitorCommandResult{RequestId: "r1", Status: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	// r1 is complete but UNDELIVERED (the backend has not confirmed receiving
+	// its result): evicting it would lose a durable result the backend still
+	// needs replayed, so a new command at capacity still fails closed.
+	_, _, err := l.begin(rollbackRequest("r2", "v3"))
+	if !phelixerr.IsCode(err, phelixerr.CodeUnavailable) {
+		t.Fatalf("error = %v, want UNAVAILABLE", err)
+	}
+	if l.entries["r1"] == nil {
+		t.Fatal("undelivered terminal entry was evicted")
+	}
+}
+
+func TestRollbackLedgerRelease(t *testing.T) {
+	l := testRollbackLedger(t, 4)
+	if _, _, err := l.begin(rollbackRequest("r1", "v2")); err != nil {
+		t.Fatal(err)
+	}
+	// Releasing an in-progress (never-started) entry drops it entirely so the
+	// request_id leaves no spent key.
+	if err := l.release("r1"); err != nil {
+		t.Fatalf("release in-progress: %v", err)
+	}
+	if l.entries["r1"] != nil {
+		t.Fatal("released entry still present")
+	}
+	// The same request_id now begins fresh and executes.
+	outcome, _, err := l.begin(rollbackRequest("r1", "v2"))
+	if err != nil || outcome != rollbackBeginExecute {
+		t.Fatalf("re-begin after release = %v, %v; want execute", outcome, err)
+	}
+	// A completed entry is a durable result: release refuses to drop it.
+	if err := l.complete("r1", &pb.MonitorCommandResult{RequestId: "r1", Status: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.release("r1"); !phelixerr.IsCode(err, phelixerr.CodeUnavailable) {
+		t.Fatalf("release of completed entry = %v, want UNAVAILABLE", err)
+	}
+	if l.entries["r1"] == nil {
+		t.Fatal("completed entry was dropped by release")
+	}
+	// Releasing an unknown id is a no-op (idempotent).
+	if err := l.release("ghost"); err != nil {
+		t.Fatalf("release unknown = %v, want nil", err)
 	}
 }
 
