@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,5 +175,43 @@ func mustSave(t *testing.T, run *Run) {
 	t.Helper()
 	if err := SaveRun(run); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRecentRunsBoundsScanWindow (F5) proves the remote read-only query scan is
+// bounded: RecentRuns reads at most the newest remoteScanWindow records even
+// when more history exists, while ListRuns (local, one-shot) stays unbounded.
+// Both are newest-first.
+func TestRecentRunsBoundsScanWindow(t *testing.T) {
+	isolateMatrixHistory(t)
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	total := remoteScanWindow + 5
+	for i := 0; i < total; i++ {
+		d := base.AddDate(0, 0, i)
+		id := RunID(fmt.Sprintf("mx_%s_%04x", d.Format("20060102"), i))
+		if err := SaveRun(finishedRun(id, "app", d, "success")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recent, _, err := RecentRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != remoteScanWindow {
+		t.Fatalf("RecentRuns returned %d, want the %d-run window", len(recent), remoteScanWindow)
+	}
+
+	all, _, err := ListRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != total {
+		t.Fatalf("ListRuns returned %d, want all %d (unbounded)", len(all), total)
+	}
+
+	newest := RunID(fmt.Sprintf("mx_%s_%04x", base.AddDate(0, 0, total-1).Format("20060102"), total-1))
+	if recent[0].ID != newest || all[0].ID != newest {
+		t.Fatalf("newest-first mismatch: recent[0]=%s all[0]=%s want %s", recent[0].ID, all[0].ID, newest)
 	}
 }

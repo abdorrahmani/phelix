@@ -52,6 +52,14 @@ const SchemaVersion = "1"
 const (
 	ActionRebuild  = "rebuild"
 	ActionRollback = "rollback"
+	// ActionMatrix authorizes a Build Matrix mutation (a native or docker
+	// matrix build, a resume, or a manual retry). It is a distinct action
+	// rather than a reuse of ActionRebuild because a matrix build is not a
+	// redeploy: it produces versioned artifacts (is_current=false) and may push
+	// images, so an operator policy should be able to allow or deny it on its
+	// own terms. Only the backend-issued (in-daemon) matrix path gates on it;
+	// the local CLI matrix build stays ungated like `build`.
+	ActionMatrix = "matrix"
 )
 
 // Decision effects. This is the complete vocabulary; there is no fourth
@@ -180,7 +188,7 @@ func (r Request) Validate() error {
 		return err
 	}
 	switch r.Action {
-	case ActionRebuild, ActionRollback:
+	case ActionRebuild, ActionRollback, ActionMatrix:
 	default:
 		return invalidf("unknown authorizable action %q", r.Action)
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/matrix"
 )
@@ -61,6 +62,7 @@ func TestValidateMatrixCommand(t *testing.T) {
 		{name: "foreign replicas", req: matrixReq("r1", MatrixCommandBuild, func(r *pb.MonitorCommandRequest) { r.Replicas = 2 }), wantErr: true},
 		{name: "foreign reason", req: matrixReq("r1", MatrixCommandBuild, func(r *pb.MonitorCommandRequest) { r.Reason = "why" }), wantErr: true},
 		{name: "foreign verify duration", req: matrixReq("r1", MatrixCommandBuild, func(r *pb.MonitorCommandRequest) { r.VerifyDurationMs = 1000 }), wantErr: true},
+		{name: "foreign canary percent", req: matrixReq("r1", MatrixCommandBuild, func(r *pb.MonitorCommandRequest) { r.CanaryPercent = 25 }), wantErr: true},
 		{name: "dry run on retry", req: matrixReq("r1", MatrixCommandRetry, func(r *pb.MonitorCommandRequest) { r.Target = "mx_20260910_8f31"; r.DryRun = true }), wantErr: true},
 		{name: "dry run on status", req: matrixReq("r1", MatrixCommandStatus, func(r *pb.MonitorCommandRequest) { r.DryRun = true }), wantErr: true},
 		{name: "dry run on list", req: matrixReq("r1", MatrixCommandList, func(r *pb.MonitorCommandRequest) { r.DryRun = true }), wantErr: true},
@@ -584,5 +586,204 @@ func TestMonitorStream_MatrixSnapshotResync(t *testing.T) {
 	}
 	if state.GetConfig() == nil || state.GetConfig().GetLanguage() != "go" {
 		t.Fatalf("snapshot config: %+v", state.GetConfig())
+	}
+}
+
+// --- F2/F3/F6 dispatch behavior -------------------------------------------
+
+// matrixLedgerEntryCount reports how many entries the ledger holds.
+func matrixLedgerEntryCount(l *rollbackLedger) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.entries)
+}
+
+// matrixLedgerHasEntry reports whether an entry exists for requestID.
+func matrixLedgerHasEntry(l *rollbackLedger, requestID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.entries[requestID] != nil
+}
+
+func waitForMatrixCount(t *testing.T, want int64, get func() int64) {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for get() < want {
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("timed out waiting for count >= %d (got %d)", want, get())
+		}
+	}
+}
+
+// startMatrixDispatchHarness wires an isolated monitor stream for dispatch
+// tests and returns the fresh matrix ledger, a send function and the fake
+// backend. All teardown is registered with t.Cleanup.
+func startMatrixDispatchHarness(t *testing.T) (*rollbackLedger, func(*pb.MonitorCommandRequest), *fakeMonitorBackend) {
+	t.Helper()
+	setupTestSession(t)
+	watchOneApp(t)
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+
+	origLedger := matrixResults
+	matrixResults = newRollbackLedger(filepath.Join(t.TempDir(), "matrix-ledger.json"), rollbackLedgerCapacity, "matrix", "test note")
+	t.Cleanup(func() { matrixResults = origLedger })
+
+	origInterval := monitorMetricsInterval
+	monitorMetricsInterval = 500 * time.Millisecond
+	t.Cleanup(func() { monitorMetricsInterval = origInterval })
+
+	origCollector := monitorStream.metricsCollector
+	monitorStream.metricsCollector = fakeMetricsCollector{}
+	t.Cleanup(func() { monitorStream.metricsCollector = origCollector })
+
+	backend := newFakeMonitorBackend()
+	c, _, cleanup := dialBufconn(t, backend)
+	t.Cleanup(cleanup)
+	t.Cleanup(startMatrixTestStream(t, backend, c))
+
+	send := func(req *pb.MonitorCommandRequest) {
+		backend.toClient <- &pb.MonitorControl{Payload: &pb.MonitorControl_Command{Command: req}}
+	}
+	return matrixResults, send, backend
+}
+
+func matrixBuildReq(id string) *pb.MonitorCommandRequest {
+	return matrixReq(id, MatrixCommandBuild, func(r *pb.MonitorCommandRequest) {
+		r.Matrix = &pb.MatrixOptions{GoVersions: []string{"1.22"}, Platforms: []string{"linux/amd64"}}
+	})
+}
+
+// TestMonitorStream_MatrixDryRunNoLedgerEntry (F2): a dry-run build is answered
+// synchronously and takes no durable idempotency slot.
+func TestMonitorStream_MatrixDryRunNoLedgerEntry(t *testing.T) {
+	var calls atomic.Int64
+	origHandler := getMatrixHandler()
+	SetMatrixHandler(func(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
+		calls.Add(1)
+		return &pb.MonitorCommandResult{Status: "success", MatrixPreview: &pb.MatrixPlanPreview{Language: "go"}}
+	})
+	defer SetMatrixHandler(origHandler)
+
+	ledger, send, backend := startMatrixDispatchHarness(t)
+
+	req := matrixBuildReq("req-dry")
+	req.DryRun = true
+	send(req)
+	if res := waitForMatrixResultStatus(backend, "req-dry", "success"); res == nil || res.GetMatrixPreview() == nil {
+		t.Fatalf("dry-run result: %+v", res)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("handler calls = %d, want 1 (answered synchronously)", calls.Load())
+	}
+	if n := matrixLedgerEntryCount(ledger); n != 0 {
+		t.Fatalf("dry-run created %d ledger entries, want 0", n)
+	}
+}
+
+// TestMonitorStream_MatrixAuthorizationGate (F3): a mutating matrix command is
+// refused when the authorizer denies, the refusal spends no idempotency key
+// (an allowed retry of the same request_id executes), and status/dry-run are
+// never routed through the gate.
+func TestMonitorStream_MatrixAuthorizationGate(t *testing.T) {
+	var authCalls, handlerCalls atomic.Int64
+	var denyActive atomic.Bool
+	denyActive.Store(true)
+
+	origAuth := getMatrixAuthorizer()
+	SetMatrixAuthorizer(func(req *pb.MonitorCommandRequest) error {
+		authCalls.Add(1)
+		if denyActive.Load() {
+			return phelixerr.New(phelixerr.CodeAuthzDenied, "policy denies this matrix mutation")
+		}
+		return nil
+	})
+	defer SetMatrixAuthorizer(origAuth)
+
+	origHandler := getMatrixHandler()
+	SetMatrixHandler(func(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
+		handlerCalls.Add(1)
+		return successMatrixResult(req, "mx_20260910_dd01")
+	})
+	defer SetMatrixHandler(origHandler)
+
+	ledger, send, backend := startMatrixDispatchHarness(t)
+
+	// Denied: the authz code, no execution, no ledger entry.
+	send(matrixBuildReq("req-authz"))
+	if res := waitForMatrixResultStatus(backend, "req-authz", "error"); res == nil || res.GetErrorCode() != string(phelixerr.CodeAuthzDenied) {
+		t.Fatalf("denied result: %+v", res)
+	}
+	if handlerCalls.Load() != 0 {
+		t.Fatalf("denied command executed (%d handler calls)", handlerCalls.Load())
+	}
+	if matrixLedgerHasEntry(ledger, "req-authz") {
+		t.Fatal("denied command spent an idempotency key")
+	}
+
+	// The refusal spent no key: the same request_id, once allowed, executes.
+	denyActive.Store(false)
+	send(matrixBuildReq("req-authz"))
+	if res := waitForMatrixResultStatus(backend, "req-authz", "success"); res == nil {
+		t.Fatal("allowed retry of the refused request_id did not execute")
+	}
+	waitForMatrixCount(t, 1, handlerCalls.Load)
+
+	// Read-only status and dry-run never reach the authorizer.
+	authBefore := authCalls.Load()
+	send(matrixReq("req-st", MatrixCommandStatus))
+	waitForMatrixResultStatus(backend, "req-st", "success")
+	dry := matrixBuildReq("req-dry2")
+	dry.DryRun = true
+	send(dry)
+	waitForMatrixResultStatus(backend, "req-dry2", "success")
+	if authCalls.Load() != authBefore {
+		t.Fatalf("authorizer consulted for a read-only/dry-run command (%d -> %d)", authBefore, authCalls.Load())
+	}
+}
+
+// TestMonitorStream_MatrixConcurrencyCap (F6): concurrent mutating matrix
+// executions are bounded; a command beyond the cap is answered UNAVAILABLE and
+// spends no idempotency key, so it executes on retry once a slot frees.
+func TestMonitorStream_MatrixConcurrencyCap(t *testing.T) {
+	origSlots := matrixExecSlots
+	matrixExecSlots = make(chan struct{}, 2)
+	t.Cleanup(func() { matrixExecSlots = origSlots })
+
+	var calls atomic.Int64
+	release := make(chan struct{})
+	origHandler := getMatrixHandler()
+	SetMatrixHandler(func(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
+		calls.Add(1)
+		<-release
+		return successMatrixResult(req, "mx_20260910_ee01")
+	})
+	defer SetMatrixHandler(origHandler)
+
+	ledger, send, backend := startMatrixDispatchHarness(t)
+
+	// Two distinct builds fill both slots and block in the handler.
+	send(matrixBuildReq("req-a"))
+	send(matrixBuildReq("req-b"))
+	waitForMatrixCount(t, 2, calls.Load)
+
+	// A third build has no slot: UNAVAILABLE, and it spends no key.
+	send(matrixBuildReq("req-c"))
+	if res := waitForMatrixResultStatus(backend, "req-c", "error"); res == nil || res.GetErrorCode() != string(phelixerr.CodeUnavailable) {
+		t.Fatalf("capacity result: %+v", res)
+	}
+	if matrixLedgerHasEntry(ledger, "req-c") {
+		t.Fatal("capacity-rejected command spent an idempotency key")
+	}
+
+	// Drain the two held builds, then the rejected request_id executes.
+	close(release)
+	if waitForMatrixResultStatus(backend, "req-a", "success") == nil || waitForMatrixResultStatus(backend, "req-b", "success") == nil {
+		t.Fatal("held builds did not complete")
+	}
+	send(matrixBuildReq("req-c"))
+	if waitForMatrixResultStatus(backend, "req-c", "success") == nil {
+		t.Fatal("capacity-rejected request_id did not execute after a slot freed")
 	}
 }

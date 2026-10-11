@@ -138,6 +138,12 @@ func runMonitor() error {
 		return RemoteMatrixCommand(matrixCtx, req)
 	})
 
+	// Gate backend-issued matrix mutations through the execution-authorization
+	// boundary, before the idempotency ledger — the same boundary a remote
+	// rebuild/rollback crosses. Registered before the client starts so no
+	// matrix command can arrive ungated in the startup race window.
+	phelixgrpc.SetMatrixAuthorizer(remoteMatrixAuthorize)
+
 	// Remote webhook management reuses the existing webhook subsystem; the
 	// handler is registered before the client starts so no webhook command
 	// can arrive in the startup race window and be answered UNIMPLEMENTED.

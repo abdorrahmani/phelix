@@ -47,13 +47,12 @@ type matrixSessionObserver interface {
 	ResultRecorded(run *matrix.Run, res matrix.Result)
 }
 
-// startMatrixSession executes combos for run, which must already be persisted
-// in its pre-execution state (fresh runs via SaveRun, resumes via UpdateRun).
-// It is the local CLI entry point: SIGINT/SIGTERM cancels the session (no new
-// combinations start, in-flight builds are killed, their combinations stay
-// pending), the default signal disposition is restored so a second signal
-// terminates the process, and the session core runs to completion.
-func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs []string, debug bool) (executed []matrix.Result, interrupted bool, err error) {
+// withMatrixSignals runs fn with SIGINT/SIGTERM wired to cancel its context —
+// the local-CLI interruption path. The first signal cancels the session (no
+// new combinations start, in-flight builds are killed, their combinations stay
+// pending) and restores the default signal disposition so a second signal
+// terminates the process.
+func withMatrixSignals(fn func(ctx context.Context)) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sigCh := make(chan os.Signal, 1)
@@ -69,26 +68,32 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 		case <-sessionDone:
 		}
 	}()
-
-	executed, interrupted, err = startMatrixSessionContext(ctx, run, combos, extraArgs, debug, nil)
+	fn(ctx)
 	signal.Stop(sigCh)
+}
+
+// startMatrixSession is the local CLI entry point for a FRESH build or a manual
+// retry: signal handling around startMatrixSessionContext. The run must already
+// be persisted in its pre-execution state (via SaveRun). Resume has its own
+// entry point (resumeMatrixSession) because it must mutate the run under the
+// run lock.
+func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs []string, debug bool) (executed []matrix.Result, interrupted bool, err error) {
+	withMatrixSignals(func(ctx context.Context) {
+		executed, interrupted, err = startMatrixSessionContext(ctx, run, combos, extraArgs, debug, nil)
+	})
 	return executed, interrupted, err
 }
 
-// startMatrixSessionContext is the execution core shared by every matrix
-// entry point (fresh build, resume, manual retry — local CLI and remote
-// backend commands alike). It builds the build function from the run's
-// configuration snapshot (never from the current phelix.yaml), applies the
-// snapshot's retry budget, records every completed combination into the run
-// (and the history store) as it finishes, and finalizes the run when done.
+// startMatrixSessionContext is the FRESH-build / manual-retry entry point into
+// the shared execution core: it acquires the run's execution lock and runs the
+// session under it. Resume takes a different entry point
+// (resumeMatrixSessionContext) because it must re-read and mutate the run UNDER
+// the lock to be safe against a concurrent resume.
 //
 // Cancellation comes from ctx (the CLI derives it from signals; the remote
 // path derives it from daemon shutdown). interrupted reports whether the
 // session stopped early: the run is left with status "interrupted" and its
 // pending combinations are resumable.
-//
-// obs, when non-nil, observes every attempt start and recorded result after
-// they are persisted.
 func startMatrixSessionContext(ctx context.Context, run *matrix.Run, combos []matrix.Combination, extraArgs []string, debug bool, obs matrixSessionObserver) (executed []matrix.Result, interrupted bool, err error) {
 	if len(combos) == 0 {
 		return nil, false, nil
@@ -100,6 +105,22 @@ func startMatrixSessionContext(ctx context.Context, run *matrix.Run, combos []ma
 	}
 	defer release()
 
+	return runMatrixSessionLocked(ctx, run, combos, extraArgs, debug, obs)
+}
+
+// runMatrixSessionLocked is the execution core shared by every matrix entry
+// point (fresh build, manual retry, resume — local CLI and remote backend
+// commands alike). The caller MUST already hold run's execution lock
+// (matrix.AcquireRunLock): that is what serializes the incremental history
+// writes and guarantees a single executor owns the run. It builds the build
+// function from the run's configuration snapshot (never from the current
+// phelix.yaml), applies the snapshot's retry budget, records every completed
+// combination into the run (and the history store) as it finishes, and
+// finalizes the run when done.
+//
+// obs, when non-nil, observes every attempt start and recorded result after
+// they are persisted.
+func runMatrixSessionLocked(ctx context.Context, run *matrix.Run, combos []matrix.Combination, extraArgs []string, debug bool, obs matrixSessionObserver) (executed []matrix.Result, interrupted bool, err error) {
 	if obs != nil {
 		obs.SessionStarted(run)
 	}
@@ -158,6 +179,62 @@ func startMatrixSessionContext(ctx context.Context, run *matrix.Run, combos []ma
 		}
 	}
 	return executed, ctx.Err() != nil, nil
+}
+
+// resumeMatrixSession is the local CLI resume entry point: signal handling
+// around resumeMatrixSessionContext. outside is the run resolved before the
+// lock (for the dry-run preview and the app-name guard); the returned run is
+// the authoritative one the session executed under the lock.
+func resumeMatrixSession(outside *matrix.Run, buildArgsOverride []string, debug bool) (run *matrix.Run, interrupted bool, err error) {
+	withMatrixSignals(func(ctx context.Context) {
+		run, interrupted, err = resumeMatrixSessionContext(ctx, outside, buildArgsOverride, debug, nil)
+	})
+	return run, interrupted, err
+}
+
+// resumeMatrixSessionContext executes a resume entirely under the run's
+// execution lock, closing the resume TOCTOU where two resumes both pass a
+// pre-lock Resumable() check and both mutate the run. It acquires the lock
+// FIRST — the loser of two concurrent resumes fails here having mutated
+// nothing — then re-reads the run under the lock and re-validates Resumable()
+// (so a run another execution finalized between the caller's read and the lock
+// is not resumed), bumps ResumeCount, applies the optional build-arg override,
+// flips the run to running and persists it, and finally runs the incomplete
+// combinations. It returns the run it operated on: the fresh re-read on
+// success, or the caller's `outside` run on a lock failure, so the caller can
+// always report terminal state.
+func resumeMatrixSessionContext(ctx context.Context, outside *matrix.Run, buildArgsOverride []string, debug bool, obs matrixSessionObserver) (*matrix.Run, bool, error) {
+	release, lerr := matrix.AcquireRunLock(outside.ID)
+	if lerr != nil {
+		return outside, false, lerr
+	}
+	defer release()
+
+	// Authoritative state is whatever is on disk now, under the lock — not the
+	// caller's pre-lock read, which another resume may have superseded.
+	run, err := matrix.LoadRun(outside.ID)
+	if err != nil {
+		return outside, false, err
+	}
+	if !run.Resumable() {
+		return run, false, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"matrix run %s is no longer resumable (status: %s) — another execution may have completed it", run.ID, run.Status)
+	}
+
+	run.ResumeCount++
+	run.Status = matrix.RunStatusRunning
+	// Explicit build args override the snapshot; otherwise the original build
+	// arguments are reproduced.
+	if len(buildArgsOverride) > 0 {
+		run.Config.BuildArgs = append([]string(nil), buildArgsOverride...)
+	}
+	if uerr := matrix.UpdateRun(run.Clone()); uerr != nil {
+		return run, false, uerr
+	}
+
+	combos := run.IncompleteCombinations()
+	_, interrupted, err := runMatrixSessionLocked(ctx, run, combos, run.Config.BuildArgs, debug, obs)
+	return run, interrupted, err
 }
 
 // matrixSessionBuildFunc constructs the combination build function from the
@@ -382,33 +459,31 @@ func resumeMatrixRun(args []string, projCfg *project.Config, extraArgs []string,
 	fmt.Printf("%s Resuming Matrix Run %s (%s): %d of %d combinations remaining\n",
 		color.BlueString("→"), color.CyanString(string(run.ID)), run.AppName, len(combos), run.Total)
 
-	run.ResumeCount++
-	run.Status = matrix.RunStatusRunning
-	// Explicit --build-arg flags override the snapshot; otherwise the
-	// original build arguments are reproduced.
-	buildArgs := run.Config.BuildArgs
+	// Explicit --build-arg flags override the snapshot; otherwise the original
+	// build arguments are reproduced. The ResumeCount bump, the flip to
+	// running and the history write all happen UNDER the run lock inside
+	// resumeMatrixSession — never before it — so a concurrent resume (another
+	// process, or a remote matrix_resume) cannot double-bump the run or leave a
+	// spurious "running" record behind after losing the lock.
+	var buildArgsOverride []string
 	if len(extraArgs) > 0 {
-		buildArgs = extraArgs
-		run.Config.BuildArgs = append([]string(nil), extraArgs...)
-	}
-	if uerr := matrix.UpdateRun(run); uerr != nil {
-		return uerr
+		buildArgsOverride = extraArgs
 	}
 
-	_, interrupted, err := startMatrixSession(run, combos, buildArgs, debug)
+	resumed, interrupted, err := resumeMatrixSession(run, buildArgsOverride, debug)
 	if err != nil {
 		return err
 	}
-	completeMatrixSession(run, tag)
+	completeMatrixSession(resumed, tag)
 
 	if interrupted {
 		return phelixerr.Newf(phelixerr.CodeBuildFailed,
-			"matrix run %s interrupted — continue it with 'phelix build --matrix --resume'", run.ID)
+			"matrix run %s interrupted — continue it with 'phelix build --matrix --resume'", resumed.ID)
 	}
-	if run.Failed > 0 {
+	if resumed.Failed > 0 {
 		return phelixerr.Newf(phelixerr.CodeBuildFailed,
 			"matrix run %s completed with %d failure(s) out of %d combinations — retry them with 'phelix matrix retry %s --failed'",
-			run.ID, run.Failed, run.Total, run.ID)
+			resumed.ID, resumed.Failed, resumed.Total, resumed.ID)
 	}
 	return nil
 }

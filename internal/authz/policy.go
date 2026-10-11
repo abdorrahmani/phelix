@@ -203,9 +203,9 @@ func (r *Rule) validate(idx int) error {
 		return invalidf("rule %d has unknown effect %q (want %q or %q)", idx, r.Effect, ruleEffectAllow, ruleEffectDeny)
 	}
 	switch r.Action {
-	case ActionRebuild, ActionRollback, "*":
+	case ActionRebuild, ActionRollback, ActionMatrix, "*":
 	default:
-		return invalidf("rule %d has unknown action %q (want %q, %q or %q)", idx, r.Action, ActionRebuild, ActionRollback, "*")
+		return invalidf("rule %d has unknown action %q (want %q, %q, %q or %q)", idx, r.Action, ActionRebuild, ActionRollback, ActionMatrix, "*")
 	}
 	if r.Target == "" {
 		return invalidf("rule %d has no target (use an application name or %q)", idx, "*")

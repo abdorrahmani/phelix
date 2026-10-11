@@ -217,6 +217,13 @@ func ToProtoMatrixRunState(run *matrix.Run) *pb.MatrixRunState {
 	if run == nil {
 		return nil
 	}
+	// Project a locked deep copy, never the live run: Clone takes the run's
+	// lock and snapshots counters + combinations together, which is the
+	// engine's one documented safe-read path. Reading run.Combinations
+	// directly below would otherwise race any executor worker still mutating
+	// the run (today callers pass a quiescent or disk run, but a future mid-run
+	// full-run emit must not turn that convention into a data race).
+	run = run.Clone()
 	state := &pb.MatrixRunState{
 		MatrixRunId: string(run.ID),
 		AppName:     run.AppName,

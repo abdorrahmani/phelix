@@ -862,3 +862,58 @@ func TestRemoteMatrixBuild_ContextCancellationInterruptsRun(t *testing.T) {
 		t.Fatalf("resume after cancellation: %+v", resume)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Authorization gate (F3) and resume lock ordering (F4)
+// ---------------------------------------------------------------------------
+
+// TestRemoteMatrixAuthorize_GatesMutations proves authz.ActionMatrix is wired
+// through the execution-authorization boundary: an unconfigured host permits a
+// matrix mutation (legacy local), and enforced authorization denies a planless
+// one — the same posture remote rebuild/rollback get.
+func TestRemoteMatrixAuthorize_GatesMutations(t *testing.T) {
+	remoteMatrixEnv(t)
+
+	if err := remoteMatrixAuthorize(buildReq("r1")); err != nil {
+		t.Fatalf("unconfigured host must permit a matrix mutation: %v", err)
+	}
+
+	writeAuthzPolicy(t, `{"schema_version":"1","mode":"enforced","rules":[
+		{"actor":{"type":"*","authenticated":false},"action":"*","target":"*","effect":"allow"}]}`)
+	if err := remoteMatrixAuthorize(buildReq("r2")); phelixerr.CodeOf(err) != phelixerr.CodeAuthzDenied {
+		t.Fatalf("enforced planless matrix must be AUTHZ_DENIED, got %v", err)
+	}
+}
+
+// TestRemoteMatrixResume_LockHeldLeavesRunUnmutated (F4) proves the resume
+// mutation now happens UNDER the run lock: a resume that cannot take the lock
+// (another execution holds it) fails cleanly with DEPLOY_LOCKED having bumped
+// no ResumeCount and left no spurious "running" record. Both the remote and
+// local resume paths share resumeMatrixSessionContext, so this covers both.
+func TestRemoteMatrixResume_LockHeldLeavesRunUnmutated(t *testing.T) {
+	projDir := remoteMatrixEnv(t)
+	seedInterruptedRun(t, projDir, "mx_20260910_ee50")
+
+	release, err := matrix.AcquireRunLock("mx_20260910_ee50")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	res := runRemote(&pb.MonitorCommandRequest{
+		RequestId: "req-locked",
+		Type:      phelixgrpc.MatrixCommandResume,
+		Target:    "mx_20260910_ee50",
+	})
+	if res.GetStatus() != "error" || res.GetErrorCode() != string(phelixerr.CodeDeployLocked) {
+		t.Fatalf("resume while locked must fail DEPLOY_LOCKED: %+v", res)
+	}
+
+	run, err := matrix.LoadRun("mx_20260910_ee50")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ResumeCount != 0 || run.Status != matrix.RunStatusInterrupted {
+		t.Fatalf("resume loser mutated the run: count=%d status=%s", run.ResumeCount, run.Status)
+	}
+}

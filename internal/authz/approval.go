@@ -182,7 +182,7 @@ func NewApproval(approver Actor, plan PlanRef, action, target, provenance string
 		return nil, invalidf("an approval requires both a plan id and a plan hash")
 	}
 	switch action {
-	case ActionRebuild, ActionRollback:
+	case ActionRebuild, ActionRollback, ActionMatrix:
 	default:
 		return nil, invalidf("unknown approvable action %q", action)
 	}

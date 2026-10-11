@@ -267,3 +267,43 @@ func TestToProtoMatrixCombinationFromResult(t *testing.T) {
 		t.Fatalf("default attempts = %d, want 1", got)
 	}
 }
+
+// TestToProtoMatrixRunState_RaceWithWorker runs the projection concurrently
+// with an executor-style worker mutating the same live run. ToProtoMatrixRunState
+// reads a Clone() taken under the run's lock, so `go test -race` is clean; the
+// pre-fix version iterated run.Combinations unlocked and would race here.
+func TestToProtoMatrixRunState_RaceWithWorker(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	prof := &matrix.Profile{
+		Lang:        builder.Go,
+		Versions:    []string{"1.22"},
+		Platforms:   []string{"linux/amd64", "linux/arm64"},
+		Concurrency: 1,
+	}
+	run := matrix.NewRun(matrix.RunID("mx_20260101_0001"), "app", t.TempDir(), prof, time.Now())
+	combos := []matrix.Combination{
+		{Lang: builder.Go, Version: "1.22", OS: "linux", Arch: "amd64", Platform: "linux/amd64"},
+		{Lang: builder.Go, Version: "1.22", OS: "linux", Arch: "arm64", Platform: "linux/arm64"},
+	}
+	run.InitCombinations(combos)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			c := combos[i%len(combos)]
+			run.MarkRunning(c.ID(), 1, time.Now())
+			run.RecordResult(matrix.Result{
+				Combination: c,
+				Status:      "success",
+				Attempts:    []matrix.Attempt{{Number: 1, Status: "success"}},
+			})
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		if state := ToProtoMatrixRunState(run); state == nil {
+			t.Fatal("projection returned nil")
+		}
+	}
+	<-done
+}
