@@ -21,12 +21,16 @@ type Daemon struct {
 	// configuration by Sync, so it is the daemon's view of "what is actually
 	// being checked right now" — as opposed to endpointStates, which is "what
 	// has been observed".
-	running         map[string]*checkHandle
-	checker         *Checker
-	configManager   *ConfigManager
-	stopChan        chan struct{}
-	wg              sync.WaitGroup
-	eventListeners  []EventListener
+	running       map[string]*checkHandle
+	checker       *Checker
+	configManager *ConfigManager
+	stopChan      chan struct{}
+	wg            sync.WaitGroup
+	// eventListeners is keyed by a monotonic id so a listener can be removed when
+	// its watch ends. A slice could not identify which listener to drop, which is
+	// why remote `health watch` used to leak one listener per session forever.
+	eventListeners  map[int]EventListener
+	nextListenerID  int
 	reporter        HealthReporter
 	isRunning       bool
 	broadcastChan   chan *HealthCheckResult
@@ -88,6 +92,7 @@ func InitDaemon() (*Daemon, error) {
 		checker:         NewChecker(),
 		configManager:   configMgr,
 		stopChan:        make(chan struct{}),
+		eventListeners:  make(map[int]EventListener),
 		broadcastChan:   make(chan *HealthCheckResult, 100),
 		autoRestartChan: make(chan *AutoRestartRecord, 50),
 	}
@@ -446,8 +451,10 @@ func (d *Daemon) startBroadcaster() {
 				return
 			case result := <-d.broadcastChan:
 				d.mu.RLock()
-				listeners := make([]EventListener, len(d.eventListeners))
-				copy(listeners, d.eventListeners)
+				listeners := make([]EventListener, 0, len(d.eventListeners))
+				for _, l := range d.eventListeners {
+					listeners = append(listeners, l)
+				}
 				d.mu.RUnlock()
 
 				for _, l := range listeners {
@@ -578,11 +585,25 @@ func (d *Daemon) GetStatus(appID string) map[string]*HealthCheckResult {
 	return results
 }
 
-// AddEventListener registers a listener for health events
-func (d *Daemon) AddEventListener(listener EventListener) {
+// AddEventListener registers a listener for health events and returns an id for
+// RemoveEventListener. The caller MUST remove the listener when it is done (an
+// interactive watch ending, a stream closing) — a listener left behind runs on
+// every probe forever.
+func (d *Daemon) AddEventListener(listener EventListener) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.eventListeners = append(d.eventListeners, listener)
+	d.nextListenerID++
+	id := d.nextListenerID
+	d.eventListeners[id] = listener
+	return id
+}
+
+// RemoveEventListener drops a listener registered by AddEventListener. Safe to
+// call with an unknown or already-removed id.
+func (d *Daemon) RemoveEventListener(id int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.eventListeners, id)
 }
 
 // GetAllStatus returns status for all apps

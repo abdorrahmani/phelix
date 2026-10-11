@@ -22,6 +22,9 @@ message HealthCommand {
     HealthWatchCommand watch = 15;
     HealthDaemonStatusCommand daemon_status = 16;
     HealthCheckCommand check = 17;
+    HealthUpdateCommand update = 18;
+    HealthSetEnabledCommand set_enabled = 19;
+    HealthRecheckCommand recheck = 20;
   }
 }
 
@@ -35,6 +38,50 @@ message HealthSetCommand {
   string expected_codes = 6;
   string timeout = 7;
   string mode = 8;
+  // Deploy-tier probe knobs (zero-downtime deploys). Empty/zero means the
+  // agent's deploy defaults (1s interval, 5 consecutive successes, 30s
+  // deadline). These configure DeployTierConfig and are independent of the
+  // monitoring-daemon interval/retries/timeout above — see
+  // docs/health-backend-contract.md.
+  string deploy_interval = 9;
+  int32 deploy_retries = 10;
+  string deploy_timeout = 11;
+}
+
+// HealthUpdateCommand edits one existing endpoint in place, preserving its
+// stable endpoint_id (so a rename or URL change never orphans the backend's
+// record or resets history). The endpoint is identified by endpoint_id; every
+// other field is the complete desired configuration (full replace of that one
+// endpoint). A remove+add is NOT an acceptable substitute.
+message HealthUpdateCommand {
+  string app_id = 1;
+  string app_name = 2;
+  string endpoint_id = 3;
+  string name = 4;
+  string url = 5;
+  string interval = 6;
+  int32 retries = 7;
+  string expected_codes = 8;
+  string timeout = 9;
+}
+
+// HealthSetEnabledCommand toggles the app's health configuration on/off.
+// Disabling stops the monitoring daemon's probes for the app (the config and
+// its endpoints are kept) and is reflected in AppHealthSnapshot.enabled.
+message HealthSetEnabledCommand {
+  string app_id = 1;
+  string app_name = 2;
+  bool enabled = 3;
+}
+
+// HealthRecheckCommand runs an immediate probe of configured endpoints now,
+// without waiting for the daemon's interval. endpoint_id selects one endpoint;
+// empty means every configured endpoint for the app. Returns the refreshed
+// status (HealthResultStatusResult).
+message HealthRecheckCommand {
+  string app_id = 1;
+  string app_name = 2;
+  string endpoint_id = 3;
 }
 
 // HealthAddCommand adds a named health check endpoint.
@@ -222,6 +269,11 @@ message HealthResult {
   string message = 9;
   string error = 10;
   string diagnostics = 11;
+  // error_code is the stable phelixerr category for a failed command (e.g.
+  // NOT_FOUND, ALREADY_EXISTS, INVALID_ARGUMENT, IDEMPOTENCY_CONFLICT,
+  // UNAVAILABLE). Empty on success. The backend keys automated handling on this,
+  // never on the human-readable error string.
+  string error_code = 12;
 
   // Result payload varies by command type
   oneof result {
@@ -432,9 +484,10 @@ message AppHealthSnapshot {
   // identity every other agent -> backend message uses.
   string app_id = 2;
   string app_name = 3;
-  // enabled is the agent's health-config enable flag. The agent always reports
-  // true today (no command toggles it); the backend must not present it as a
-  // user-facing switch.
+  // enabled is the agent's health-config enable flag. It is a real toggle,
+  // driven by HealthSetEnabledCommand: when false the agent keeps the config and
+  // its endpoints but stops probing them, and reports enabled=false here. The
+  // backend MAY surface it as a user-facing switch.
   bool enabled = 4;
   // status is the application-level rollup over endpoints that have been probed:
   //   "UP"      — every probed endpoint is UP
