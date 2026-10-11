@@ -62,46 +62,44 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize health config", err)
 	}
 
-	hc := &health.AppHealthConfig{
-		AppID:     appID,
-		AppName:   appName,
-		Endpoints: make(map[string]*health.HealthCheckConfig, len(cfg.Health.Endpoints)),
-		Enabled:   true,
-	}
-	if existing := configMgr.GetConfig(appID); existing != nil {
-		hc.HTTPMetrics = existing.HTTPMetrics
-	}
-
-	for _, ep := range cfg.Health.Endpoints {
-		interval := ep.Interval
-		if interval == "" {
-			interval = "10s"
+	// Mutate serializes the rebuild behind the health lock so a concurrent
+	// gRPC/daemon write cannot clobber it or read a torn file. The passed config
+	// is the current persisted state: its endpoints are replaced wholesale from
+	// phelix.yaml, while HTTPMetrics and the enabled flag are preserved (a build
+	// must not silently re-enable health an operator disabled remotely).
+	_, err = configMgr.Mutate(appID, appName, func(hc *health.AppHealthConfig) error {
+		hc.Endpoints = make(map[string]*health.HealthCheckConfig, len(cfg.Health.Endpoints))
+		for _, ep := range cfg.Health.Endpoints {
+			interval := ep.Interval
+			if interval == "" {
+				interval = "10s"
+			}
+			retries := ep.Retries
+			if retries == 0 {
+				retries = 3
+			}
+			hc.Endpoints[ep.Name] = &health.HealthCheckConfig{
+				Name:          ep.Name,
+				URL:           fmt.Sprintf("http://localhost:%d%s", appPort, ep.Path),
+				Interval:      interval,
+				Retries:       retries,
+				ExpectedCodes: "200-299",
+				Timeout:       "10s",
+			}
 		}
-		retries := ep.Retries
-		if retries == 0 {
-			retries = 3
-		}
-		hc.Endpoints[ep.Name] = &health.HealthCheckConfig{
-			Name:          ep.Name,
-			URL:           fmt.Sprintf("http://localhost:%d%s", appPort, ep.Path),
-			Interval:      interval,
-			Retries:       retries,
-			ExpectedCodes: "200-299",
-			Timeout:       "10s",
-		}
-	}
 
-	// Deploy tier mirrors `phelix health set`: only Mode and Path, taken from
-	// the first declared endpoint. Interval/Retries in the yaml describe the
-	// monitoring daemon's cadence and must not inflate the deploy deadline.
-	first := cfg.Health.Endpoints[0]
-	mode := health.TierModeAuto
-	if first.Mode != "" {
-		mode = health.DeployTierMode(first.Mode)
-	}
-	hc.DeployTier = &health.DeployTierConfig{Mode: mode, Path: first.Path}
-
-	if err := configMgr.SaveConfig(appID, hc); err != nil {
+		// Deploy tier mirrors `phelix health set`: only Mode and Path, taken from
+		// the first declared endpoint. Interval/Retries in the yaml describe the
+		// monitoring daemon's cadence and must not inflate the deploy deadline.
+		first := cfg.Health.Endpoints[0]
+		mode := health.TierModeAuto
+		if first.Mode != "" {
+			mode = health.DeployTierMode(first.Mode)
+		}
+		hc.DeployTier = &health.DeployTierConfig{Mode: mode, Path: first.Path}
+		return nil
+	})
+	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save health config", err)
 	}
 

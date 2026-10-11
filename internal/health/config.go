@@ -98,8 +98,85 @@ func (cm *ConfigManager) SaveConfig(appID string, config *AppHealthConfig) error
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to marshal health config", err)
 	}
 
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
+	// Atomic temp+rename so a concurrent reader (another process's Reload) never
+	// observes a torn file. Cross-process write exclusion is Mutate's job (the
+	// health lock); this guarantees reads are always of a complete file.
+	if err := writeFileAtomic(filePath, data, 0644); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write health config %s", filePath)
+	}
+	return nil
+}
+
+// Mutate serializes a read-modify-write cycle on one app's health.json across
+// processes. It takes the health lock, Reloads on-disk state (so it sees writes
+// from other processes), hands fn the current config (creating an empty enabled
+// one if none exists), persists the result and releases the lock. It is the
+// single write entry point for production health-config edits — CLI
+// set/add/remove, `phelix build` sync and backend health commands all go through
+// it, so no two writers clobber each other. The returned config is the saved
+// state (endpoint IDs assigned), for building the result or next snapshot.
+//
+// SaveConfig itself does NOT take the lock (doing so would self-deadlock here,
+// since Mutate already holds it); call SaveConfig directly only from
+// single-process tests.
+func (cm *ConfigManager) Mutate(appID, appName string, fn func(*AppHealthConfig) error) (*AppHealthConfig, error) {
+	release, err := acquireHealthLock(cm.basePath)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	if err := cm.Reload(); err != nil {
+		return nil, err
+	}
+	config := cm.GetConfig(appID)
+	if config == nil {
+		config = &AppHealthConfig{
+			AppID:     appID,
+			AppName:   appName,
+			Endpoints: make(map[string]*HealthCheckConfig),
+			Enabled:   true,
+		}
+	}
+	if err := fn(config); err != nil {
+		return nil, err
+	}
+	if err := cm.SaveConfig(appID, config); err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
+// writeFileAtomic writes data to path via a temp file + fsync + rename, so a
+// concurrent reader never observes a partially written file. The rename is
+// atomic within the same directory/filesystem.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".health-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
 	}
 	return nil
 }

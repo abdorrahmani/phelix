@@ -78,33 +78,18 @@ var healthSetCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize config", err)
 		}
 
-		// Get or create config
-		config := configMgr.GetConfig(appID)
-		if config == nil {
-			config = &health.AppHealthConfig{
-				AppID:     appID,
-				AppName:   appInfo.Name,
-				Endpoints: make(map[string]*health.HealthCheckConfig),
-				Enabled:   true,
-			}
-		}
-
-		// Parse interval
+		// Parse/validate monitoring knobs up front.
 		interval := "10s"
 		if healthInterval != "" {
 			interval = healthInterval
-			// Validate duration format
 			if _, err := time.ParseDuration(interval); err != nil {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid interval format: %s", interval)
 			}
 		}
-
-		// Parse retries
 		retries := 3
 		if healthRetries > 0 {
 			retries = healthRetries
 		}
-
 		timeout := "10s"
 		if healthTimeout != "" {
 			timeout = healthTimeout
@@ -112,7 +97,6 @@ var healthSetCmd = &cobra.Command{
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid timeout format: %s", timeout)
 			}
 		}
-
 		expectedCodes := "200-299"
 		if healthExpectedCodes != "" {
 			expectedCodes = healthExpectedCodes
@@ -125,36 +109,11 @@ var healthSetCmd = &cobra.Command{
 			}
 		}
 
-		// Create default endpoint if path is provided
-		if healthPath != "" {
-			endpointName := "default"
-			url := fmt.Sprintf("http://localhost:%d%s", appInfo.Port, healthPath)
-
-			config.Endpoints[endpointName] = &health.HealthCheckConfig{
-				Name:          endpointName,
-				URL:           url,
-				Interval:      interval,
-				Retries:       retries,
-				ExpectedCodes: expectedCodes,
-				Timeout:       timeout,
-			}
-
-			fmt.Printf("Default endpoint configured: %s\n", endpointName)
-		} else {
-			fmt.Println("Health checks initialized for app (no endpoints yet)")
-		}
-
-		// Persist the deploy-tier health config (used by blue-green/rolling
-		// deploys). Validate the mode up front so typos are caught here rather
-		// than silently falling back to auto at deploy time.
-		//
-		// Only Mode and Path are persisted: interval/retries/timeout on this
-		// command describe the monitoring DAEMON's cadence (10s checks), while
-		// DeployTier.Timeout is the overall deploy deadline. Copying the daemon
-		// values across produced impossible configs (3 probes × 10s interval
-		// > 10s deadline → every Tier 1 deploy timed out), so the deploy probe
-		// keeps its own documented defaults (1s interval, 5 successes, 30s
-		// deadline) unless DeployTier fields are set explicitly.
+		// Validate the deploy-tier mode up front. Only Mode and Path are
+		// persisted for deploy: the interval/retries/timeout above describe the
+		// monitoring DAEMON's cadence, which would make the deploy deadline
+		// impossible (see the gRPC handler) — the deploy probe keeps its own
+		// defaults (1s/5/30s) unless set explicitly.
 		mode := health.TierModeAuto
 		if healthMode != "" {
 			switch health.DeployTierMode(healthMode) {
@@ -164,37 +123,45 @@ var healthSetCmd = &cobra.Command{
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid --mode %q: must be one of auto, http, tcp-only, none", healthMode)
 			}
 		}
-		config.DeployTier = &health.DeployTierConfig{
-			Mode: mode,
-			Path: healthPath,
-		}
 
+		var metricsConfig *health.HTTPMetricsConfig
 		if httpMetricsDomain != "" || caddyAdminURL != "" {
 			if httpMetricsDomain == "" {
 				return phelixerr.New(phelixerr.CodeInvalidArgument, "--domain is required when --caddy-admin is set")
 			}
-			metricsConfig := &health.HTTPMetricsConfig{
-				Domain:     httpMetricsDomain,
-				CaddyAdmin: caddyAdminURL,
-			}
+			metricsConfig = &health.HTTPMetricsConfig{Domain: httpMetricsDomain, CaddyAdmin: caddyAdminURL}
 			if err := metricsConfig.Validate(); err != nil {
 				return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid HTTP metrics config", err)
 			}
-			config.HTTPMetrics = metricsConfig
 		}
 
-		// Save config
-		if err := configMgr.SaveConfig(appID, config); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
+		// Mutate serializes the read-modify-write behind the health lock, so a
+		// concurrent gRPC/daemon write cannot clobber this one.
+		if _, err := configMgr.Mutate(appID, appInfo.Name, func(config *health.AppHealthConfig) error {
+			if healthPath != "" {
+				config.Endpoints["default"] = &health.HealthCheckConfig{
+					Name: "default", URL: fmt.Sprintf("http://localhost:%d%s", appInfo.Port, healthPath),
+					Interval: interval, Retries: retries, ExpectedCodes: expectedCodes, Timeout: timeout,
+				}
+			}
+			config.DeployTier = &health.DeployTierConfig{Mode: mode, Path: healthPath}
+			if metricsConfig != nil {
+				config.HTTPMetrics = metricsConfig
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 
-		// No gRPC call here: persisting the config IS the sync. The monitor
-		// daemon reconciles health.json every 15s and pushes a complete
-		// AppHealthSnapshot, so this change reaches the backend even if the
-		// backend is down right now — unlike the fire-and-forget RPC this
-		// replaced, which lost the mutation permanently.
-		// See docs/health-backend-contract.md.
+		if healthPath != "" {
+			fmt.Println("Default endpoint configured: default")
+		} else {
+			fmt.Println("Health checks initialized for app (no endpoints yet)")
+		}
 
+		// Persisting the config IS the sync: the monitor daemon reconciles
+		// health.json and pushes a complete AppHealthSnapshot, so this reaches the
+		// backend even if it is down now. See docs/health-backend-contract.md.
 		fmt.Printf("✓ Health checks configured for '%s' (ID: %s)\n", appInfo.Name, appID)
 		fmt.Println("Use 'phelix health add' to add more endpoints")
 
@@ -260,22 +227,6 @@ var healthAddCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize config", err)
 		}
 
-		// Get or create config
-		config := configMgr.GetConfig(appID)
-		if config == nil {
-			config = &health.AppHealthConfig{
-				AppID:     appID,
-				AppName:   appInfo.Name,
-				Endpoints: make(map[string]*health.HealthCheckConfig),
-				Enabled:   true,
-			}
-		}
-
-		// Check if endpoint already exists
-		if _, exists := config.Endpoints[healthName]; exists {
-			return phelixerr.Newf(phelixerr.CodeAlreadyExists, "endpoint %q already exists", healthName)
-		}
-
 		// Parse parameters
 		interval := "10s"
 		if healthInterval != "" {
@@ -303,21 +254,25 @@ var healthAddCmd = &cobra.Command{
 			expectedCodes = healthExpectedCodes
 		}
 
-		// Create endpoint config
-		config.Endpoints[healthName] = &health.HealthCheckConfig{
-			Name:          healthName,
-			URL:           healthURL,
-			Interval:      interval,
-			Retries:       retries,
-			ExpectedCodes: expectedCodes,
-			Timeout:       timeout,
-		}
-
-		// Save config locally. The monitor daemon picks the new endpoint up on
-		// its next reconcile and reports it to the backend inside the app's
-		// health snapshot; see the note in `health set`.
-		if err := configMgr.SaveConfig(appID, config); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
+		// Mutate serializes the read-modify-write behind the health lock. The
+		// endpoint-exists check runs against the freshly reloaded config, so a
+		// concurrent writer cannot be clobbered. The monitor daemon reconciles
+		// health.json and reports the new endpoint in the app's snapshot.
+		if _, err := configMgr.Mutate(appID, appInfo.Name, func(config *health.AppHealthConfig) error {
+			if _, exists := config.Endpoints[healthName]; exists {
+				return phelixerr.Newf(phelixerr.CodeAlreadyExists, "endpoint %q already exists", healthName)
+			}
+			config.Endpoints[healthName] = &health.HealthCheckConfig{
+				Name:          healthName,
+				URL:           healthURL,
+				Interval:      interval,
+				Retries:       retries,
+				ExpectedCodes: expectedCodes,
+				Timeout:       timeout,
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 
 		fmt.Printf("✓ Endpoint '%s' added to '%s'\n", healthName, appInfo.Name)
@@ -369,24 +324,23 @@ var healthRemoveCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize config", err)
 		}
 
-		config := configMgr.GetConfig(appID)
-		if config == nil {
+		if configMgr.GetConfig(appID) == nil {
 			return phelixerr.New(phelixerr.CodeNotFound, "no health checks configured for this app")
 		}
 
-		if _, exists := config.Endpoints[healthName]; !exists {
-			return phelixerr.Newf(phelixerr.CodeNotFound, "endpoint %q not found", healthName)
+		// Mutate serializes the delete behind the health lock; the existence
+		// check runs against the freshly reloaded config. The deletion propagates
+		// because the next snapshot simply omits this endpoint (reconcile by
+		// replacement), so it cannot be lost while the backend is unreachable.
+		if _, err := configMgr.Mutate(appID, appInfo.Name, func(config *health.AppHealthConfig) error {
+			if _, exists := config.Endpoints[healthName]; !exists {
+				return phelixerr.Newf(phelixerr.CodeNotFound, "endpoint %q not found", healthName)
+			}
+			delete(config.Endpoints, healthName)
+			return nil
+		}); err != nil {
+			return err
 		}
-
-		delete(config.Endpoints, healthName)
-		if err := configMgr.SaveConfig(appID, config); err != nil {
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save config", err)
-		}
-
-		// The deletion propagates because the next health snapshot simply does
-		// not list this endpoint — the backend reconciles by replacement, so a
-		// removal cannot be lost while the backend is unreachable.
-
 		fmt.Printf("✓ Endpoint '%s' removed from '%s'\n", healthName, appInfo.Name)
 		return nil
 	},
