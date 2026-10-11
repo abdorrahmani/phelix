@@ -23,7 +23,8 @@ import "internal/grpc/proto/buildreport.proto";
 //     (reconnect/periodic convergence, like deployment_snapshot).
 //
 // Source of truth for backend implementation:
-// docs/matrix-backend-contract.md. State/status vocabularies are the agent's
+// docs/architecture/backend-contracts/matrix-remote-control-backend-contract.md.
+// State/status vocabularies are the agent's
 // own (string-valued, never re-invented here): run status is one of
 // running|succeeded|partial|failed|interrupted, combination status one of
 // pending|running|success|failed|skipped.

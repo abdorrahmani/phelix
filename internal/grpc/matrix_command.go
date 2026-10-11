@@ -90,6 +90,55 @@ func getMatrixHandler() MatrixHandlerFunc {
 	return matrixHandler
 }
 
+// MatrixAuthorizeFunc authorizes one mutating matrix command before it is
+// recorded in the idempotency ledger or executed. It returns a non-nil error
+// (a structured phelixerr) exactly when the command must NOT run. The cmd
+// package registers it (SetMatrixAuthorizer) so the grpc dispatch gates a
+// backend-issued matrix mutation through the same execution-authorization
+// boundary a remote rebuild/rollback crosses — a daemon-side deploy-class
+// mutation must not be the one that bypasses it.
+type MatrixAuthorizeFunc func(req *pb.MonitorCommandRequest) error
+
+var (
+	matrixAuthorizerMu sync.RWMutex
+	matrixAuthorizer   MatrixAuthorizeFunc
+)
+
+// SetMatrixAuthorizer registers the remote matrix authorization gate. A nil
+// authorizer (the default, and in unit tests that do not wire one) means the
+// dispatch does not gate — the same posture as a host with no authorization
+// policy configured.
+func SetMatrixAuthorizer(f MatrixAuthorizeFunc) {
+	matrixAuthorizerMu.Lock()
+	defer matrixAuthorizerMu.Unlock()
+	matrixAuthorizer = f
+}
+
+func getMatrixAuthorizer() MatrixAuthorizeFunc {
+	matrixAuthorizerMu.RLock()
+	defer matrixAuthorizerMu.RUnlock()
+	return matrixAuthorizer
+}
+
+// maxConcurrentMatrixExecutions bounds how many mutating matrix commands may
+// execute at once in the daemon. Each one is a full multi-combination build
+// (itself running up to its own concurrency of parallel compilations), so the
+// local one-build-per-process model has no analogue here: without a bound a
+// backend — or a retry storm — could launch unbounded concurrent builds and
+// exhaust host CPU/memory/disk. Beyond the limit a new mutating command is
+// answered UNAVAILABLE (consuming no idempotency key) and the backend retries
+// once a slot frees.
+//
+// ponytail: a fixed 2-slot semaphore (never blocks the receive loop — the
+// acquire is non-blocking). Raise it, or replace it with a real queue, if a
+// host should run more concurrent matrix builds.
+const maxConcurrentMatrixExecutions = 2
+
+// matrixExecSlots is the concurrency semaphore for mutating matrix executions.
+// A var so a test can substitute a differently-sized channel; handleMatrixCommand
+// captures it locally per command so a swap never crosses acquire/release.
+var matrixExecSlots = make(chan struct{}, maxConcurrentMatrixExecutions)
+
 // matrixResults is the durable idempotency ledger for remote matrix commands.
 var matrixResults = newRollbackLedger(filepath.Join(server.DataDir(), matrixLedgerFile), rollbackLedgerCapacity, "matrix",
 	"any matrix run the command created is persisted with its per-combination state — inspect it with a matrix_status command or continue it with matrix_resume")
@@ -174,9 +223,9 @@ func validateMatrixCommand(req *pb.MonitorCommandRequest) error {
 	if req.GetRequestId() == "" {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command requires a request_id", req.GetType())
 	}
-	if req.GetStrategy() != "" || req.GetReplicas() != 0 || req.GetReason() != "" || req.GetVerifyDurationMs() != 0 {
+	if req.GetStrategy() != "" || req.GetReplicas() != 0 || req.GetReason() != "" || req.GetVerifyDurationMs() != 0 || req.GetCanaryPercent() != 0 {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-			"%s command must not carry rollback/rebuild options (strategy, replicas, reason, verify_duration_ms)", req.GetType())
+			"%s command must not carry rollback/rebuild options (strategy, replicas, reason, verify_duration_ms, canary_percent)", req.GetType())
 	}
 	if req.GetWebhook() != nil {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
@@ -227,12 +276,16 @@ func validateMatrixCommand(req *pb.MonitorCommandRequest) error {
 	return nil
 }
 
-// handleMatrixCommand dispatches one matrix command. Mutating commands are
-// validated and ledger-begun synchronously, then executed on a background
-// goroutine; their terminal result is persisted in the ledger BEFORE the send
-// attempt and replayed on the next stream connection when the send could not
-// be confirmed. Read-only commands (status/list) are answered synchronously
-// without the ledger.
+// handleMatrixCommand dispatches one matrix command. A mutating command is
+// validated, authorized, admitted to the bounded execution semaphore and
+// ledger-begun synchronously, then executed on a background goroutine; its
+// terminal result is persisted in the ledger BEFORE the send attempt and
+// replayed on the next stream connection when the send could not be confirmed.
+// Read-only commands (status/list) and dry-run previews are answered
+// synchronously without a ledger entry, an authorization gate or an execution
+// slot — they mutate nothing. Authorization and the semaphore are both checked
+// BEFORE ledger.begin, so a refusal or a capacity rejection consumes no
+// idempotency key.
 //
 // Metrics are deliberately NOT paused during matrix commands: a matrix build
 // runs for minutes, and monitoring the host while it works is the point.
@@ -242,17 +295,48 @@ func (c *Client) handleMatrixCommand(req *pb.MonitorCommandRequest, ledger *roll
 		return
 	}
 
-	if !isMutatingMatrixCommand(req.GetType()) {
+	// Read-only queries (status/list) and dry-run previews mutate nothing —
+	// including idempotency state (F2): they take no ledger entry, no
+	// authorization gate and no execution slot, and are answered synchronously
+	// on this goroutine (a preview is cheap; a bounded query scan — see
+	// matrix.RecentRuns — keeps it so).
+	if !isMutatingMatrixCommand(req.GetType()) || req.GetDryRun() {
 		_ = sendCommandResultLogged(executeMatrixCommand(req))
+		return
+	}
+
+	// Execution-authorization boundary (F3): a backend-issued matrix mutation
+	// runs in the daemon, so it needs the same gate a remote rebuild/rollback
+	// crosses. Gated BEFORE the ledger so a refusal spends no idempotency key —
+	// a corrected retry under the same request_id then executes. status/list
+	// and dry-run above are read-only and stay ungated.
+	if authorize := getMatrixAuthorizer(); authorize != nil {
+		if err := authorize(req); err != nil {
+			_ = sendCommandResultLogged(finalizeMatrixResult(req, commandErrorResult(req, err)))
+			return
+		}
+	}
+
+	// Concurrency bound (F6): non-blocking acquire BEFORE the ledger so a
+	// capacity rejection also spends no idempotency key. The slot is captured
+	// locally so a test that swaps matrixExecSlots cannot cross acquire/release.
+	slots := matrixExecSlots
+	select {
+	case slots <- struct{}{}:
+	default:
+		_ = sendCommandResultLogged(finalizeMatrixResult(req, commandErrorResult(req, phelixerr.Newf(phelixerr.CodeUnavailable,
+			"agent is already running %d matrix builds; retry once one finishes", cap(slots)))))
 		return
 	}
 
 	outcome, replay, err := ledger.begin(req)
 	if err != nil {
+		<-slots
 		_ = sendCommandResultLogged(finalizeMatrixResult(req, commandErrorResult(req, err)))
 		return
 	}
 	if outcome == rollbackBeginReplay {
+		<-slots
 		if sendCommandResultLogged(replay) == nil {
 			if err := ledger.markDelivered(req.GetRequestId()); err != nil {
 				logs.ErrorFile("grpc", "[gRPC Matrix] failed to mark replay delivered: %v", err)
@@ -263,6 +347,7 @@ func (c *Client) handleMatrixCommand(req *pb.MonitorCommandRequest, ledger *roll
 
 	pendingMatrixWG.Add(1)
 	go func() {
+		defer func() { <-slots }()
 		defer pendingMatrixWG.Done()
 		result := executeMatrixCommand(req)
 		if err := ledger.complete(req.GetRequestId(), result); err != nil {
@@ -311,6 +396,9 @@ func executeMatrixCommand(req *pb.MonitorCommandRequest) (result *pb.MonitorComm
 func finalizeMatrixResult(req *pb.MonitorCommandRequest, result *pb.MonitorCommandResult) *pb.MonitorCommandResult {
 	result.RequestId = req.GetRequestId()
 	result.Command = req.GetType()
+	// Run-targeted commands (resume/retry/status by run ID) may omit app_name,
+	// so this top-level field is then empty by design — the authoritative app
+	// is matrix_run.app_name. Not a bug: the command simply did not name an app.
 	result.AppName = req.GetAppName()
 	result.Timestamp = time.Now().UnixMilli()
 	if result.Status == "error" {

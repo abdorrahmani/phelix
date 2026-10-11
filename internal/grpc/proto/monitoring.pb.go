@@ -1674,7 +1674,7 @@ type MonitorCommandRequest struct {
 	// local CLI uses — never a second implementation. dry-run semantics reuse
 	// the dry_run field above; run selection (matrix_resume / matrix_retry /
 	// matrix_status) reuses target ("latest" or "mx_…" run ID). See
-	// docs/matrix-backend-contract.md.
+	// docs/architecture/backend-contracts/matrix-remote-control-backend-contract.md.
 	Matrix *MatrixOptions `protobuf:"bytes,10,opt,name=matrix,proto3" json:"matrix,omitempty"`
 	// Remote webhook management options, carried by webhook_* commands only
 	// (additive; older agents ignore them). The agent reads and mutates the

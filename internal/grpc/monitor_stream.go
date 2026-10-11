@@ -860,7 +860,7 @@ func (c *Client) sendMonitorTick() {
 // or "running" records orphaned by a crash — are NOT resynced; the backend
 // learns about them from command results and matrix_status queries.
 func (c *Client) sendMatrixSnapshots() {
-	runs, err := matrix.ActiveRuns()
+	runs, err := matrix.ActiveRunsRecent()
 	if err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect active matrix runs: %v", err)
 		return

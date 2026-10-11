@@ -111,6 +111,38 @@ func LoadRun(id RunID) (*Run, error) {
 // order is deterministic). Malformed files are skipped, not fatal — one bad
 // record must never hide the rest of the history.
 func ListRuns() (runs []*Run, skipped int, err error) {
+	return listRunsScan(0)
+}
+
+// remoteScanWindow bounds how many of the newest run records a remote
+// read-only query (matrix_list / matrix_status / the resync snapshot) reads
+// and unmarshals in one call. Matrix run history has no retention or pruning,
+// so without a bound these queries would do O(all-runs) disk + unmarshal work
+// — on the agent's gRPC receive loop — and get slower for the whole life of
+// the agent.
+//
+// ponytail: a 200-record window. A run older than the newest 200 is invisible
+// to matrix_list, matrix_status latest/active and the resync snapshot
+// (matrix_status by explicit ID still loads it directly, O(1)). 200 comfortably
+// exceeds the matrix_list hard cap (100), and active runs are by definition
+// recent, so the window never hides a live run. Upgrade path: add run-history
+// retention/pruning (like versions.json) or an on-disk index, then lift the
+// window. The local CLI (ListRuns / ActiveRuns) stays unbounded — it is a
+// one-shot command, not on a hot loop.
+const remoteScanWindow = 200
+
+// RecentRuns returns at most the newest remoteScanWindow runs, newest first.
+// It is the bounded ListRuns the remote read-only query paths use.
+func RecentRuns() (runs []*Run, skipped int, err error) {
+	return listRunsScan(remoteScanWindow)
+}
+
+// listRunsScan reads run records newest-first and returns them sorted by start
+// time (ties broken by ID). maxScan <= 0 loads every record; a positive
+// maxScan reads only the newest maxScan files by name (the run ID embeds the
+// date, so filename order is day-granular newest-first) and sorts that window
+// precisely by StartedAt. Malformed files are skipped.
+func listRunsScan(maxScan int) (runs []*Run, skipped int, err error) {
 	dir, err := RunsDir()
 	if err != nil {
 		return nil, 0, err
@@ -123,6 +155,7 @@ func ListRuns() (runs []*Run, skipped int, err error) {
 		return nil, 0, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "read matrix runs directory")
 	}
 
+	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -132,7 +165,20 @@ func ListRuns() (runs []*Run, skipped int, err error) {
 		if strings.HasSuffix(entry.Name(), ".manifest.json") {
 			continue
 		}
-		data, rerr := os.ReadFile(filepath.Join(dir, entry.Name()))
+		names = append(names, entry.Name())
+	}
+
+	// os.ReadDir yields names ascending; reverse for newest-first (by the date
+	// in the run ID) so a positive maxScan keeps the newest window.
+	for i, j := 0, len(names)-1; i < j; i, j = i+1, j-1 {
+		names[i], names[j] = names[j], names[i]
+	}
+	if maxScan > 0 && len(names) > maxScan {
+		names = names[:maxScan]
+	}
+
+	for _, name := range names {
+		data, rerr := os.ReadFile(filepath.Join(dir, name))
 		if rerr != nil {
 			skipped++
 			continue
@@ -329,6 +375,24 @@ func ActiveRuns() ([]*Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	return activeOf(runs), nil
+}
+
+// ActiveRunsRecent is the bounded ActiveRuns for remote paths (status active,
+// resync snapshots): it only scans the newest remoteScanWindow records. Active
+// runs are executing right now and therefore recent, so the window never hides
+// one.
+func ActiveRunsRecent() ([]*Run, error) {
+	runs, _, err := RecentRuns()
+	if err != nil {
+		return nil, err
+	}
+	return activeOf(runs), nil
+}
+
+// activeOf filters a run list (already newest-first) to those being executed
+// by a live process.
+func activeOf(runs []*Run) []*Run {
 	active := make([]*Run, 0)
 	for _, r := range runs {
 		if r.Status != RunStatusRunning {
@@ -338,5 +402,5 @@ func ActiveRuns() ([]*Run, error) {
 			active = append(active, r)
 		}
 	}
-	return active, nil
+	return active
 }

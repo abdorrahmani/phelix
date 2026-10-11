@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
@@ -68,6 +69,88 @@ func remoteMatrixError(req *pb.MonitorCommandRequest, err error) *pb.MonitorComm
 		Error:     err.Error(),
 		ErrorCode: string(phelixerr.CodeOf(err)),
 	}
+}
+
+// remoteMatrixAuthorize is the execution-authorization gate for a mutating
+// remote matrix command (build / dockerize / resume / retry). It resolves the
+// target application — the named app for build/dockerize, the run's recorded
+// app for resume/retry — and runs it through the same authorizeDirectExecution
+// boundary a remote rebuild/rollback crosses, under authz.ActionMatrix.
+//
+// The grpc dispatcher (SetMatrixAuthorizer) calls it BEFORE the idempotency
+// ledger, and only for mutating, non-dry-run commands, so a refusal — or a
+// target that cannot be resolved — spends no idempotency key. Read-only
+// status/list and dry-run previews are never routed here.
+//
+// Scope decision (recorded here on purpose): this gates the backend-issued,
+// in-daemon path ONLY. The local CLI matrix build stays ungated, exactly like
+// the local `build` command, because a matrix build produces versioned
+// artifacts (is_current=false) without serving them — it is build-class, not
+// deploy-class, for the local trust model. The remote path is gated because an
+// in-daemon, backend-issued deploy-class mutation must not be the one that
+// bypasses the boundary (the same rationale as RemoteRollback).
+//
+// ponytail: remote-only gating. Upgrade path if the local matrix build should
+// also be gated: add authorizeDirectExecution(authz.ActionMatrix, …) to the
+// local runMatrixMode/resumeMatrixRun/matrix-retry commands — Phase 4
+// deliberately left local `build`-class paths ungated, so that is a policy
+// change, not a bug fix.
+func remoteMatrixAuthorize(req *pb.MonitorCommandRequest) error {
+	name, appID, err := remoteMatrixAuthzTarget(req)
+	if err != nil {
+		return err
+	}
+	return authorizeDirectExecution(authz.ActionMatrix, name, appID)
+}
+
+// remoteMatrixAuthzTarget resolves the (app name, app ID) a mutating matrix
+// command authorizes against. build/dockerize carry the app directly; resume
+// and retry carry a run whose recorded application is the real target (the
+// command may omit app_name entirely). A resolution failure is returned as-is:
+// a command that cannot even name its target is refused before any key is
+// spent, never silently allowed.
+func remoteMatrixAuthzTarget(req *pb.MonitorCommandRequest) (name, appID string, err error) {
+	switch req.GetType() {
+	case phelixgrpc.MatrixCommandBuild, phelixgrpc.MatrixCommandDockerize:
+		appInfo, aerr := GetAppInfo(req.GetAppName())
+		if aerr != nil {
+			return "", "", aerr
+		}
+		return appInfo.Name, appInfo.ID, nil
+	case phelixgrpc.MatrixCommandResume:
+		run, rerr := remoteResolveResumeTarget(req)
+		if rerr != nil {
+			return "", "", rerr
+		}
+		return run.AppName, matrixAppID(run.AppName), nil
+	case phelixgrpc.MatrixCommandRetry:
+		id, perr := matrix.ParseRunID(req.GetTarget())
+		if perr != nil {
+			return "", "", perr
+		}
+		source, lerr := matrix.LoadRun(id)
+		if lerr != nil {
+			return "", "", lerr
+		}
+		if req.GetAppName() != "" && req.GetAppName() != source.AppName {
+			return "", "", phelixerr.Newf(phelixerr.CodeInvalidArgument,
+				"matrix run %s belongs to application %q, not %q", source.ID, source.AppName, req.GetAppName())
+		}
+		return source.AppName, matrixAppID(source.AppName), nil
+	default:
+		return "", "", phelixerr.Newf(phelixerr.CodeInvalidArgument, "matrix command %q is not an authorizable mutation", req.GetType())
+	}
+}
+
+// matrixAppID best-effort resolves a registered application's ID from its name
+// for the authorization target. An empty ID is fine — the policy matches on
+// the app name and the ID is audit metadata — so a run whose application is no
+// longer registered still authorizes by name rather than failing.
+func matrixAppID(name string) string {
+	if info, err := GetAppInfo(name); err == nil {
+		return info.ID
+	}
+	return ""
 }
 
 // remoteMatrixProject resolves the target application and its project
@@ -370,11 +453,11 @@ func remoteMatrixResume(ctx context.Context, req *pb.MonitorCommandRequest, opts
 	if err != nil {
 		return remoteMatrixError(req, err)
 	}
-	combos := run.IncompleteCombinations()
 
 	// Dry run: preview what a resume would execute without touching the run
 	// — no lock, no ResumeCount bump, no history update, no builds.
 	if req.GetDryRun() {
+		combos := run.IncompleteCombinations()
 		preview := &pb.MatrixPlanPreview{
 			ResumeRunId: string(run.ID),
 			RunTotal:    int32(run.Total),
@@ -385,26 +468,26 @@ func remoteMatrixResume(ctx context.Context, req *pb.MonitorCommandRequest, opts
 		return &pb.MonitorCommandResult{Status: "success", MatrixPreview: preview}
 	}
 
-	run.ResumeCount++
-	run.Status = matrix.RunStatusRunning
-	buildArgs := run.Config.BuildArgs
+	var buildArgsOverride []string
 	if len(opts.GetBuildArgs()) > 0 {
-		buildArgs = opts.GetBuildArgs()
-		run.Config.BuildArgs = append([]string(nil), opts.GetBuildArgs()...)
-	}
-	if uerr := matrix.UpdateRun(run); uerr != nil {
-		return remoteMatrixError(req, uerr)
+		buildArgsOverride = opts.GetBuildArgs()
 	}
 
+	// The ResumeCount bump, the flip to running, the history write and the
+	// build all happen UNDER the run lock inside resumeMatrixSessionContext —
+	// never on the pre-lock read above — so a remote resume racing a local
+	// `phelix build --matrix --resume` (or a second request_id) cannot
+	// double-bump the run; the loser fails cleanly with CodeDeployLocked having
+	// mutated nothing.
 	rep := phelixgrpc.NewMatrixReporter(req.GetRequestId(), string(run.ID), run.AppName, phelixgrpc.MatrixModeNative)
-	_, interrupted, serr := startMatrixSessionContext(ctx, run, combos, buildArgs, false, remoteSessionEvents{rep: rep, resumed: true})
+	lockedRun, interrupted, serr := resumeMatrixSessionContext(ctx, run, buildArgsOverride, false, remoteSessionEvents{rep: rep, resumed: true})
 	if serr != nil {
-		return matrixRunTerminalResult(run, false, serr)
+		return matrixRunTerminalResult(lockedRun, false, serr)
 	}
 
-	completeMatrixSession(run, opts.GetTag())
-	rep.RunFinished(run, interrupted)
-	return matrixRunTerminalResult(run, interrupted, nil)
+	completeMatrixSession(lockedRun, opts.GetTag())
+	rep.RunFinished(lockedRun, interrupted)
+	return matrixRunTerminalResult(lockedRun, interrupted, nil)
 }
 
 // remoteResolveResumeTarget resolves the run a matrix_resume command
@@ -509,7 +592,7 @@ func remoteMatrixStatus(req *pb.MonitorCommandRequest, _ *pb.MatrixOptions) *pb.
 	target := req.GetTarget()
 
 	if target == "" || target == "active" {
-		active, err := matrix.ActiveRuns()
+		active, err := matrix.ActiveRunsRecent()
 		if err != nil {
 			return remoteMatrixError(req, err)
 		}
@@ -525,7 +608,7 @@ func remoteMatrixStatus(req *pb.MonitorCommandRequest, _ *pb.MatrixOptions) *pb.
 		}
 		// No active run: point at the most recent one for context, mirroring
 		// the local command's "No active Matrix Run. Most recent run: …".
-		runs, _, lerr := matrix.ListRuns()
+		runs, _, lerr := matrix.RecentRuns()
 		if lerr != nil {
 			return remoteMatrixError(req, lerr)
 		}
@@ -542,7 +625,7 @@ func remoteMatrixStatus(req *pb.MonitorCommandRequest, _ *pb.MatrixOptions) *pb.
 
 	var run *matrix.Run
 	if target == "latest" {
-		runs, _, err := matrix.ListRuns()
+		runs, _, err := matrix.RecentRuns()
 		if err != nil {
 			return remoteMatrixError(req, err)
 		}
@@ -589,7 +672,7 @@ func statusFilterSuffix(appName string) string {
 // of `phelix matrix list`. app_name optionally filters by application;
 // list_limit bounds the answer (default 20, hard cap 100).
 func remoteMatrixList(req *pb.MonitorCommandRequest, opts *pb.MatrixOptions) *pb.MonitorCommandResult {
-	runs, _, err := matrix.ListRuns()
+	runs, _, err := matrix.RecentRuns()
 	if err != nil {
 		return remoteMatrixError(req, err)
 	}
