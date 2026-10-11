@@ -594,6 +594,15 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, targ
 	if requestID != "" {
 		tracker.SetRequestID(requestID)
 	}
+	// A rollback's target version is known up front (unlike a forward deploy,
+	// whose version is minted during the build), so record it before the deploy
+	// emits its first event. Otherwise the started/building events carry an
+	// empty target_version and a backend that captures the deployment's version
+	// from them shows the from-version (current) instead of the rolled-back-to
+	// target. The deploy's own SetTargetVersion still re-states it after the
+	// build; a non-zero target set here is simply not erased in between
+	// (SetVersions ignores a 0 target).
+	tracker.SetTargetVersion(target)
 	op.setDeploymentID(tracker)
 	// Signal cancellation is wired only when verification is requested: the
 	// observation window is interruptible (Ctrl+C cancels verification, the
@@ -905,15 +914,11 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 			verifyStatus = string(verification.Status)
 		}
 		if verr != nil {
-			if res := op.result; res != nil {
-				res.Verification = verifyStatus
-			}
+			op.setVerification(verifyStatus)
 			return verr
 		}
 	}
-	if res := op.result; res != nil {
-		res.Verification = verifyStatus
-	}
+	op.setVerification(verifyStatus)
 	return op.writeResultEnv(machine.Success(op.operationID(), rollbackResult{
 		App:          appName,
 		FromVersion:  currentVer,

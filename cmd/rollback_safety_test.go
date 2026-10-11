@@ -89,7 +89,26 @@ func TestReplaceBinaryBackupRestore(t *testing.T) {
 	}
 }
 
-// TestRollbackVerifyFlagCapped pins local/remote verify-window parity: the
+// TestOpRunNilSafeForRemoteRollback guards the remote-rollback crash: the
+// remote path passes a nil *opRun into rollbackClassic / rollbackZeroDowntime,
+// so every opRun method those paths reach must be nil-safe. Before the fix,
+// rollbackClassic read op.result directly and panicked (nil dereference) right
+// after a successful classic rollback.
+func TestOpRunNilSafeForRemoteRollback(t *testing.T) {
+	var op *opRun // the remote rollback path's opRun is nil
+
+	// None of these may panic.
+	op.setResult(nil)
+	op.setVerification("passed")
+	op.setDeploymentID(nil)
+	if got := op.operationID(); got != "" {
+		t.Fatalf("nil opRun operationID = %q, want empty", got)
+	}
+	if got := op.requestIdForEvents(); got != "" {
+		t.Fatalf("nil opRun requestIdForEvents = %q, want empty", got)
+	}
+}
+
 // local --verify flag is bounded by the SAME shared constant
 // (deploy.MaxRollbackVerifyDuration) that the remote verify_duration_ms is held
 // to at the wire boundary, so the two can never diverge.
