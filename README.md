@@ -1,7 +1,7 @@
 # Phelix
 
 A single-binary CLI for building, running, versioning, and **zero-downtime
-deploying Go and Rust applications** on a host — with encrypted environment
+deploying Go and Rust applications** on a host, with encrypted environment
 variables, health checks, Docker workflows, and optional multi-server monitoring
 through a dashboard at `phelix.anophel.com`.
 
@@ -14,39 +14,39 @@ Shipping a change to a small fleet usually means stitching together a build step
 a process manager, a reverse proxy, a rollback plan, and some way to watch it all.
 Phelix folds that into one binary you run on the host: it compiles your app,
 records every build as a numbered version, and cuts traffic over to the new
-version only after it passes a health check — so a broken deploy never takes down
+version only after it passes a health check, so a broken deploy never takes down
 the running one. When something is wrong, you roll back to any retained version.
 
 It is **offline-first**: build, run, deploy, and roll back work with no account
-and no network. Logging in only adds dashboard sync — nothing leaves your machine
+and no network. Logging in only adds dashboard sync: nothing leaves your machine
 until you opt in, per application.
 
 ## Features
 
-- **Go & Rust** application lifecycle — build, run, rebuild, start/stop/restart,
-  status, logs.
-- **Versioned builds** — every build is `v1`, `v2`, … with optional `--tag`;
-  binary + encrypted env are snapshotted together.
-- **Zero-downtime deploys** — blue-green and rolling via the `phelix proxy`.
-- **Canary & progressive rollouts** — shift a traffic percentage, verify health
-  and metrics against the stable baseline, auto-rollback on regression.
-- **Rollback** — interactive picker or `--to`, dry-run preview, verification
-  window, automatic rollback on failed deploy, audited history.
-- **Health checks** — tiered deploy health gating (2xx / any-HTTP / TCP / PID).
-- **Docker** — generate optimized multi-stage images (`dockerize`), or run app
-  **instances as containers** under the proxy.
-- **Matrix builds** — toolchain-version × platform cross-product, with resume,
-  retries, per-artifact SHA-256, and release manifests.
-- **Build reports** — automatic per-build metrics and regression alerts, offline.
-- **Encrypted env vars** — AES-256-GCM at rest, injected at start, versioned.
-- **Per-instance resource limits** — CPU/memory via cgroups v2 (Linux).
-- **Git webhook deploys** — HMAC-authenticated push webhooks deploy the exact
-  pushed commit through the normal rebuild pipeline.
-- **Monitoring** — optional, per-app opt-in gRPC stream to the dashboard.
-- **Agent sessions** — durable, auditable tracking of one unit of agent work
-  across inspect → plan → apply → verify, so an interrupted agent can resume by
-  reading state. Tracking only — it grants no authorization and executes
-  nothing. See [Agent Execution Sessions](docs/guides/agent-sessions.md).
+- **Go & Rust** application lifecycle: build, run, rebuild, start/stop/restart,
+status, logs.
+- **Versioned builds**: every build is `v1`, `v2`, … with optional `--tag`;
+binary + encrypted env are snapshotted together.
+- **Zero-downtime deploys**: blue-green and rolling via the `phelix proxy`.
+- **Canary & progressive rollouts**: shift a traffic percentage, verify health
+and metrics against the stable baseline, auto-rollback on regression.
+- **Rollback**: interactive picker or `--to`, dry-run preview, verification
+window, automatic rollback on failed deploy, audited history.
+- **Health checks**: tiered deploy health gating (2xx / any-HTTP / TCP / PID).
+- **Docker**: generate optimized multi-stage images (`dockerize`), or run app
+**instances as containers** under the proxy.
+- **Matrix builds**: toolchain-version × platform cross-product, with resume,
+retries, per-artifact SHA-256, and release manifests.
+- **Build reports**: automatic per-build metrics and regression alerts, offline.
+- **Encrypted env vars**: AES-256-GCM at rest, injected at start, versioned.
+- **Per-instance resource limits**: CPU/memory via cgroups v2 (Linux).
+- **Git webhook deploys**: HMAC-authenticated push webhooks deploy the exact
+pushed commit through the normal rebuild pipeline.
+- **Monitoring**: optional, per-app opt-in gRPC stream to the dashboard.
+- **Agent sessions**: durable, auditable tracking of one unit of agent work
+across inspect → plan → apply → verify, so an interrupted agent can resume by
+reading state. Tracking only: it grants no authorization and executes
+nothing. See [Agent Execution Sessions](docs/guides/agent-sessions.md).
 
 See the [documentation index](#documentation) for details on any of these.
 
@@ -68,7 +68,7 @@ phelix init
 # Build and run an app (auto-detects Go or Rust)
 phelix build myapp --port 8080
 
-# Rebuild after a change — zero downtime via blue-green
+# Rebuild after a change with zero downtime via blue-green
 phelix rebuild myapp --blue-green
 
 # Roll back to the previous versioned build
@@ -76,7 +76,7 @@ phelix rollback myapp
 ```
 
 > **One requirement:** managed apps must listen on the port given by the `PORT`
-> environment variable rather than hardcoding one — see
+> environment variable rather than hardcoding one: see
 > [The PORT Contract](docs/getting-started/the-port-contract.md). Run
 > `phelix doctor` to check.
 
@@ -86,19 +86,19 @@ Full walk-through: [Quick Start](docs/getting-started/quick-start.md).
 
 **Deploy with zero downtime**
 ```bash
-phelix rebuild myapp --blue-green      # or: --replicas 3 for rolling
+phelix rebuild myapp --blue-green   # or: --replicas 3 for rolling
 ```
 → [Zero-downtime deployments](docs/guides/zero-downtime-deployments.md)
 
 **Ship to a slice of traffic first**
 ```bash
-phelix rebuild myapp --canary 5        # 5% canary, verify, then promote
+phelix rebuild myapp --canary 5    # 5% canary, verify, then promote
 ```
 → [Canary & progressive rollouts](docs/guides/canary-and-progressive-rollouts.md)
 
 **Roll back**
 ```bash
-phelix rollback myapp --to v7 --dry-run   # preview, then run without --dry-run
+phelix rollback myapp --to v7 --dry-run  # preview, then run without --dry-run
 ```
 → [Rollback](docs/guides/rollback.md)
 
@@ -118,19 +118,19 @@ PHELIX_WEBHOOK_SECRET=… phelix webhook
 
 Runnable, dependency-free starter projects under [`examples/`](examples/):
 
-- [Simple Go application](examples/simple-go/) — the minimal `PORT`-reading app.
-- [Simple Rust application](examples/simple-rust/) — the same, in Rust (stdlib only).
-- [Blue-green deployment](examples/blue-green/) — a zero-downtime deploy you can watch cut over.
-- [Docker runtime (Go)](examples/docker-go/) — Phelix runs the app as a container.
-- [Docker runtime (Rust)](examples/docker-rust/) — the same, in Rust.
-- [Docker + compose backing services (Go)](examples/docker-compose-go/) — Phelix runs the app on a shared network; docker-compose owns Redis.
-- [Docker + compose backing services (Rust)](examples/docker-compose-rust/) — the same, in Rust.
-- [Docker + compose profile (Go)](examples/docker-compose-profiles-go/) — app in compose for local dev, Phelix runs it on the server.
-- [Docker + compose profile (Rust)](examples/docker-compose-profiles-rust/) — the same, in Rust.
-- [Docker image built from a compose service (Go)](examples/docker-compose-aware-go/) — `deploy.docker.build: compose`.
-- [Docker image built from a compose service (Rust)](examples/docker-compose-aware-rust/) — the same, in Rust.
-- [Docker multiservice (Go)](examples/docker-compose-multiservice-go/) — several app services, one shared backing tier.
-- [Docker multiservice (Rust)](examples/docker-compose-multiservice-rust/) — the same, in Rust.
+- [Simple Go application](examples/simple-go/): the minimal `PORT`-reading app.
+- [Simple Rust application](examples/simple-rust/): the same, in Rust (stdlib only).
+- [Blue-green deployment](examples/blue-green/): a zero-downtime deploy you can watch cut over.
+- [Docker runtime (Go)](examples/docker-go/): Phelix runs the app as a container.
+- [Docker runtime (Rust)](examples/docker-rust/): the same, in Rust.
+- [Docker + compose backing services (Go)](examples/docker-compose-go/): Phelix runs the app on a shared network; docker-compose owns Redis.
+- [Docker + compose backing services (Rust)](examples/docker-compose-rust/): the same, in Rust.
+- [Docker + compose profile (Go)](examples/docker-compose-profiles-go/): app in compose for local dev, Phelix runs it on the server.
+- [Docker + compose profile (Rust)](examples/docker-compose-profiles-rust/): the same, in Rust.
+- [Docker image built from a compose service (Go)](examples/docker-compose-aware-go/): `deploy.docker.build: compose`.
+- [Docker image built from a compose service (Rust)](examples/docker-compose-aware-rust/): the same, in Rust.
+- [Docker multiservice (Go)](examples/docker-compose-multiservice-go/): several app services, one shared backing tier.
+- [Docker multiservice (Rust)](examples/docker-compose-multiservice-rust/): the same, in Rust.
 
 ## Documentation
 
@@ -186,13 +186,13 @@ Phelix is a single Cobra binary: thin commands in `cmd/` orchestrate domain
 packages in `internal/`, and all runtime state lives on disk under `~/.phelix/`.
 
 ```text
-your app  →  phelix CLI  →  build / deploy engine  →  runtime (host process or container)
-                                     │                        │
-                                     ▼                        ▼
-                          versioned state on disk      phelix proxy (public port)
-                                                              │
-                                                              ▼
-                                            optional gRPC monitoring → dashboard
+your app → phelix CLI → build / deploy engine → runtime (host process or container)
+                  │            │
+                  ▼            ▼
+            versioned state on disk   phelix proxy (public port)
+                              │
+                              ▼
+                     optional gRPC monitoring → dashboard
 ```
 
 Deploys are fail-safe by construction: a version is only promoted to `current`
@@ -218,14 +218,14 @@ leave your machine. See [Security](docs/guides/security.md).
 
 Phelix is **source-available** (not classic open source). The CLI in this
 repository is licensed under the **Functional Source License, Version 1.1, with
-an Apache 2.0 future license (FSL-1.1-ALv2)** — see [`LICENSE`](./LICENSE). Each
+an Apache 2.0 future license (FSL-1.1-ALv2)**: see [`LICENSE`](./LICENSE). Each
 released version converts to Apache 2.0 two years after its release.
 
 You may use, study, modify, and redistribute the CLI for any purpose **except a
 Competing Use** (reselling it or offering a competing hosted/dashboard service).
 You are very welcome to fork it and contribute changes back.
 
-- **"Phelix" name & logo** are trademarks of Mohammad Abdorrahmani — see [`TRADEMARK.md`](./TRADEMARK.md).
+- **"Phelix" name & logo** are trademarks of Mohammad Abdorrahmani: see [`TRADEMARK.md`](./TRADEMARK.md).
 - **Contributing** (DCO + CLA): see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 - **Plain-language summary** of what's allowed: see [`docs/licensing.md`](docs/licensing.md).
 
