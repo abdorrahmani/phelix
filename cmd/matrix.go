@@ -49,8 +49,6 @@ var matrixListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		// The malformed-file warning is terminal output only: in --json mode
-		// stdout must stay pure, machine-readable JSON.
 		if skipped > 0 && !matrixListJSON {
 			fmt.Printf("%s %d malformed matrix run %s skipped\n",
 				color.YellowString("⚠"), skipped, plural(skipped))
@@ -215,9 +213,7 @@ func printMatrixRun(run *matrix.Run) {
 			attempts = dim.Sprintf(" (attempt %d)", c.Attempts)
 		}
 		fmt.Printf("  %s %-35s %s%s\n", icon, c.ID, dim.Sprint(c.Duration), attempts)
-		// Include-rule metadata (e.g. tag: latest) travels with the
-		// combination into the run record; show renders it so the attributes
-		// are visible where the README promises them.
+
 		if len(c.Metadata) > 0 {
 			keys := make([]string, 0, len(c.Metadata))
 			for k := range c.Metadata {
@@ -351,9 +347,7 @@ func matrixFlagConflict(matrixFlagSet, matrixFlag bool, goVers, rustVers, platfo
 
 // validateMatrixFlagValues rejects explicitly-invalid numeric matrix flags
 // instead of silently falling back to the defaults: --matrix-concurrency must
-// be at least 1 and --matrix-retries at least 0. The *Set parameters tell
-// whether the flag was explicitly provided (an unset flag keeps its default,
-// which is valid).
+// be at least 1 and --matrix-retries at least 0.
 func validateMatrixFlagValues(concurrency int, concurrencySet bool, retries int, retriesSet bool) error {
 	if concurrencySet && concurrency <= 0 {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
@@ -367,7 +361,7 @@ func validateMatrixFlagValues(concurrency int, concurrencySet bool, retries int,
 }
 
 // dockerizeMatrixResolveInput assembles the convergence input for the
-// dockerize command from its own matrix flags and the loaded phelix.yaml —
+// dockerize command from its own matrix flags and the loaded phelix.yaml
 // the exact analogue of matrixResolveInput for `phelix build`, so both
 // commands activate, validate, and expand the matrix identically.
 func dockerizeMatrixResolveInput(cmd *cobra.Command, projCfg *project.Config, detectedLang builder.Language) matrix.ResolveInput {

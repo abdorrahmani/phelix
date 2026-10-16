@@ -41,17 +41,7 @@ func loadProjectConfigFrom(dir string) (*project.Config, error) {
 // syncProjectHealth applies the health endpoints declared in phelix.yaml to
 // the app's persisted health configuration (the same store that
 // `phelix health list/status` and the deploy health tiers read).
-//
-// phelix.yaml is the desired state: when the health block is present, its
-// endpoints replace the app's persisted endpoints on every build/rebuild.
-// Apps without a health block keep whatever was configured via the health
-// commands. HTTPMetrics opt-ins from `health set` are preserved.
-//
-// Endpoint identities survive the wholesale replace: ConfigManager.SaveConfig
-// carries each endpoint's ID over by name, so a rebuild is an update on the
-// backend rather than delete-all-then-recreate. Nothing is pushed over gRPC from
-// here — the monitor daemon reports the new configuration in the app's next
-// health snapshot (docs/health-backend-contract.md).
+
 func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) error {
 	if cfg == nil || cfg.Health == nil || len(cfg.Health.Endpoints) == 0 {
 		return nil
@@ -62,11 +52,6 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize health config", err)
 	}
 
-	// Mutate serializes the rebuild behind the health lock so a concurrent
-	// gRPC/daemon write cannot clobber it or read a torn file. The passed config
-	// is the current persisted state: its endpoints are replaced wholesale from
-	// phelix.yaml, while HTTPMetrics and the enabled flag are preserved (a build
-	// must not silently re-enable health an operator disabled remotely).
 	_, err = configMgr.Mutate(appID, appName, func(hc *health.AppHealthConfig) error {
 		hc.Endpoints = make(map[string]*health.HealthCheckConfig, len(cfg.Health.Endpoints))
 		for _, ep := range cfg.Health.Endpoints {
@@ -88,9 +73,6 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 			}
 		}
 
-		// Deploy tier mirrors `phelix health set`: only Mode and Path, taken from
-		// the first declared endpoint. Interval/Retries in the yaml describe the
-		// monitoring daemon's cadence and must not inflate the deploy deadline.
 		first := cfg.Health.Endpoints[0]
 		mode := health.TierModeAuto
 		if first.Mode != "" {
@@ -138,16 +120,7 @@ func syncProjectResources(cfg *project.Config, appID string) error {
 
 // syncProjectWatching applies the watching value declared in phelix.yaml to
 // the app's persisted flag (the same store `phelix watch` writes).
-//
-// phelix.yaml is the desired state: when the watching key is present, its
-// value overrides the app's persisted flag on every build/rebuild — a project
-// that declares `watching: enable` stays watched even if the app entry was
-// created disabled. A file without the key (older projects) leaves the
-// persisted flag untouched, which for a new app means the disabled default.
 func syncProjectWatching(cfg *project.Config, appID string) error {
-	// No phelix.yaml (loadProjectConfig's nil, nil for a missing file):
-	// nothing to apply. Watching must never affect the build itself, so this
-	// is a silent no-op, exactly like the health sync's nil guard.
 	if cfg == nil {
 		return nil
 	}
@@ -165,8 +138,6 @@ func syncProjectWatching(cfg *project.Config, appID string) error {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found in state", appID)
 	}
 
-	// Mutate-then-SaveState, the same pattern `phelix watch` and the rebuild
-	// flow's NoUpload flag use.
 	if info.Watching == enabled {
 		return nil
 	}
