@@ -24,7 +24,7 @@ func GoCacheStatusFromOutput(output string) buildreport.CacheStatus {
 // a "Finished" summary, whereas any "Compiling <crate>" line indicates real
 // compilation work (COLD). Warnings alone keep the status HIT.
 func RustCacheStatusFromOutput(output string) buildreport.CacheStatus {
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		if strings.HasPrefix(strings.TrimLeft(line, " "), "Compiling ") ||
 			strings.HasPrefix(strings.TrimLeft(line, " "), "Building ") {
 			return buildreport.CacheCold
@@ -41,9 +41,6 @@ var (
 // DetectCompilerVersion returns the normalized (major.minor) toolchain version
 // for lang, e.g. "1.27" for Go or "1.85" for Rust. An empty string means the
 // version could not be determined — callers must not fail a build over this.
-//
-// Cheap by design: one short-lived subprocess of an already-required
-// toolchain binary, executed once per build.
 func DetectCompilerVersion(lang Language) string {
 	switch lang {
 	case Go:

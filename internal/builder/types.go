@@ -45,7 +45,6 @@ type BuildConfig struct {
 	OutputPath     string    // Path where built binary should be placed
 	Language       Language  // Programming language
 	ExtraArgs      []string  // Extra build arguments
-	NoUpload       bool      // Whether to upload to server after building
 	CreatedAt      time.Time // When app was created
 	UpdatedAt      time.Time // Last update time
 	BuildStartTime time.Time // When build started (set during build)
@@ -56,13 +55,18 @@ type BuildConfig struct {
 	// it automatically; direct BuilderInterface users may leave it nil —
 	// builders must tolerate a nil pointer (additive, optional).
 	Observe *BuildObservation
+
+	// Scan is the project traversal shared with validation and language
+	// detection. PrepareBuild supplies it so one walk serves the whole build;
+	// a nil Scan (direct BuildConfig users, tests) falls back to fresh scan.
+	Scan *ProjectScan
 }
 
 // BuildObservation collects non-fatal telemetry emitted by one build run.
 // Builders populate it best-effort: an undeterminable value simply stays
 // unknown and never influences build success.
 type BuildObservation struct {
-	// CacheStatus records whether the compile came from cache
+	// CacheStatus records whether to compile came from cache
 	// (buildreport.CacheHit), did real compilation work (buildreport.CacheCold)
 	// or could not be determined (buildreport.CacheUnknown).
 	CacheStatus buildreport.CacheStatus
@@ -88,8 +92,9 @@ type BuilderInterface interface {
 	// Name returns the builder's language name
 	Name() Language
 
-	// Validate checks if the project is valid for this builder
-	Validate(projectRoot string) error
+	// Validate checks that the project is valid for this builder, reading the
+	// shared project scan rather than walking the tree again.
+	Validate(scan *ProjectScan) error
 
 	// Build performs the build operations
 	Build(config BuildConfig) error
@@ -111,7 +116,7 @@ func NewBuilderFactory() *BuilderFactory {
 	bf := &BuilderFactory{
 		builders: make(map[Language]BuilderInterface),
 	}
-	// Register builders
+
 	bf.Register(Go, NewGoBuilder())
 	bf.Register(Rust, NewRustBuilder())
 	return bf

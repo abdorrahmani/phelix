@@ -50,8 +50,6 @@ type AppInfo struct {
 	logFileHandle *os.File
 	// Language represents the programming language of the project (go, rust, ...)
 	Language string
-	// NoUpload indicates whether this app should be uploaded/shared with the server
-	NoUpload bool
 	// AutoStart indicates the app was intentionally started and should be
 	// restored the next time the phelix monitor daemon launches (e.g. after a
 	// machine reboot). Set to true whenever the app is started, cleared on an

@@ -1,8 +1,6 @@
 package builder
 
 import (
-	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,35 +22,21 @@ func (gb *GoBuilder) Name() Language {
 	return Go
 }
 
-// Validate checks if a valid Go project exists at the given root
-func (gb *GoBuilder) Validate(projectRoot string) error {
-	if _, err := os.Stat(projectRoot); os.IsNotExist(err) {
-		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", projectRoot)
+// Validate checks that scan describes a buildable Go project.
+func (gb *GoBuilder) Validate(scan *ProjectScan) error {
+	if scan == nil {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "validate : no project scan")
 	}
 
-	// Check for go.mod or main.go
-	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
+	if !scan.Exists {
+		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", scan.Root)
+	}
+
+	if scan.RootFile("go.mod") || scan.RootFile("main.go") {
 		return nil
 	}
 
-	if _, err := os.Stat(filepath.Join(projectRoot, "main.go")); err == nil {
-		return nil
-	}
-
-	// Try to find any main.go file
-	found := false
-	_ = filepath.WalkDir(projectRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || found {
-			return nil
-		}
-		if !d.IsDir() && d.Name() == "main.go" {
-			found = true
-			return io.EOF
-		}
-		return nil
-	})
-
-	if found {
+	if scan.HasMainFile() {
 		return nil
 	}
 
@@ -60,8 +44,6 @@ func (gb *GoBuilder) Validate(projectRoot string) error {
 }
 
 // observeCache records cache telemetry into config.Observe when present.
-// Best-effort by design: a nil observation or unknown status simply leaves
-// the report's cache section unknown.
 func observeCache(config BuildConfig, status buildreport.CacheStatus, source string) {
 	if config.Observe == nil {
 		return
@@ -75,18 +57,19 @@ func observeCache(config BuildConfig, status buildreport.CacheStatus, source str
 
 // Build performs a Go build
 func (gb *GoBuilder) Build(config BuildConfig) error {
-	mainFile, err := gb.findMainFile(config.ProjectRoot)
-	if err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeUnsupportedProject, err, "failed to find main.go")
+	scan := config.Scan
+
+	if scan == nil {
+		scan = NewProjectScan(config.ProjectRoot)
+	}
+
+	mainFile := scan.FirstMainFile()
+	if mainFile == "" {
+		return phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
 	}
 
 	relPath, _ := filepath.Rel(config.ProjectRoot, mainFile)
 
-	// Build command arguments.
-	//
-	// `-v` makes `go build` print every package being compiled, which is how
-	// the build report distinguishes a cache COLD build from a cache HIT (all
-	// packages up to date). It does not change what is compiled or linked.
 	args := []string{"build", "-v"}
 
 	// Add extra arguments from user (e.g., -ldflags, -tags, etc.)
@@ -94,7 +77,6 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 		args = append(args, config.ExtraArgs...)
 	}
 
-	// Output path
 	args = append(args, "-o", config.OutputPath, relPath)
 
 	cmd := exec.Command("go", args...)
@@ -102,11 +84,6 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// The compiler output is not embedded in the message. It is kept as a
-		// bounded tail on the ToolError so the CLI error reporter can classify
-		// known go.mod failures and show raw diagnostics; the underlying
-		// *exec.ExitError (and its exit code) is preserved through the wraps so
-		// errors.As / errors.Is still reach it.
 		return phelixerr.Wrapf(
 			phelixerr.CodeBuildFailed,
 			&ToolError{Tool: "go", Output: tailOutput(output), Err: err},
@@ -157,26 +134,4 @@ func (gb *GoBuilder) GetBuildFlags() []string {
 		"-work",
 		"-x",
 	}
-}
-
-// findMainFile searches for a main.go file in the project root
-func (gb *GoBuilder) findMainFile(root string) (string, error) {
-	var mainFile string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && d.Name() == "main.go" {
-			mainFile = path
-			return io.EOF
-		}
-		return nil
-	})
-	if err != nil && err != io.EOF {
-		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "error searching for main.go")
-	}
-	if mainFile == "" {
-		return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
-	}
-	return mainFile, nil
 }

@@ -89,7 +89,6 @@ func (m *AppManager) SaveState() error {
 		UpdatedAt   time.Time        `json:"updated_at"`
 		Directory   string           `json:"directory"`
 		Language    string           `json:"language"`
-		NoUpload    bool             `json:"no_upload"`
 		AutoStart   bool             `json:"auto_start"`
 		Watching    bool             `json:"watching"`
 		Resources   resources.Config `json:"resources,omitzero"`
@@ -110,7 +109,6 @@ func (m *AppManager) SaveState() error {
 			UpdatedAt:   app.UpdatedAt,
 			Directory:   app.Directory,
 			Language:    app.Language,
-			NoUpload:    app.NoUpload,
 			AutoStart:   app.AutoStart,
 			Watching:    app.Watching,
 			Resources:   app.Resources,
@@ -173,7 +171,6 @@ func (m *AppManager) LoadState() error {
 		UpdatedAt   time.Time        `json:"updated_at"`
 		Directory   string           `json:"directory"`
 		Language    string           `json:"language"`
-		NoUpload    bool             `json:"no_upload"`
 		AutoStart   bool             `json:"auto_start"`
 		Watching    bool             `json:"watching"`
 		Resources   resources.Config `json:"resources,omitzero"`
@@ -217,7 +214,6 @@ func (m *AppManager) LoadState() error {
 		}
 		// restore language and no-upload flag
 		appInfo.Language = saved.Language
-		appInfo.NoUpload = saved.NoUpload
 
 		// Watching is a plain copy: state files that predate the field
 		// unmarshal to false, which is the required default — an upgrade

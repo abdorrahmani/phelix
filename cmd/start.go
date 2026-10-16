@@ -213,7 +213,7 @@ func ensureNewApplication(name string, port int) error {
 	fmt.Printf("%s Application %s does not exist. Building it with ID: %s\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(id))
 	fmt.Printf("  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
 
-	if err := createAppEntry(id, name, lang, noUpload); err != nil {
+	if err := createAppEntry(id, name, lang); err != nil {
 		return err
 	}
 

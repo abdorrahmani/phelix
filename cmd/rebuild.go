@@ -26,7 +26,6 @@ import (
 
 var rebuildPort int
 var rebuildArgs []string
-var rebuildNoUpload bool
 var rebuildBlueGreen bool
 var rebuildReplicas int
 var rebuildStrategy string
@@ -310,7 +309,6 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 func init() {
 	RebuildCmd.Flags().IntVarP(&rebuildPort, "port", "p", 8080, "Port to run the application on (defaults to previous port if unspecified)")
 	RebuildCmd.Flags().StringArrayVarP(&rebuildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
-	RebuildCmd.Flags().BoolVar(&rebuildNoUpload, "no-upload", false, "If set, do not upload/send app information to the server after rebuild")
 	RebuildCmd.Flags().StringVar(&rebuildStrategy, "strategy", "", "Deployment strategy for this rebuild only: classic, blue-green, rolling, canary, or progressive (overrides phelix.yaml, never written to it)")
 	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
@@ -838,7 +836,6 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, s
 		outputPath,
 		lang,
 		extraArgs,
-		appInfo.NoUpload,
 	)
 	if err != nil {
 		printFailedBuildSummary(lang, nil)
