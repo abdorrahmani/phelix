@@ -41,12 +41,12 @@ func (bm *BuildManager) DetectLanguage(projectRoot string) Language {
 // detectLanguageFrom determines the language based on the project scan
 func detectLanguageFrom(s *ProjectScan) Language {
 	// Maker files are only meaningful at the root of the project, so we only check the root files.
-	if s.RootFile("main.go") || s.RootFile("go.mod") {
-		return Go
-	}
-
 	if s.RootFile("Cargo.toml") {
 		return Rust
+	}
+
+	if s.RootFile("main.go") || s.RootFile("go.mod") {
+		return Go
 	}
 
 	// Fallback: any .go file declaring package main, outside ignoredDirs.
