@@ -55,30 +55,21 @@ var BuildCmd = &cobra.Command{
 	Long:  "Compiles an application from the current directory (auto-detects language) with the given name and starts it immediately",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
-		// Machine mode: progress detours to stderr for the whole command so
-		// the JSON envelope stays alone on stdout.
 		if buildJSON {
 			restore := machine.EnterJSON()
 			defer restore()
 		}
 
-		// Project configuration (phelix.yaml) supplies name/port defaults.
-		// A missing file is fine; a present-but-invalid file fails fast here
-		// so a broken config can never silently affect the build.
 		projCfg, err := loadProjectConfig()
 		if err != nil {
 			return err
 		}
 
-		// --resume continues an interrupted matrix run. It implies matrix
-		// mode and needs no application name — the run record carries it —
-		// so it is handled before name resolution/prompting.
 		if matrixResume != "" {
 			return resumeMatrixRun(args, projCfg, buildArgs, buildTag, buildDebug)
 		}
 
 		if len(args) == 0 && projCfg != nil && projCfg.Name != "" {
-			// phelix.yaml supplies the name; no prompt.
 			args = []string{projCfg.Name}
 		}
 		if len(args) == 0 {
@@ -97,22 +88,12 @@ var BuildCmd = &cobra.Command{
 
 		name := args[0]
 
-		// Conflicting matrix flags fail fast: an explicit --matrix=false next
-		// to dimension flags must not silently drop the requested
-		// versions/platforms behind a plain single build.
 		if ferr := matrixFlagConflict(cmd.Flags().Changed("matrix"), matrixFlag, goVersions, rustVersions, platforms); ferr != nil {
 			return ferr
 		}
 
-		// Precedence: CLI flag > phelix.yaml > default. When --port was not
-		// passed, a phelix.yaml in the current directory supplies the port.
-		// Matrix activity includes the phelix.yaml matrix profile (enabled
-		// profiles activate the matrix without --matrix).
 		isMatrix := matrixActive(cmd, projCfg)
 		if isMatrix {
-			// Explicitly-set numeric matrix flags are validated before any
-			// build output starts: --matrix-concurrency 0 or a negative
-			// --matrix-retries used to be silently replaced by the defaults.
 			if ferr := validateMatrixFlagValues(matrixConcurrency, cmd.Flags().Changed("matrix-concurrency"), matrixRetries, cmd.Flags().Changed("matrix-retries")); ferr != nil {
 				return ferr
 			}
@@ -122,9 +103,6 @@ var BuildCmd = &cobra.Command{
 				buildPort = projCfg.Port
 			}
 
-			// When neither the flag nor the config supplied a port, offer to
-			// choose it interactively (defaults to the configured or default
-			// port). A config-supplied value is used as-is, without prompting.
 			if projCfg == nil || projCfg.Port == 0 {
 				if IsInteractive() {
 					chosen, err := PromptInt("Port to run the application on", buildPort)
@@ -136,9 +114,6 @@ var BuildCmd = &cobra.Command{
 			}
 		}
 
-		// Matrix builds compile artifacts for other platforms and never start
-		// a local instance — port validation/availability is irrelevant and
-		// must not block them (e.g. when the default port is already in use).
 		if !isMatrix {
 			if err := phelixport.Validate(buildPort); err != nil {
 				return err
@@ -148,8 +123,6 @@ var BuildCmd = &cobra.Command{
 			}
 		}
 
-		// Build/run works without a session. Dashboard upload (metrics, events)
-		// is skipped until the user logs in.
 		if !auth.IsLoggedIn() {
 			fmt.Printf("  %s Not logged in — this build will run normally, but no metrics or events will be sent to the phelix.anophel.com dashboard. Run %s to enable monitoring.\n",
 				color.YellowString("Note:"), color.CyanString("'phelix auth login'"))
@@ -163,13 +136,11 @@ var BuildCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
-		// Get project root
 		currentDir, err := os.Getwd()
 		if err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
 		}
 
-		// Detect language
 		buildMgr := builder.NewBuildManager()
 		lang := buildMgr.DetectLanguage(currentDir)
 		if !lang.IsSupported() {
@@ -180,22 +151,6 @@ var BuildCmd = &cobra.Command{
 			)
 		}
 
-		// --- Matrix build path ---
-		// Active when --matrix is set, version/platform flags are provided,
-		// or the phelix.yaml matrix profile is enabled. CLI flags, the YAML
-		// profile, and the wizard all converge into one normalized profile
-		// (matrix.Resolve) before the engine expands and executes it.
-		//
-		// Matrix builds compile artifacts for an existing application just as
-		// much as for a new one — they never register an app entry or start an
-		// instance, so the unique-name check below does not apply here.
-		//
-		// Operation identity: a matrix build already owns a durable identity —
-		// the mx_ run record — so no second ID is minted; the JSON envelope
-		// exposes the run ID as the operation identity. Request-key
-		// idempotency is deliberately not offered on build (naturally
-		// repeatable, version-minting; matrix runs carry their own resume and
-		// retry lineage) — see docs/reference/machine-contract.md.
 		var op *opRun
 		if !isMatrix {
 			op = newOpRun(ops.KindBuild, name, "")
@@ -210,22 +165,14 @@ var BuildCmd = &cobra.Command{
 			return runMatrixMode(name, lang, currentDir, buildArgs, noUpload, buildTag, prof)
 		}
 
-		// --- Standard single-artifact build path ---
-		// The classic path creates a new app entry, so the name must be free.
-		// (Checked here, after the matrix branch: matrix builds record
-		// artifacts under the app's version history without registering it.)
 		if err := validateUniqueName(name); err != nil {
 			return err
 		}
 
-		// Docker runtime: the first deploy is a CONTAINER deploy, not a native
-		// classic start. Hand off to the zero-downtime engine (image build →
-		// container → health → proxy enrol); the host toolchain is not needed.
 		if projCfg.DeployRuntime() == project.RuntimeDocker {
 			return runDockerInitialBuild(cmd, projCfg, name, buildPort, currentDir, lang, noUpload, op)
 		}
 
-		// Check toolchain; prompt to install if missing
 		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
 		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
@@ -242,16 +189,11 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 
-		// Apply the watching value declared in phelix.yaml (desired state) to
-		// the app's persisted flag. A file without the key leaves the
-		// just-created entry at the disabled default.
 		if serr := syncProjectWatching(projCfg, id); serr != nil {
 			fmt.Printf("  %s Warning: could not apply watching from %s: %v\n",
 				color.YellowString("⚠"), project.FileName, serr)
 		}
 
-		// Apply health endpoints declared in phelix.yaml (desired state) to
-		// the app's persisted health configuration before the app starts.
 		if serr := syncProjectHealth(projCfg, id, name, buildPort); serr != nil {
 			fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
 				color.YellowString("⚠"), project.FileName, serr)
@@ -269,12 +211,6 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 
-		// --- Version recording ------------------------------------------------
-		// The build succeeded. Record a new version with is_current=false.
-		// The version becomes "current" only after the deploy (start) succeeds
-		// and PromoteVersion is called below. This two-phase approach ensures
-		// that a build which succeeds but whose start fails leaves the version
-		// on disk for inspection but never becomes the active running instance.
 		gitCommit := deploy.DetectGitCommit(currentDir)
 		logger := &colorLogger{}
 		rec, verErr := deploy.RecordFreshBuild(
@@ -285,21 +221,14 @@ var BuildCmd = &cobra.Command{
 			deploy.DefaultRetention{Max: 5}, logger,
 		)
 		if verErr != nil {
-			// Version recording is best-effort for the initial build path.
-			// If it fails, the build still succeeded — we warn but don't abort.
 			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
 		} else {
 			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
 			tracker.SetTargetVersion(rec.Version)
 		}
 
-		// --- Build Report + regression analysis ---------------------------------
-		// Pure observability: printed after recording; never affects success.
 		emitBuildReport(name, report, gitCommit, rec, verErr)
 
-		// Structured build-report sync (best-effort; gated on the "build_report"
-		// capability and a session). The regression deltas are computed inside
-		// ReportBuildEventForApp from versions.json, mirroring emitBuildReport.
 		buildVer := 0
 		if rec != nil {
 			buildVer = rec.Version
@@ -310,9 +239,6 @@ var BuildCmd = &cobra.Command{
 			err := auth.SendAppsToServer()
 			switch {
 			case errors.Is(err, auth.ErrNotLoggedIn):
-				// Not logged in — the user was already told at the top of the
-				// build that dashboard sync is skipped. Stay silent here so the
-				// note isn't repeated.
 			case err != nil:
 				fmt.Printf("%s Warning: Failed to send app information to server: %v\n", color.YellowString("⚠"), err)
 			default:
@@ -323,18 +249,11 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if err := startApplication(id, name); err != nil {
-			// Deploy (start) failed. The version exists on disk in
-			// builds/vN/ but is_current was never set to true and
-			// PromoteVersion was never called, so the user can inspect
-			// or retry without having a broken "current" pointer.
 			tracker.Failed(err)
 			return err
 		}
 		tracker.InstanceStarted("", classicPID(id), buildPort)
 
-		// Deploy succeeded — promote the version so it becomes current.
-		// This updates versions.json (is_current, deployed_at) and the
-		// current → builds/vN symlink.
 		if rec != nil {
 			if err := deploy.PromoteVersion(name, rec.Version, "classic"); err != nil {
 				fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
@@ -346,7 +265,6 @@ var BuildCmd = &cobra.Command{
 		fmt.Printf("%s Application %s (ID: %s) started successfully on port %d\n",
 			color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(id), buildPort)
 
-		// Report build event
 		phelixgrpc.ReportEvent(id, name, "build", true, "", 0, "classic", "")
 		phelixgrpc.SendVersionListForApp(id, name, currentDir)
 
@@ -438,7 +356,7 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 }
 
 // buildApplication runs the compile step and returns the captured build
-// report for the successful build. On failure it prints a concise post-mortem
+// report for the successful build. On failure, it prints a concise post-mortem
 // summary (never persists anything) and returns the error unchanged.
 func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager, outputPath string) (report *buildreport.Report, err error) {
 	appInfo := app.Manager.(*app.AppManager).Apps[id]
@@ -451,7 +369,6 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 	}
 	projectRoot := appInfo.Directory
 
-	// Detect language
 	lang := builder.ParseLanguage(appInfo.Language)
 	if !lang.IsSupported() {
 		lang = buildMgr.DetectLanguage(projectRoot)
@@ -466,7 +383,6 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		}
 	}()
 
-	// Prepare build context
 	buildCtx, prepErr := buildMgr.PrepareBuild(
 		id,
 		appInfo.Name,
@@ -490,9 +406,8 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 	}
 
 	progress.Update(fmt.Sprintf("compiling %s", buildMgr.FormatLanguage(lang)), 0, 0)
-	// Execute build
+
 	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
-		// Failed builds are never recorded as versions; print post-mortem.
 		printFailedBuildSummary(lang, buildCtx.Config)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if appInfo, exists := appManager.Apps[id]; exists {
@@ -509,7 +424,6 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 
 	progress.Finish("done")
 
-	// Update build status
 	if appManager, ok := app.Manager.(*app.AppManager); ok {
 		if appInfoPtr, exists := appManager.Apps[id]; exists {
 			appInfoPtr.BuildStatus = "success"
@@ -541,18 +455,6 @@ func startApplicationOnPort(id, name string, port int) error {
 // runMatrixMode executes a matrix build from a normalized profile (the same
 // representation CLI flags, the phelix.yaml matrix profile, and the wizard
 // converge into): base Cartesian product → include → exclude.
-//
-// Every execution gets a Matrix Run ID; the run (configuration snapshot +
-// per-combination results) is persisted to the local run history before the
-// first build starts and updated as each combination completes, so an
-// interrupted run can be resumed with --resume (`phelix build --matrix
-// --resume`) without rebuilding completed combinations.
-//
-// Build phase uses fail-open semantics: if one combination fails, we continue
-// building the rest. This is deliberate — a matrix build produces multiple
-// artifacts and users need to know which combinations are broken, not just that
-// "something failed". The full summary at the end shows exactly what succeeded
-// and what failed, with error details per failure.
 func runMatrixMode(name string, lang builder.Language, projectRoot string, extraArgs []string, noUpload bool, tag string, prof *matrix.Profile) error {
 	// Expand and validate the plan — the same Expand engine (base product →
 	// include → exclude) every matrix path uses.
@@ -577,13 +479,8 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 		return nil
 	}
 
-	// Every matrix execution is identified by a Matrix Run; the run snapshot
-	// (effective configuration at execution time) is taken before building,
-	// persisted immediately, and updated as combinations complete.
 	runID := matrix.NewUniqueRunID(time.Now())
 	fmt.Printf("%s Matrix Run: %s\n", color.BlueString("→"), color.CyanString(string(runID)))
-	// The run ID is the operation identity of this build — register it before
-	// any outcome so a failure envelope is correlatable too.
 	machine.SetActiveOperation(string(runID))
 
 	run := matrix.NewRun(runID, name, projectRoot, prof, time.Now())
@@ -598,14 +495,8 @@ func runMatrixMode(name string, lang builder.Language, projectRoot string, extra
 		return err
 	}
 
-	// Report (terminal + JSON) and version recording for the whole run.
 	completeMatrixSession(run, tag)
 
-	// Return an error when combinations failed or the run was interrupted, so
-	// the CLI exit code is non-zero. The user sees the full report above —
-	// this just ensures scripts can detect failures. On failure paths the
-	// error boundary emits the single JSON error envelope (the run ID is the
-	// registered operation identity); a success envelope is written here.
 	switch {
 	case interrupted:
 		return phelixerr.Newf(
