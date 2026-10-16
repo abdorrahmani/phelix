@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 ) // RustBuilder builds Rust projects
+
 type RustBuilder struct{}
 
 // NewRustBuilder creates a new Rust builder
@@ -102,13 +104,7 @@ func cargoFailureMessage(err error, config BuildConfig) string {
 // happily mistook for the binary).
 func (rb *RustBuilder) GetBinaryPath(config BuildConfig) (string, error) {
 	// Determine if it's a release build
-	isRelease := false
-	for _, arg := range config.ExtraArgs {
-		if arg == "--release" {
-			isRelease = true
-			break
-		}
-	}
+	isRelease := slices.Contains(config.ExtraArgs, "--release")
 
 	buildType := "debug"
 	if isRelease {
@@ -117,7 +113,7 @@ func (rb *RustBuilder) GetBinaryPath(config BuildConfig) (string, error) {
 	targetDir := filepath.Join(config.ProjectRoot, "target", buildType)
 
 	pkgName := rb.getPackageNameFromCargo(config.ProjectRoot)
-	candidates := []string{}
+	var candidates []string
 	if pkgName != "" {
 		candidates = append(candidates, pkgName)
 	}
@@ -176,7 +172,7 @@ func binNamesFromCargo(projectRoot string) []string {
 
 	var names []string
 	inBin := false
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") {
 			inBin = trimmed == "[[bin]]"
@@ -231,7 +227,7 @@ func (rb *RustBuilder) getPackageNameFromCargo(projectRoot string) string {
 		return ""
 	}
 
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "name") && strings.Contains(line, "=") {
 			parts := strings.SplitN(line, "=", 2)
