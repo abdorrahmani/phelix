@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +30,6 @@ const (
 var (
 	buildPort int
 	buildArgs []string
-	noUpload  bool
 	buildTag  string
 
 	// Matrix build flags.
@@ -162,7 +160,7 @@ var BuildCmd = &cobra.Command{
 			if rerr != nil {
 				return rerr
 			}
-			return runMatrixMode(name, lang, currentDir, buildArgs, noUpload, buildTag, prof)
+			return runMatrixMode(name, currentDir, buildArgs, buildTag, prof)
 		}
 
 		if err := validateUniqueName(name); err != nil {
@@ -170,7 +168,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if projCfg.DeployRuntime() == project.RuntimeDocker {
-			return runDockerInitialBuild(cmd, projCfg, name, buildPort, currentDir, lang, noUpload, op)
+			return runDockerInitialBuild(cmd, projCfg, name, buildPort, currentDir, lang, op)
 		}
 
 		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
@@ -182,7 +180,7 @@ var BuildCmd = &cobra.Command{
 		fmt.Printf("%s Building application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(id))
 		fmt.Printf("  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
 
-		if err := createAppEntry(id, name, lang, noUpload); err != nil {
+		if err := createAppEntry(id, name, lang); err != nil {
 			return err
 		}
 		if err := syncProjectResources(projCfg, id); err != nil {
@@ -235,19 +233,6 @@ var BuildCmd = &cobra.Command{
 		}
 		phelixgrpc.ReportBuildEventForApp(id, name, "classic", true, buildVer, buildTag, gitCommit, report, "")
 
-		if !noUpload {
-			err := auth.SendAppsToServer()
-			switch {
-			case errors.Is(err, auth.ErrNotLoggedIn):
-			case err != nil:
-				fmt.Printf("%s Warning: Failed to send app information to server: %v\n", color.YellowString("⚠"), err)
-			default:
-				fmt.Printf("%s App information uploaded to server\n", color.BlueString("→"))
-			}
-		} else {
-			fmt.Printf("  %s Skipping upload to server (--no-upload was set)\n", color.YellowString("Note:"))
-		}
-
 		if err := startApplication(id, name); err != nil {
 			tracker.Failed(err)
 			return err
@@ -285,7 +270,6 @@ var BuildCmd = &cobra.Command{
 func init() {
 	BuildCmd.Flags().IntVarP(&buildPort, "port", "p", defaultPort, "Port to run the application on")
 	BuildCmd.Flags().StringArrayVarP(&buildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
-	BuildCmd.Flags().BoolVar(&noUpload, "no-upload", false, "If set, do not upload/send app information to the server")
 	BuildCmd.Flags().StringVar(&buildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
 
 	// Matrix build flags.
@@ -323,7 +307,7 @@ func validateUniqueName(name string) error {
 	return nil
 }
 
-func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
+func createAppEntry(id, name string, lang any) error {
 	if appManager, ok := app.Manager.(*app.AppManager); ok {
 		now := time.Now()
 		currentDir, err := os.Getwd()
@@ -331,7 +315,6 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
 		}
 
-		// Convert lang to string
 		langStr := "unknown"
 		if langBuilt, ok := lang.(builder.Language); ok {
 			langStr = string(langBuilt)
@@ -348,7 +331,6 @@ func createAppEntry(id, name string, lang interface{}, noUpload bool) error {
 			UpdatedAt:   now,
 			Directory:   currentDir,
 			Language:    langStr,
-			NoUpload:    noUpload,
 		}
 		return appManager.SaveState()
 	}
@@ -455,9 +437,7 @@ func startApplicationOnPort(id, name string, port int) error {
 // runMatrixMode executes a matrix build from a normalized profile (the same
 // representation CLI flags, the phelix.yaml matrix profile, and the wizard
 // converge into): base Cartesian product → include → exclude.
-func runMatrixMode(name string, lang builder.Language, projectRoot string, extraArgs []string, noUpload bool, tag string, prof *matrix.Profile) error {
-	// Expand and validate the plan — the same Expand engine (base product →
-	// include → exclude) every matrix path uses.
+func runMatrixMode(name string, projectRoot string, extraArgs []string, tag string, prof *matrix.Profile) error {
 	plan, err := prof.Plan()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid matrix build plan", err)

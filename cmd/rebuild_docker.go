@@ -239,7 +239,7 @@ func warnIfComposeManaged(ctx context.Context, log deploy.Logger, appName, svc s
 //
 // The host Go/Rust toolchain is not required here — the image is built with the
 // toolchain inside the container — so this checks for Docker instead.
-func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name string, publicPort int, currentDir string, lang builder.Language, noUpload bool, op *opRun) error {
+func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name string, publicPort int, currentDir string, lang builder.Language, op *opRun) error {
 	if err := docker.CheckDockerAvailable(); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeDockerDaemonUnavailable, err,
 			"docker runtime: Docker is required to build and run %q as a container", name)
@@ -250,7 +250,7 @@ func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name str
 		color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(id))
 	fmt.Printf("  Language: %s\n", color.GreenString(string(lang)))
 
-	if err := createAppEntry(id, name, lang, noUpload); err != nil {
+	if err := createAppEntry(id, name, lang); err != nil {
 		return err
 	}
 	if err := syncProjectResources(projCfg, id); err != nil {
