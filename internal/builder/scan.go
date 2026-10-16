@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// ignoreDirs is a set of directory names that should be ignored during scanning.
-var ignoreDirs = map[string]bool{
+// ignoredDirs is a set of directory names that should be ignored during scanning.
+var ignoredDirs = map[string]bool{
 	".git":         true,
 	"vendor":       true,
 	"node_modules": true,
@@ -20,12 +20,16 @@ type ProjectScan struct {
 	Root   string
 	Exists bool
 
-	// mainFiles holds every file named main.go found outside ignoreDirs, in
+	// mainFiles holds every file named main.go found outside ignoredDirs, in
 	// deterministic walk order.
 	mainFiles []string
 
-	// hashMainPkg records that some .go file declares "package main".
-	hashMainPkg bool
+	// hasMainPkg records that some .go file declares "package main".
+	hasMainPkg bool
+
+	// ignored holds directory names from the root .gitignore, merged over
+	// ignoredDirs.
+	ignored map[string]bool
 }
 
 // NewProjectScan scans the given root directory for Go files and packages, returning a ProjectScan struct with the results.
@@ -41,13 +45,15 @@ func NewProjectScan(root string) *ProjectScan {
 		return s
 	}
 
+	s.ignored = loadGitignoreDirs(root)
+
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return nil
 		}
 
 		if d.IsDir() {
-			if path != root && ignoreDirs[d.Name()] {
+			if path != root && s.skipped(d.Name()) {
 				return fs.SkipDir
 			}
 			return nil
@@ -57,8 +63,8 @@ func NewProjectScan(root string) *ProjectScan {
 			s.mainFiles = append(s.mainFiles, path)
 		}
 
-		if !s.hashMainPkg && strings.HasSuffix(d.Name(), ".go") && declaresMainPackage(path) {
-			s.hashMainPkg = true
+		if !s.hasMainPkg && strings.HasSuffix(d.Name(), ".go") && declaresMainPackage(path) {
+			s.hasMainPkg = true
 		}
 		return nil
 	})
@@ -95,7 +101,7 @@ func (s *ProjectScan) HasMainFile() bool {
 
 // HasMainPackage returns true if any Go file in the project declares "package main".
 func (s *ProjectScan) HasMainPackage() bool {
-	return s != nil && s.hashMainPkg
+	return s != nil && s.hasMainPkg
 }
 
 // FirstMainFile returns the first main.go file found in walk order, or "" when there is
@@ -105,4 +111,34 @@ func (s *ProjectScan) FirstMainFile() string {
 		return ""
 	}
 	return s.mainFiles[0]
+}
+
+// loadGitignoreDirs reads the .gitignore file in the given root directory and returns a map of directory names that should be ignored during scanning.
+func loadGitignoreDirs(root string) map[string]bool {
+	out := map[string]bool{}
+	data, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if err != nil {
+		return out
+	}
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
+			continue
+		}
+
+		line = strings.TrimSuffix(line, "/")
+		if strings.ContainsAny(line, "*?[]\\/") {
+			continue
+		}
+
+		out[line] = true
+	}
+
+	return out
+}
+
+// skipped reports whether a directory should be skipped.
+func (s *ProjectScan) skipped(name string) bool {
+	return ignoredDirs[name] || s.ignored[name]
 }

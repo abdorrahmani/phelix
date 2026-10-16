@@ -16,6 +16,10 @@ func TestBuildManager_DetectLanguage(t *testing.T) {
 		{"main.go at root", map[string]string{"main.go": "package main\n"}, Go},
 		{"main pkg in subdir", map[string]string{"cmd/main.go": "package main\n"}, Go},
 		{"nothing recognisable", map[string]string{"README.md": "hi\n"}, Language("unknown")},
+		{"cargo wins over go.mod", map[string]string{
+			"Cargo.toml": "[package]\nname = \"x\"\n", "go.mod": "module x\n"}, Rust},
+		{"cargo wins over main.go", map[string]string{
+			"Cargo.toml": "[package]\nname = \"x\"\n", "main.go": "package main\n"}, Rust},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

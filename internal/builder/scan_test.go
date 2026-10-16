@@ -3,6 +3,7 @@ package builder
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +114,80 @@ func TestProjectScan_NilSafe(t *testing.T) {
 	var s *ProjectScan
 	if s.HasMainFile() || s.HasMainPackage() || s.RootFile("go.mod") || s.FirstMainFile() != "" {
 		t.Fatal("a nil scan must be safe and report nothing")
+	}
+}
+
+// One entry per sub-case so each form is proven independently. A single
+// .gitignore listing several entries passes whenever any one of them works —
+// which is how a parser that silently rejected every "dir/" form went
+// unnoticed.
+func TestProjectScan_HonoursGitignoreDirs(t *testing.T) {
+	for _, entry := range []string{"dist", "dist/", "coverage", "coverage/"} {
+		t.Run(entry, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestFile(t, filepath.Join(root, ".gitignore"), entry+"\n")
+			// Only the ignored dir exists, so a found main.go can only come
+			// from that dir not being skipped.
+			dir := strings.TrimSuffix(entry, "/")
+			writeTestFile(t, filepath.Join(root, dir, "main.go"), "package main\n")
+
+			if s := NewProjectScan(root); s.HasMainFile() {
+				t.Fatalf("entry %q must be skipped, got %q", entry, s.FirstMainFile())
+			}
+		})
+	}
+}
+
+// A comment, a negation, a glob and an embedded path in one file: only the
+// bare names among them may skip anything.
+func TestProjectScan_GitignoreMixedEntries(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".gitignore"),
+		"# build output\ndist/\ncoverage\n!keepme\n*.log\nsrc/generated\n\n")
+	writeTestFile(t, filepath.Join(root, "dist", "main.go"), "package main\n")
+	writeTestFile(t, filepath.Join(root, "coverage", "main.go"), "package main\n")
+	writeTestFile(t, filepath.Join(root, "keepme", "main.go"), "package main\n")
+	writeTestFile(t, filepath.Join(root, "src", "generated", "main.go"), "package main\n")
+
+	s := NewProjectScan(root)
+	// keepme (negated) and src/generated (embedded path) must still be walked.
+	if len(s.mainFiles) != 2 {
+		t.Fatalf("expected the 2 non-bare-name dirs to survive, got %d: %v", len(s.mainFiles), s.mainFiles)
+	}
+}
+
+// Globs, negations and paths are not bare directory names and must not be
+// applied as if they were.
+func TestProjectScan_GitignoreOnlyBareDirNames(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, ".gitignore"), "*.tmp\n!important\nsrc/gen\n")
+	writeTestFile(t, filepath.Join(root, "important", "main.go"), "package main\n")
+
+	if !NewProjectScan(root).HasMainFile() {
+		t.Fatal("a negated or glob pattern must not cause a directory to be skipped")
+	}
+}
+
+func TestProjectScan_MissingGitignoreIsFine(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "main.go"), "package main\n")
+
+	if !NewProjectScan(root).HasMainFile() {
+		t.Fatal("a project without .gitignore must still scan normally")
+	}
+}
+
+func TestProjectScan_UnreadableDirDoesNotAbortWalk(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores permission bits")
+	}
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "sub", "main.go"), "package main\n")
+	os.MkdirAll(filepath.Join(root, "aaa_locked"), 0o755)
+	os.Chmod(filepath.Join(root, "aaa_locked"), 0o000)
+	defer os.Chmod(filepath.Join(root, "aaa_locked"), 0o755)
+
+	if s := NewProjectScan(root); s.FirstMainFile() == "" {
+		t.Fatalf("unreadable dir aborted the walk: %v", s.mainFiles)
 	}
 }
