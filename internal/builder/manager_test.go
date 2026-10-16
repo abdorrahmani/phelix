@@ -65,7 +65,7 @@ func TestPrepareBuild_SharesOneScanWithBuild(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, "main.go"), "package main\n")
 
 	bm := NewBuildManager()
-	bc, err := bm.PrepareBuild("id", "app", root, filepath.Join(root, "out"), "", nil, true)
+	bc, err := bm.PrepareBuild("id", "app", root, filepath.Join(root, "out"), "", nil)
 	if err != nil {
 		t.Fatalf("PrepareBuild: %v", err)
 	}
