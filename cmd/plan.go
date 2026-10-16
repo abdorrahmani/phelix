@@ -60,8 +60,6 @@ var PlanCmd = &cobra.Command{
 		"Use --json for the machine envelope (docs/reference/machine-contract.md).",
 }
 
-// --- plan create ---------------------------------------------------------------
-
 var (
 	planCreateJSON         bool
 	planCreatePort         int
@@ -71,7 +69,6 @@ var (
 	planCreateCanary       int
 	planCreateTag          string
 	planCreateBuildArgs    []string
-	planCreateNoUpload     bool
 	planCreateAutoRollback bool
 	planCreateSourceDir    string
 
@@ -104,7 +101,6 @@ var planCreateRebuildCmd = &cobra.Command{
 		rebuildCanary = planCreateCanary
 		rebuildTag = planCreateTag
 		rebuildArgs = planCreateBuildArgs
-		rebuildNoUpload = planCreateNoUpload
 		rebuildAutoRollback = planCreateAutoRollback
 		rebuildSourceDir = planCreateSourceDir
 		rolloutPlan = nil
@@ -241,7 +237,6 @@ func buildRebuildPlan(spec *rebuildSpec, portExplicit bool) (*plans.Plan, error)
 			Tag:               planCreateTag,
 			BuildArgs:         append([]string(nil), planCreateBuildArgs...),
 			AutoRollback:      planCreateAutoRollback,
-			NoUpload:          planCreateNoUpload,
 			StrategyOverride:  planCreateStrategy,
 			FlagBlueGreen:     planCreateBlueGreen,
 			FlagReplicas:      planCreateReplicas,
@@ -598,7 +593,6 @@ func applyPlan(planID string) (err error) {
 		rebuildStrategy = plan.Inputs.StrategyOverride
 		rebuildTag = plan.Inputs.Tag
 		rebuildArgs = append([]string(nil), plan.Inputs.BuildArgs...)
-		rebuildNoUpload = plan.Inputs.NoUpload
 		rebuildAutoRollback = plan.Inputs.AutoRollback
 		rebuildSourceDir = plan.Inputs.SourceDir
 		rebuildCanary = plan.Inputs.FlagCanary
@@ -802,9 +796,7 @@ func syntheticRebuildCommand(plan *plans.Plan) *cobra.Command {
 	for _, arg := range plan.Inputs.BuildArgs {
 		_ = flags.Set("build-arg", arg)
 	}
-	if plan.Inputs.NoUpload {
-		_ = flags.Set("no-upload", "true")
-	}
+
 	if plan.Inputs.AutoRollback {
 		_ = flags.Set("auto-rollback", "true")
 	}
@@ -904,7 +896,6 @@ func init() {
 	planCreateRebuildCmd.Flags().IntVar(&planCreateCanary, "canary", 0, "Canary rollout at N percent of traffic")
 	planCreateRebuildCmd.Flags().StringVar(&planCreateTag, "tag", "", "Optional tag for the build this plan will produce")
 	planCreateRebuildCmd.Flags().StringArrayVarP(&planCreateBuildArgs, "build-arg", "a", nil, "Extra build argument (repeatable)")
-	planCreateRebuildCmd.Flags().BoolVar(&planCreateNoUpload, "no-upload", false, "Do not upload app information to the server")
 	planCreateRebuildCmd.Flags().BoolVar(&planCreateAutoRollback, "auto-rollback", false, "Automatically restore the previous version on deploy-phase failure")
 	planCreateRebuildCmd.Flags().StringVar(&planCreateSourceDir, "source-dir", "", "Build from this source directory instead of the app's directory")
 

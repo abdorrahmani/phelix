@@ -22,7 +22,6 @@ config file supplies both, the command runs without asking anything.
 | `--port, -p` | `8080` | Port to run the app on (not required for matrix builds — they never start an instance) |
 | `--build-arg, -a` | — | Extra args passed to the build tool (repeatable); in matrix mode they are passed to every `go build` / `cross build` |
 | `--tag` | — | Human label stored with the version (e.g. `"hotfix-auth"`) |
-| `--no-upload` | `false` | Don't sync app info to the server |
 | `--debug` | `false` | Verbose build/tool output |
 | `--matrix` | `false` | Matrix mode: build versions × platforms (see [Matrix builds](../guides/matrix-builds.md); also activates via the phelix.yaml matrix profile) |
 | `--go-versions` | — | Go versions, e.g. `1.22,1.23,1.27` |

@@ -100,7 +100,6 @@ type Inputs struct {
 	Tag          string   `json:"tag,omitempty"`
 	BuildArgs    []string `json:"build_args,omitempty"`
 	AutoRollback bool     `json:"auto_rollback,omitempty"`
-	NoUpload     bool     `json:"no_upload,omitempty"`
 	// SourceCommit pins the source the plan was created from, when the
 	// source directory is a git work tree. Absent when not determinable —
 	// the precondition is then simply not created.

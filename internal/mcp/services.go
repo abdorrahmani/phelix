@@ -163,7 +163,6 @@ type PlanCreateInput struct {
 	Canary       int    `json:"canary,omitempty" jsonschema:"rebuild: canary rollout percentage"`
 	Tag          string `json:"tag,omitempty" jsonschema:"rebuild: optional build tag label"`
 	AutoRollback bool   `json:"auto_rollback,omitempty" jsonschema:"rebuild: auto-restore the previous version on deploy-phase failure"`
-	NoUpload     bool   `json:"no_upload,omitempty" jsonschema:"rebuild: do not upload app information to the backend"`
 
 	// Rollback inputs.
 	To     string `json:"to,omitempty" jsonschema:"rollback: target version (e.g. v3, 3, or a tag name)"`

@@ -286,7 +286,6 @@ func (cmdServices) PlanCreate(_ context.Context, in phelixmcp.PlanCreateInput) (
 			planCreateCanary = in.Canary
 			planCreateTag = in.Tag
 			planCreateBuildArgs = nil // build args are not exposed over MCP
-			planCreateNoUpload = in.NoUpload
 			planCreateAutoRollback = in.AutoRollback
 			planCreateSourceDir = "" // source dir is not exposed over MCP
 			synth := mcpSyntheticRebuildCreateCmd(in)
@@ -341,9 +340,6 @@ func mcpSyntheticRebuildCreateCmd(in phelixmcp.PlanCreateInput) *cobra.Command {
 	}
 	if in.Tag != "" {
 		_ = f.Set("tag", in.Tag)
-	}
-	if in.NoUpload {
-		_ = f.Set("no-upload", "true")
 	}
 	if in.AutoRollback {
 		_ = f.Set("auto-rollback", "true")

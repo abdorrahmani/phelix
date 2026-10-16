@@ -199,12 +199,6 @@ func runRebuildExec(spec *rebuildSpec, op *opRun) error {
 	fmt.Printf("%s Rebuilding application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID))
 	fmt.Printf("  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
 
-	// If user set no-upload flag, update the app info
-	if rebuildNoUpload {
-		appInfo.NoUpload = true
-		_ = app.Manager.SaveState()
-	}
-
 	// Apply the watching value declared in phelix.yaml (desired state) so
 	// a project that declares enable/disable converges on every rebuild.
 	// A file without the key leaves the persisted flag untouched.

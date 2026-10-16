@@ -45,7 +45,6 @@ type BuildConfig struct {
 	OutputPath     string    // Path where built binary should be placed
 	Language       Language  // Programming language
 	ExtraArgs      []string  // Extra build arguments
-	NoUpload       bool      // Whether to upload to server after building
 	CreatedAt      time.Time // When app was created
 	UpdatedAt      time.Time // Last update time
 	BuildStartTime time.Time // When build started (set during build)

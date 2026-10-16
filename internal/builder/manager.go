@@ -72,7 +72,6 @@ func (bm *BuildManager) PrepareBuild(
 	outputPath string,
 	detectLang Language,
 	extraArgs []string,
-	noUpload bool,
 ) (*BuildContext, error) {
 	scan := bm.scanProject(projectRoot)
 
@@ -101,7 +100,6 @@ func (bm *BuildManager) PrepareBuild(
 		OutputPath:  outputPath,
 		Language:    lang,
 		ExtraArgs:   extraArgs,
-		NoUpload:    noUpload,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 		Scan:        scan,

@@ -372,7 +372,6 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		outputPath,
 		lang,
 		extraArgs,
-		appInfo.NoUpload,
 	)
 	if prepErr != nil {
 		printFailedBuildSummary(lang, nil)
