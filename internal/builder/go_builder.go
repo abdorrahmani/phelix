@@ -71,9 +71,15 @@ func observeCache(config BuildConfig, status buildreport.CacheStatus, source str
 
 // Build performs a Go build
 func (gb *GoBuilder) Build(config BuildConfig) error {
-	mainFile, err := gb.findMainFile(config.ProjectRoot)
-	if err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeUnsupportedProject, err, "failed to find main.go")
+	scan := config.Scan
+
+	if scan == nil {
+		scan = NewProjectScan(config.ProjectRoot)
+	}
+
+	mainFile := scan.FirstMainFile()
+	if mainFile == "" {
+		return phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
 	}
 
 	relPath, _ := filepath.Rel(config.ProjectRoot, mainFile)
@@ -142,26 +148,4 @@ func (gb *GoBuilder) GetBuildFlags() []string {
 		"-work",
 		"-x",
 	}
-}
-
-// findMainFile searches for a main.go file in the project root
-func (gb *GoBuilder) findMainFile(root string) (string, error) {
-	var mainFile string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && d.Name() == "main.go" {
-			mainFile = path
-			return io.EOF
-		}
-		return nil
-	})
-	if err != nil && err != io.EOF {
-		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "error searching for main.go")
-	}
-	if mainFile == "" {
-		return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
-	}
-	return mainFile, nil
 }

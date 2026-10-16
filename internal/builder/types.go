@@ -56,6 +56,11 @@ type BuildConfig struct {
 	// it automatically; direct BuilderInterface users may leave it nil —
 	// builders must tolerate a nil pointer (additive, optional).
 	Observe *BuildObservation
+
+	// Scan is the project traversal shared with validation and language
+	// detection. PrepareBuild supplies it so one walk serves the whole build;
+	// a nil Scan (direct BuildConfig users, tests) falls back to fresh scan.
+	Scan *ProjectScan
 }
 
 // BuildObservation collects non-fatal telemetry emitted by one build run.
