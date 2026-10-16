@@ -50,7 +50,6 @@ rolling rebuild inherited this way keeps the replica count the app is running at
 | `--port, -p` | previous/`8080` | Port to run on |
 | `--build-arg, -a` | — | Extra build args (repeatable) |
 | `--tag` | — | Version label |
-| `--no-upload` | `false` | Skip server sync |
 | `--strategy` | — | Strategy for this rebuild only: `classic`, `blue-green`, `rolling`, `canary`, or `progressive`. Overrides `phelix.yaml`; never written back to it |
 | `--blue-green` | `false` | Zero-downtime blue-green deploy (needs `phelix proxy`) |
 | `--replicas` | `0` | Zero-downtime rolling deploy over N replicas |
