@@ -1,10 +1,7 @@
 package builder
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/buildreport"
@@ -14,6 +11,9 @@ import (
 // BuildManager orchestrates the build process
 type BuildManager struct {
 	factory *BuilderFactory
+
+	scan    *ProjectScan
+	scanFor string
 }
 
 // NewBuildManager creates a new build manager
@@ -23,44 +23,34 @@ func NewBuildManager() *BuildManager {
 	}
 }
 
+// scanProject scans the project directory and caches the result
+func (bm *BuildManager) scanProject(root string) *ProjectScan {
+	if bm.scan != nil && bm.scanFor == root {
+		return bm.scan
+	}
+	bm.scan = NewProjectScan(root)
+	bm.scanFor = root
+	return bm.scan
+}
+
 // DetectLanguage detects the programming language of a project
 func (bm *BuildManager) DetectLanguage(projectRoot string) Language {
-	if _, err := os.Stat(filepath.Join(projectRoot, "Cargo.toml")); err == nil {
+	return detectLanguageFrom(bm.scanProject(projectRoot))
+}
+
+// detectLanguageFrom determines the language based on the project scan
+func detectLanguageFrom(s *ProjectScan) Language {
+	// Maker files are only meaningful at the root of the project, so we only check the root files.
+	if s.RootFile("main.go") || s.RootFile("go.mod") {
+		return Go
+	}
+
+	if s.RootFile("Cargo.toml") {
 		return Rust
 	}
 
-	if _, err := os.Stat(filepath.Join(projectRoot, "main.go")); err == nil {
-		return Go
-	}
-
-	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
-		return Go
-	}
-
-	hasGoFile := false
-	_ = filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || hasGoFile {
-			return nil
-		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".go") {
-			return nil
-		}
-
-		f, err := os.Open(path)
-		if err != nil {
-			return nil
-		}
-		defer func() { _ = f.Close() }()
-
-		buf := make([]byte, 1024)
-		n, _ := f.Read(buf)
-		if n > 0 && strings.Contains(string(buf[:n]), "package main") {
-			hasGoFile = true
-		}
-		return nil
-	})
-
-	if hasGoFile {
+	// Fallback: any .go file declaring package main, outside ignoredDirs.
+	if s.HasMainPackage() {
 		return Go
 	}
 
@@ -84,11 +74,11 @@ func (bm *BuildManager) PrepareBuild(
 	extraArgs []string,
 	noUpload bool,
 ) (*BuildContext, error) {
-	scan := NewProjectScan(projectRoot)
+	scan := bm.scanProject(projectRoot)
 
 	lang := detectLang
 	if !lang.IsSupported() {
-		lang = bm.DetectLanguage(projectRoot)
+		lang = detectLanguageFrom(scan)
 	}
 
 	if !lang.IsSupported() {
