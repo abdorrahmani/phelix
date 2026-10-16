@@ -1,8 +1,6 @@
 package builder
 
 import (
-	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,33 +22,21 @@ func (gb *GoBuilder) Name() Language {
 	return Go
 }
 
-// Validate checks if a valid Go project exists at the given root
-func (gb *GoBuilder) Validate(projectRoot string) error {
-	if _, err := os.Stat(projectRoot); os.IsNotExist(err) {
-		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", projectRoot)
+// Validate checks that scan describes a buildable Go project.
+func (gb *GoBuilder) Validate(scan *ProjectScan) error {
+	if scan == nil {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "validate : no project scan")
 	}
 
-	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
+	if !scan.Exists {
+		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", scan.Root)
+	}
+
+	if scan.RootFile("go.mod") || scan.RootFile("main.go") {
 		return nil
 	}
 
-	if _, err := os.Stat(filepath.Join(projectRoot, "main.go")); err == nil {
-		return nil
-	}
-
-	found := false
-	_ = filepath.WalkDir(projectRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || found {
-			return nil
-		}
-		if !d.IsDir() && d.Name() == "main.go" {
-			found = true
-			return io.EOF
-		}
-		return nil
-	})
-
-	if found {
+	if scan.HasMainFile() {
 		return nil
 	}
 

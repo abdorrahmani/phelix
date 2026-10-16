@@ -26,15 +26,18 @@ func (rb *RustBuilder) Name() Language {
 	return Rust
 }
 
-// Validate checks if a valid Rust project exists at the given root
-func (rb *RustBuilder) Validate(projectRoot string) error {
-	if _, err := os.Stat(projectRoot); os.IsNotExist(err) {
-		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", projectRoot)
+// Validate checks that scan describes a buildable Rust project.
+func (rb *RustBuilder) Validate(scan *ProjectScan) error {
+	if scan == nil {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "validate : no project scan")
 	}
 
-	cargoPath := filepath.Join(projectRoot, "Cargo.toml")
-	if _, err := os.Stat(cargoPath); os.IsNotExist(err) {
-		return phelixerr.New(phelixerr.CodeUnsupportedProject, "no Cargo.toml found in project root")
+	if !scan.Exists {
+		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", scan.Root)
+	}
+
+	if !scan.RootFile("Cargo.toml") {
+		return phelixerr.New(phelixerr.CodeUnsupportedProject, "no valid Rust project found: missing Cargo.toml")
 	}
 
 	return nil

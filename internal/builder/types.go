@@ -93,8 +93,9 @@ type BuilderInterface interface {
 	// Name returns the builder's language name
 	Name() Language
 
-	// Validate checks if the project is valid for this builder
-	Validate(projectRoot string) error
+	// Validate checks that the project is valid for this builder, reading the
+	// shared project scan rather than walking the tree again.
+	Validate(scan *ProjectScan) error
 
 	// Build performs the build operations
 	Build(config BuildConfig) error

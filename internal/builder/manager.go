@@ -84,6 +84,8 @@ func (bm *BuildManager) PrepareBuild(
 	extraArgs []string,
 	noUpload bool,
 ) (*BuildContext, error) {
+	scan := NewProjectScan(projectRoot)
+
 	lang := detectLang
 	if !lang.IsSupported() {
 		lang = bm.DetectLanguage(projectRoot)
@@ -98,7 +100,7 @@ func (bm *BuildManager) PrepareBuild(
 		return nil, err
 	}
 
-	if err := builder.Validate(projectRoot); err != nil {
+	if err := builder.Validate(scan); err != nil {
 		return nil, err
 	}
 
@@ -112,6 +114,7 @@ func (bm *BuildManager) PrepareBuild(
 		NoUpload:    noUpload,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
+		Scan:        scan,
 
 		Observe: &BuildObservation{CacheStatus: buildreport.CacheUnknown},
 	}
