@@ -25,22 +25,18 @@ func NewBuildManager() *BuildManager {
 
 // DetectLanguage detects the programming language of a project
 func (bm *BuildManager) DetectLanguage(projectRoot string) Language {
-	// Check for Rust Cargo.toml first
 	if _, err := os.Stat(filepath.Join(projectRoot, "Cargo.toml")); err == nil {
 		return Rust
 	}
 
-	// Check for Go main
 	if _, err := os.Stat(filepath.Join(projectRoot, "main.go")); err == nil {
 		return Go
 	}
 
-	// Check for go.mod
 	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
 		return Go
 	}
 
-	// Fallback: try to find any .go file with package main
 	hasGoFile := false
 	_ = filepath.WalkDir(projectRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil || hasGoFile {
@@ -56,7 +52,6 @@ func (bm *BuildManager) DetectLanguage(projectRoot string) Language {
 		}
 		defer func() { _ = f.Close() }()
 
-		// Simple check for "package main"
 		buf := make([]byte, 1024)
 		n, _ := f.Read(buf)
 		if n > 0 && strings.Contains(string(buf[:n]), "package main") {
@@ -72,7 +67,7 @@ func (bm *BuildManager) DetectLanguage(projectRoot string) Language {
 	return Language("unknown")
 }
 
-// BuildConfig wraps the BuildConfig and adds additional context
+// BuildContext wraps the BuildConfig and adds additional context
 type BuildContext struct {
 	Config  *BuildConfig
 	Lang    Language
@@ -89,7 +84,6 @@ func (bm *BuildManager) PrepareBuild(
 	extraArgs []string,
 	noUpload bool,
 ) (*BuildContext, error) {
-	// Auto-detect language if not specified
 	lang := detectLang
 	if !lang.IsSupported() {
 		lang = bm.DetectLanguage(projectRoot)
@@ -99,13 +93,11 @@ func (bm *BuildManager) PrepareBuild(
 		return nil, phelixerr.Newf(phelixerr.CodeUnsupportedProject, "unsupported or unknown project language: %s", lang)
 	}
 
-	// Get the builder for this language
 	builder, err := bm.factory.GetBuilder(lang)
 	if err != nil {
 		return nil, err
 	}
 
-	// Validate the project
 	if err := builder.Validate(projectRoot); err != nil {
 		return nil, err
 	}
@@ -121,8 +113,6 @@ func (bm *BuildManager) PrepareBuild(
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 
-		// Build-report telemetry sink. Builders populate it best-effort
-		// during ExecuteBuild; consumers read it after the run.
 		Observe: &BuildObservation{CacheStatus: buildreport.CacheUnknown},
 	}
 
@@ -134,11 +124,6 @@ func (bm *BuildManager) PrepareBuild(
 }
 
 // ExecuteBuild runs the build process.
-//
-// Timing semantics: BuildStartTime/BuildEndTime always bracket the attempt —
-// including failures — so a failed build still reports how long it ran before
-// dying (useful post-mortem data). The end timestamp used to be skipped on
-// failure; always recording it is additive and only enriches reporting.
 func (bm *BuildManager) ExecuteBuild(ctx *BuildContext) error {
 	ctx.Config.BuildStartTime = time.Now()
 
@@ -146,9 +131,6 @@ func (bm *BuildManager) ExecuteBuild(ctx *BuildContext) error {
 
 	ctx.Config.BuildEndTime = time.Now()
 
-	// Probe the actual toolchain version once per build for the build report.
-	// Never fatal: an undetectable version simply stays empty in the report
-	// (requirement: metadata collection must not fail builds).
 	if ctx.Config.Observe != nil && ctx.Config.Observe.CompilerVersion == "" {
 		if v := DetectCompilerVersion(ctx.Lang); v != "" {
 			ctx.Config.Observe.CompilerVersion = v
@@ -159,14 +141,13 @@ func (bm *BuildManager) ExecuteBuild(ctx *BuildContext) error {
 }
 
 func (bm *BuildManager) runBuilders(ctx *BuildContext) error {
-	// For Rust, we need special handling to copy the binary
 	if ctx.Lang == Rust {
 		if err := BuildAndCopyRust(*ctx.Config); err != nil {
 			return err
 		}
 		return nil
 	}
-	// For other languages (Go, etc.), use the standard builder
+
 	return ctx.Builder.Build(*ctx.Config)
 }
 

@@ -67,12 +67,7 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 		)
 	}
 
-	// Cargo prints "Compiling <crate>" lines whenever real compilation work
-	// happens; a fully fresh build only prints the "Finished" summary.
 	observeCache(config, RustCacheStatusFromOutput(string(output)), buildreport.CacheSourceCargo)
-
-	// In the actual process, after cargo build completes, we'll copy the binary
-	// to the output path. This is handled in the app manager that uses this builder.
 	return nil
 }
 
@@ -94,14 +89,6 @@ func cargoFailureMessage(err error, config BuildConfig) string {
 }
 
 // GetBinaryPath returns the path to the built binary.
-//
-// Resolution order: the exact package-name binary, then an exact `[[bin]]`
-// name from Cargo.toml, then the most recently modified executable file in
-// target/<buildType>. When none exists, the returned error names the expected
-// location and why — a cargo success with no artifact is always an explicit,
-// actionable failure, never a silent fallback to whatever file happens to be
-// newest (cargo also leaves .d/.rlib/.a files there, which the old fallback
-// happily mistook for the binary).
 func (rb *RustBuilder) GetBinaryPath(config BuildConfig) (string, error) {
 	// Determine if it's a release build
 	isRelease := slices.Contains(config.ExtraArgs, "--release")
