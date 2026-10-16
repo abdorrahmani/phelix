@@ -62,7 +62,7 @@ type BuildConfig struct {
 // Builders populate it best-effort: an undeterminable value simply stays
 // unknown and never influences build success.
 type BuildObservation struct {
-	// CacheStatus records whether the compile came from cache
+	// CacheStatus records whether to compile came from cache
 	// (buildreport.CacheHit), did real compilation work (buildreport.CacheCold)
 	// or could not be determined (buildreport.CacheUnknown).
 	CacheStatus buildreport.CacheStatus
@@ -111,7 +111,7 @@ func NewBuilderFactory() *BuilderFactory {
 	bf := &BuilderFactory{
 		builders: make(map[Language]BuilderInterface),
 	}
-	// Register builders
+
 	bf.Register(Go, NewGoBuilder())
 	bf.Register(Rust, NewRustBuilder())
 	return bf

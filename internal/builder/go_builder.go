@@ -30,7 +30,6 @@ func (gb *GoBuilder) Validate(projectRoot string) error {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "project root does not exist: %s", projectRoot)
 	}
 
-	// Check for go.mod or main.go
 	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
 		return nil
 	}
@@ -39,7 +38,6 @@ func (gb *GoBuilder) Validate(projectRoot string) error {
 		return nil
 	}
 
-	// Try to find any main.go file
 	found := false
 	_ = filepath.WalkDir(projectRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || found {
@@ -60,8 +58,6 @@ func (gb *GoBuilder) Validate(projectRoot string) error {
 }
 
 // observeCache records cache telemetry into config.Observe when present.
-// Best-effort by design: a nil observation or unknown status simply leaves
-// the report's cache section unknown.
 func observeCache(config BuildConfig, status buildreport.CacheStatus, source string) {
 	if config.Observe == nil {
 		return
@@ -82,11 +78,6 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 
 	relPath, _ := filepath.Rel(config.ProjectRoot, mainFile)
 
-	// Build command arguments.
-	//
-	// `-v` makes `go build` print every package being compiled, which is how
-	// the build report distinguishes a cache COLD build from a cache HIT (all
-	// packages up to date). It does not change what is compiled or linked.
 	args := []string{"build", "-v"}
 
 	// Add extra arguments from user (e.g., -ldflags, -tags, etc.)
@@ -94,7 +85,6 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 		args = append(args, config.ExtraArgs...)
 	}
 
-	// Output path
 	args = append(args, "-o", config.OutputPath, relPath)
 
 	cmd := exec.Command("go", args...)
@@ -102,11 +92,6 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// The compiler output is not embedded in the message. It is kept as a
-		// bounded tail on the ToolError so the CLI error reporter can classify
-		// known go.mod failures and show raw diagnostics; the underlying
-		// *exec.ExitError (and its exit code) is preserved through the wraps so
-		// errors.As / errors.Is still reach it.
 		return phelixerr.Wrapf(
 			phelixerr.CodeBuildFailed,
 			&ToolError{Tool: "go", Output: tailOutput(output), Err: err},
