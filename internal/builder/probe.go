@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -38,27 +39,72 @@ var (
 	rustVersionRe = regexp.MustCompile(`rustc (\d+\.\d+)(\.\d+)?`)
 )
 
-// DetectCompilerVersion returns the normalized (major.minor) toolchain version
-// for lang, e.g. "1.27" for Go or "1.85" for Rust. An empty string means the
-// version could not be determined — callers must not fail a build over this.
-func DetectCompilerVersion(lang Language) string {
+// toolchainProbe names the binary and argv that report a toolchain's version,
+// plus the pattern extracting major.minor from its output.
+type toolchainProbe struct {
+	bin  string
+	args []string
+	re   *regexp.Regexp
+}
+
+// probeFor maps a language to its version probe.
+func probeFor(lang Language) (toolchainProbe, bool) {
 	switch lang {
 	case Go:
-		out, err := exec.Command("go", "version").Output()
-		if err != nil {
-			return ""
-		}
-		return normalizeToolchainVersion(string(out), goVersionRe)
+		return toolchainProbe{
+			bin:  "go",
+			args: []string{"version"},
+			re:   goVersionRe,
+		}, true
 	case Rust:
-		out, err := exec.Command("rustc", "--version").Output()
-		if err != nil {
-			// Fall back to the driver binary name used by some setups.
-			return ""
-		}
-		return normalizeToolchainVersion(string(out), rustVersionRe)
-	default:
+		return toolchainProbe{
+			bin:  "rustc",
+			args: []string{"--version"},
+			re:   rustVersionRe,
+		}, true
+	}
+
+	return toolchainProbe{}, false
+}
+
+// DetectCompilerVersion returns the normalized (major.minor) toolchain version
+// for lang, e.g. "1.27" for Go or "1.85" for Rust. An empty string means the
+// version could not be determined; callers must not fail a build over this.
+func DetectCompilerVersion(lang Language) string {
+	probe, ok := probeFor(lang)
+	if !ok {
 		return ""
 	}
+
+	resolved, err := exec.LookPath(probe.bin)
+	if err != nil {
+		return ""
+	}
+	fi, err := os.Stat(resolved)
+	if err != nil {
+		return ""
+	}
+
+	if v, ok := loadCachedVersion(lang, resolved, fi.Size(), fi.ModTime().UnixNano()); ok {
+		return v
+	}
+
+	out, err := exec.Command(probe.bin, probe.args...).Output()
+	if err != nil {
+		return ""
+	}
+	version := normalizeToolchainVersion(string(out), probe.re)
+	if version == "" {
+		return ""
+	}
+
+	storeCachedVersion(lang, versionCacheEntry{
+		Path:    resolved,
+		Size:    fi.Size(),
+		MtimeNS: fi.ModTime().UnixNano(),
+		Version: version,
+	})
+	return version
 }
 
 // normalizeToolchainVersion extracts a "major.minor" version like "1.27"

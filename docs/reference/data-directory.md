@@ -15,6 +15,8 @@ All state lives under `~/.phelix/` (relocatable with `PHELIX_DATA_DIR` — see t
 │   ├── <app>.log            # per-app logs
 │   └── deploy_*.log         # deploy instance logs
 ├── registry/<slug>.enc      # encrypted registry credentials
+├── cache/                    # regenerable caches (safe to delete)
+│   └── toolchain-<lang>.json # cached toolchain version (see Toolchain version cache)
 ├── authz/                    # execution authorization state (see Authorization)
 │   ├── policy.json            # host authorization policy (0600; absent = legacy local mode)
 │   ├── approvals/             # immutable per-plan approvals (<plan-id>.json, 0600)
@@ -49,12 +51,36 @@ All state lives under `~/.phelix/` (relocatable with `PHELIX_DATA_DIR` — see t
 > targets to `~/.phelix/proxy-state.json`
 > (see [Zero-downtime deployments](../guides/zero-downtime-deployments.md)).
 
+Everything under `cache/` is derived data. It can be deleted at any time and is
+rebuilt on demand, unlike the records above.
+
 ## Retention
 
 The last **5** versions are kept by default (configurable per plan); the active
 version is never pruned. Build-report metadata lives inside `versions.json` (the
 `build_report` field per version) — there is no separate build database, and
 everything works offline.
+
+## Toolchain version cache
+
+`cache/toolchain-<lang>.json` holds one small record per language, so a build
+reports the compiler version without spawning `go version` or `rustc --version`
+on every run:
+
+```json
+{"path": "/usr/lib/go/bin/go", "size": 15894528, "mtime_ns": 1791505098000000000, "version": "1.27"}
+```
+
+The record is reused only while the toolchain binary it was read from is
+unchanged. `path`, `size` and `mtime_ns` all have to match, which covers an
+upgrade, a reinstall, and a version manager retargeting a shim such as `asdf`
+or `rustup`. A mismatch means the next build probes again and rewrites the
+entry, so the cache self-corrects after a toolchain change with no manual step.
+
+It is an optimisation only. Any unreadable, malformed or stale entry is treated
+as a miss, and an unwritable cache directory is ignored rather than reported, so
+the cache can never fail a build or change its output. Deleting `cache/` is
+always safe; the next build recreates it.
 
 ## Data directory location
 

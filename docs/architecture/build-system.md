@@ -9,6 +9,16 @@ build reports see [Build reports](../guides/build-reports.md).
 `internal/builder` — `BuildManager` detects language (`Cargo.toml` → Rust;
 `main.go`/`go.mod` or any `package main` `.go` file → Go) via `BuilderFactory`.
 
+Language detection, project validation and main-file discovery all read one
+`ProjectScan`: a single traversal of the project root, cached per root on the
+`BuildManager`, that skips `vendor/`, `node_modules/`, `target/`, `.git/` and
+bare directory names from the root `.gitignore`.
+
+`DetectCompilerVersion` reads the toolchain version from a cache
+(`<data-dir>/cache/toolchain-<lang>.json`) keyed on the resolved binary's path,
+size and mtime, so a build does not spawn `go version` or `rustc --version`
+every time. See [data directory](../reference/data-directory.md).
+
 `internal/toolchain` — `EnsureTool` checks PATH, prompts to install (via
 `cmd.Confirm`), and falls back to OS-specific manual instructions in
 `toolchain/manual.go`. A missing toolchain surfaces as `TOOLCHAIN_NOT_FOUND` with
