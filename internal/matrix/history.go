@@ -89,6 +89,7 @@ func LoadRun(id RunID) (*Run, error) {
 	}
 	path := filepath.Join(dir, string(id)+".json")
 	data, err := os.ReadFile(path)
+
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, phelixerr.Newf(phelixerr.CodeNotFound,
@@ -96,14 +97,19 @@ func LoadRun(id RunID) (*Run, error) {
 		}
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "read matrix run %s", id)
 	}
+
 	var run Run
 	if err := json.Unmarshal(data, &run); err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "matrix run %s is malformed", id)
 	}
+
 	if run.ID != id {
 		return nil, phelixerr.Newf(phelixerr.CodeConfiguration,
 			"matrix run %s is malformed: record claims ID %s", id, run.ID)
 	}
+
+	replayJournal(dir, id, &run)
+
 	return &run, nil
 }
 
@@ -120,15 +126,6 @@ func ListRuns() (runs []*Run, skipped int, err error) {
 // so without a bound these queries would do O(all-runs) disk + unmarshal work
 // — on the agent's gRPC receive loop — and get slower for the whole life of
 // the agent.
-//
-// ponytail: a 200-record window. A run older than the newest 200 is invisible
-// to matrix_list, matrix_status latest/active and the resync snapshot
-// (matrix_status by explicit ID still loads it directly, O(1)). 200 comfortably
-// exceeds the matrix_list hard cap (100), and active runs are by definition
-// recent, so the window never hides a live run. Upgrade path: add run-history
-// retention/pruning (like versions.json) or an on-disk index, then lift the
-// window. The local CLI (ListRuns / ActiveRuns) stays unbounded — it is a
-// one-shot command, not on a hot loop.
 const remoteScanWindow = 200
 
 // RecentRuns returns at most the newest remoteScanWindow runs, newest first.
@@ -160,16 +157,14 @@ func listRunsScan(maxScan int) (runs []*Run, skipped int, err error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		// Per-run release manifests live in the same directory
-		// (<id>.manifest.json) but are not run records.
+
 		if strings.HasSuffix(entry.Name(), ".manifest.json") {
 			continue
 		}
+
 		names = append(names, entry.Name())
 	}
 
-	// os.ReadDir yields names ascending; reverse for newest-first (by the date
-	// in the run ID) so a positive maxScan keeps the newest window.
 	for i, j := 0, len(names)-1; i < j; i, j = i+1, j-1 {
 		names[i], names[j] = names[j], names[i]
 	}
@@ -234,6 +229,7 @@ func UpdateRun(run *Run) error {
 	if err != nil {
 		return err
 	}
+
 	if IsTerminalRunStatus(existing.Status) {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"matrix run %s is already %s and cannot be modified — retry it with 'phelix matrix retry %s --failed' instead",
@@ -244,10 +240,14 @@ func UpdateRun(run *Run) error {
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "write matrix run %s", run.ID)
 	}
+
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "replace matrix run %s", run.ID)
 	}
+
+	discardJournal(dir, run.ID)
+
 	return nil
 }
 
@@ -271,7 +271,7 @@ func AcquireRunLock(id RunID) (release func(), err error) {
 	}
 	path := filepath.Join(dir, string(id)+".lock")
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		f, oerr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if oerr == nil {
 			_, _ = f.WriteString(strconv.Itoa(os.Getpid()))

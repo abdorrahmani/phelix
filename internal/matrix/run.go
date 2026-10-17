@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"regexp"
 	"sync"
 	"time"
@@ -35,8 +36,6 @@ var runIDEntropy = rand.Read
 func NewRunID(now time.Time) RunID {
 	suffix := make([]byte, 2)
 	if _, err := runIDEntropy(suffix); err != nil {
-		// Fall back to sub-second entropy: still unique within the process,
-		// still matching the pattern.
 		suffix[0] = byte(now.Nanosecond() >> 8)
 		suffix[1] = byte(now.Nanosecond())
 	}
@@ -58,7 +57,7 @@ func ParseRunID(s string) (RunID, error) {
 // If the history cannot be read it degrades to a plain NewRunID — SaveRun
 // still rejects duplicates as a last resort.
 func NewUniqueRunID(now time.Time) RunID {
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		id := NewRunID(now)
 		_, err := LoadRun(id)
 		if phelixerr.CodeOf(err) == phelixerr.CodeNotFound {
@@ -68,7 +67,7 @@ func NewUniqueRunID(now time.Time) RunID {
 	return NewRunID(now)
 }
 
-// Run statuses. "running" is only ever persisted by a live execution; a
+// RunStatus Run statuses. "running" is only ever persisted by a live execution; a
 // persisted "running" record whose process is gone (crash, SIGKILL, machine
 // restart) is treated as orphaned and is resumable. "interrupted" is the
 // terminal-ish status of a run that stopped with incomplete combinations
@@ -425,6 +424,23 @@ func (r *Run) combinationEntry(res Result) RunCombination {
 	return rc
 }
 
+// CombinationEntry returns the run's current record for one combination.
+// The copy is taken under the run's lock so a caller serializing it sees a
+// consistent entry while other workers keep mutating the run.
+func (r *Run) CombinationEntry(id string) (RunCombination, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.Combinations {
+		if r.Combinations[i].ID == id {
+			entry := r.Combinations[i]
+			entry.Metadata = copyStringMap(entry.Metadata)
+			entry.AttemptLog = append([]RunAttempt(nil), entry.AttemptLog...)
+			return entry, true
+		}
+	}
+	return RunCombination{}, false
+}
+
 // uncountLocked/countLocked maintain the status counters across transitions,
 // including the pending/running → terminal transition (which lowers Incomplete).
 func (r *Run) uncountLocked(status string) {
@@ -719,8 +735,6 @@ func copyStringMap(m map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	return out
 }
