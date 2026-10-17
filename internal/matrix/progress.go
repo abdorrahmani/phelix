@@ -69,12 +69,12 @@ func cutDockerStep(line string) (number, section string, found bool) {
 }
 
 // WithBuildProgress attaches stage reporting to a matrix build context.
-func WithBuildProgress(ctx context.Context, key string, report progressReporter) context.Context {
-	return context.WithValue(ctx, progressContextKey{}, func(reportKey, stage string, current, total int64) {
+func WithBuildProgress(ctx context.Context, report progressReporter) context.Context {
+	return context.WithValue(ctx, progressContextKey{}, progressReporter(func(reportKey, stage string, current, total int64) {
 		if report != nil {
 			report(reportKey, stage, current, total)
 		}
-	})
+	}))
 }
 
 // ReportBuildProgress publishes an optional build-stage update. A zero total

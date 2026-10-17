@@ -11,8 +11,6 @@ import (
 	"github.com/abdorrahmani/phelix/internal/builder"
 )
 
-// --- Host toolchain version matching ---------------------------------------------
-
 func TestGoVersionProvides(t *testing.T) {
 	cases := []struct {
 		requested, host string
@@ -27,6 +25,10 @@ func TestGoVersionProvides(t *testing.T) {
 		{"v1.22", "go1.22.4", true}, // prefixes normalized
 		{"1.22", "", false},
 		{"1.22", "garbage", false},
+		{"1.27.2", "go1.27.2-X:nodwarf5", true},
+		{"1.27", "go1.27.2-X:nodwarf5", true},
+		{"1.27.1", "go1.27.2-X:nodwarf5", false},
+		{"1.28", "go1.27.2-X:nodwarf5", false},
 	}
 	for _, tc := range cases {
 		if got := goVersionProvides(tc.requested, tc.host); got != tc.want {
@@ -84,6 +86,41 @@ func TestGoMatrixBuild_VersionMismatchFallsBackToDocker(t *testing.T) {
 	}
 	if len(dockerImages) == 0 || dockerImages[0] != "golang:1.22" {
 		t.Fatalf("expected the version-pinned golang:1.22 image, got %v", dockerImages)
+	}
+}
+
+// The Docker path must announce its stages, so the progress cell names what
+// the wait is (a first-time image pull) instead of sitting at "starting 0%".
+// This also guards the named-progressReporter type in WithBuildProgress: a
+// bare func literal stored there fails the assertion in ReportBuildProgress
+// and silently drops every stage.
+func TestGoMatrixBuild_DockerPathReportsStages(t *testing.T) {
+	dir := writeGoProject(t)
+
+	gb := &GoMatrixBuilder{
+		ProjectRoot: dir,
+		AppName:     "t",
+		LookPath:    func(string) (string, error) { return "/usr/bin/go", nil },
+		CommandContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			if name == "go" && len(args) > 0 && args[0] == "env" {
+				return exec.Command("sh", "-c", "echo go1.24.0")
+			}
+			return exec.Command("true")
+		},
+	}
+
+	c := Combination{Lang: builder.Go, Version: "1.22", OS: "linux", Arch: "amd64", Platform: "linux/amd64"}
+	var stages []string
+	ctx := WithBuildProgress(context.Background(), func(key, stage string, current, total int64) {
+		stages = append(stages, stage)
+	})
+	gb.Build(ctx, c)
+
+	if len(stages) == 0 {
+		t.Fatal("no build stages reported — ReportBuildProgress cannot see the reporter")
+	}
+	if !strings.HasPrefix(stages[0], "pulling golang:1.22") {
+		t.Errorf("first stage = %q, want the image pull announced", stages[0])
 	}
 }
 

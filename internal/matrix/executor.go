@@ -181,7 +181,7 @@ func Execute(plan *MatrixPlan, fn BuildFunc, cfg ExecutorConfig) []Result {
 				}
 				c := plan.Combinations[idx]
 				comboID := c.ID()
-				buildCtx := WithBuildProgress(ctx, comboID, func(key, stage string, current, total int64) {
+				buildCtx := WithBuildProgress(ctx, func(key, stage string, current, total int64) {
 					progress.Update(key, stage, current, total)
 				})
 				progress.Update(comboID, "starting", 0, 0)

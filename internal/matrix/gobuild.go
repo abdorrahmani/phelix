@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"go/version"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,7 +104,7 @@ func DetectCgo(projectRoot string) (bool, error) {
 
 var cgoPattern = regexp.MustCompile(`(?m)^\s*import\s+"C"`)
 
-// BuildGo runs the build for one combination. It chooses between native
+// Build runs the build for one combination. It chooses between native
 // cross-compilation and Docker-based builds based on the configuration.
 //
 // Native cross-compilation (CGO_ENABLED=0):
@@ -263,23 +264,29 @@ func (g *GoMatrixBuilder) hostGoProvides(ctx context.Context, requested string) 
 	return goVersionProvides(requested, strings.TrimSpace(string(out)))
 }
 
-// goVersionProvides is the pure comparison behind hostGoProvides: the
-// requested version's components must be a prefix of the host version's
-// components ("1.22" ⊑ "1.22.4", "1.22.4" ⊑ "1.22.4", "1.22" ⋢ "1.24.0").
+// goVersionProvides is the pure comparison behind hostGoProvides. Both sides
+// are parsed by the go/version stdlib parser, so a host GOVERSION carrying a
+// toolchain suffix ("go1.27.2-X:nodwarf5") compares as 1.27.2 rather than
+// looking like a different release — splitting on "." would compare the last
+// field "2" against "2-X:nodwarf5" and mismatch.
+// A major.minor request matches any patch of that minor ("1.22" ⊑ "1.22.4");
+// a patch request needs the same patch ("1.22.4" ⋢ "1.22.5").
+// An unparseable version is a mismatch — correctness over convenience.
 func goVersionProvides(requested, host string) bool {
-	requested = normalizeVersionValue(requested)
-	host = normalizeVersionValue(host)
-	reqParts := strings.Split(requested, ".")
-	hostParts := strings.Split(host, ".")
-	if len(reqParts) == 0 || len(reqParts) > len(hostParts) {
+	req := "go" + normalizeVersionValue(requested)
+
+	if !version.IsValid(req) || !version.IsValid(host) {
 		return false
 	}
-	for i := range reqParts {
-		if reqParts[i] != hostParts[i] {
-			return false
-		}
+
+	if version.Compare(req, host) == 0 {
+		return true
 	}
-	return true
+
+	if version.Lang(req) == req {
+		return version.Lang(host) == req
+	}
+	return false
 }
 
 // buildInDocker runs the Go build inside a version-specific Docker container.
@@ -334,9 +341,8 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	logLine("output:   %s", outPath)
 	logLine("cache:    %s", cacheDir)
 
-	// Pull the image if not present (best-effort, non-fatal — docker run
-	// surfaces a real error if the image is unavailable).
 	logLine("pulling image %s...", image)
+	ReportBuildProgress(ctx, c.ID(), "pulling "+image, 0, 0)
 	pullCmd := g.command(ctx, "docker", "pull", image)
 	if g.Debug {
 		pullOutput, _ := pullCmd.CombinedOutput()
@@ -375,6 +381,7 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	logLine("command:  docker %s (argv form, no shell)", strings.Join(args, " "))
 
 	cmd := g.command(ctx, "docker", args...)
+	ReportBuildProgress(ctx, c.ID(), "compiling", 0, 0)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
