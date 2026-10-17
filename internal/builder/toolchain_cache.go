@@ -80,10 +80,6 @@ func storeCachedVersion(lang Language, e versionCacheEntry) {
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
-		return
-	}
-
-	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 	}
 }

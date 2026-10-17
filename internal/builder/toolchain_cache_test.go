@@ -3,6 +3,7 @@ package builder
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -124,6 +125,37 @@ func TestStoreCachedVersion_LeavesNoTempBehind(t *testing.T) {
 	for _, e := range entries {
 		if filepath.Ext(e.Name()) != ".json" {
 			t.Fatalf("unexpected leftover file %q", e.Name())
+		}
+	}
+}
+
+// A FAILED rename must clean up its temp file too. Occupying the destination
+// with a non-empty directory makes the rename fail on every platform, so the
+// error path is exercised without relying on permissions.
+func TestStoreCachedVersion_FailedRenameLeavesNoTemp(t *testing.T) {
+	withTempCache(t)
+	if err := os.MkdirAll(toolchainCacheDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Destination is a directory holding a file: renaming a file onto it fails.
+	dst := cacheFilePath(Go)
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "blocker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	storeCachedVersion(Go, versionCacheEntry{Path: "/x", Size: 1, MtimeNS: 1, Version: "1.27"})
+
+	entries, err := os.ReadDir(toolchainCacheDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp.") {
+			t.Fatalf("a failed rename stranded %q", e.Name())
 		}
 	}
 }
