@@ -114,3 +114,99 @@ func seedVersionsFile(app string, versions []int) error {
 	}
 	return saveVersions(app, vf)
 }
+
+// A prune of k excess versions removes them in one sweep, lowest version
+// first, and stops as soon as the count is back within max even if older
+// versions remain (because they are newer relative to the kept head). This
+// is the shape the old quadratic loop also produced; the rewrite must keep it.
+func TestPruneVersions_PrunesLowestFirstInOnePass(t *testing.T) {
+	resetHome(t)
+	const app = "prune-lowest-first"
+	const max = 5
+
+	// 10 versions, none protected: max=5 prunes v1..v5 and keeps v6..v10.
+	// NOTE: no version dirs are created on purpose — removeVersionArtifacts
+	// ignores missing artifacts, so the test stays on tmpfs-free ground.
+	vf := &VersionsFile{}
+	for v := 1; v <= 10; v++ {
+		vf.Versions = append(vf.Versions, VersionMeta{Version: v})
+	}
+	if err := saveVersions(app, vf); err != nil {
+		t.Fatal(err)
+	}
+
+	log := &fakeLogger{}
+	if err := PruneVersions(app, DefaultRetention{Max: max}, log); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadVersions(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alive := map[int]bool{}
+	for _, m := range got.Versions {
+		alive[m.Version] = true
+	}
+	for v := 1; v <= 5; v++ {
+		if alive[v] {
+			t.Fatalf("v%d survived, want pruned (alive=%v)", v, alive)
+		}
+	}
+	for v := 6; v <= 10; v++ {
+		if !alive[v] {
+			t.Fatalf("v%d was pruned, want kept (alive=%v)", v, alive)
+		}
+	}
+}
+
+// With all survivors protected, prune declines to go under max instead of
+// deleting a running version — the short-circuit the old loop hit with
+// `if !removed { break }`.
+func TestPruneVersions_ProtectedSurvivorsShortCircuit(t *testing.T) {
+	resetHome(t)
+	const app = "prune-all-protected"
+	const max = 1
+
+	vf := &VersionsFile{}
+	for _, v := range []int{1, 2, 3} {
+		vf.Versions = append(vf.Versions, VersionMeta{Version: v})
+	}
+	if err := saveVersions(app, vf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every version protected: v3 as the active/running slot, v2 as the
+	// rollback target (highest below the deployed v3), v1 as a running
+	// green slot. max=1 would demand two removals, but not one version is
+	// removable — prune must stop short instead of deleting a live binary.
+	state := &DeployState{
+		AppName: app, Mode: ModeBlueGreen, PublicPort: 8000,
+		ActiveVersion: 3,
+		Slots: map[string]*Instance{
+			SlotBlue:  {Slot: SlotBlue, PID: os.Getpid(), Status: "running", Version: 3},
+			SlotGreen: {Slot: SlotGreen, PID: os.Getpid(), Status: "running", Version: 1},
+		},
+	}
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := PruneVersions(app, DefaultRetention{Max: max}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadVersions(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alive := map[int]bool{}
+	for _, m := range got.Versions {
+		alive[m.Version] = true
+	}
+	for _, v := range []int{1, 2, 3} {
+		if !alive[v] {
+			t.Fatalf("v%d was pruned though fully protected (alive=%v)", v, alive)
+		}
+	}
+}
