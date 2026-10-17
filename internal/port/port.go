@@ -50,13 +50,11 @@ func IsAvailable(port int) bool {
 
 // EnsureAvailable returns a PORT_UNAVAILABLE error when the port is occupied.
 func EnsureAvailable(port int) error {
-	if !IsAvailable(port) {
-		return phelixerr.Newf(
-			phelixerr.CodePortUnavailable,
-			"port %d is already in use by another process",
-			port,
-		)
+	ln, err := ReservePort(port)
+	if err != nil {
+		return err
 	}
+	_ = ln.Close()
 	return nil
 }
 
@@ -83,4 +81,14 @@ func WaitForListener(addr string, timeout time.Duration) bool {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+// ReservePort attempts to bind to the given port, returning a listener if
+func ReservePort(port int) (net.Listener, error) {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return nil, phelixerr.Newf(phelixerr.CodePortUnavailable,
+			"port %d is already in use by another process", port)
+	}
+	return ln, nil
 }

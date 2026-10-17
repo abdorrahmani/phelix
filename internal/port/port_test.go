@@ -70,3 +70,32 @@ func TestWaitForListener(t *testing.T) {
 		t.Error("WaitForListener on closed port = true, want false")
 	}
 }
+
+func TestReservePort(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen on ephemeral port: %v", err)
+	}
+	taken := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	ln, err := ReservePort(taken)
+	if err != nil {
+		t.Fatalf("ReservePort(%d) = %v, want nil", taken, err)
+	}
+
+	// Held: a second bind on the same port must fail with PORT_UNAVAILABLE.
+	if _, err := ReservePort(taken); err == nil {
+		t.Fatalf("ReservePort(%d) while held = nil, want error", taken)
+	} else if code := phelixerr.CodeOf(err); code != phelixerr.CodePortUnavailable {
+		t.Errorf("error code = %q, want PORT_UNAVAILABLE", code)
+	}
+
+	// Release: after the caller closes, the port is bindable again.
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !IsAvailable(taken) {
+		t.Errorf("IsAvailable(%d) after release = false, want true", taken)
+	}
+}
