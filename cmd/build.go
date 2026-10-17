@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -112,13 +113,23 @@ var BuildCmd = &cobra.Command{
 			}
 		}
 
+		var buildListener net.Listener
+		defer func() {
+			if buildListener != nil {
+				_ = buildListener.Close()
+			}
+		}()
+
 		if !isMatrix {
 			if err := phelixport.Validate(buildPort); err != nil {
 				return err
 			}
-			if err := phelixport.EnsureAvailable(buildPort); err != nil {
+
+			ln, err := phelixport.ReservePort(buildPort)
+			if err != nil {
 				return err
 			}
+			buildListener = ln
 		}
 
 		if !auth.IsLoggedIn() {
@@ -233,10 +244,16 @@ var BuildCmd = &cobra.Command{
 		}
 		phelixgrpc.ReportBuildEventForApp(id, name, "classic", true, buildVer, buildTag, gitCommit, report, "")
 
+		if buildListener != nil {
+			_ = buildListener.Close()
+			buildListener = nil
+		}
+
 		if err := startApplication(id, name); err != nil {
 			tracker.Failed(err)
 			return err
 		}
+
 		tracker.InstanceStarted("", classicPID(id), buildPort)
 
 		if rec != nil {
