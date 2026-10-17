@@ -89,11 +89,6 @@ func startMatrixSession(run *matrix.Run, combos []matrix.Combination, extraArgs 
 // session under it. Resume takes a different entry point
 // (resumeMatrixSessionContext) because it must re-read and mutate the run UNDER
 // the lock to be safe against a concurrent resume.
-//
-// Cancellation comes from ctx (the CLI derives it from signals; the remote
-// path derives it from daemon shutdown). interrupted reports whether the
-// session stopped early: the run is left with status "interrupted" and its
-// pending combinations are resumable.
 func startMatrixSessionContext(ctx context.Context, run *matrix.Run, combos []matrix.Combination, extraArgs []string, debug bool, obs matrixSessionObserver) (executed []matrix.Result, interrupted bool, err error) {
 	if len(combos) == 0 {
 		return nil, false, nil
@@ -130,13 +125,31 @@ func runMatrixSessionLocked(ctx context.Context, run *matrix.Run, combos []matri
 		return nil, false, berr
 	}
 
-	// Incremental persistence: one history update per completed combination
-	// (and per attempt start, so the live "running" state is visible to
-	// `phelix matrix status` from another process). Failures are best-effort
-	// (warned once) — a history write error must never fail a successful
-	// build. Every write marshals a clone taken under the run's lock: other
-	// workers keep mutating the run while this one serializes.
 	var warnOnce sync.Once
+	journalDir, dirErr := matrix.RunsDir()
+	warnJournal := func(err error) {
+		warnOnce.Do(func() {
+			fmt.Printf("  %s Warning: could not update matrix run history: %v\n", color.YellowString("⚠"), err)
+		})
+	}
+
+	if dirErr != nil {
+		warnJournal(dirErr)
+	}
+
+	journalResult := func(c matrix.Combination) {
+		if dirErr != nil {
+			return
+		}
+		entry, ok := run.CombinationEntry(c.ID())
+		if !ok {
+			return
+		}
+		if err := matrix.AppendJournal(journalDir, run.ID, entry); err != nil {
+			warnJournal(err)
+		}
+	}
+
 	persist := func() {
 		if uerr := matrix.UpdateRun(run.Clone()); uerr != nil {
 			warnOnce.Do(func() {
@@ -144,6 +157,7 @@ func runMatrixSessionLocked(ctx context.Context, run *matrix.Run, combos []matri
 			})
 		}
 	}
+
 	onAttempt := func(c matrix.Combination, attempt int) {
 		run.MarkRunning(c.ID(), attempt, time.Now())
 		persist()
@@ -151,9 +165,10 @@ func runMatrixSessionLocked(ctx context.Context, run *matrix.Run, combos []matri
 			obs.AttemptStarted(run, c, attempt)
 		}
 	}
+
 	onResult := func(res matrix.Result) {
 		run.RecordResult(res)
-		persist()
+		journalResult(res.Combination)
 		if obs != nil {
 			obs.ResultRecorded(run, res)
 		}
@@ -195,14 +210,6 @@ func resumeMatrixSession(outside *matrix.Run, buildArgsOverride []string, debug 
 // resumeMatrixSessionContext executes a resume entirely under the run's
 // execution lock, closing the resume TOCTOU where two resumes both pass a
 // pre-lock Resumable() check and both mutate the run. It acquires the lock
-// FIRST — the loser of two concurrent resumes fails here having mutated
-// nothing — then re-reads the run under the lock and re-validates Resumable()
-// (so a run another execution finalized between the caller's read and the lock
-// is not resumed), bumps ResumeCount, applies the optional build-arg override,
-// flips the run to running and persists it, and finally runs the incomplete
-// combinations. It returns the run it operated on: the fresh re-read on
-// success, or the caller's `outside` run on a lock failure, so the caller can
-// always report terminal state.
 func resumeMatrixSessionContext(ctx context.Context, outside *matrix.Run, buildArgsOverride []string, debug bool, obs matrixSessionObserver) (*matrix.Run, bool, error) {
 	release, lerr := matrix.AcquireRunLock(outside.ID)
 	if lerr != nil {
@@ -210,8 +217,6 @@ func resumeMatrixSessionContext(ctx context.Context, outside *matrix.Run, buildA
 	}
 	defer release()
 
-	// Authoritative state is whatever is on disk now, under the lock — not the
-	// caller's pre-lock read, which another resume may have superseded.
 	run, err := matrix.LoadRun(outside.ID)
 	if err != nil {
 		return outside, false, err
@@ -223,8 +228,7 @@ func resumeMatrixSessionContext(ctx context.Context, outside *matrix.Run, buildA
 
 	run.ResumeCount++
 	run.Status = matrix.RunStatusRunning
-	// Explicit build args override the snapshot; otherwise the original build
-	// arguments are reproduced.
+
 	if len(buildArgsOverride) > 0 {
 		run.Config.BuildArgs = append([]string(nil), buildArgsOverride...)
 	}
@@ -327,10 +331,6 @@ func completeMatrixSession(run *matrix.Run, tag string) {
 	}
 	fmt.Printf("  %s Matrix build recorded in version history (v%d)\n", color.GreenString("✓"), rec.Version)
 
-	// Structured build-report sync for the matrix build: each combination
-	// carries its own report (deploy.MatrixArtifact.Report). Best-effort and
-	// gated inside the reporter on the app being watched; a matrix build of an
-	// app with no registered entry is simply not synced.
 	matrixAppID := ""
 	for _, a := range app.Manager.ListApplications() {
 		if a.Name == run.AppName {
@@ -341,11 +341,6 @@ func completeMatrixSession(run *matrix.Run, tag string) {
 	phelixgrpc.ReportMatrixBuildEventForApp(matrixAppID, run.AppName,
 		run.Status == matrix.RunStatusSucceeded, rec.Version, tag, gitCommit, artifacts, "")
 
-	// The release manifest describes this run's artifact set under the
-	// logical version just recorded. Only finished runs with successful
-	// artifacts form a release: an interrupted run has none yet (its
-	// manifest appears once a resume finishes), and a partial run gets an
-	// explicitly partial manifest — never a silently complete one.
 	if run.Status == matrix.RunStatusSucceeded || run.Status == matrix.RunStatusPartial {
 		manifest, merr := matrix.BuildReleaseManifest(run, rec.Version, tag, time.Now())
 		if merr == nil {
@@ -435,8 +430,6 @@ func resumeMatrixRun(args []string, projCfg *project.Config, extraArgs []string,
 		run = r
 	}
 
-	// An explicit name that disagrees with the run's application is almost
-	// certainly the wrong run — fail instead of building something else.
 	if len(args) > 0 && args[0] != run.AppName {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"matrix run %s belongs to application %q, not %q", run.ID, run.AppName, args[0])
@@ -444,8 +437,6 @@ func resumeMatrixRun(args []string, projCfg *project.Config, extraArgs []string,
 
 	combos := run.IncompleteCombinations()
 
-	// --matrix-dry-run previews what a resume would execute without touching
-	// the run: no lock, no ResumeCount bump, no history update, no builds.
 	if matrixDryRun {
 		fmt.Printf("%s Dry run: resuming Matrix Run %s (%s) would execute %d of %d combination(s):\n",
 			color.BlueString("→"), color.CyanString(string(run.ID)), run.AppName, len(combos), run.Total)
@@ -459,12 +450,6 @@ func resumeMatrixRun(args []string, projCfg *project.Config, extraArgs []string,
 	fmt.Printf("%s Resuming Matrix Run %s (%s): %d of %d combinations remaining\n",
 		color.BlueString("→"), color.CyanString(string(run.ID)), run.AppName, len(combos), run.Total)
 
-	// Explicit --build-arg flags override the snapshot; otherwise the original
-	// build arguments are reproduced. The ResumeCount bump, the flip to
-	// running and the history write all happen UNDER the run lock inside
-	// resumeMatrixSession — never before it — so a concurrent resume (another
-	// process, or a remote matrix_resume) cannot double-bump the run or leave a
-	// spurious "running" record behind after losing the lock.
 	var buildArgsOverride []string
 	if len(extraArgs) > 0 {
 		buildArgsOverride = extraArgs

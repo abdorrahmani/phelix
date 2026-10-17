@@ -104,3 +104,16 @@ func replayJournal(dir string, id RunID, run *Run) {
 func discardJournal(dir string, id RunID) {
 	_ = os.Remove(journalPathFor(dir, id))
 }
+
+// AppendJournal records one combination's current state in the run's delta
+// log. Callers pass an entry obtained from Run.CombinationEntry, so the
+// serialization happens outside the run's lock.
+func AppendJournal(dir string, id RunID, entry RunCombination) error {
+	return appendJournal(dir, id, entry)
+}
+
+// DiscardJournal removes the delta log for a run once its state is in the
+// snapshot. Exported so the session can clean up after a final write.
+func DiscardJournal(dir string, id RunID) {
+	discardJournal(dir, id)
+}

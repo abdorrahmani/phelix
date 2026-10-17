@@ -89,6 +89,7 @@ func LoadRun(id RunID) (*Run, error) {
 	}
 	path := filepath.Join(dir, string(id)+".json")
 	data, err := os.ReadFile(path)
+
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, phelixerr.Newf(phelixerr.CodeNotFound,
@@ -96,10 +97,12 @@ func LoadRun(id RunID) (*Run, error) {
 		}
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "read matrix run %s", id)
 	}
+
 	var run Run
 	if err := json.Unmarshal(data, &run); err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "matrix run %s is malformed", id)
 	}
+
 	if run.ID != id {
 		return nil, phelixerr.Newf(phelixerr.CodeConfiguration,
 			"matrix run %s is malformed: record claims ID %s", id, run.ID)
@@ -226,6 +229,7 @@ func UpdateRun(run *Run) error {
 	if err != nil {
 		return err
 	}
+
 	if IsTerminalRunStatus(existing.Status) {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"matrix run %s is already %s and cannot be modified — retry it with 'phelix matrix retry %s --failed' instead",
@@ -236,10 +240,14 @@ func UpdateRun(run *Run) error {
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "write matrix run %s", run.ID)
 	}
+
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "replace matrix run %s", run.ID)
 	}
+
+	discardJournal(dir, run.ID)
+
 	return nil
 }
 
