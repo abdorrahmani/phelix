@@ -97,7 +97,6 @@ func (m *VersionMeta) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(aux.RawReport, &rep); err == nil {
 			m.BuildReport = &rep
 		}
-		// else: leave nil — malformed optional metadata must not break loading.
 	}
 	return nil
 }
@@ -601,40 +600,40 @@ func PruneVersions(appName string, policy RetentionPolicy, log Logger) error {
 	if policy == nil {
 		policy = DefaultRetention{}
 	}
+
 	max := policy.MaxRetainedVersions()
 	if max <= 0 {
 		return nil
 	}
+
 	vf, err := LoadVersions(appName)
 	if err != nil {
 		return err
 	}
+
 	cur, _ := CurrentVersion(appName)
 	protected := deploymentProtectedVersions(appName)
 	sort.Slice(vf.Versions, func(i, j int) bool {
 		return vf.Versions[i].Version < vf.Versions[j].Version
 	})
-	// Keep at most max versions total, but never drop a protected version.
-	for len(vf.Versions) > max {
-		removed := false
-		for i, v := range vf.Versions {
-			if v.IsCurrent || v.Version == cur || protected[v.Version] {
-				continue
-			}
-			if err := removeVersionArtifacts(appName, v.Version); err != nil {
-				return err
-			}
-			if log != nil {
-				log.Infof("pruned version v%d for %s", v.Version, appName)
-			}
-			vf.Versions = append(vf.Versions[:i], vf.Versions[i+1:]...)
-			removed = true
-			break
+
+	over := len(vf.Versions) - max
+	for i := 0; i < len(vf.Versions) && over > 0; {
+		v := vf.Versions[i]
+		if v.IsCurrent || v.Version == cur || protected[v.Version] {
+			i++
+			continue
 		}
-		if !removed {
-			break
+		if err := removeVersionArtifacts(appName, v.Version); err != nil {
+			return err
 		}
+		if log != nil {
+			log.Infof("pruned version v%d for %s", v.Version, appName)
+		}
+		vf.Versions = append(vf.Versions[:i], vf.Versions[i+1:]...)
+		over--
 	}
+
 	return saveVersions(appName, vf)
 }
 
@@ -851,12 +850,6 @@ func RecentVersions(appName string, n int) ([]VersionMeta, error) {
 
 // BuildReportHistory returns previous builds' report metadata for appName,
 // newest first, excluding excludeVersion (the just-recorded current build).
-//
-// Matrix versions contribute one entry per successful artifact, each carrying
-// its own per-combination report, so combinations only ever compare against
-// matching toolchain/platform contexts. Versions whose metadata predates
-// build reports — or Docker-only builds — yield entries with a nil Report;
-// those are unavailable for regression comparison but never break it.
 func BuildReportHistory(appName string, excludeVersion int) ([]buildreport.HistoryEntry, error) {
 	vf, err := LoadVersions(appName)
 	if err != nil {
@@ -910,10 +903,6 @@ func BuildReportHistory(appName string, excludeVersion int) ([]buildreport.Histo
 // RecordMatrixBuild records a matrix build as a new version entry containing
 // multiple per-platform artifacts. The version is created with is_current=false
 // (same two-phase protocol as RecordFreshBuild / RecordDockerBuild).
-//
-// artifacts should only include successfully-built combinations. Failed
-// combinations are recorded in the report.json but NOT in versions.json,
-// since versions.json is the deploy source of truth.
 func RecordMatrixBuild(appName, tag, gitCommit string, artifacts []MatrixArtifact, multiArchImage string, policy RetentionPolicy, log Logger) (*RecordResult, error) {
 	if policy == nil {
 		policy = DefaultRetention{}
