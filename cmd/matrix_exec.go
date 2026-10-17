@@ -150,17 +150,9 @@ func runMatrixSessionLocked(ctx context.Context, run *matrix.Run, combos []matri
 		}
 	}
 
-	persist := func() {
-		if uerr := matrix.UpdateRun(run.Clone()); uerr != nil {
-			warnOnce.Do(func() {
-				fmt.Printf("  %s Warning: could not update matrix run history: %v\n", color.YellowString("⚠"), uerr)
-			})
-		}
-	}
-
 	onAttempt := func(c matrix.Combination, attempt int) {
 		run.MarkRunning(c.ID(), attempt, time.Now())
-		persist()
+		journalResult(c)
 		if obs != nil {
 			obs.AttemptStarted(run, c, attempt)
 		}
