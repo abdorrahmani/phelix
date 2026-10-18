@@ -390,13 +390,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 	if prepErr != nil {
 		printFailedBuildSummary(lang, nil)
 		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", prepErr)
-		if appManager, ok := app.Manager.(*app.AppManager); ok {
-			if info, exists := appManager.Apps[id]; exists {
-				info.BuildStatus = "failed"
-				info.UpdatedAt = time.Now()
-				_ = appManager.SaveState()
-			}
-		}
+		markBuildFailed(id)
 		return nil, err
 	}
 
@@ -404,13 +398,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 
 	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
 		printFailedBuildSummary(lang, buildCtx.Config)
-		if appManager, ok := app.Manager.(*app.AppManager); ok {
-			if appInfo, exists := appManager.Apps[id]; exists {
-				appInfo.BuildStatus = "failed"
-				appInfo.UpdatedAt = time.Now()
-				_ = appManager.SaveState()
-			}
-		}
+		markBuildFailed(id)
 		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)
 		return nil, err
 	}
@@ -540,4 +528,21 @@ func newMatrixComboReport(r matrix.Result) *buildreport.Report {
 	report := newMatrixComboReportFromRun(rc)
 	report.DurationMS = r.Duration.Milliseconds()
 	return report
+}
+
+func markBuildFailed(id string) {
+	appManager, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return
+	}
+
+	info, exists := appManager.Apps[id]
+	if !exists {
+		return
+	}
+
+	info.BuildStatus = "failed"
+	info.Status = "failed"
+	info.UpdatedAt = time.Now()
+	_ = appManager.SaveState()
 }
