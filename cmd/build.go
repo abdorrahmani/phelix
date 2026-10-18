@@ -217,6 +217,7 @@ var BuildCmd = &cobra.Command{
 		report, err := buildApplication(id, buildArgs, buildMgr, binPath)
 		if err != nil {
 			tracker.Failed(err)
+			discardAppEntry(id, name)
 			return err
 		}
 
@@ -251,6 +252,7 @@ var BuildCmd = &cobra.Command{
 
 		if err := startApplication(id, name); err != nil {
 			tracker.Failed(err)
+			markBuildFailed(id)
 			return err
 		}
 
@@ -312,12 +314,12 @@ func validateName(name string) error {
 }
 
 func validateUniqueName(name string) error {
-	for _, app := range app.Manager.(*app.AppManager).Apps {
-		if app.Name == name {
+	for _, existing := range app.Manager.(*app.AppManager).Apps {
+		if existing.Name == name {
 			return phelixerr.Newf(
 				phelixerr.CodeAlreadyExists,
-				"application name %q is already in use",
-				name,
+				"application name %q is already in use\n\nto free the name:\n  phelix remove %s",
+				name, name,
 			)
 		}
 	}
@@ -358,14 +360,11 @@ func createAppEntry(id, name string, lang any) error {
 // report for the successful build. On failure, it prints a concise post-mortem
 // summary (never persists anything) and returns the error unchanged.
 func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager, outputPath string) (report *buildreport.Report, err error) {
-	appInfo := app.Manager.(*app.AppManager).Apps[id]
-	if appInfo == nil {
-		return nil, phelixerr.Newf(
-			phelixerr.CodeNotFound,
-			"application %s not found in state (it may have been removed by a concurrent operation); please retry",
-			id,
-		)
+	appInfo, err := GetAppInfo(id)
+	if err != nil {
+		return nil, err
 	}
+
 	projectRoot := appInfo.Directory
 
 	lang := builder.ParseLanguage(appInfo.Language)
@@ -393,13 +392,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 	if prepErr != nil {
 		printFailedBuildSummary(lang, nil)
 		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", prepErr)
-		if appManager, ok := app.Manager.(*app.AppManager); ok {
-			if app, exists := appManager.Apps[id]; exists {
-				app.BuildStatus = "failed"
-				app.UpdatedAt = time.Now()
-				_ = appManager.SaveState()
-			}
-		}
+		markBuildFailed(id)
 		return nil, err
 	}
 
@@ -407,13 +400,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 
 	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
 		printFailedBuildSummary(lang, buildCtx.Config)
-		if appManager, ok := app.Manager.(*app.AppManager); ok {
-			if appInfo, exists := appManager.Apps[id]; exists {
-				appInfo.BuildStatus = "failed"
-				appInfo.UpdatedAt = time.Now()
-				_ = appManager.SaveState()
-			}
-		}
+		markBuildFailed(id)
 		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)
 		return nil, err
 	}
@@ -543,4 +530,40 @@ func newMatrixComboReport(r matrix.Result) *buildreport.Report {
 	report := newMatrixComboReportFromRun(rc)
 	report.DurationMS = r.Duration.Milliseconds()
 	return report
+}
+
+// markBuildFailed updates the app entry to indicate that the build has failed. This is used to ensure that failed builds are not considered "running" and can be cleaned up later.
+func markBuildFailed(id string) {
+	appManager, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return
+	}
+
+	info, exists := appManager.Apps[id]
+	if !exists {
+		return
+	}
+
+	info.BuildStatus = "failed"
+	info.Status = "failed"
+	info.UpdatedAt = time.Now()
+	_ = appManager.SaveState()
+}
+
+// discardAppEntry removes the app entry from the state if it is not running and has no deploy state. This is used to clean up failed builds.
+func discardAppEntry(id, name string) {
+	appManager, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return
+	}
+
+	info, exists := appManager.Apps[id]
+	if !exists || info.Status == "running" || loadDeployState(name) != nil {
+		return
+	}
+
+	if err := appManager.RemoveApplication(id); err != nil {
+		fmt.Printf("  %s Warning: could not clean up the failed build entry: %v\n",
+			color.YellowString("⚠"), err)
+	}
 }
