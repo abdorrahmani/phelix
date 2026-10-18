@@ -179,6 +179,10 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if projCfg.DeployRuntime() == project.RuntimeDocker {
+			if buildListener != nil {
+				_ = buildListener.Close()
+				buildListener = nil
+			}
 			return runDockerInitialBuild(cmd, projCfg, name, buildPort, currentDir, lang, op)
 		}
 
