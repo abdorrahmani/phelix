@@ -39,13 +39,11 @@ var StartCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			// PromptApp returns "" when "All applications" is selected.
 			if chosen != "" {
 				args = []string{chosen}
 			}
 		}
 
-		// If no ID or AppName provided, start all apps
 		if len(args) == 0 {
 			apps := app.Manager.ListApplications()
 			if len(apps) == 0 {
@@ -137,7 +135,6 @@ var StartCmd = &cobra.Command{
 
 			fmt.Printf("%s Start failed for application %s (ID: %s): %v\n", color.YellowString("⚠"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), err)
 
-			// Try to rebuild
 			buildMgr := builder.NewBuildManager()
 			lang := builder.ParseLanguage(appInfo.Language)
 			if !lang.IsSupported() {
@@ -194,7 +191,6 @@ func ensureNewApplication(name string, port int) error {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
 	}
 
-	// Detect language
 	buildMgr := builder.NewBuildManager()
 	lang := buildMgr.DetectLanguage(cwd)
 	if !lang.IsSupported() {
@@ -224,11 +220,10 @@ func ensureNewApplication(name string, port int) error {
 	}
 
 	if err := startApplicationOnPort(id, name, port); err != nil {
+		markBuildFailed(id)
 		return err
 	}
 
-	// Build report only: this legacy ensure-path does not go through version
-	// recording, so no regression analysis is possible (and none is required).
 	if report != nil {
 		buildreport.PrintReport(os.Stdout, buildreport.ReportView{
 			AppName: name,
