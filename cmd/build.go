@@ -358,14 +358,11 @@ func createAppEntry(id, name string, lang any) error {
 // report for the successful build. On failure, it prints a concise post-mortem
 // summary (never persists anything) and returns the error unchanged.
 func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildManager, outputPath string) (report *buildreport.Report, err error) {
-	appInfo := app.Manager.(*app.AppManager).Apps[id]
-	if appInfo == nil {
-		return nil, phelixerr.Newf(
-			phelixerr.CodeNotFound,
-			"application %s not found in state (it may have been removed by a concurrent operation); please retry",
-			id,
-		)
+	appInfo, err := GetAppInfo(id)
+	if err != nil {
+		return nil, err
 	}
+
 	projectRoot := appInfo.Directory
 
 	lang := builder.ParseLanguage(appInfo.Language)
@@ -394,9 +391,9 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		printFailedBuildSummary(lang, nil)
 		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", prepErr)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
-			if app, exists := appManager.Apps[id]; exists {
-				app.BuildStatus = "failed"
-				app.UpdatedAt = time.Now()
+			if info, exists := appManager.Apps[id]; exists {
+				info.BuildStatus = "failed"
+				info.UpdatedAt = time.Now()
 				_ = appManager.SaveState()
 			}
 		}
