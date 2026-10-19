@@ -88,3 +88,65 @@ func TestGoBuildTargetIsNeverAFileWithinAModule(t *testing.T) {
 		t.Fatalf("target = %q: a .go file builds a single-file ad-hoc package, so any helper in a sibling file is undefined", got)
 	}
 }
+
+// TestGoBuildTargetPrefersRootMainFile pins the fix for silently building the
+// wrong program. WalkDir is depth-first and lexicographic, so a main.go under
+// any directory sorting before "main.go" (".claude/", "cmd/", "examples/") is
+// collected first; FirstMainFile returns it, and before this fix the target
+// was derived from its directory.
+func TestGoBuildTargetPrefersRootMainFile(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/app\n\ngo 1.22\n")
+	writeTestFile(t, filepath.Join(root, "main.go"), "package main\n\nfunc main() {}\n")
+	writeTestFile(t, filepath.Join(root, ".claude", "worktrees", "wt", "examples", "blue-green", "main.go"),
+		"package main\n\nfunc main() {}\n")
+
+	scan := NewProjectScan(root)
+	if got := scan.FirstMainFile(); got == filepath.Join(root, "main.go") {
+		t.Fatal("fixture is not exercising the bug: walk order already reaches the root main.go first")
+	}
+
+	got, err := scan.GoBuildTarget()
+	if err != nil {
+		t.Fatalf("GoBuildTarget: %v", err)
+	}
+	if got != "." {
+		t.Fatalf("target = %q, want %q: the root main.go must win over one found earlier in walk order", got, ".")
+	}
+}
+
+// TestGoBuildTargetRefusesAmbiguousMainFiles: with several candidates and none
+// at the root, Phelix cannot know which program was meant, so it must refuse
+// and name them rather than build whichever the walk happened to reach first.
+func TestGoBuildTargetRefusesAmbiguousMainFiles(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/app\n\ngo 1.22\n")
+	writeTestFile(t, filepath.Join(root, "cmd", "api", "main.go"), "package main\n\nfunc main() {}\n")
+	writeTestFile(t, filepath.Join(root, "cmd", "worker", "main.go"), "package main\n\nfunc main() {}\n")
+
+	got, err := NewProjectScan(root).GoBuildTarget()
+	if err == nil {
+		t.Fatalf("target = %q, want a refusal", got)
+	}
+	for _, want := range []string{"cmd/api/main.go", "cmd/worker/main.go"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal must list %s, got: %v", want, err)
+		}
+	}
+}
+
+// TestGoBuildTargetSingleSubdirMainFile: one candidate in a subdirectory is
+// unambiguous and must still build, module or not.
+func TestGoBuildTargetSingleSubdirMainFile(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/app\n\ngo 1.22\n")
+	writeTestFile(t, filepath.Join(root, "cmd", "app", "main.go"), "package main\n\nfunc main() {}\n")
+
+	got, err := NewProjectScan(root).GoBuildTarget()
+	if err != nil {
+		t.Fatalf("GoBuildTarget: %v", err)
+	}
+	if got != "./cmd/app" {
+		t.Fatalf("target = %q, want %q", got, "./cmd/app")
+	}
+}

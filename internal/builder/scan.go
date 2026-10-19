@@ -118,9 +118,9 @@ func (s *ProjectScan) FirstMainFile() string {
 // GoBuildTarget returns the package argument to hand `go build` for this
 // project, relative to Root.
 func (s *ProjectScan) GoBuildTarget() (string, error) {
-	mainFile := s.FirstMainFile()
-	if mainFile == "" {
-		return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
+	mainFile, err := s.mainFileForBuild()
+	if err != nil {
+		return "", err
 	}
 
 	if s.RootFile("go.mod") {
@@ -133,6 +133,45 @@ func (s *ProjectScan) GoBuildTarget() (string, error) {
 
 	return "", phelixerr.Newf(phelixerr.CodeUnsupportedProject,
 		"no go.mod found in %s; Phelix builds a module-less project only when its main.go sits in the project root", s.Root)
+}
+
+// mainFileForBuild returns the one main.go this build targets: the project
+// root's, when there is one, otherwise the only candidate.
+func (s *ProjectScan) mainFileForBuild() (string, error) {
+	if s == nil || len(s.mainFiles) == 0 {
+		return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
+	}
+
+	rootMain := filepath.Join(s.Root, "main.go")
+	for _, f := range s.mainFiles {
+		if f == rootMain {
+			return f, nil
+		}
+	}
+
+	if len(s.mainFiles) == 1 {
+		return s.mainFiles[0], nil
+	}
+
+	return "", phelixerr.Newf(
+		phelixerr.CodeUnsupportedProject,
+		"found %d main.go files and none in the project root, so Phelix cannot tell which program to build: %s",
+		len(s.mainFiles), strings.Join(s.relPaths(s.mainFiles), ", "),
+	)
+}
+
+// relPaths renders mainFile paths relative to Root, for messages.
+func (s *ProjectScan) relPaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		rel, err := filepath.Rel(s.Root, p)
+		if err != nil {
+			out = append(out, filepath.ToSlash(p))
+			continue
+		}
+		out = append(out, filepath.ToSlash(rel))
+	}
+	return out
 }
 
 // mainPkgTarget returns the package directory holding mainFile, expressed the
