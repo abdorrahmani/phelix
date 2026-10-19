@@ -216,11 +216,6 @@ func (d *Daemon) startAppProxy(p *Proxy) error {
 }
 
 // EnrollApp adds an app to the daemon and starts proxying on its public port.
-//
-// Re-enrolling an app that already exists on the SAME public port atomically
-// updates its target set and keeps the bound listener untouched — there is no
-// close/reopen gap during which clients could get connection refused. Only a
-// genuine public-port change takes down and rebinds the old listener.
 func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backends []Target) error {
 	if appName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "proxy: appName is required")
@@ -248,8 +243,6 @@ func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backe
 		p.SetTarget(primary, backends...)
 	}
 
-	// Bind BEFORE publishing so a failed bind leaves the daemon's map (and
-	// persisted state) untouched.
 	if err := d.startAppProxy(p); err != nil {
 		return err
 	}
@@ -260,10 +253,11 @@ func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backe
 	d.mu.Unlock()
 
 	if old != nil {
-		// Public port changed: retire the previous listener.
 		_ = old.Shutdown(context.Background())
 	}
+
 	d.persistState()
+
 	return nil
 }
 
@@ -272,15 +266,19 @@ func (d *Daemon) SwitchApp(appName string, primary Target, backends []Target) er
 	d.mu.Lock()
 	p, ok := d.proxies[appName]
 	d.mu.Unlock()
+
 	if !ok {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "proxy: app %q is not enrolled with the proxy daemon", appName)
 	}
+
 	if len(backends) > 0 {
 		p.SetTarget(primary, backends...)
 	} else {
 		p.SetTarget(primary)
 	}
+
 	d.persistState()
+
 	return nil
 }
 
@@ -296,9 +294,7 @@ func (d *Daemon) RemoveApp(appName string) error {
 		return nil
 	}
 	err := p.Shutdown(context.Background())
-	// Only forget the enrollment from disk once the listener actually closed;
-	// on shutdown failure the app keeps serving through the old proxy, so the
-	// persisted state must keep describing it.
+
 	if err == nil {
 		d.persistState()
 	}
@@ -339,7 +335,7 @@ func (d *Daemon) persistState() {
 		fmt.Fprintf(os.Stderr, "[proxy] encode state: %v\n", err)
 		return
 	}
-	tmp := path + ".tmp"
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".proxy-state.tmp.%d.%d", os.Getpid(), time.Now().UnixNano()))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "[proxy] state dir: %v\n", err)
 		return
@@ -732,10 +728,6 @@ func isPortOpen(port int) bool {
 // EnsureDaemon compares it against the running daemon's version and restarts
 // stale daemons so a rebuilt CLI never keeps talking to a pre-upgrade proxy
 // that would persist outdated state.
-//
-// v3 added: Target.Weight on Add/Switch (an older daemon silently drops the
-// field and would split canary traffic 50/50) and the OpStats per-backend
-// metrics op (an older daemon answers "unknown op").
 const proxyProtoVersion = 3
 
 // daemonVersionOf returns the running daemon's protocol version. A daemon
@@ -767,16 +759,10 @@ func EnsureDaemon(ctx context.Context, phelixBin string, wait time.Duration) err
 	}
 	client := NewClient(socket)
 
-	// Fast path: already running. An old daemon left over from a previous
-	// phelix build must not keep serving stale proxy logic (e.g. persisting
-	// duplicate backends): if its protocol version predates the current one,
-	// replace it before the caller enrolls new state into it.
 	if client.IsRunning() {
 		if daemonVersionOf(ctx, client) >= proxyProtoVersion {
 			return nil
 		}
-		// Stale daemon: drain (shutdown drains up to 30s) and replace it with
-		// a fresh one from this binary.
 		_, _ = client.Do(ctx, Request{Op: OpShutdown})
 		staleDeadline := time.Now().Add(35 * time.Second)
 		for client.IsRunning() && time.Now().Before(staleDeadline) {
@@ -798,12 +784,9 @@ func EnsureDaemon(ctx context.Context, phelixBin string, wait time.Duration) err
 		return phelixerr.Wrapf(phelixerr.CodeProxy, err, "proxy: cannot locate phelix executable to start daemon")
 	}
 
-	// Spawn detached: own session, stdio to /dev/null, survive this CLI exit.
-	// --foreground is required so the child actually runs the daemon loop
-	// instead of trying to background itself again.
 	cmd := exec.Command(phelixBin, "proxy", "--foreground")
 	cmd.SysProcAttr = detachedSysProcAttr()
-	// Redirect stdio so the background process never touches our terminal.
+
 	if devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0); err == nil {
 		cmd.Stdin = devnull
 		cmd.Stdout = devnull
@@ -812,7 +795,7 @@ func EnsureDaemon(ctx context.Context, phelixBin string, wait time.Duration) err
 	if err := cmd.Start(); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeProxy, err, "proxy: failed to start daemon")
 	}
-	// Release the child so it isn't reaped/killed when this process exits.
+
 	_ = cmd.Process.Release()
 
 	if wait <= 0 {

@@ -212,6 +212,16 @@ var BuildCmd = &cobra.Command{
 				color.YellowString("⚠"), project.FileName, serr)
 		}
 
+		releaseBuild, lockErr := deploy.AcquireDeployLock(name, "build")
+		if lockErr != nil {
+			discardAppEntry(id, name)
+			return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock for build", lockErr)
+		}
+
+		defer func() {
+			releaseBuild()
+		}()
+
 		binPath := filepath.Join(currentDir, fmt.Sprintf("app_%s", id))
 		tracker, flushTelemetry := classicTracker(id, name, buildPort, 0)
 		defer flushTelemetry()
