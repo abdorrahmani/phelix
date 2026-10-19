@@ -187,22 +187,27 @@ func LoadVersions(appName string) (*VersionsFile, error) {
 	return &vf, nil
 }
 
+// saveVersions writes versions.json atomically, creating the directory if needed.
 func saveVersions(appName string, vf *VersionsFile) error {
 	path, err := versionsPath(appName)
 	if err != nil {
 		return err
 	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+
 	data, err := json.MarshalIndent(vf, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
+
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".versions.tmp.%d.%d", os.Getpid(), time.Now().UnixNano()))
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
+
 	return os.Rename(tmp, path)
 }
 

@@ -14,6 +14,7 @@ package deploy
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -219,11 +220,6 @@ func (s *DeployState) restoreMode(m modeSnapshot) {
 // caller can stop their processes at the right moment — after the new
 // strategy's instances actually serve traffic; stopping them earlier would
 // drop requests. A no-op returning (nil, nil) when already in mode.
-//
-// The mode switch is persisted immediately: a crash mid-rollout must not
-// leave the old strategy recorded as the active one. Callers that must keep
-// the previous strategy when the rollout fails before it replaced anything
-// capture the four fields with captureMode and restore them with restoreMode.
 func (s *DeployState) MigrateTo(mode Mode) ([]*Instance, error) {
 	if s == nil || s.Mode == mode {
 		return nil, nil
@@ -269,14 +265,10 @@ func (s *DeployState) ActiveInstance() *Instance {
 		}
 		return s.Slots[s.ActiveSlot]
 	case ModeRolling:
-		// No single "active" replica for rolling; return nil. Callers iterate
-		// Replicas themselves.
 		return nil
 	}
 	return nil
 }
-
-// --- persistence -----------------------------------------------------------
 
 // statePath returns the on-disk path for an app's DeployState, mirroring the
 // health package's ~/.phelix/apps/<AppName>/ layout.
@@ -293,6 +285,7 @@ func Store(s *DeployState) error {
 	if s == nil || s.AppName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: cannot store state without an app name")
 	}
+
 	path, err := statePath(s.AppName)
 	if err != nil {
 		return err
@@ -306,7 +299,8 @@ func Store(s *DeployState) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
+
+	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".deploy.tmp.%d.%d", os.Getpid(), time.Now().UnixNano()))
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
