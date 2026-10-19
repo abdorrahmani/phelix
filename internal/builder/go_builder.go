@@ -3,7 +3,6 @@ package builder
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -63,12 +62,10 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 		scan = NewProjectScan(config.ProjectRoot)
 	}
 
-	mainFile := scan.FirstMainFile()
-	if mainFile == "" {
-		return phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
+	target, err := scan.GoBuildTarget()
+	if err != nil {
+		return err
 	}
-
-	relPath, _ := filepath.Rel(config.ProjectRoot, mainFile)
 
 	args := []string{"build", "-v"}
 
@@ -77,7 +74,7 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 		args = append(args, config.ExtraArgs...)
 	}
 
-	args = append(args, "-o", config.OutputPath, relPath)
+	args = append(args, "-o", config.OutputPath, target)
 
 	cmd := exec.Command("go", args...)
 	cmd.Dir = config.ProjectRoot

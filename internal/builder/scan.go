@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // ignoredDirs is a set of directory names that should be ignored during scanning.
@@ -111,6 +113,43 @@ func (s *ProjectScan) FirstMainFile() string {
 		return ""
 	}
 	return s.mainFiles[0]
+}
+
+// GoBuildTarget returns the package argument to hand `go build` for this
+// project, relative to Root.
+func (s *ProjectScan) GoBuildTarget() (string, error) {
+	mainFile := s.FirstMainFile()
+	if mainFile == "" {
+		return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "no main.go file found in the project")
+	}
+
+	if s.RootFile("go.mod") {
+		return s.mainPkgTarget(mainFile), nil
+	}
+
+	if mainFile == filepath.Join(s.Root, "main.go") {
+		return "main.go", nil
+	}
+
+	return "", phelixerr.Newf(phelixerr.CodeUnsupportedProject,
+		"no go.mod found in %s; Phelix builds a module-less project only when its main.go sits in the project root", s.Root)
+}
+
+// mainPkgTarget returns the package directory holding mainFile, expressed the
+// way `go build` wants it: "." for the root, otherwise "./" plus the
+// root-relative path. The "./" is required, a bare "sub" is read as a stdlib
+// import path, not a directory.
+func (s *ProjectScan) mainPkgTarget(mainFile string) string {
+	if filepath.Dir(mainFile) == s.Root {
+		return "."
+	}
+
+	rel, err := filepath.Rel(s.Root, filepath.Dir(mainFile))
+	if err != nil {
+		return "."
+	}
+
+	return "./" + filepath.ToSlash(rel)
 }
 
 // loadGitignoreDirs reads the .gitignore file in the given root directory and returns a map of directory names that should be ignored during scanning.
