@@ -198,13 +198,25 @@ var BuildCmd = &cobra.Command{
 		if err := createAppEntry(id, name, lang); err != nil {
 			return err
 		}
-		if err := syncProjectResources(projCfg, id); err != nil {
+
+		stateChanged := false
+		if changed, err := syncProjectResources(projCfg, id); err != nil {
 			return err
+		} else {
+			stateChanged = stateChanged || changed
 		}
 
-		if serr := syncProjectWatching(projCfg, id); serr != nil {
+		if changed, serr := syncProjectWatching(projCfg, id); serr != nil {
 			fmt.Printf("  %s Warning: could not apply watching from %s: %v\n",
 				color.YellowString("⚠"), project.FileName, serr)
+		} else {
+			stateChanged = stateChanged || changed
+		}
+
+		if stateChanged {
+			if err := app.Manager.SaveState(); err != nil {
+				return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to persist app state", err)
+			}
 		}
 
 		if serr := syncProjectHealth(projCfg, id, name, buildPort); serr != nil {

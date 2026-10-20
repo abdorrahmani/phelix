@@ -253,22 +253,33 @@ func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name str
 	if err := createAppEntry(id, name, lang); err != nil {
 		return err
 	}
-	if err := syncProjectResources(projCfg, id); err != nil {
+
+	stateChanged := false
+
+	if changed, err := syncProjectResources(projCfg, id); err != nil {
 		return err
+	} else {
+		stateChanged = stateChanged || changed
 	}
-	if serr := syncProjectWatching(projCfg, id); serr != nil {
+
+	if changed, serr := syncProjectWatching(projCfg, id); serr != nil {
 		fmt.Printf("  %s Warning: could not apply watching from %s: %v\n",
 			color.YellowString("⚠"), project.FileName, serr)
+	} else {
+		stateChanged = stateChanged || changed
 	}
+
+	if stateChanged {
+		if err := app.Manager.SaveState(); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to persist app state", err)
+		}
+	}
+
 	if serr := syncProjectHealth(projCfg, id, name, publicPort); serr != nil {
 		fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
 			color.YellowString("⚠"), project.FileName, serr)
 	}
 
-	// Resolve the deploy strategy from phelix.yaml into the shared rebuild
-	// flags the deploy engine reads (build defines none of --blue-green /
-	// --replicas / --strategy, so this falls through to deploy.strategy —
-	// which validation guarantees is a zero-downtime one for docker).
 	if err := applyConfigDeployStrategy(cmd, projCfg, name); err != nil {
 		return err
 	}

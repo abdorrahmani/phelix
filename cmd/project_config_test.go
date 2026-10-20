@@ -28,8 +28,12 @@ func TestLoadProjectConfigMissing(t *testing.T) {
 // config-less directory call this on every run (regression: the nil deref
 // crashed the build after the app entry was already created).
 func TestSyncProjectWatchingNilConfig(t *testing.T) {
-	if err := syncProjectWatching(nil, "app-1"); err != nil {
+	changed, err := syncProjectWatching(nil, "app-1")
+	if err != nil {
 		t.Fatalf("syncProjectWatching(nil, ...) = %v, want nil", err)
+	}
+	if changed {
+		t.Fatal("a missing phelix.yaml must not report a state change")
 	}
 }
 
