@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -130,8 +130,6 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		}
 	}
 
-	// Docker is used when explicitly requested, or when no host Go toolchain
-	// exists (the version-specific golang:<ver> images carry the toolchain).
 	if _, hostGoErr := g.lookPath("go"); hostGoErr != nil {
 		if !g.UseDocker {
 			logLine("host go toolchain not found (%v) — falling back to Docker build", hostGoErr)
@@ -142,10 +140,6 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		return g.buildInDocker(ctx, c, result)
 	}
 	if g.UseDocker || !g.hostGoProvides(ctx, c.Version) {
-		// The native path compiles with whatever `go` is on the PATH: a host
-		// toolchain of a different version would silently produce an artifact
-		// labeled with a toolchain it was not built with. The version-pinned
-		// Docker image keeps the label honest.
 		if !g.UseDocker {
 			logLine("host go toolchain is not version %s — using the version-pinned Docker image", c.Version)
 		}
@@ -155,16 +149,11 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		return g.buildInDocker(ctx, c, result)
 	}
 
-	// Native cross-compilation path.
 	if cgo, err := DetectCgo(g.ProjectRoot); err != nil {
 		result.Status = "failed"
 		result.Error = phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to scan for cgo usage")
 		return result
 	} else if cgo {
-		// CGO detected — cross-compilation without a C cross-compiler
-		// would produce a binary that segfaults or fails to load on the
-		// target. Rather than silently shipping broken artifacts, we fail
-		// with a clear message.
 		result.Status = "failed"
 		result.Error = phelixerr.Newf(
 			phelixerr.CodeUnsupportedProject,
@@ -199,8 +188,6 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	logLine("output:  %s", outPath)
 	logLine("cache:   (native cross-compile, host go build cache)")
 
-	// `-v` makes go print every compiled package, letting us distinguish a
-	// cache COLD run from a cache HIT for the per-combination build report.
 	args := append([]string{"build", "-v"}, g.ExtraArgs...)
 	args = append(args, "-o", outPath, mainPkg)
 	cmd := g.command(ctx, "go", args...)
@@ -221,8 +208,7 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	cmd.Stderr = commandOutput
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
-		// The underlying *exec.ExitError (with exit code) stays reachable via
-		// errors.As; the full compiler output is captured only in the debug log.
+
 		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "go build failed for %s (%s)", g.AppName, c.Platform)
 		logLine("error: %v", err)
 		if s := output.String(); s != "" {
@@ -234,9 +220,8 @@ func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result.Duration = time.Since(start)
 	result.Status = "success"
 	result.Artifact = outPath
-	result.CacheStatus = string(builder.GoCacheStatusFromOutput(output.String()))
-	// Checksum the final artifact bytes; an unreadable/unhashable artifact is
-	// an integrity failure and fails the combination.
+	result.CacheStatus = string(buildreport.CacheUnknown)
+
 	finalizeArtifactChecksum(result)
 	logLine("success in %s", result.Duration.Round(time.Millisecond))
 	if result.SHA256 != "" {
@@ -330,8 +315,6 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	}
 	outPath := filepath.Join(outDir, c.BinaryName(g.AppName))
 
-	// Docker cache directory — keyed per combination so different versions
-	// don't invalidate each other's Go build caches.
 	cacheDir := filepath.Join(g.ProjectRoot, ".phelix", "cache", "go", c.ID())
 	os.MkdirAll(cacheDir, 0o755)
 
@@ -372,9 +355,8 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	if c.Variant != "" {
 		args = append(args, "-e", "GOARM="+goarmFromVariant(c.Variant))
 	}
-	args = append(args, "-e", "CGO_ENABLED=0", image, "go", "build", "-v")
-	// `-v` prints compiled package names, enabling cache COLD/HIT detection
-	// for the per-combination build report from the captured stderr.
+	args = append(args, "-e", "CGO_ENABLED=0", image, "go", "build")
+
 	args = append(args, g.ExtraArgs...)
 	args = append(args, "-o", "/out/"+binName, mainPkg)
 
@@ -397,8 +379,6 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 		return result
 	}
 
-	// The container exited 0 — verify the artifact actually landed in the
-	// mounted output directory before reporting success.
 	if _, err := os.Stat(outPath); err != nil {
 		result.Status = "failed"
 		result.Error = phelixerr.Newf(phelixerr.CodeNotFound,
@@ -409,10 +389,9 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	result.Duration = time.Since(start)
 	result.Status = "success"
 	result.Artifact = outPath
-	// The persistent cache dir is mounted at /root/.cache/go-build; compiled
-	// package names on stderr mean real compilation happened (COLD).
-	result.CacheStatus = string(builder.GoCacheStatusFromOutput(stderr.String()))
-	// Checksum the final artifact bytes (integrity failure fails the combo).
+
+	result.CacheStatus = string(buildreport.CacheUnknown)
+
 	finalizeArtifactChecksum(result)
 	logLine("success in %s", result.Duration.Round(time.Millisecond))
 	if result.SHA256 != "" {
@@ -423,12 +402,10 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 
 // findMainPackage locates the Go main package in the project.
 func (g *GoMatrixBuilder) findMainPackage() (string, error) {
-	// Check for go.mod first — if present, use relative path.
 	if _, err := os.Stat(filepath.Join(g.ProjectRoot, "go.mod")); err == nil {
 		return ".", nil
 	}
 
-	// Walk to find main.go with "package main".
 	var mainDir string
 	err := filepath.Walk(g.ProjectRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || mainDir != "" {

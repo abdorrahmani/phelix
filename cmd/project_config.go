@@ -91,56 +91,60 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 }
 
 // syncProjectResources persists current runtime policy, not versioned state.
-func syncProjectResources(cfg *project.Config, appID string) error {
+func syncProjectResources(cfg *project.Config, appID string) (bool, error) {
 	if cfg == nil {
-		return nil
+		return false, nil
 	}
 	if err := cfg.Resources.Validate(); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeConfiguration, "invalid resource limits", err)
+		return false, phelixerr.Wrap(phelixerr.CodeConfiguration, "invalid resource limits", err)
 	}
+
 	manager, ok := app.Manager.(*app.AppManager)
 	if !ok {
-		return phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
+		return false, phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
 	}
+
 	info := manager.Apps[appID]
 	if info == nil {
-		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found in state", appID)
+		return false, phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found in state", appID)
 	}
+
 	previous := info.Resources
 	if previous == cfg.Resources {
-		return nil
+		return false, nil
 	}
+
 	info.Resources = cfg.Resources
-	if err := manager.SaveState(); err != nil {
-		info.Resources = previous
-		return err
-	}
-	return nil
+
+	return true, nil
 }
 
 // syncProjectWatching applies the watching value declared in phelix.yaml to
 // the app's persisted flag (the same store `phelix watch` writes).
-func syncProjectWatching(cfg *project.Config, appID string) error {
+func syncProjectWatching(cfg *project.Config, appID string) (bool, error) {
 	if cfg == nil {
-		return nil
+		return false, nil
 	}
+
 	enabled, ok := cfg.WatchingSetting()
 	if !ok {
-		return nil
+		return false, nil
 	}
 
 	appManager, isReal := app.Manager.(*app.AppManager)
 	if !isReal {
-		return phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
+		return false, phelixerr.New(phelixerr.CodeServer, "invalid app manager type")
 	}
+
 	info, exists := appManager.Apps[appID]
 	if !exists {
-		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found in state", appID)
+		return false, phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found in state", appID)
 	}
 
 	if info.Watching == enabled {
-		return nil
+		return false, nil
 	}
 	info.Watching = enabled
-	return appManager.SaveState()
+
+	return true, nil
 }

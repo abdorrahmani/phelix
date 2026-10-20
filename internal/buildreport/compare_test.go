@@ -61,25 +61,25 @@ func TestDurationComparable_HitToColdSkipped(t *testing.T) {
 	}
 }
 
-func TestDurationComparable_MissingCacheMetadataSafe(t *testing.T) {
-	// Old versions carry no cache info (unknown status) — comparison must be
-	// skipped safely rather than guessed.
+func TestDurationComparable_UnknownCacheStillCompares(t *testing.T) {
 	prev := repWith("go", "1.27", "linux/amd64", 1000, 8000, CacheUnknown)
-	cur := repWith("go", "1.27", "linux/amd64", 1010, 9000, CacheCold)
-	ok, reason := DurationComparable(prev, cur)
-	if ok {
-		t.Fatalf("missing cache metadata must not allow duration comparison")
-	}
-	if !contains(reason, "cache information unavailable") {
-		t.Fatalf("unexpected reason %q", reason)
+	cur := repWith("go", "1.27", "linux/amd64", 1010, 9000, CacheUnknown)
+
+	if ok, reason := DurationComparable(prev, cur); !ok {
+		t.Fatalf("unknown cache status must still compare, got reason %q", reason)
 	}
 
-	// nil reports are equally safe.
-	if ok, _ := DurationComparable(nil, cur); ok {
-		t.Fatalf("nil previous report must be incomparable")
+	known := repWith("go", "1.27", "linux/amd64", 1000, 8000, CacheCold)
+	if ok, _ := DurationComparable(prev, known); !ok {
+		t.Fatal("unknown against known must compare")
 	}
-	if ok, _ := DurationComparable(cur, nil); ok {
-		t.Fatalf("nil current report must be incomparable")
+
+	if ok, _ := DurationComparable(nil, prev); ok {
+		t.Fatal("nil previous report must be incomparable")
+	}
+
+	if ok, _ := DurationComparable(prev, nil); ok {
+		t.Fatal("nil current report must be incomparable")
 	}
 }
 

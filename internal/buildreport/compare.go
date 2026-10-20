@@ -19,13 +19,15 @@ func DurationComparable(prev, cur *Report) (bool, string) {
 	if prev.IdentityKey() != cur.IdentityKey() {
 		return false, "artifact context differs from the previous comparable build"
 	}
+
 	p, c := prev.Cache.Status.Normalized(), cur.Cache.Status.Normalized()
 	if p == CacheUnknown || c == CacheUnknown {
-		return false, "cache information unavailable for one of the builds"
+		return true, ""
 	}
 	if p != c {
 		return false, "cache mode differs from the previous comparable build"
 	}
+
 	return true, ""
 }
 

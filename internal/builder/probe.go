@@ -9,18 +9,6 @@ import (
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 )
 
-// GoCacheStatusFromOutput classifies a Go build as cache-cold or cache-hit
-// using the output of `go build -v`: -v prints every package being compiled,
-// so an empty result means all packages were served from the build cache
-// (HIT / incremental relink), while any package lines mean real compilation
-// work happened (COLD).
-func GoCacheStatusFromOutput(output string) buildreport.CacheStatus {
-	if strings.TrimSpace(output) == "" {
-		return buildreport.CacheHit
-	}
-	return buildreport.CacheCold
-}
-
 // RustCacheStatusFromOutput classifies a Cargo build: fresh builds print only
 // a "Finished" summary, whereas any "Compiling <crate>" line indicates real
 // compilation work (COLD). Warnings alone keep the status HIT.
