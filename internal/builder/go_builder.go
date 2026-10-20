@@ -67,7 +67,7 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 		return err
 	}
 
-	args := []string{"build", "-v"}
+	args := []string{"build"}
 
 	// Add extra arguments from user (e.g., -ldflags, -tags, etc.)
 	if len(config.ExtraArgs) > 0 {
@@ -90,7 +90,7 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 		)
 	}
 
-	observeCache(config, GoCacheStatusFromOutput(string(output)), buildreport.CacheSourceGoBuild)
+	observeCache(config, buildreport.CacheUnknown, "")
 
 	return nil
 }
@@ -127,7 +127,6 @@ func (gb *GoBuilder) GetBuildFlags() []string {
 		"-tags",
 		"-toolexec",
 		"-trimpath",
-		"-v",
 		"-work",
 		"-x",
 	}

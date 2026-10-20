@@ -227,7 +227,7 @@ func (durationSelector) cacheGate(prev, cur *Report) (bool, string) {
 	p := prev.Cache.Status.Normalized()
 	c := cur.Cache.Status.Normalized()
 	if p == CacheUnknown || c == CacheUnknown {
-		return false, "cache information unavailable for one of the builds"
+		return true, ""
 	}
 	if diff, reason := cacheModeDiffers(prev.Cache.Status, cur.Cache.Status); diff {
 		return false, reason

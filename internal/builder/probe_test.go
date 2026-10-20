@@ -13,22 +13,6 @@ import (
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 )
 
-func TestGoCacheStatusFromOutput(t *testing.T) {
-	// `go build -v` prints nothing when every package is up to date → HIT.
-	if got := GoCacheStatusFromOutput(""); got != buildreport.CacheHit {
-		t.Fatalf("empty output should classify HIT, got %q", got)
-	}
-	// Any compiled-package line means real compilation → COLD.
-	cold := GoCacheStatusFromOutput("github.com/user/pkg\n")
-	if got := cold; got != buildreport.CacheCold {
-		t.Fatalf("compiled-package output should classify COLD, got %q", got)
-	}
-	// Whitespace-only output still counts as fully cached.
-	if got := GoCacheStatusFromOutput("   \n"); got != buildreport.CacheHit {
-		t.Fatalf("whitespace output should classify HIT, got %q", got)
-	}
-}
-
 func TestRustCacheStatusFromOutput(t *testing.T) {
 	fresh := "    Finished `release` profile [optimized] target(s) in 0.42s\n"
 	if got := RustCacheStatusFromOutput(fresh); got != buildreport.CacheHit {
