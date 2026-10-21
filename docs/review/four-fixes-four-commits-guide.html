@@ -1,0 +1,1309 @@
+<title>Four Fixes, Four Commits</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+/* ==========================================================================
+   Fourth sheet in the build-flow memo set. Same tokens as the lock, cache and
+   restore guides so the set reads as one document family. Accent marks a
+   decision the reader must make; red marks data that is destroyed.
+   ========================================================================== */
+:root {
+  --bg:          #f5f7f6;
+  --bg-raised:   #ffffff;
+  --bg-sunken:   #e8ebe9;
+  --fg:          #14181a;
+  --fg-muted:    #58615e;
+  --fg-faint:    #7d8783;
+  --rule:        #d9dedb;
+  --rule-strong: #bcc4c0;
+  --accent:      #8a520f;
+  --accent-soft: #f7ecd8;
+  --ink:         #22564e;
+  --ink-soft:    #e1efec;
+  --ok:          #15603a;
+  --ok-soft:     #e2f0e6;
+  --del:         #9d2a2a;
+  --del-soft:    #f8e7e7;
+  --code-bg:     #ebeeec;
+  --shadow:      0 1px 2px rgba(16,22,20,.05), 0 10px 26px -16px rgba(16,22,20,.28);
+
+  --font-display: "Newsreader", ui-serif, Georgia, "Times New Roman", serif;
+  --font-body:    "Public Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --step--1: .8125rem;
+  --step-0:  1rem;
+  --step-1:  1.125rem;
+  --step-2:  1.375rem;
+  --step-3:  2rem;
+  --col: 61rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:          #101413;
+    --bg-raised:   #181d1c;
+    --bg-sunken:   #0b0e0d;
+    --fg:          #e4e9e7;
+    --fg-muted:    #9aa4a1;
+    --fg-faint:    #798380;
+    --rule:        #262c2b;
+    --rule-strong: #394341;
+    --accent:      #dfa95c;
+    --accent-soft: #2d2416;
+    --ink:         #7bc0b1;
+    --ink-soft:    #11221e;
+    --ok:          #66c794;
+    --ok-soft:     #102519;
+    --del:         #ee8a8a;
+    --del-soft:    #2a1515;
+    --code-bg:     #1c2322;
+    --shadow:      0 1px 2px rgba(0,0,0,.45), 0 12px 30px -18px rgba(0,0,0,.75);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:          #101413;
+  --bg-raised:   #181d1c;
+  --bg-sunken:   #0b0e0d;
+  --fg:          #e4e9e7;
+  --fg-muted:    #9aa4a1;
+  --fg-faint:    #798380;
+  --rule:        #262c2b;
+  --rule-strong: #394341;
+  --accent:      #dfa95c;
+  --accent-soft: #2d2416;
+  --ink:         #7bc0b1;
+  --ink-soft:    #11221e;
+  --ok:          #66c794;
+  --ok-soft:     #102519;
+  --del:         #ee8a8a;
+  --del-soft:    #2a1515;
+  --code-bg:     #1c2322;
+  --shadow:      0 1px 2px rgba(0,0,0,.45), 0 12px 30px -18px rgba(0,0,0,.75);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: 1.65;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 4.5rem;
+}
+
+.masthead {
+  border-bottom: 1px solid var(--rule-strong);
+  background: linear-gradient(var(--bg-sunken), var(--bg) 88%);
+  margin-inline: calc(-1 * max(16px, env(safe-area-inset-left, 0px)));
+  padding-inline: max(16px, env(safe-area-inset-left, 0px));
+  padding-block: 2.75rem 1.75rem;
+}
+.masthead-inner { max-width: var(--col); margin-inline: auto; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  display: block;
+  margin-bottom: .55rem;
+}
+h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(1.6rem, 4.4vw, var(--step-3));
+  line-height: 1.18;
+  letter-spacing: -.011em;
+  text-wrap: balance;
+  margin: 0 0 .6rem;
+}
+.lede {
+  font-size: var(--step-1);
+  color: var(--fg-muted);
+  max-width: 46rem;
+  margin: 0;
+  text-wrap: pretty;
+}
+
+main { max-width: var(--col); margin-inline: auto; }
+
+section { padding-block: 2.6rem .4rem; }
+section + section { border-top: 1px solid var(--rule); }
+
+h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: var(--step-2);
+  letter-spacing: -.008em;
+  margin: 0 0 .35rem;
+  text-wrap: balance;
+}
+h3 { font-family: var(--font-body); font-weight: 600; font-size: var(--step-1); margin: 0 0 .3rem; }
+h4 {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: .74rem;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin: 1.75rem 0 .6rem;
+}
+h4:first-child { margin-top: 0; }
+p { margin: 0 0 .9rem; max-width: 68ch; text-wrap: pretty; }
+
+a { color: var(--ink); text-underline-offset: .18em; }
+a:focus-visible, .check .step input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+code, kbd {
+  font-family: var(--font-mono);
+  font-size: .86em;
+  background: var(--code-bg);
+  padding: .1em .34em;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+
+.commit-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .6rem 1rem;
+  padding-bottom: .9rem;
+  border-bottom: 2px solid var(--rule-strong);
+  margin-bottom: 1.4rem;
+}
+.commit-n {
+  font-family: var(--font-mono);
+  font-size: .74rem;
+  letter-spacing: .1em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: .18rem .45rem;
+  white-space: nowrap;
+}
+.commit-head h2 { margin: 0; flex: 1 1 18rem; min-width: 0; }
+
+.pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  letter-spacing: .04em;
+  padding: .14rem .5rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule-strong);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.pill.fix { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+.files { list-style: none; padding: 0; margin: 0 0 1.4rem; display: grid; gap: .3rem; }
+.files li {
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  display: flex;
+  gap: .6rem;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+.files li::before { content: "▸"; color: var(--fg-faint); flex: none; }
+.files .new::after {
+  content: "new";
+  font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ok); border: 1px solid var(--ok); border-radius: 2px;
+  padding: 0 .28rem; margin-left: .1rem; flex: none;
+}
+
+.code {
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-strong);
+  border-radius: 2px;
+  overflow-x: auto;
+  margin: 0 0 1.1rem;
+  box-shadow: var(--shadow);
+}
+.code pre {
+  margin: 0;
+  padding: .95rem 1.1rem;
+  font-family: var(--font-mono);
+  font-size: .8rem;
+  line-height: 1.62;
+  tab-size: 2;
+  color: var(--fg);
+}
+.code .cmt { color: var(--fg-faint); }
+.code .add { color: var(--ok); }
+.code .del { color: var(--del); }
+.code-hd {
+  font-family: var(--font-mono);
+  font-size: .72rem;
+  letter-spacing: .05em;
+  color: var(--fg-muted);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--rule);
+  padding: .38rem 1.1rem;
+  display: block;
+}
+
+.msg {
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  background: var(--bg-sunken);
+  border: 1px dashed var(--rule-strong);
+  border-radius: 2px;
+  padding: .7rem 1rem;
+  margin: 0 0 1.2rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.callout {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  padding: .8rem 1.05rem;
+  margin: 0 0 1.2rem;
+  border-radius: 2px;
+}
+.callout.warn { border-left-color: var(--del); background: var(--del-soft); }
+.callout.good { border-left-color: var(--ok); background: var(--ok-soft); }
+.callout p:last-child { margin-bottom: 0; }
+.callout .label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin-bottom: .3rem;
+}
+
+ol.plain, ul.plain { padding-left: 1.2rem; margin: 0 0 1.1rem; }
+ol.plain li, ul.plain li { margin-bottom: .45rem; max-width: 66ch; }
+
+table { border-collapse: collapse; width: 100%; font-size: var(--step--1); }
+.tscroll { overflow-x: auto; margin: 0 0 1.2rem; }
+th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th {
+  font-family: var(--font-mono);
+  font-size: .7rem; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ink); white-space: nowrap;
+}
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.mono { font-family: var(--font-mono); font-size: .78rem; }
+
+.check { list-style: none; padding: 0; margin: 0 0 1.2rem; display: grid; gap: .5rem; }
+.check .step { display: flex; gap: .7rem; align-items: flex-start; cursor: pointer; }
+.check .step input {
+  appearance: none;
+  width: 1.05rem; height: 1.05rem;
+  flex: none; margin-top: .28rem;
+  border: 1.5px solid var(--rule-strong);
+  border-radius: 3px;
+  background: var(--bg-raised);
+  cursor: pointer; position: relative;
+}
+.check .step input:checked { background: var(--ok); border-color: var(--ok); }
+.check .step input:checked::after {
+  content: "";
+  position: absolute; left: .28rem; top: .08rem;
+  width: .3rem; height: .55rem;
+  border-right: 2px solid var(--bg-raised);
+  border-bottom: 2px solid var(--bg-raised);
+  transform: rotate(42deg);
+}
+.check .step input:checked ~ .txt { color: var(--fg-muted); }
+.check .txt { font-size: var(--step--1); }
+
+footer {
+  max-width: var(--col);
+  margin: 2.4rem auto 0;
+  padding-top: 1.3rem;
+  border-top: 1px solid var(--rule);
+  color: var(--fg-muted);
+  font-size: var(--step--1);
+}
+
+@media (max-width: 640px) {
+  .commit-head { gap: .5rem; }
+  .code pre { font-size: .74rem; padding: .8rem .85rem; }
+}
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <span class="eyebrow">Phelix · build flow · F6, F8, F15, F16, F23</span>
+    <h1>Four fixes, four commits</h1>
+    <p class="lede">An app name reaches the filesystem unvalidated, <code>phelix remove</code> leaves the version history behind, a hung compiler blocks the CLI forever, and an error code exists that nothing can produce. Each is one commit, in this order.</p>
+  </div>
+</header>
+
+<main>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section id="start">
+  <h2>Before you start</h2>
+
+  <p>All four findings come from the build-flow review. They touch four independent surfaces, so they land as four commits on one branch — each commit builds, tests and reverts on its own.</p>
+
+  <h4>Branch</h4>
+  <div class="code">
+    <span class="code-hd">shell</span>
+    <pre>git switch -c fix/build-flow-residuals
+git status                     <span class="cmt"># expect only config/config.yml modified</span></pre>
+  </div>
+
+  <h4>Baseline</h4>
+  <p><code>go test ./...</code> has two known failures in <code>internal/health</code> (<code>TestCaddyMetricsSourceScrape</code>, <code>TestParseCaddySample</code>). They are fixtures, not regressions. Nothing below touches that package, so the count must stay at two after every commit.</p>
+
+  <div class="callout">
+    <span class="label">Do not touch config/config.yml</span>
+    <p>The file is currently modified to dev/<code>phelix.local</code> in your working tree. Leave it uncommitted and name paths explicitly in every <code>git add</code> below, never <code>git add -A</code>.</p>
+  </div>
+
+  <h4>The order, and why</h4>
+  <div class="tscroll">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Commit</th><th>Closes</th><th>Why here</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="num">1</td>
+          <td class="mono">fix(cmd): reject app names that escape the apps data directory</td>
+          <td>F8</td>
+          <td>The trust boundary. Everything after it writes paths that are now guaranteed to stay inside <code>~/.phelix/apps/</code>.</td>
+        </tr>
+        <tr>
+          <td class="num">2</td>
+          <td class="mono">fix(cmd): delete the app data directory on remove --purge</td>
+          <td>F15, F16</td>
+          <td>Once names are valid path components, deletion cannot cross into another app's directory. Purging is also the cheap half of F16.</td>
+        </tr>
+        <tr>
+          <td class="num">3</td>
+          <td class="mono">feat(builder): bound compiler invocations with --build-timeout</td>
+          <td>F6</td>
+          <td>Gives <code>BUILD_TIMEOUT</code> its first producer.</td>
+        </tr>
+        <tr>
+          <td class="num">4</td>
+          <td class="mono">test(errors): fail when an error code has no producer</td>
+          <td>F23</td>
+          <td>Only passes once commit 3 has landed — that is the point.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section id="c1">
+  <div class="commit-head">
+    <span class="commit-n">01</span>
+    <h2>Reject app names that escape the data directory</h2>
+    <span class="pill fix">F8</span>
+  </div>
+
+  <p><code>~/.phelix/apps/&lt;appName&gt;</code> is built from a name the user typed, and <code>validateName</code> only rejects the empty string. A name containing <code>/</code> or <code>..</code> points at another app's directory, or outside <code>~/.phelix</code> entirely. The same constructors are reached by names supplied over gRPC (rollback, matrix, health commands), so the check has to live where the path is built, not only at the flag parser.</p>
+
+  <p>The fix is one regular expression at that choke point. <code>appDataDir</code> and <code>statePath</code> already return an <code>error</code>, so no signature changes and no caller changes.</p>
+
+  <ul class="files">
+    <li>internal/deploy/version.go</li>
+    <li>internal/deploy/state.go</li>
+    <li>cmd/build.go</li>
+    <li class="new">internal/deploy/app_name_test.go</li>
+  </ul>
+
+  <h4>1. Declare the validator</h4>
+  <p>In <code>internal/deploy/version.go</code>, add <code>"regexp"</code> to the import block — alphabetically after <code>"path/filepath"</code>, before <code>"sort"</code>:</p>
+
+  <div class="code">
+    <span class="code-hd">internal/deploy/version.go · imports</span>
+    <pre>import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	<span class="add">"regexp"</span>
+	"sort"
+	"strconv"
+	"strings"
+)</pre>
+  </div>
+
+  <p>Then insert this immediately above <code>func appDataDir</code> (currently line 138, the first function after the <code>RecordResult</code> type):</p>
+
+  <div class="code">
+    <span class="code-hd">internal/deploy/version.go · above appDataDir</span>
+    <pre><span class="add">// appNameRe keeps an app name to a single safe path component. The name
+// becomes ~/.phelix/apps/&lt;name&gt;/, so separators, ".." and absolute paths
+// must never reach the filesystem. A leading dot is rejected, which rules out
+// both "." and "..".
+var appNameRe = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$`)
+
+// ValidateAppName reports whether name can be used as an app's on-disk
+// directory component. appDataDir and statePath enforce it themselves, so
+// names arriving over gRPC are covered too; CLI callers check it early to
+// fail before any state is written.
+func ValidateAppName(name string) error {
+	if !appNameRe.MatchString(name) {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid application name %q: use letters, digits, dot, dash or underscore (1-64 characters, no path separators)",
+			name)
+	}
+	return nil
+}</span></pre>
+  </div>
+
+  <h4>2. Enforce it in both path constructors</h4>
+  <p>First statement of <code>appDataDir</code> in <code>internal/deploy/version.go</code>:</p>
+
+  <div class="code">
+    <span class="code-hd">internal/deploy/version.go · appDataDir</span>
+    <pre>func appDataDir(appName string) (string, error) {
+	<span class="add">if err := ValidateAppName(appName); err != nil {
+		return "", err
+	}</span>
+	home, err := os.UserHomeDir()</pre>
+  </div>
+
+  <p>Same first statement in <code>statePath</code>, <code>internal/deploy/state.go</code> (currently line 275):</p>
+
+  <div class="code">
+    <span class="code-hd">internal/deploy/state.go · statePath</span>
+    <pre>func statePath(appName string) (string, error) {
+	<span class="add">if err := ValidateAppName(appName); err != nil {
+		return "", err
+	}</span>
+	home, err := os.UserHomeDir()</pre>
+  </div>
+
+  <h4>3. Let the CLI reuse it</h4>
+  <p>Replace the whole body of <code>validateName</code> in <code>cmd/build.go</code> (currently lines 335–340). It keeps its name because five call sites already use it — <code>init</code>, <code>build</code> ×2, <code>start</code>, <code>dockerize</code> — and there should be one rule, not two:</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/build.go · validateName</span>
+    <pre>func validateName(name string) error {
+<span class="del">	if name == "" {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "application name cannot be empty")
+	}
+	return nil</span>
+<span class="add">	return deploy.ValidateAppName(name)</span>
+}</pre>
+  </div>
+
+  <p><code>deploy</code> is already imported by <code>cmd/build.go</code>, so no import change is needed. Empty names now get the validator's message, which names the rule instead of only the symptom.</p>
+
+  <h4>4. Test</h4>
+  <p>New file in the same package, so it can call <code>appDataDir</code> and <code>statePath</code> directly:</p>
+
+  <div class="code">
+    <span class="code-hd">internal/deploy/app_name_test.go · new</span>
+    <pre>package deploy
+
+import (
+	"strings"
+	"testing"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+)
+
+// An app name becomes a directory component; a name carrying a separator or
+// ".." must never be turned into a path.
+func TestValidateAppName(t *testing.T) {
+	valid := []string{"api", "my-app", "my_app", "app.v2", "a", "9lives"}
+	for _, name := range valid {
+		if err := ValidateAppName(name); err != nil {
+			t.Errorf("ValidateAppName(%q) = %v, want nil", name, err)
+		}
+	}
+
+	invalid := []string{
+		"",                       // empty
+		"..",                     // parent directory
+		".",                      // current directory
+		".hidden",                // leading dot cannot become the app dir
+		"../foo",                 // escapes the data directory
+		"a/b",                    // nested path
+		`a\b`,                    // windows separator
+		"/abs",                   // absolute path
+		"my app",                 // space
+		strings.Repeat("a", 65),  // over the 64-character bound
+	}
+	for _, name := range invalid {
+		err := ValidateAppName(name)
+		if err == nil {
+			t.Errorf("ValidateAppName(%q) = nil, want error", name)
+			continue
+		}
+		if !phelixerr.IsCode(err, phelixerr.CodeInvalidArgument) {
+			t.Errorf("ValidateAppName(%q) code = %s, want INVALID_ARGUMENT", name, phelixerr.CodeOf(err))
+		}
+	}
+}
+
+// The constructors must refuse on their own: callers that never run the CLI
+// validator (gRPC paths) reach these directly.
+func TestAppDataDirRefusesUnsafeName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if _, err := appDataDir("../escape"); err == nil {
+		t.Fatal("appDataDir accepted a name that escapes the data directory")
+	}
+	if _, err := statePath("a/b"); err == nil {
+		t.Fatal("statePath accepted a name with a path separator")
+	}
+}</pre>
+  </div>
+
+  <div class="callout warn">
+    <span class="label">Migration risk — check before you commit</span>
+    <p>Any app already on disk whose name breaks this rule (a space, a slash, a leading dot) loses its history operations: <code>rollback</code> fails with <code>INVALID_ARGUMENT</code>, and <code>status</code>/<code>list</code> quietly drop their version and deploy columns because those readers ignore <code>deploy.Load</code> errors. Run <code>./phelix list</code> and confirm every name matches <code>[A-Za-z0-9._-]</code>. If one does not, rename it before merging: stop it, remove the entry, rebuild under a valid name. This is a deliberate fail-closed choice — a name that reaches the filesystem unchecked is worse than a name that is refused.</p>
+  </div>
+
+  <h4>Gate</h4>
+  <div class="code">
+    <span class="code-hd">shell</span>
+    <pre>gofmt -l cmd internal
+go vet ./...
+go test ./internal/deploy/ ./cmd/
+./phelix list                 <span class="cmt"># every name must satisfy the rule</span></pre>
+  </div>
+
+  <div class="code">
+    <span class="code-hd">commit message</span>
+    <pre>fix(cmd): reject app names that escape the apps data directory
+
+An app name becomes ~/.phelix/apps/&lt;name&gt;/ without validation, so a name
+containing a separator or ".." could share or leave another app's directory.
+Validate the name where the path is built (appDataDir, statePath) and reuse
+the same rule from the CLI validator, so names arriving over gRPC are covered
+without touching each handler.</pre>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section id="c2">
+  <div class="commit-head">
+    <span class="commit-n">02</span>
+    <h2>Delete the app data directory on remove --purge</h2>
+    <span class="pill fix">F15 · F16</span>
+  </div>
+
+  <p><code>RemoveApplication</code> deletes the binary, the log file and the <code>apps.json</code> entry. It never touches <code>~/.phelix/apps/&lt;Name&gt;/</code>, which holds <code>versions.json</code>, <code>builds/vN/</code> and the encrypted <code>env/vN.enc</code> snapshots. Those stay on disk forever, and the dashboard is told the app is gone.</p>
+
+  <p>Deleting them also closes F16 — "a reused name inherits the old app's version history" — because there is no history left to inherit. A second effect is worth knowing: <code>health.json</code> lives in the same directory, so it goes with it.</p>
+
+  <p>This is irreversible local data deletion, so it stays behind an explicit flag. The flag <em>is</em> the confirmation: no prompt, no silent default, and nothing changes for anyone who runs <code>phelix remove app</code> as before.</p>
+
+  <ul class="files">
+    <li>cmd/remove.go</li>
+    <li>docs/reference/commands.md</li>
+  </ul>
+
+  <h4>1. Import and flag variable</h4>
+  <p>Add <code>deploy</code> to the import block at the top of <code>cmd/remove.go</code>, then declare the flag variable between <code>RemoveCmd</code> and <code>init()</code>:</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/remove.go · imports</span>
+    <pre>import (
+	"fmt"
+
+	"github.com/abdorrahmani/phelix/internal/app"
+	<span class="add">"github.com/abdorrahmani/phelix/internal/deploy"</span>
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	"github.com/fatih/color"
+	"github.com/spf13/cobra"
+)</pre>
+  </div>
+
+  <div class="code">
+    <span class="code-hd">cmd/remove.go · after the RemoveCmd declaration</span>
+    <pre><span class="add">// removePurge also deletes ~/.phelix/apps/&lt;Name&gt;/ — version history, build
+// artifacts and encrypted env snapshots. Off by default: it is the only
+// irreversible part of remove.
+var removePurge bool</span></pre>
+  </div>
+
+  <h4>2. Purge after the app record is gone</h4>
+  <p>Inside <code>RunE</code>, immediately after the <code>RemoveApplication</code> error block and before the <code>✓ ... removed successfully</code> print (currently between lines 58 and 60):</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/remove.go · RunE</span>
+    <pre>		if err := app.Manager.RemoveApplication(appInfo.ID); err != nil {
+			<span class="cmt">// ... existing error handling, unchanged ...</span>
+		}
+
+<span class="add">		if removePurge {
+			// Purge after the record is gone keeps the failure honest: the app
+			// is no longer managed either way; this error only means its
+			// history survived.
+			if err := deploy.Remove(appInfo.Name); err != nil {
+				return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+					"application %q was removed, but its data directory could not be deleted",
+					appInfo.Name)
+			}
+			fmt.Printf("✓ Deleted version history, build artifacts and env snapshots for '%s'\n",
+				appInfo.Name)
+		}</span>
+
+		fmt.Printf("✓ Application '%s' (ID: %s) removed successfully\n", appInfo.Name, appInfo.ID)</pre>
+  </div>
+
+  <div class="callout">
+    <span class="label">Why not inside RemoveApplication</span>
+    <p><code>discardAppEntry</code> (<code>cmd/build.go:591</code>) also calls <code>RemoveApplication</code>, to clean up after a failed build. Purging there would delete a data directory that a <em>different</em> app with the same name may still own. Keep the destructive path on the explicit command only.</p>
+  </div>
+
+  <h4>3. Register the flag</h4>
+  <p><code>cmd/remove.go</code> has no <code>init()</code> yet — add one at the end of the file:</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/remove.go · end of file</span>
+    <pre><span class="add">func init() {
+	RemoveCmd.Flags().BoolVar(&amp;removePurge, "purge", false,
+		"Also delete the app's data directory (version history, build artifacts, encrypted env snapshots). Irreversible.")
+}</span></pre>
+  </div>
+
+  <h4>4. Document it</h4>
+  <p>In <code>docs/reference/commands.md</code>, replace the remove row (currently line 165):</p>
+
+  <div class="code">
+    <span class="code-hd">docs/reference/commands.md</span>
+    <pre><span class="del">| `phelix remove &lt;ID\|AppName&gt;` | Stop and delete an app from management. |</span>
+<span class="add">| `phelix remove &lt;ID\|AppName&gt; [--purge]` | Stop and delete an app from management. `--purge` also deletes `~/.phelix/apps/&lt;Name&gt;/` (version history, build artifacts, encrypted env snapshots). Irreversible. |</span></pre>
+  </div>
+
+  <h4>Gate</h4>
+  <p>Before this flag existed, <code>deploy.Remove</code> had no caller at all. Check that it now has exactly one:</p>
+
+  <div class="code">
+    <span class="code-hd">shell</span>
+    <pre>gofmt -l cmd internal
+go vet ./...
+go test ./cmd/ ./internal/deploy/
+grep -rn 'deploy\.Remove(' cmd/ internal/ | grep -v _test   <span class="cmt"># expect one hit: cmd/remove.go</span>
+
+<span class="cmt"># manual, against a throwaway HOME:</span>
+export H=$(mktemp -d)
+HOME=$H ./phelix build demo -p 18080
+HOME=$H ./phelix remove demo --purge
+ls $H/.phelix/apps/demo           <span class="cmt"># expect: No such file or directory</span></pre>
+  </div>
+
+  <div class="code">
+    <span class="code-hd">commit message</span>
+    <pre>fix(cmd): delete the app data directory on remove --purge
+
+RemoveApplication drops the binary, log and apps.json entry but leaves
+~/.phelix/apps/&lt;Name&gt;/ — version history, build artifacts and the encrypted
+env snapshots — on disk forever, and the dashboard is told the app is gone.
+Call deploy.Remove, which already does the right os.RemoveAll, behind an
+explicit --purge flag because the deletion is irreversible.
+
+Closes the other half of the reused-name bug: with no directory left, a name
+built again starts at v1 instead of inheriting an unrelated app's history.</pre>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section id="c3">
+  <div class="commit-head">
+    <span class="commit-n">03</span>
+    <h2>Bound compiler invocations</h2>
+    <span class="pill fix">F6</span>
+  </div>
+
+  <p>Both builders run <code>cmd.CombinedOutput()</code> with no context and no deadline. A compiler waiting on a network fetch, a stuck cgo toolchain or a dead NFS mount hangs <code>phelix build</code> forever, with no diagnostic and no way out except a signal. Meanwhile <code>BUILD_TIMEOUT</code> is declared and mapped to exit 20 with nothing in the tree producing it.</p>
+
+  <p>One deadline, one shared helper, both builders. The CLI exposes it as <code>--build-timeout</code>, defaulting to 30 minutes.</p>
+
+  <ul class="files">
+    <li>internal/builder/types.go</li>
+    <li>internal/builder/manager.go</li>
+    <li>internal/builder/go_builder.go</li>
+    <li>internal/builder/rust_builder.go</li>
+    <li>cmd/build.go</li>
+    <li>cmd/rebuild.go</li>
+    <li>cmd/rebuild_spec.go</li>
+    <li>cmd/cli_errors_test.go</li>
+    <li class="new">internal/builder/build_timeout_test.go</li>
+  </ul>
+
+  <h4>1. Carry the deadline on the config</h4>
+  <p>In <code>internal/builder/types.go</code>, add one field to <code>BuildConfig</code> after <code>BuildEndTime</code>:</p>
+
+  <div class="code">
+    <span class="code-hd">internal/builder/types.go · BuildConfig</span>
+    <pre>	BuildStartTime time.Time // When build started (set during build)
+	BuildEndTime   time.Time // When build ended (set after build)
+<span class="add">
+	// Timeout bounds the compiler invocation. Zero means DefaultBuildTimeout.
+	Timeout time.Duration</span></pre>
+  </div>
+
+  <h4>2. Shared default and wiring</h4>
+  <p>In <code>internal/builder/manager.go</code>, above <code>type BuildManager</code>:</p>
+
+  <div class="code">
+    <span class="code-hd">internal/builder/manager.go</span>
+    <pre><span class="add">// DefaultBuildTimeout bounds one compiler invocation when the caller sets no
+// deadline. Without it a hung compiler blocks the CLI forever.
+const DefaultBuildTimeout = 30 * time.Minute
+
+// buildTimeout returns the effective deadline for one invocation.
+func buildTimeout(d time.Duration) time.Duration {
+	if d &lt;= 0 {
+		return DefaultBuildTimeout
+	}
+	return d
+}</span></pre>
+  </div>
+
+  <div class="code">
+    <span class="code-hd">internal/builder/manager.go · BuildManager</span>
+    <pre>type BuildManager struct {
+	factory *BuilderFactory
+
+	scan    *ProjectScan
+	scanFor string
+<span class="add">
+	timeout time.Duration</span>
+}
+
+<span class="add">// SetTimeout bounds each compiler invocation. Zero keeps DefaultBuildTimeout.
+func (bm *BuildManager) SetTimeout(d time.Duration) { bm.timeout = d }</span></pre>
+  </div>
+
+  <p>Pass it through in <code>PrepareBuild</code>, inside the <code>&amp;BuildConfig{...}</code> literal (currently lines 96–108), after <code>Scan: scan,</code>:</p>
+
+  <div class="code">
+    <span class="code-hd">internal/builder/manager.go · PrepareBuild</span>
+    <pre>		Scan:        scan,
+<span class="add">		Timeout:     bm.timeout,</span>
+
+		Observe: &amp;BuildObservation{CacheStatus: buildreport.CacheUnknown},</pre>
+  </div>
+
+  <h4>3. Go builder</h4>
+  <p>In <code>internal/builder/go_builder.go</code>, add <code>"context"</code> and <code>"time"</code> to the imports, then replace the command construction and the error branch of <code>Build</code> (currently lines 79–91):</p>
+
+  <div class="code">
+    <span class="code-hd">internal/builder/go_builder.go · Build</span>
+    <pre><span class="add">	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout(config.Timeout))
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", args...)</span>
+	cmd.Dir = config.ProjectRoot
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+<span class="add">		// A deadline is not a compiler error: report it with the code the
+		// exit-code contract reserves for it instead of BUILD_FAILED.
+		if ctx.Err() != nil {
+			return phelixerr.Wrapf(phelixerr.CodeBuildTimeout, err,
+				"go build for %s exceeded the %s build timeout; raise it with --build-timeout",
+				config.Name, buildTimeout(config.Timeout))
+		}</span>
+		return phelixerr.Wrapf(
+			phelixerr.CodeBuildFailed,
+			&amp;ToolError{Tool: "go", Output: tailOutput(output), Err: err},
+			"go build failed for %s (%s)",
+			config.Name,
+			config.Language,
+		)
+	}</pre>
+  </div>
+
+  <h4>4. Rust builder</h4>
+  <p>Same shape in <code>internal/builder/rust_builder.go</code> (<code>time</code> is already imported; add <code>"context"</code>), replacing lines 56–71:</p>
+
+  <div class="code">
+    <span class="code-hd">internal/builder/rust_builder.go · Build</span>
+    <pre><span class="add">	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout(config.Timeout))
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "cargo", args...)</span>
+	cmd.Dir = config.ProjectRoot
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+<span class="add">		if ctx.Err() != nil {
+			return phelixerr.Wrapf(phelixerr.CodeBuildTimeout, err,
+				"cargo build for %s exceeded the %s build timeout; raise it with --build-timeout",
+				config.Name, buildTimeout(config.Timeout))
+		}</span>
+		<span class="cmt">// Compiler output never enters the message: it is kept as a bounded</span>
+		<span class="cmt">// tail on the ToolError for the CLI error reporter (rendered only</span>
+		<span class="cmt">// after redaction); the underlying *exec.ExitError stays reachable</span>
+		<span class="cmt">// through the wraps.</span>
+		return phelixerr.Wrapf(
+			phelixerr.CodeBuildFailed,
+			&amp;ToolError{Tool: "cargo", Output: tailOutput(output), Err: err},
+			"%s",
+			cargoFailureMessage(err, config),
+		)
+	}</pre>
+  </div>
+
+  <h4>5. Do not erase the code at the CLI boundary</h4>
+  <p>This is the part that quietly breaks the finding: both call sites wrap <em>every</em> build error as <code>CodeBuildFailed</code>, so the code set above would be lost. In <code>cmd/build.go</code>, replace line 430:</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/build.go · buildApplication</span>
+    <pre>	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
+		printFailedBuildSummary(lang, buildCtx.Config)
+		markBuildFailed(id)
+<span class="del">		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)</span>
+<span class="add">		// Preserve a code the builder already chose (BUILD_TIMEOUT); only
+		// untagged failures default to BUILD_FAILED.
+		code := phelixerr.CodeOf(err)
+		if code == phelixerr.CodeUnknown {
+			code = phelixerr.CodeBuildFailed
+		}
+		err = phelixerr.Wrap(code, "build failed", err)</span>
+		return nil, err
+	}</pre>
+  </div>
+
+  <p>Identical change in <code>cmd/rebuild.go</code>, in <code>rebuildApp</code> (currently line 865):</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/rebuild.go · rebuildApp</span>
+    <pre>	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
+		<span class="cmt">// Failed builds are never recorded as versions; print post-mortem.</span>
+		printFailedBuildSummary(lang, buildCtx.Config)
+		<span class="cmt">// ... existing state update, unchanged ...</span>
+<span class="del">		return nil, phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild failed", err)</span>
+<span class="add">		code := phelixerr.CodeOf(err)
+		if code == phelixerr.CodeUnknown {
+			code = phelixerr.CodeBuildFailed
+		}
+		return nil, phelixerr.Wrap(code, "rebuild failed", err)</span>
+	}</pre>
+  </div>
+
+  <h4>6. The flag</h4>
+  <p><code>cmd/build.go</code> — add the variable to the existing declaration block, after <code>buildTag</code> (line 34); <code>time</code> is already imported:</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/build.go · var block</span>
+    <pre>var (
+	buildPort int
+	buildArgs []string
+	buildTag  string
+<span class="add">	buildTimeout time.Duration</span></pre>
+  </div>
+
+  <p>Register it in <code>init()</code> next to <code>--port</code> (line 316), then apply it where the manager is created (line 153):</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/build.go · init and RunE</span>
+    <pre><span class="cmt">// in init():</span>
+	BuildCmd.Flags().DurationVar(&amp;buildTimeout, "build-timeout", builder.DefaultBuildTimeout,
+		"How long one compiler invocation may run before it is cancelled (exit 20, BUILD_TIMEOUT)")
+
+<span class="cmt">// in RunE, right after buildMgr := builder.NewBuildManager() (line 153):</span>
+	buildMgr.SetTimeout(buildTimeout)</pre>
+  </div>
+
+  <p><code>cmd/rebuild.go</code> — declare <code>rebuildTimeout time.Duration</code> beside the other rebuild flag variables (they are individual <code>var</code> lines, not one block) and register it in its <code>init()</code> (near line 310). Apply it in <code>cmd/rebuild_spec.go</code> right after <code>buildMgr := builder.NewBuildManager()</code> (line 117), inside <code>buildRebuildSpec</code>, because that is where rebuilds construct their manager:</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/rebuild.go · init</span>
+    <pre>	RebuildCmd.Flags().DurationVar(&amp;rebuildTimeout, "build-timeout", builder.DefaultBuildTimeout,
+		"How long one compiler invocation may run before it is cancelled (exit 20, BUILD_TIMEOUT)")</pre>
+  </div>
+
+  <div class="code">
+    <span class="code-hd">cmd/rebuild_spec.go · buildRebuildSpec</span>
+    <pre>	buildMgr := builder.NewBuildManager()
+<span class="add">	buildMgr.SetTimeout(rebuildTimeout)</span>
+	lang := builder.ParseLanguage(appInfo.Language)</pre>
+  </div>
+
+  <p>There is a second manager in <code>cmd/rebuild.go</code> — the one built at line 371 for the zero-downtime <code>deploy.Builder</code> closure, which calls <code>rebuildApp</code> directly. Set the same deadline there, or blue-green and rolling rebuilds keep the default:</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/rebuild.go · runZeroDowntimeDeploy</span>
+    <pre>	buildMgr := builder.NewBuildManager()
+<span class="add">	buildMgr.SetTimeout(rebuildTimeout)</span>
+	gitCommit := deploy.DetectGitCommit(buildSource)</pre>
+  </div>
+
+  <h4>7. Tests</h4>
+  <p>The Rust builder is the cheap one to pin: <code>fakeCargoDir</code> already exists in the package's tests, and a shim that sleeps is all a deadline needs.</p>
+
+  <div class="code">
+    <span class="code-hd">internal/builder/build_timeout_test.go · new</span>
+    <pre>package builder
+
+import (
+	"testing"
+	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+)
+
+// A compiler that never returns must be cancelled and reported as
+// BUILD_TIMEOUT, never as BUILD_FAILED — the exit-code contract maps the first
+// to a distinguishable state.
+//
+// The shim uses "exec sleep" on purpose: a bare "sleep" leaves a grandchild
+// holding the output pipe, and CombinedOutput would wait for it.
+func TestRustBuild_DeadlineIsBuildTimeout(t *testing.T) {
+	fakeCargoDir(t, "exec sleep 5")
+
+	cfg := rustBuildConfig(t, t.TempDir())
+	cfg.Timeout = 50 * time.Millisecond
+
+	err := NewRustBuilder().Build(cfg)
+	if err == nil {
+		t.Fatal("Build returned nil for a compiler that never finishes")
+	}
+	if !phelixerr.IsCode(err, phelixerr.CodeBuildTimeout) {
+		t.Fatalf("error code = %s, want BUILD_TIMEOUT (err: %v)", phelixerr.CodeOf(err), err)
+	}
+}</pre>
+  </div>
+
+  <p>One test covers both builders: the deadline decision is shared. Add the exit-code row to <code>cmd/cli_errors_test.go</code> so the 20 mapping is pinned end to end, next to the existing <code>build</code> case in <code>TestExitCodeFor</code>:</p>
+
+  <div class="code">
+    <span class="code-hd">cmd/cli_errors_test.go · TestExitCodeFor</span>
+    <pre>		{"build", phelixerr.New(phelixerr.CodeBuildFailed, "build"), ExitBuild},
+<span class="add">		{"buildtimeout", phelixerr.New(phelixerr.CodeBuildTimeout, "slow"), ExitBuild},</span></pre>
+  </div>
+
+  <h4>Gate</h4>
+  <div class="code">
+    <span class="code-hd">shell</span>
+    <pre>gofmt -l cmd internal
+go vet ./...
+go test ./internal/builder/ ./cmd/ -run 'Timeout|ExitCodeFor' -v
+go test ./...
+
+<span class="cmt"># a real deadline, without a hung compiler:</span>
+./phelix build demo -p 18080 --build-timeout 1ns; echo "exit=$?"   <span class="cmt"># expect exit=20</span></pre>
+  </div>
+
+  <div class="code">
+    <span class="code-hd">commit message</span>
+    <pre>feat(builder): bound compiler invocations with --build-timeout
+
+GoBuilder and RustBuilder ran the compiler with no context and no deadline,
+so a hung compile blocked phelix build forever with no diagnostic. Run both
+through exec.CommandContext with a 30 minute default, expose it as
+--build-timeout on build and rebuild, and report the deadline as
+BUILD_TIMEOUT — the code the exit contract already maps to 20 and that
+nothing in the tree produced before this.
+
+Keep the builder's code when the CLI adds context: both call sites wrapped
+every failure as BUILD_FAILED, which would have erased the timeout.</pre>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section id="c4">
+  <div class="commit-head">
+    <span class="commit-n">04</span>
+    <h2>Fail the build when a code has no producer</h2>
+    <span class="pill fix">F23</span>
+  </div>
+
+  <p>Commit 3 gave <code>BUILD_TIMEOUT</code> a producer, so nothing is orphaned today. The finding's second half is the guard: a test that fails when a constant is declared and never referenced outside its own definition. That turns "remember to check" into a build failure.</p>
+
+  <p>Two files are exempt by meaning: <code>codes.go</code> defines the constants, and <code>cmd/cli_errors.go</code> maps them to exit codes. A mapping is not a producer. <code>CodeOK</code> and <code>CodeUnauthorized</code> are allowlisted with a written reason — both are contract values that intentionally have no producer.</p>
+
+  <ul class="files">
+    <li class="new">internal/errors/producers_test.go</li>
+  </ul>
+
+  <div class="code">
+    <span class="code-hd">internal/errors/producers_test.go · new</span>
+    <pre>package phelixerr
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// TestEveryCodeHasAProducer keeps the script-facing error contract honest: a
+// declared code nothing in the tree can produce promises a state a script can
+// never observe. The declaration file and the exit-code mapping do not count.
+func TestEveryCodeHasAProducer(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Codes that legitimately have no producer, with the reason.
+	allowed := map[string]string{
+		"CodeOK":           "success sentinel; ExitCodeFor maps it, nothing errors with it",
+		"CodeUnauthorized": "reserved for a backend 401; the CLI fails with UNAUTHENTICATED instead",
+	}
+
+	fset := token.NewFileSet()
+	used := map[string]bool{}
+
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "releases", "node_modules", ".claude":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == "internal/errors/codes.go" || rel == "cmd/cli_errors.go" {
+			return nil
+		}
+		f, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok &amp;&amp; strings.HasPrefix(id.Name, "Code") {
+				used[id.Name] = true
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk the tree: %v", err)
+	}
+
+	declared, err := declaredCodes(fset)
+	if err != nil {
+		t.Fatalf("parse codes.go: %v", err)
+	}
+
+	var orphans []string
+	for name := range declared {
+		if used[name] {
+			continue
+		}
+		if _, ok := allowed[name]; ok {
+			continue
+		}
+		orphans = append(orphans, name)
+	}
+	sort.Strings(orphans)
+	if len(orphans) &gt; 0 {
+		t.Fatalf("error codes declared but never produced: %s\n"+
+			"Give each one a producer, delete it, or list it in allowed with a reason.",
+			strings.Join(orphans, ", "))
+	}
+
+	// A stale allowlist entry is how this test quietly stops guarding anything.
+	for name := range allowed {
+		if !declared[name] {
+			t.Errorf("allowed entry %q no longer exists in codes.go; remove it", name)
+		}
+	}
+}
+
+// declaredCodes returns every Code-prefixed constant declared in codes.go.
+func declaredCodes(fset *token.FileSet) (map[string]bool, error) {
+	f, err := parser.ParseFile(fset, "codes.go", nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]bool{}
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, name := range vs.Names {
+				if strings.HasPrefix(name.Name, "Code") {
+					declared[name.Name] = true
+				}
+			}
+		}
+	}
+	return declared, nil
+}</pre>
+  </div>
+
+  <div class="callout good">
+    <span class="label">Why the order matters</span>
+    <p>Run this test on the tree <em>before</em> commit 3 and it fails on <code>CodeBuildTimeout</code>. That is the clean demonstration that the finding was real. After commit 3 it passes with only the two allowlisted entries left.</p>
+  </div>
+
+  <h4>Gate</h4>
+  <div class="code">
+    <span class="code-hd">shell</span>
+    <pre>gofmt -l cmd internal
+go test ./internal/errors/ -run TestEveryCodeHasAProducer -v
+
+<span class="cmt"># prove the guard bites: temporarily add an unused constant, expect failure</span>
+<span class="cmt">#   CodeNoSuchThing Code = "NO_SUCH_THING"   → test fails and names it</span>
+<span class="cmt"># then remove it again.</span></pre>
+  </div>
+
+  <div class="code">
+    <span class="code-hd">commit message</span>
+    <pre>test(errors): fail when an error code has no producer
+
+A code in the exit-code contract that nothing can produce promises a state a
+script can never observe. Enumerate the constants declared in codes.go and
+require each to be referenced outside its own definition and outside the
+exit-code mapping, with an explicit, reasoned allowlist for contract values
+such as CodeOK.</pre>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section id="gates">
+  <h2>All gates, at the end</h2>
+
+  <ul class="check">
+    <li><label class="step" for="g1"><input type="checkbox" id="g1"><span class="txt"><code>gofmt -l cmd internal config main.go</code> prints nothing.</span></label></li>
+    <li><label class="step" for="g2"><input type="checkbox" id="g2"><span class="txt"><code>go vet ./...</code> is clean.</span></label></li>
+    <li><label class="step" for="g3"><input type="checkbox" id="g3"><span class="txt"><code>go test ./...</code> fails only on the two known <code>internal/health</code> Caddy tests.</span></label></li>
+    <li><label class="step" for="g4"><input type="checkbox" id="g4"><span class="txt"><code>phelix remove --purge</code> on a throwaway HOME leaves nothing under <code>~/.phelix/apps/demo</code>.</span></label></li>
+    <li><label class="step" for="g5"><input type="checkbox" id="g5"><span class="txt"><code>phelix build demo --build-timeout 1ns</code> exits 20, with <code>BUILD_TIMEOUT</code> rather than <code>BUILD_FAILED</code>.</span></label></li>
+    <li><label class="step" for="g6"><input type="checkbox" id="g6"><span class="txt">A name containing <code>/</code> is refused by <code>build</code>, <code>start</code>, <code>init</code> and <code>dockerize</code> before anything is written.</span></label></li>
+    <li><label class="step" for="g7"><input type="checkbox" id="g7"><span class="txt"><code>git status</code> shows <code>config/config.yml</code> still uncommitted, and none of the stray binary litter added.</span></label></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section id="limits">
+  <h2>What this does not fix</h2>
+
+  <div class="tscroll">
+    <table>
+      <thead>
+        <tr><th>Gap</th><th>Why it is left out</th><th>What to do when it matters</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">matrix builds</td>
+          <td><code>internal/matrix</code> takes a context from <code>cmd/matrix_exec.go</code> with no deadline; its builders are a separate implementation.</td>
+          <td>Give <code>withMatrixSignals</code> a deadline derived from <code>--build-timeout</code>. The matrix side already threads contexts, so it is one <code>WithTimeout</code>.</td>
+        </tr>
+        <tr>
+          <td class="mono">docker builds</td>
+          <td><code>docker build</code> has its own daemon-side timeouts and is not a compiler invocation.</td>
+          <td>Only if docker builds are reported hanging; the matrix docker path already accepts a context.</td>
+        </tr>
+        <tr>
+          <td class="mono">child processes</td>
+          <td><code>exec.CommandContext</code> kills the direct child (<code>go</code>, <code>cargo</code>), not a process group, so <code>rustc</code> or a linker can outlive it briefly.</td>
+          <td>Set <code>cmd.SysProcAttr.Setpgid</code> and kill the group on non-Windows, and add a <code>ponytail:</code> comment naming the ceiling when you do.</td>
+        </tr>
+        <tr>
+          <td class="mono">health paths</td>
+          <td><code>internal/health</code> builds <code>~/.phelix/apps/&lt;AppName&gt;/health.json</code> from its own name field and cannot import <code>deploy</code> (deploy imports health).</td>
+          <td>Move <code>ValidateAppName</code> into a leaf package both can import, or have the health writer reject names outside the same rule.</td>
+        </tr>
+        <tr>
+          <td class="mono">remote names</td>
+          <td>gRPC handlers now fail with <code>INVALID_ARGUMENT</code> for a bad name because the path constructor refuses it — nothing validates at the wire edge.</td>
+          <td>Fine as is: fail-closed at the choke point is the property that matters. Add wire-level validation only if the backend needs a better error message.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════ -->
+<section id="pr">
+  <h2>Pull request</h2>
+
+  <h4>Title</h4>
+  <div class="msg">🐛 fix: close the residual build-flow findings (F6, F8, F15, F23)</div>
+
+  <p>Shorter alternative if the repo prefers no review identifiers in titles:</p>
+  <div class="msg">🐛 fix: validate app names, purge removed app data, bound compiles</div>
+
+  <h4>Description</h4>
+  <div class="code">
+    <span class="code-hd">markdown</span>
+    <pre>## What
+
+Four residual defects from the build-flow review, one commit each.
+
+| Commit | Fixes | Effect |
+|---|---|---|
+| 1 | F8 | An app name is validated where it becomes a path, so no name can escape or collide inside `~/.phelix/apps/`. |
+| 2 | F15, F16 | `phelix remove --purge` deletes the app's data directory: version history, build artifacts, encrypted env snapshots. A reused name no longer inherits a dead app's history. |
+| 3 | F6 | Compiler invocations are `exec.CommandContext` calls with a 30 minute default, overridable with `--build-timeout`; a deadline reports `BUILD_TIMEOUT` (exit 20). |
+| 4 | F23 | A test fails when an error code is declared and never produced. |
+
+## Why
+
+- **F8** — `appDataDir` and `statePath` concatenated an unvalidated name into a path. A name containing `/` or `..` reached the filesystem, including from gRPC handlers that never run the CLI validator.
+- **F15** — `RemoveApplication` deleted the binary, the log and the `apps.json` entry, and left `~/.phelix/apps/&lt;Name&gt;/` forever. `deploy.Remove` already did the right `os.RemoveAll` and had no callers.
+- **F6** — `GoBuilder.Build` and `RustBuilder.Build` ran `CombinedOutput()` with no context. A hung compile blocked the CLI with no diagnostic, while `BUILD_TIMEOUT` sat in the codeset, mapped to exit 20, produced by nothing.
+- **F23** — that orphaned constant exposed the gap: nothing made "declared but unreachable" a build failure.
+
+## Behaviour changes
+
+- `phelix remove` keeps its current behaviour by default. Deleting the data directory requires `--purge`, and it is irreversible.
+- App names must match `[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}`. **Anyone with an existing app whose name breaks this rule will need to rename it** — check `phelix list` before merging.
+- `phelix build` and `phelix rebuild` gain `--build-timeout` (default `30m`). A timeout now exits 20 with `BUILD_TIMEOUT` instead of hanging.
+
+## Invariants held
+
+- Two-phase promotion is untouched: nothing is promoted before health passes.
+- `--purge` runs only on explicit removal, never from `discardAppEntry`'s failed-build cleanup, so it cannot touch a directory a different app owns.
+- The exit-code contract is preserved: existing codes keep their exits, and `BUILD_TIMEOUT` keeps 20.
+
+## Testing
+
+- `go test ./...` — only the two pre-existing `internal/health` Caddy fixture failures remain.
+- New `TestValidateAppName`, `TestAppDataDirRefusesUnsafeName`.
+- New `TestRustBuild_DeadlineIsBuildTimeout` (sleeping `cargo` shim, 50 ms deadline).
+- New `TestEveryCodeHasAProducer`, plus a `BUILD_TIMEOUT` → exit 20 row in `TestExitCodeFor`.
+- Manual: `remove --purge` on a throwaway `HOME`; `build --build-timeout 1ns` exits 20.
+
+## Not in this PR
+
+Matrix and Docker build paths are not bounded by `--build-timeout`, and a killed compiler's grandchildren can briefly outlive it. Both are noted in the guide.</pre>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  Phelix · build-flow review · four commits · F6, F8, F15, F16, F23
+</footer>
