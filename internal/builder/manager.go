@@ -8,12 +8,23 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
+const DefaultBuildTimeout = 30 * time.Minute
+
 // BuildManager orchestrates the build process
 type BuildManager struct {
 	factory *BuilderFactory
 
 	scan    *ProjectScan
 	scanFor string
+
+	timeout time.Duration
+}
+
+// BuildContext wraps the BuildConfig and adds additional context
+type BuildContext struct {
+	Config  *BuildConfig
+	Lang    Language
+	Builder BuilderInterface
 }
 
 // NewBuildManager creates a new build manager
@@ -54,14 +65,7 @@ func detectLanguageFrom(s *ProjectScan) Language {
 		return Go
 	}
 
-	return Language("unknown")
-}
-
-// BuildContext wraps the BuildConfig and adds additional context
-type BuildContext struct {
-	Config  *BuildConfig
-	Lang    Language
-	Builder BuilderInterface
+	return "unknown"
 }
 
 // PrepareBuild validates and prepares the build context
@@ -103,6 +107,7 @@ func (bm *BuildManager) PrepareBuild(
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 		Scan:        scan,
+		Timeout:     bm.timeout,
 
 		Observe: &BuildObservation{CacheStatus: buildreport.CacheUnknown},
 	}
@@ -194,4 +199,18 @@ func (bm *BuildManager) FormatLanguage(lang Language) string {
 	default:
 		return "Unknown"
 	}
+}
+
+// SetTimeout bounds each compiler invocation. Zero keeps DefaultBuildTimeout.
+func (bm *BuildManager) SetTimeout(d time.Duration) {
+	bm.timeout = d
+}
+
+// buildTimeout returns the effective deadline for one invocation.
+func buildTimeout(d time.Duration) time.Duration {
+	if d <= 0 {
+		return DefaultBuildTimeout
+	}
+
+	return d
 }

@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"context"
 	"os"
 	"os/exec"
 
@@ -76,23 +77,30 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 
 	args = append(args, "-o", config.OutputPath, target)
 
-	cmd := exec.Command("go", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout(config.Timeout))
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = config.ProjectRoot
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return phelixerr.Wrapf(
-			phelixerr.CodeBuildFailed,
-			&ToolError{Tool: "go", Output: tailOutput(output), Err: err},
-			"go build failed for %s (%s)",
-			config.Name,
-			config.Language,
-		)
+		if ctx.Err() != nil {
+			return phelixerr.Wrapf(phelixerr.CodeBuildTimeout, err,
+				"go build for %s exceeded the %s build timeout; raise it with --build-timeout",
+				config.Name, buildTimeout(config.Timeout))
+		}
 	}
 
 	observeCache(config, buildreport.CacheUnknown, "")
 
-	return nil
+	return phelixerr.Wrapf(
+		phelixerr.CodeBuildFailed,
+		&ToolError{Tool: "go", Output: tailOutput(output), Err: err},
+		"go build failed for %s (%s)",
+		config.Name,
+		config.Language,
+	)
 }
 
 // GetBinaryPath returns the path to the built binary

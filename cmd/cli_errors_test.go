@@ -24,6 +24,7 @@ func TestExitCodeFor(t *testing.T) {
 		{"auth", phelixerr.New(phelixerr.CodeUnauthenticated, "auth"), ExitAuth},
 		{"permission", phelixerr.New(phelixerr.CodePermissionDenied, "perm"), ExitPermission},
 		{"build", phelixerr.New(phelixerr.CodeBuildFailed, "build"), ExitBuild},
+		{"buildtimeout", phelixerr.New(phelixerr.CodeBuildTimeout, "slow"), ExitBuild},
 		{"deploy", phelixerr.New(phelixerr.CodeDeployFailed, "deploy"), ExitDeploy},
 		{"rollback", phelixerr.New(phelixerr.CodeRollbackFailed, "rb"), ExitRollback},
 		{"network", phelixerr.New(phelixerr.CodeConnection, "net"), ExitNetwork},

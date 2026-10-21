@@ -115,6 +115,7 @@ func buildRebuildSpec(cmd *cobra.Command, args []string) (*rebuildSpec, error) {
 	}
 
 	buildMgr := builder.NewBuildManager()
+	buildMgr.SetTimeout(rebuildTimeout)
 	lang := builder.ParseLanguage(appInfo.Language)
 	if !lang.IsSupported() {
 		lang = buildMgr.DetectLanguage(buildSource)

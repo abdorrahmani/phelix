@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -53,25 +54,29 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 		args = append(args, config.ExtraArgs...)
 	}
 
-	cmd := exec.Command("cargo", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout(config.Timeout))
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "cargo", args...)
 	cmd.Dir = config.ProjectRoot
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		// Compiler output never enters the message: it is kept as a bounded
-		// tail on the ToolError for the CLI error reporter (rendered only
-		// after redaction); the underlying *exec.ExitError stays reachable
-		// through the wraps.
-		return phelixerr.Wrapf(
-			phelixerr.CodeBuildFailed,
-			&ToolError{Tool: "cargo", Output: tailOutput(output), Err: err},
-			"%s",
-			cargoFailureMessage(err, config),
-		)
+		if ctx.Err() != nil {
+			return phelixerr.Wrapf(phelixerr.CodeBuildTimeout, err,
+				"cargo build for %s exceeded the %s build timeout; raise it with --build-timeout",
+				config.Name, buildTimeout(config.Timeout))
+		}
 	}
 
 	observeCache(config, RustCacheStatusFromOutput(string(output)), buildreport.CacheSourceCargo)
-	return nil
+
+	return phelixerr.Wrapf(
+		phelixerr.CodeBuildFailed,
+		&ToolError{Tool: "cargo", Output: tailOutput(output), Err: err},
+		"%s",
+		cargoFailureMessage(err, config),
+	)
 }
 
 // cargoFailureMessage renders the human-facing reason a cargo invocation

@@ -50,6 +50,9 @@ type BuildConfig struct {
 	BuildStartTime time.Time // When build started (set during build)
 	BuildEndTime   time.Time // When build ended (set after build)
 
+	// Timeout bounds the compiler invocation. Zero means DefaultBuildTimeout.
+	Timeout time.Duration
+
 	// Observe, when non-nil, receives facts observed during the build
 	// (compiler-cache status, detected toolchain version). PrepareBuild wires
 	// it automatically; direct BuilderInterface users may leave it nil —
