@@ -67,16 +67,18 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 				"cargo build for %s exceeded the %s build timeout; raise it with --build-timeout",
 				config.Name, buildTimeout(config.Timeout))
 		}
+
+		return phelixerr.Wrapf(
+			phelixerr.CodeBuildFailed,
+			&ToolError{Tool: "cargo", Output: tailOutput(output), Err: err},
+			"%s",
+			cargoFailureMessage(err, config),
+		)
 	}
 
 	observeCache(config, RustCacheStatusFromOutput(string(output)), buildreport.CacheSourceCargo)
 
-	return phelixerr.Wrapf(
-		phelixerr.CodeBuildFailed,
-		&ToolError{Tool: "cargo", Output: tailOutput(output), Err: err},
-		"%s",
-		cargoFailureMessage(err, config),
-	)
+	return nil
 }
 
 // cargoFailureMessage renders the human-facing reason a cargo invocation

@@ -90,17 +90,19 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 				"go build for %s exceeded the %s build timeout; raise it with --build-timeout",
 				config.Name, buildTimeout(config.Timeout))
 		}
+
+		return phelixerr.Wrapf(
+			phelixerr.CodeBuildFailed,
+			&ToolError{Tool: "go", Output: tailOutput(output), Err: err},
+			"go build failed for %s (%s)",
+			config.Name,
+			config.Language,
+		)
 	}
 
 	observeCache(config, buildreport.CacheUnknown, "")
 
-	return phelixerr.Wrapf(
-		phelixerr.CodeBuildFailed,
-		&ToolError{Tool: "go", Output: tailOutput(output), Err: err},
-		"go build failed for %s (%s)",
-		config.Name,
-		config.Language,
-	)
+	return nil
 }
 
 // GetBinaryPath returns the path to the built binary
