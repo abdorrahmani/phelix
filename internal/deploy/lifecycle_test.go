@@ -402,3 +402,47 @@ var errHandoffFailed = &handoffError{}
 type handoffError struct{}
 
 func (*handoffError) Error() string { return "handoff failed" }
+
+func TestStartDeployment_PersistsInstancesAlreadyStarted(t *testing.T) {
+	resetHome(t)
+
+	ok := &httpLauncher{}
+	defer ok.close()
+
+	launches := 0
+	launcher := func(ctx context.Context, bin string, env []string) (Process, int, error) {
+		launches++
+		if launches == 1 {
+			return ok.Launch(ctx, bin, env)
+		}
+		return closedLauncher{}.Launch(ctx, bin, env)
+	}
+
+	state := &DeployState{
+		AppName: "appPartial",
+		Mode:    ModeRolling,
+		Replicas: map[string]*Instance{
+			"1": {Slot: "1", Status: "stopped", BinaryPath: "/bin/true"},
+			"2": {Slot: "2", Status: "stopped", BinaryPath: "/bin/true"},
+		},
+	}
+
+	if err := Store(state); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	err := StartDeployment(context.Background(), state, StartOptions{
+		Launcher:      launcher,
+		ListenTimeout: 300 * time.Millisecond,
+		Logger:        &fakeLogger{},
+	})
+
+	if err == nil {
+		t.Fatal("the second instance never listens, so StartDeployment must fail")
+	}
+
+	replica := mustLoad(t, "appPartial").Replicas["1"]
+	if replica == nil || replica.Status != "running" || replica.PID == 0 || replica.Port == 0 {
+		t.Fatalf("replica 1 was started but not persisted: %+v", replica)
+	}
+}
