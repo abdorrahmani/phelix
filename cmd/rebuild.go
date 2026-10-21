@@ -35,6 +35,7 @@ var rebuildCanary int
 var rebuildSourceDir string
 var rebuildJSON bool
 var rebuildRequestKey string
+var rebuildTimeout time.Duration
 
 // rolloutPlan is non-nil when this rebuild takes the canary/progressive path.
 // It is resolved by applyConfigDeployStrategy from --canary, --strategy or
@@ -42,48 +43,26 @@ var rebuildRequestKey string
 var rolloutPlan *deploy.RolloutPlan
 
 var RebuildCmd = &cobra.Command{
-	Use:   "rebuild [ID|AppName] --port <PORT>",
-	Short: "Rebuilds and runs a Go Application by its ID or AppName.",
-	Args:  cobra.MaximumNArgs(1),
-	// Deploy failures are already printed with context (✗ lines); cobra's
-	// default usage dump and "Error:" prefix after a long blue-green/rolling
-	// run are noise.
+	Use:           "rebuild [ID|AppName] --port <PORT>",
+	Short:         "Rebuilds and runs a Go Application by its ID or AppName.",
+	Args:          cobra.MaximumNArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
-		// Machine mode: progress detours to stderr for the whole command so
-		// the JSON envelope stays alone on stdout.
 		if rebuildJSON {
 			restore := machine.EnterJSON()
 			defer restore()
 		}
 
-		// Resolution (pure reads): project config, app identity, port
-		// precedence, deployment strategy, language. Shared with the plan
-		// subsystem so plans capture exactly what this command would execute.
 		spec, specErr := buildRebuildSpec(cmd, args)
 		if specErr != nil {
 			return specErr
 		}
 
-		// The execution authorization boundary (Phase 4). Placed after pure
-		// resolution and before the operation record, the request-key ledger
-		// and every engine call, so a refusal mutates nothing and consumes no
-		// idempotency key.
-		//
-		// This gate also covers the webhook queue and the monitor daemon's
-		// remote rebuild: both execute deployments by re-invoking this very
-		// command as a subprocess, so neither can reach the engine without
-		// passing here.
 		if authzErr := authorizeDirectExecution(authz.ActionRebuild, spec.Name, spec.AppInfo.ID); authzErr != nil {
 			return authzErr
 		}
 
-		// Operation identity + request-key idempotency. The fingerprint covers
-		// the mutation-defining inputs, so reusing a key for a materially
-		// different operation conflicts instead of replaying the wrong result.
-		// Created after validation but before any mutation; every failure and
-		// success path below is closed out by the deferred finish.
 		op := newOpRun(ops.KindRebuild, spec.Name, rebuildRequestKey)
 		defer func() { op.finish(&err) }()
 		replayed, idemErr := op.beginIdempotency(map[string]string{
@@ -112,10 +91,6 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 	appInfo, name, portToUse, buildSource := spec.AppInfo, spec.Name, spec.Port, spec.SourceDir
 	buildMgr := spec.BuildMgr
 
-	// Acquire deploy lock FIRST so two concurrent rebuilds cannot race on
-	// versions.json or double-assign version numbers; previously the old
-	// process was stopped before locking, letting a concurrent rebuild
-	// interleave between the stop and the lock.
 	release, lockErr := deploy.AcquireDeployLock(name, "rebuild")
 	if lockErr != nil {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lockErr)
@@ -139,11 +114,6 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 		return rerr
 	}
 
-	// --- Version recording ------------------------------------------------
-	// Same two-phase invariant as build: record with is_current=false,
-	// promote only after the start succeeds. The git commit is detected
-	// from the source that was actually compiled, so version metadata
-	// never claims a commit the binary was not built from.
 	gitCommit := deploy.DetectGitCommit(buildSource)
 	logger := &colorLogger{}
 	rec, verErr := deploy.RecordFreshBuild(
@@ -160,13 +130,11 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 		tracker.SetTargetVersion(rec.Version)
 	}
 
-	// --- Build Report + regression analysis ---------------------------------
 	emitBuildReport(name, rebuildReport, gitCommit, rec, verErr)
 
 	fmt.Printf("  %s Starting application on port %d...\n", color.BlueString("→"), portToUse)
 	if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
-		// Deploy failed. Version exists on disk but is_current is
-		// false and PromoteVersion was never called.
+
 		startErr := phelixerr.Wrapf(
 			phelixerr.CodeProcessFailed,
 			err,
@@ -176,10 +144,6 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 		)
 		tracker.Failed(startErr)
 		if rec != nil && rebuildAutoRollback {
-			// The version was recorded but never promoted; the previous
-			// classic process was stopped above, so the old version must
-			// be restarted to restore service. Brief downtime is
-			// unavoidable here — classic has no second slot.
 			runClassicAutoRollback(name, appInfo, rec.Version, portToUse, startErr)
 		}
 		return startErr
@@ -217,29 +181,7 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 // applyConfigDeployStrategy resolves which deployment path this rebuild takes
 // and maps it onto the existing --blue-green / --replicas flags or a rollout
 // plan.
-//
-// Precedence: explicit --blue-green/--replicas/--canary > --strategy >
-// phelix.yaml > the strategy the app is currently deployed with > classic.
-// --strategy is the one-off override (the backend's remote rebuild uses it);
-// it is never written back to phelix.yaml.
-//
-// Inheriting the deployed strategy matters: falling straight through to classic
-// meant any rebuild that named no strategy — a phelix.yaml without a deploy
-// block, or a backend-issued rebuild that sent no override — silently migrated
-// a live blue-green/rolling app to classic, tearing down its instances and
-// deleting deploy.json along with the mode, public port, active version, health
-// tier and rollback record it holds. Demoting a deployment destroys state, so
-// it has to be asked for (--strategy classic, or deploy.strategy in
-// phelix.yaml), not defaulted into.
-//
-// A canary/progressive rollout runs on the blue-green topology, so an app whose
-// last deploy was a rollout inherits blue-green when nothing names a strategy —
-// a safe full cut-over, never a destructive downgrade. Put deploy.strategy:
-// canary/progressive in phelix.yaml to make rollouts the app's default.
 func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName string) error {
-	// The explicit canary flag: one-shot rollout at the given traffic share.
-	// It names a strategy just like --blue-green does, so combining them is a
-	// contradiction rather than a precedence question.
 	if cmd.Flags().Changed("canary") {
 		if cmd.Flags().Changed("blue-green") || cmd.Flags().Changed("replicas") {
 			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
@@ -280,10 +222,6 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 	case project.StrategyBlueGreen:
 		rebuildBlueGreen = true
 	case project.StrategyRolling:
-		// Rolling needs a replica count. phelix.yaml supplies one when it has
-		// it — including for an override that only named the strategy — then
-		// the width the app is already running at (so an inherited rolling
-		// rebuild does not silently shrink it), and 1 is the floor.
 		rebuildReplicas = 1
 		switch {
 		case cfg != nil && cfg.Deploy != nil && cfg.Deploy.Replicas > 0:
@@ -309,6 +247,8 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 func init() {
 	RebuildCmd.Flags().IntVarP(&rebuildPort, "port", "p", 8080, "Port to run the application on (defaults to previous port if unspecified)")
 	RebuildCmd.Flags().StringArrayVarP(&rebuildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
+	RebuildCmd.Flags().DurationVar(&rebuildTimeout, "build-timeout", builder.DefaultBuildTimeout,
+		"How long one compiler invocation may run before it is cancelled (exit 20, BUILD_TIMEOUT)")
 	RebuildCmd.Flags().StringVar(&rebuildStrategy, "strategy", "", "Deployment strategy for this rebuild only: classic, blue-green, rolling, canary, or progressive (overrides phelix.yaml, never written to it)")
 	RebuildCmd.Flags().BoolVar(&rebuildBlueGreen, "blue-green", false, "Rebuild with zero-downtime blue-green deployment (requires 'phelix proxy' to be running)")
 	RebuildCmd.Flags().IntVar(&rebuildReplicas, "replicas", 0, "Rebuild with zero-downtime rolling deployment over N replicas (requires 'phelix proxy' to be running)")
@@ -363,12 +303,8 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	logger := &colorLogger{}
 	healthProvider := deploy.DefaultHealthProvider()
 
-	// deploy.Builder closure: delegates to the existing rebuild path, which
-	// handles language detection, toolchain checks and env injection. The
-	// captured build report is handed to FreshBuildSource via ReportFn so the
-	// recorded version carries the same telemetry as classic builds. The git
-	// commit is detected from the source actually compiled.
 	buildMgr := builder.NewBuildManager()
+	buildMgr.SetTimeout(rebuildTimeout)
 	gitCommit := deploy.DetectGitCommit(buildSource)
 	var lastReport *buildreport.Report
 	freshSource := &deploy.FreshBuildSource{
@@ -395,19 +331,13 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		},
 	}
 
-	// Resolve the launch runtime from the app's own source config (PHELIX_RUNTIME
-	// env → phelix.yaml deploy.runtime → native). Native keeps the existing
-	// binary source+launcher untouched; docker swaps in the image source and the
-	// container launcher — the deploy engines and proxy path are identical.
 	runtimeCfg, _ := loadProjectConfigFrom(buildSource)
 	deployRuntime := runtimeCfg.DeployRuntime()
 	deployNetwork := runtimeCfg.DeployNetwork()
 	var deploySource deploy.BuildSource = freshSource
 	launcher := deploy.LauncherForApp(name)
 	if deploy.IsDockerRuntime(deployRuntime) {
-		// How the image is built (dockerfile default | compose) — this only
-		// changes where the image comes from; the launcher/proxy/network below
-		// are identical either way.
+
 		deployBuild := runtimeCfg.DeployDockerBuild()
 		composeFile := runtimeCfg.DeployComposeFile()
 		composeService := runtimeCfg.DeployComposeService()
@@ -422,10 +352,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		}
 		launcher = deploy.DockerLauncherForApp(name, deployNetwork)
 		if deployNetwork != "" {
-			// Fail fast before any image build or container run: a missing user
-			// network means containers could never resolve the backing services
-			// on it, so abort now with an actionable message rather than after a
-			// full image build. Bounded so a wedged daemon cannot hang the deploy.
+
 			pfCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			verr := deploy.VerifyDockerNetwork(pfCtx, deployNetwork)
 			cancel()
@@ -437,9 +364,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		if deployBuild == project.DockerBuildCompose {
 			logger.Stepf("docker runtime: image built from compose service %q in %s (build only — runtime env stays with `phelix env`)", composeService, composeFile)
 		}
-		// Warn (never block) if the same app also runs as a compose-managed
-		// container — the app tier would then have two owners. Silent under the
-		// compose-profile pattern (no such container runs on the server).
+
 		warnSvc := composeService
 		if warnSvc == "" {
 			warnSvc = name
@@ -454,13 +379,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
 	}
-	// The lock is NOT deferred: automatic rollback must acquire it again after
-	// the failed deploy returns (same-process flock excludes re-acquisition),
-	// and the recovery path below releases it explicitly first.
 
-	// Deployment telemetry. The sink is nil when the CLI has no session, which
-	// makes the tracker nil and the deploy identical to an offline run. Queued
-	// events are flushed before the command returns.
 	strategy := string(deploy.ModeRolling)
 	if rebuildBlueGreen {
 		strategy = string(deploy.ModeBlueGreen)
@@ -472,10 +391,6 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	op.setDeploymentID(tracker)
 	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
 
-	// Canary/progressive rollouts run step windows that can take minutes; a
-	// Ctrl-C must abort the rollout through its cancellation path (which
-	// restores the stable version to 100% of traffic) instead of killing the
-	// CLI mid-switch. Blue-green and rolling keep their existing behavior.
 	deployCtx := context.Background()
 	if rolloutPlan != nil {
 		signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -541,10 +456,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			HealthProvider: healthProvider,
 			Logger:         logger,
 			Telemetry:      tracker,
-			// Classic → blue-green migration: when the app still runs as a
-			// classic process binding the public port, stop it right before
-			// the proxy enrols (after the candidate is healthy), so the user
-			// never has to run 'phelix stop' by hand.
+
 			PortHandoff: stopPublicPortOwner,
 		}
 		err := bg.Deploy(context.Background())
@@ -643,10 +555,6 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 		return deployErr
 	}
 
-	// The recovery is its own deployment operation: give it a fresh tracker
-	// (its own deployment_id) so its transitions never mix with the failed
-	// deploy's, matching how a manual rollback reports. Silent when the
-	// deploy state is unreadable — telemetry must never block recovery.
 	recoveryTracker := tracker
 	if st, serr := deploy.Load(name); serr == nil && st != nil && st.Mode != "" {
 		recoveryTracker = deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, string(st.Mode))
@@ -688,9 +596,7 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 	emitAutoRollbackEvent(appInfo, name, "", failedVer, res.ToVer,
 		deploy.AutoRollbackReason(failedVer, deployErr), res.AlreadyServing, nil, tracker.DeploymentID())
 	if res.AlreadyServing {
-		// The failure never reached traffic (blue-green pre-switch abort,
-		// rolling failure at the first replica): the known-good version kept
-		// serving the whole time.
+
 		fmt.Printf("%s Deployment rolled back automatically — %s kept serving\n",
 			color.GreenString("✓"), color.CyanString("v%d", res.ToVer))
 		return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
@@ -743,8 +649,7 @@ func runClassicAutoRollback(name string, appInfo *app.AppInfo, failedVer, port i
 			deploy.AutoRollbackReason(failedVer, deployErr), false, startErr, "")
 		return
 	}
-	// Promotion failed earlier only as a warning path — here the known-good
-	// version is already current in versions.json; re-promote is idempotent.
+
 	if err := deploy.PromoteVersion(name, target, "classic"); err != nil {
 		logger.Warnf("could not re-promote v%d: %v", target, err)
 	}
@@ -781,10 +686,7 @@ func stopExistingApp(appInfo *app.AppInfo) error {
 
 	fmt.Printf("  %s Stopping existing application...\n", color.BlueString("→"))
 	if err := app.Manager.StopApplication(appInfo.ID); err != nil {
-		// Warn but don't block the rebuild — the old process may be
-		// unkillable (e.g. stuck in D-state I/O). The new build will
-		// fail with a clear port-conflict error if the old process still
-		// holds the port.
+
 		fmt.Printf("  %s Could not stop old process: %v\n", color.YellowString("⚠"), err)
 	}
 	return nil
@@ -851,9 +753,8 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, s
 
 	fmt.Printf("  %s Rebuilding with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
 
-	// Execute build
 	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
-		// Failed builds are never recorded as versions; print post-mortem.
+
 		printFailedBuildSummary(lang, buildCtx.Config)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if info, exists := appManager.Apps[id]; exists {
@@ -862,7 +763,13 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, s
 				_ = appManager.SaveState()
 			}
 		}
-		return nil, phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild failed", err)
+
+		code := phelixerr.CodeOf(err)
+		if code == phelixerr.CodeUnknown {
+			code = phelixerr.CodeBuildFailed
+		}
+
+		return nil, phelixerr.Wrap(code, "rebuild failed", err)
 	}
 
 	duration := buildMgr.GetBuildDuration(buildCtx)

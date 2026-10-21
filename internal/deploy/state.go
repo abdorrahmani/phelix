@@ -273,10 +273,15 @@ func (s *DeployState) ActiveInstance() *Instance {
 // statePath returns the on-disk path for an app's DeployState, mirroring the
 // health package's ~/.phelix/apps/<AppName>/ layout.
 func statePath(appName string) (string, error) {
+	if err := ValidateAppName(appName); err != nil {
+		return "", err
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
+
 	return filepath.Join(home, ".phelix", "apps", appName, "deploy.json"), nil
 }
 

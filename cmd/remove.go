@@ -4,11 +4,14 @@ import (
 	"fmt"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
+
+var removePurge bool
 
 var RemoveCmd = &cobra.Command{
 	Use:   "remove [ID|AppName]",
@@ -37,9 +40,6 @@ var RemoveCmd = &cobra.Command{
 			return err
 		}
 
-		// A zero-downtime deployment owns its instances and its proxy route;
-		// tearing it down (and dropping deploy.json) first prevents orphaned
-		// replicas and a proxy route that outlives the app.
 		if err := migrateToClassic(appInfo.Name); err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
 				"failed to stop the zero-downtime deployment for %q before removal", appInfo.Name)
@@ -57,14 +57,24 @@ var RemoveCmd = &cobra.Command{
 			)
 		}
 
+		if removePurge {
+			if err := deploy.Remove(appInfo.Name); err != nil {
+				return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+					"application %q was removed, but its data directory could not be deleted", appInfo.Name)
+			}
+
+			fmt.Printf("✓ Deleted version history, build artifacts and env snapshots for '%s'\n", appInfo.Name)
+		}
+
 		fmt.Printf("✓ Application '%s' (ID: %s) removed successfully\n", appInfo.Name, appInfo.ID)
-		// Tell the backend to delete its copy of this app (action="remove" is
-		// what triggers the database deletion there). Surface delivery
-		// failures instead of failing silently — a silent drop leaves the app
-		// stuck on the dashboard forever.
+
 		if rerr := phelixgrpc.ReportEventResult(appInfo.ID, appInfo.Name, "remove", true, "", 0, "", ""); rerr != nil {
 			fmt.Printf("%s Removed locally, but the dashboard was NOT updated — the app may still appear there: %v\n", color.YellowString("⚠"), rerr)
 		}
 		return nil
 	},
+}
+
+func init() {
+	RemoveCmd.Flags().BoolVarP(&removePurge, "purge", "p", false, "Also delete the app's data directory (version history, build artifacts, encrypted env snapshots). Irreversible.")
 }

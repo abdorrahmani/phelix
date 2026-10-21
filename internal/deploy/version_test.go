@@ -13,8 +13,6 @@ import (
 	"github.com/abdorrahmani/phelix/internal/health"
 )
 
-// --- retention pruning tests -----------------------------------------------
-
 func TestPruneVersions_RetainsAtMostMax(t *testing.T) {
 	resetHome(t)
 	app := "prune-max"

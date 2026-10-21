@@ -29,9 +29,10 @@ const (
 )
 
 var (
-	buildPort int
-	buildArgs []string
-	buildTag  string
+	buildPort    int
+	buildArgs    []string
+	buildTag     string
+	buildTimeout time.Duration
 
 	// Matrix build flags.
 	matrixFlag        bool
@@ -151,6 +152,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		buildMgr := builder.NewBuildManager()
+		buildMgr.SetTimeout(buildTimeout)
 		lang := buildMgr.DetectLanguage(currentDir)
 		if !lang.IsSupported() {
 			return phelixerr.Newf(
@@ -316,6 +318,8 @@ func init() {
 	BuildCmd.Flags().IntVarP(&buildPort, "port", "p", defaultPort, "Port to run the application on")
 	BuildCmd.Flags().StringArrayVarP(&buildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	BuildCmd.Flags().StringVar(&buildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
+	BuildCmd.Flags().DurationVar(&buildTimeout, "build-timeout", builder.DefaultBuildTimeout,
+		"How long one compiler invocation may run before it is cancelled (exit 20, BUILD_TIMEOUT)")
 
 	// Matrix build flags.
 	BuildCmd.Flags().BoolVar(&buildJSON, "json", false,
@@ -333,10 +337,7 @@ func init() {
 }
 
 func validateName(name string) error {
-	if name == "" {
-		return phelixerr.New(phelixerr.CodeInvalidArgument, "application name cannot be empty")
-	}
-	return nil
+	return deploy.ValidateAppName(name)
 }
 
 func validateUniqueName(name string) error {
@@ -427,7 +428,14 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
 		printFailedBuildSummary(lang, buildCtx.Config)
 		markBuildFailed(id)
-		err = phelixerr.Wrap(phelixerr.CodeBuildFailed, "build failed", err)
+
+		code := phelixerr.CodeOf(err)
+		if code == phelixerr.CodeUnknown {
+			code = phelixerr.CodeBuildFailed
+		}
+
+		err = phelixerr.Wrap(code, "build failed", err)
+
 		return nil, err
 	}
 

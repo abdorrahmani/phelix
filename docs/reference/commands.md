@@ -162,7 +162,7 @@ Shows the recorded rollback outcomes for one application, newest first.
 | `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing. |
 | `phelix list` | Table of all apps with version, status, watching, deploy, and proxy columns. |
 | `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. |
-| `phelix remove <ID\|AppName>` | Stop and delete an app from management. |
+| `phelix remove <ID\|AppName> [--purge]` | Stop and delete an app from management. `--purge` also deletes `~/.phelix/apps/<Name>/` (version history, build artifacts, encrypted env snapshots). Irreversible. |
 | `phelix watch <ID\|AppName> [--disable]` | Enable (default) or disable backend monitoring for one app. See [Monitoring](../guides/monitoring.md). |
 
 ## Encrypted environment variables
