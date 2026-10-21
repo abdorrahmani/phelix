@@ -14,13 +14,6 @@ import (
 
 // DeployLock records an in-flight deploy or rollback so two zero-downtime
 // swaps cannot race on the same blue/green slots.
-//
-// Implementation note: the mutual exclusion primitive is an exclusive,
-// non-blocking OS file lock (flock on POSIX, LockFileEx on Windows) on
-// ~/.phelix/apps/<AppName>/deploy.lock. The kernel releases it automatically
-// when the owning process dies, which makes stale-lock recovery implicit and
-// removes the old check-then-write race where two concurrent processes could
-// both observe "no lock" in deploy.json and both proceed.
 type DeployLock struct {
 	Operation string    `json:"operation"`
 	StartedAt time.Time `json:"started_at"`
@@ -79,14 +72,15 @@ func AcquireDeployLock(appName, operation string) (release func(), err error) {
 }
 
 // writeHolder records who currently holds the lock inside the lock file so a
-// rejected acquirer can report actionable details. Best-effort only: losing
-// this write never weakens exclusion itself.
+// rejected acquirer can report actionable details.
 func (h *lockHandle) writeHolder(lock DeployLock) {
 	data, err := json.Marshal(lock)
 	if err != nil {
 		return
 	}
+
 	_, _ = h.f.Seek(0, 0)
+	_ = h.f.Truncate(0)
 	_, _ = h.f.Write(data)
 }
 
@@ -150,7 +144,6 @@ func TryLoadLock(appName string) (*DeployLock, error) {
 	}
 	defer f.Close()
 	if err := lockFileExclusive(f); err != nil {
-		// Locked: report the recorded holder.
 		holder := readLockHolder(path)
 		if holder == nil {
 			holder = &DeployLock{Operation: "unknown"}
