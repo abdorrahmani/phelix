@@ -190,17 +190,26 @@ wet = np.fft.irfft(np.fft.rfft(music, L) * np.fft.rfft(ir, L))[:N]
 wet /= np.max(np.abs(wet)) + 1e-9
 music = music + 0.16 * wet * np.max(np.abs(music))
 
-# ---- VO ----
-VO = [(1, 0.55), (2, 8.20), (3, 10.60), (4, 14.45), (5, 20.35), (6, 24.10)]
-vo_bus = np.zeros(N + SR)
-here = os.path.dirname(os.path.abspath(__file__))
-for k, t0 in VO:
-    with wave.open(os.path.join(here, 'vo', f'vo{k}.wav'), 'rb') as f:
+def load_wav(path):
+    """Read a mono float signal at SR, resampling from the file's own rate."""
+    with wave.open(path, 'rb') as f:
+        sr = f.getframerate()
         d = np.frombuffer(f.readframes(f.getnframes()), dtype='<i2').astype(np.float64) / 32768
         if f.getnchannels() == 2:
             d = d.reshape(-1, 2).mean(axis=1)
+    if sr != SR:  # piper writes 22050; play it back at its own rate or it runs 2x fast
+        n = int(round(len(d) * SR / sr))
+        d = np.interp(np.linspace(0, len(d) - 1, n), np.arange(len(d)), d)
+    return d
+
+# ---- VO ----
+VO = [(1, 0.55), (2, 7.95), (3, 10.35), (4, 14.20), (5, 20.25), (6, 24.95)]
+vo_bus = np.zeros(N + SR)
+here = os.path.dirname(os.path.abspath(__file__))
+for k, t0 in VO:
+    d = load_wav(os.path.join(here, 'vo', f'vo{k}.wav'))
     rms = np.sqrt(np.mean(d ** 2)) + 1e-9
-    d = d * (0.075 / rms)
+    d = d * (0.085 / rms)
     place(vo_bus, d, t0)
 
 # duck the music under the voice: envelope follower with 180 ms attack/release

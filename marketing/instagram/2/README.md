@@ -6,20 +6,26 @@
 
 ## Voiceover
 
-Local piper TTS (`en_US-lessac-medium`), no cloud. Six lines, mixed at the scene beats and
-sidechain-ducked under the music in `audio.py`. Edit the `VO` list to re-time.
+Local piper TTS, male voice `en_US-ryan-medium`, no cloud service, then a -2.5 semitone
+formant-preserving pitch shift (`rubberband`) so the read sits around 130-160 Hz instead of
+165-180 Hz. Six lines, mixed at the scene beats and sidechain-ducked under the music in
+`audio.py`. `vo.sh` regenerates every clip from the six lines below; the model is expected at
+`~/.local/share/piper/en_US-ryan-medium.onnx` (override with `PIPER_MODEL`).
 
-| Line | Start |
-|---|---|
-| Still deploying with SSH scripts? | 0.55 |
-| Build. Deploy. Verify. | 8.20 |
-| Ship Go and Rust apps with zero-downtime deployments. | 10.60 |
-| Monitor your services. Roll back with confidence. | 14.45 |
-| Your servers. Your stack. One operational layer. | 20.35 |
-| Meet Phelix. | 24.10 |
+**Sample-rate note:** piper writes 22050 Hz mono. `audio.py:load_wav` resamples to the 44100 Hz
+mix bus. Skipping that step plays the voice 2x fast and one octave up.
 
-Regenerate VO: `mkvo.sh` (kept in the job scratch dir) pipes the six lines into piper with
-`--length-scale 1.02`. Re-run `audio.py` after editing `vo/*.wav`.
+| Line | Start | Source length |
+|---|---|---|
+| Still deploying with SSH scripts? | 0.55 | 2.15 s |
+| Build. Deploy. Verify. | 7.95 | 1.52 s |
+| Ship Go and Rust apps with zero-downtime deployments. | 10.35 | 3.18 s |
+| Monitor your services. Roll back with confidence. | 14.20 | 2.63 s |
+| Your servers. Your stack. One operational layer. | 20.25 | 2.88 s |
+| Meet Phelix. | 24.95 | 0.85 s |
+
+`vo.sh` uses `--length-scale 1.10`; raise it for a slower read (never above ~1.25 or lines
+overrun their scenes), then re-run `audio.py` and the encode.
 
 ## Regenerate
 
@@ -28,6 +34,7 @@ node build-reel.js                       # 840 SVGs into ./frames
 mkdir -p png
 find frames -name '*.svg' -print0 | xargs -0 -P 12 -I{} bash -c \
   'f="$1"; rsvg-convert -w 1080 -h 1920 "$f" -o "png/$(basename "$f" .svg).png"' _ {}
+./vo.sh                                  # six VO clips (piper + pitch shift); skip if vo/ is current
 python3 -I audio.py mix_raw.wav
 ffmpeg -y -i mix_raw.wav -af loudnorm=I=-14:TP=-1.5:LRA=11 -ar 48000 final_audio.wav
 ffmpeg -y -framerate 30 -i png/f_%04d.png -i final_audio.wav \
