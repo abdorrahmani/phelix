@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,12 @@ import (
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
+
+// appNameRe keeps an app name to a single safe path component. The name
+// becomes ~/.phelix/apps/<name>/, so separators, ".." and absolute paths
+// must never reach the filesystem. A leading dot is rejected, which rules out
+// both "." and "..".
+var appNameRe = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$`)
 
 // VersionMeta is one row in ~/.phelix/apps/<AppName>/versions.json.
 type VersionMeta struct {
@@ -136,10 +143,15 @@ type RecordResult struct {
 }
 
 func appDataDir(appName string) (string, error) {
+	if err := ValidateAppName(appName); err != nil {
+		return "", err
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
+
 	return filepath.Join(home, ".phelix", "apps", appName), nil
 }
 
@@ -390,16 +402,6 @@ func formatAvailableVersions(vf *VersionsFile) string {
 // RecordFreshBuild copies the built binary and env snapshot into versioned
 // storage and appends metadata. Pruning runs immediately; the current version
 // is never removed even when over retention.
-//
-// record is optional build-report telemetry captured by the caller for this
-// exact build; when non-nil it is persisted alongside the version row so
-// later builds can run regression analysis against it.
-//
-// RecordFreshBuild always creates the version with is_current=false. The caller
-// must call PromoteVersion only after the deploy's health check passes. This
-// two-phase approach ensures that a build which succeeds but whose deploy
-// (start / health check) fails leaves the version on disk for inspection but
-// never becomes the active version.
 func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, report *buildreport.Report, policy RetentionPolicy, log Logger) (*RecordResult, error) {
 	if policy == nil {
 		policy = DefaultRetention{}
@@ -642,63 +644,6 @@ func PruneVersions(appName string, policy RetentionPolicy, log Logger) error {
 	return saveVersions(appName, vf)
 }
 
-// deploymentProtectedVersions collects the versions deploy.json says are in
-// active use (slot instance or replica) plus the rollback target, so pruning
-// can never delete a binary that is running or is the designated rollback.
-// Best-effort: a missing deploy state protects nothing.
-func deploymentProtectedVersions(appName string) map[int]bool {
-	protected := make(map[int]bool)
-	state, err := Load(appName)
-	if err != nil || state == nil {
-		return protected
-	}
-	collect := func(m map[string]*Instance) {
-		for _, inst := range m {
-			if inst != nil && inst.PID > 0 && inst.Version > 0 {
-				protected[inst.Version] = true
-			}
-		}
-	}
-	collect(state.Slots)
-	collect(state.Replicas)
-	if state.ActiveVersion > 0 {
-		protected[state.ActiveVersion] = true
-	}
-	// Rollback target: the highest version below the deployed one.
-	if deployed := state.ActiveVersion; deployed > 0 {
-		rollback := 0
-		for _, v := range vfList(appName) {
-			if v.Version < deployed && v.Version > rollback {
-				rollback = v.Version
-			}
-		}
-		if rollback > 0 {
-			protected[rollback] = true
-		}
-	}
-	return protected
-}
-
-// vfList returns versions.json rows (empty when unreadable).
-func vfList(appName string) []VersionMeta {
-	vf, err := LoadVersions(appName)
-	if err != nil || vf == nil {
-		return nil
-	}
-	return vf.Versions
-}
-
-func removeVersionArtifacts(appName string, ver int) error {
-	vdir, err := versionDir(appName, ver)
-	if err != nil {
-		return err
-	}
-	_ = os.RemoveAll(vdir)
-	envPath, _ := envSnapshotPath(appName, ver)
-	_ = os.Remove(envPath)
-	return nil
-}
-
 // ListVersionsForDisplay returns metadata sorted newest-first, with a flag for
 // versions that would be pruned next under the given policy.
 func ListVersionsForDisplay(appName string, policy RetentionPolicy) ([]VersionMeta, error) {
@@ -737,26 +682,6 @@ func WouldPruneOnNextBuild(appName string, ver int, policy RetentionPolicy) bool
 	// Simulate one more version appended.
 	n := len(vf.Versions) + 1
 	return n > max
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Close()
 }
 
 // ParseVersionArg accepts "v3" or "3".
@@ -936,4 +861,99 @@ func RecordMatrixBuild(appName, tag, gitCommit string, artifacts []MatrixArtifac
 		return nil, err
 	}
 	return &RecordResult{Version: ver}, nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+
+	return out.Close()
+}
+
+// vfList returns versions.json rows (empty when unreadable).
+func vfList(appName string) []VersionMeta {
+	vf, err := LoadVersions(appName)
+	if err != nil || vf == nil {
+		return nil
+	}
+	return vf.Versions
+}
+
+func removeVersionArtifacts(appName string, ver int) error {
+	vdir, err := versionDir(appName, ver)
+	if err != nil {
+		return err
+	}
+	_ = os.RemoveAll(vdir)
+	envPath, _ := envSnapshotPath(appName, ver)
+	_ = os.Remove(envPath)
+	return nil
+}
+
+// deploymentProtectedVersions collects the versions deploy.json says are in
+// active use (slot instance or replica) plus the rollback target, so pruning
+// can never delete a binary that is running or is the designated rollback.
+// Best-effort: a missing deploy state protects nothing.
+func deploymentProtectedVersions(appName string) map[int]bool {
+	protected := make(map[int]bool)
+	state, err := Load(appName)
+	if err != nil || state == nil {
+		return protected
+	}
+	collect := func(m map[string]*Instance) {
+		for _, inst := range m {
+			if inst != nil && inst.PID > 0 && inst.Version > 0 {
+				protected[inst.Version] = true
+			}
+		}
+	}
+	collect(state.Slots)
+	collect(state.Replicas)
+	if state.ActiveVersion > 0 {
+		protected[state.ActiveVersion] = true
+	}
+	// Rollback target: the highest version below the deployed one.
+	if deployed := state.ActiveVersion; deployed > 0 {
+		rollback := 0
+		for _, v := range vfList(appName) {
+			if v.Version < deployed && v.Version > rollback {
+				rollback = v.Version
+			}
+		}
+		if rollback > 0 {
+			protected[rollback] = true
+		}
+	}
+	return protected
+}
+
+// ValidateAppName reports whether name can be used as an app's on-disk
+// directory component. appDataDir and statePath enforce it themselves, so
+// names arriving over gRPC are covered too; CLI callers check it early to
+// fail before any state is written.
+func ValidateAppName(name string) error {
+	if !appNameRe.MatchString(name) {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid application name %q: use letters, digits, dot, dash or underscore (1-64 characters, no path separators)", name)
+	}
+
+	return nil
 }

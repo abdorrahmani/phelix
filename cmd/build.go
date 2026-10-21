@@ -333,10 +333,7 @@ func init() {
 }
 
 func validateName(name string) error {
-	if name == "" {
-		return phelixerr.New(phelixerr.CodeInvalidArgument, "application name cannot be empty")
-	}
-	return nil
+	return deploy.ValidateAppName(name)
 }
 
 func validateUniqueName(name string) error {
