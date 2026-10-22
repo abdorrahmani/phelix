@@ -36,10 +36,11 @@ var StopCmd = &cobra.Command{
 			return err
 		}
 
-		// Zero-downtime deployments own their instances through deploy.json;
-		// stopping them means tearing down the deployment (proxy route first,
-		// then every slot), not killing some legacy AppManager PID.
-		if state := loadDeployState(appInfo.Name); state != nil {
+		state, derr := loadDeployState(appInfo.Name)
+		if derr != nil {
+			return derr
+		}
+		if state != nil {
 			if err := runDeployAwareStop(appInfo); err != nil {
 				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", false, err.Error(), 0, "", "")
 				return phelixerr.Wrapf(

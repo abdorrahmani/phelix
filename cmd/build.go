@@ -592,7 +592,11 @@ func discardAppEntry(id, name string) {
 	}
 
 	info, exists := appManager.Apps[id]
-	if !exists || info.Status == "running" || loadDeployState(name) != nil {
+	if !exists || info.Status == "running" {
+		return
+	}
+
+	if state, err := loadDeployState(name); err != nil || state != nil {
 		return
 	}
 

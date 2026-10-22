@@ -331,22 +331,22 @@ func Load(appName string) (*DeployState, error) {
 }
 
 // LoadZeroDowntime returns the app's state when it is managed by a
-// zero-downtime strategy (blue-green/rolling), and nil otherwise — no state
-// file, an unreadable one, or a mode outside those two all mean "classic".
-//
-// It is the single definition of "is this app deploy-managed", shared by the
-// CLI lifecycle commands and the monitor daemon's remote-command executor.
-// Those two disagreeing is what let a backend-issued start/restart kill a
-// serving instance and try to rebind the proxy-owned public port.
-func LoadZeroDowntime(appName string) *DeployState {
+// zero-downtime strategy (blue-green/rolling), and (nil, nil) otherwise — no
+// state file, or a mode outside those two, both mean "classic".
+func LoadZeroDowntime(appName string) (*DeployState, error) {
 	s, err := Load(appName)
-	if err != nil || s == nil {
-		return nil
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	if s.Mode != ModeBlueGreen && s.Mode != ModeRolling {
-		return nil
+
+	if s == nil || (s.Mode != ModeBlueGreen && s.Mode != ModeRolling) {
+		return nil, nil
 	}
-	return s
+
+	return s, nil
 }
 
 // LoadOrInit returns the existing state for the app, or a freshly initialised

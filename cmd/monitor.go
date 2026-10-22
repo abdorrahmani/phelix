@@ -53,18 +53,18 @@ func runMonitor() error {
 		return err
 	}
 
-	// Apps managed by a zero-downtime deployment must never be classic-started
-	// on the public port; they are restored below through their deployment
-	// (active slot relaunch + proxy route restore).
 	app.DeployedAppSkipper = func(id string) bool {
 		if info, err := GetAppInfo(id); err == nil {
-			return loadDeployState(info.Name) != nil
+			state, derr := loadDeployState(info.Name)
+			if derr != nil {
+				logs.Warning("monitor", "cannot read deployment state for %s, treating as deploy-managed: %v", info.Name, derr)
+				return true
+			}
+			return state != nil
 		}
 		return false
 	}
-	// Same rule for the health daemon's auto-restart: tear the deployment down
-	// and bring it back, exactly as `phelix restart` does, instead of killing
-	// the serving instance and rebinding the proxy-owned public port.
+
 	app.DeployedAppRestarter = func(id string) error {
 		info, err := GetAppInfo(id)
 		if err != nil {
@@ -78,23 +78,15 @@ func runMonitor() error {
 	restoreDeployedApps()
 
 	if _, err := app.Manager.RestoreAutoStartApps(); err != nil {
-		// Restoration is best-effort: log the failure and continue so the
-		// monitoring connection still comes up. Apps can be started manually.
+
 		logs.Warning("monitor", "app restore had errors: %v", err)
 	}
 
-	// The server identity is required for auth metadata and ServerInfo. The
-	// agent_id in the startup log ties every daemon log line to one runtime and
-	// makes the identity visible across hosts sharing a machine-id.
 	if err := server.Initialize(); err != nil {
 		return err
 	}
 	logs.Info("monitor", "loaded agent identity agent_id=%s", server.GetAgentID())
 
-	// Least-privilege nudge (audit B1): if the session this daemon will use
-	// is a full-scope token, say so once at startup. A compromised server
-	// then exposes the whole account; `phelix auth login --scope agent`
-	// provisions a monitoring-only token instead.
 	if scope := phelixgrpc.PreferredSessionScope(); scope != phelixgrpc.SessionScopeAgent {
 		logs.Warning("monitor",
 			"daemon is authenticating with a full-scope session token; for least privilege run 'phelix auth login --scope agent' on this machine (monitoring-only token, see README § Authentication)")
@@ -104,14 +96,8 @@ func runMonitor() error {
 	phelixgrpc.InitGlobalClient()
 	c := phelixgrpc.GetClient()
 
-	// Attach a health reporter BEFORE the client starts so the daemon never
-	// misses a health result. The reporter resolves the service client per-send,
-	// so it keeps working across reconnects.
 	healthDaemon.SetReporter(phelixgrpc.NewGrpcHealthReporter(c))
 
-	// Load the durable command ledgers before any stream can accept rollback
-	// or matrix requests. Corrupt/unreadable state fails startup closed
-	// instead of losing idempotency across a daemon restart.
 	if err := phelixgrpc.InitializeRollbackLedger(); err != nil {
 		return err
 	}
@@ -122,46 +108,28 @@ func runMonitor() error {
 		return err
 	}
 
-	// Register command execution before opening streams; otherwise a command
-	// can arrive in the Start race window and be rejected as unimplemented.
 	monitor.SetRollbackHandler(func(payload monitor.CommandPayload) error {
 		return RemoteRollback(payload)
 	})
 
-	// Remote matrix commands run the same engine as the local CLI. Their
-	// session context is canceled on daemon shutdown: an in-flight matrix
-	// build then finalizes its run as "interrupted" (resumable) instead of
-	// being killed mid-write — the same semantics as a local Ctrl-C.
 	matrixCtx, cancelMatrixSessions := context.WithCancel(context.Background())
 	defer cancelMatrixSessions()
 	phelixgrpc.SetMatrixHandler(func(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
 		return RemoteMatrixCommand(matrixCtx, req)
 	})
 
-	// Gate backend-issued matrix mutations through the execution-authorization
-	// boundary, before the idempotency ledger — the same boundary a remote
-	// rebuild/rollback crosses. Registered before the client starts so no
-	// matrix command can arrive ungated in the startup race window.
 	phelixgrpc.SetMatrixAuthorizer(remoteMatrixAuthorize)
 
-	// Remote webhook management reuses the existing webhook subsystem; the
-	// handler is registered before the client starts so no webhook command
-	// can arrive in the startup race window and be answered UNIMPLEMENTED.
 	phelixgrpc.SetWebhookHandler(RemoteWebhookCommand)
 
-	// Start the client: connects, and runs the reconnect loop, monitor stream,
-	// agent stream and metadata/version syncs in the background.
 	c.Start()
 
-	// Start the health-check daemon (auto-restart + endpoint checking). A
-	// failure here is not fatal to the monitor — log and continue.
 	if err := healthDaemon.Start(); err != nil {
 		logs.Warning("monitor", "failed to start health daemon: %v", err)
 	}
 
 	done := make(chan struct{})
 
-	// Periodic log maintenance (bounds disk usage of the daemon's own log files).
 	appTargets := func() []logs.AppLogTarget {
 		var targets []logs.AppLogTarget
 		for _, a := range app.Manager.ListApplications() {
@@ -196,18 +164,12 @@ func runMonitor() error {
 		}
 	}()
 
-	// Block until SIGINT/SIGTERM, then shut down cleanly. systemd sends SIGTERM
-	// during 'systemctl stop/restart phelix'.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
 	logs.Info("monitor", "shutdown signal received, stopping...")
 
-	// Cancel in-flight remote matrix sessions first: their runs finalize as
-	// "interrupted" (resumable) and their durable results are persisted. Wait
-	// for the commands to settle BEFORE closing the gRPC client so terminal
-	// results and events can still be delivered.
 	cancelMatrixSessions()
 	phelixgrpc.WaitPendingMatrixCommands(phelixgrpc.MatrixCommandSettleTimeout())
 	phelixgrpc.WaitPendingWebhookCommands(phelixgrpc.WebhookCommandSettleTimeout())
@@ -215,15 +177,10 @@ func runMonitor() error {
 
 	close(done)
 
-	// Stop the health-check daemon (flushes/waits its goroutines).
 	if err := healthDaemon.Stop(); err != nil {
 		logs.Warning("monitor", "error stopping health daemon: %v", err)
 	}
 
-	// Stop sending events and close the gRPC connection + streams. This
-	// cancels the monitor/agent streams; their background loops watch the
-	// client's done channel and exit. Remaining goroutines end when the process
-	// exits through main returning.
 	c.Close()
 
 	logs.Info("monitor", "daemon stopped")
@@ -240,7 +197,11 @@ func restoreDeployedApps() {
 		return
 	}
 	for _, info := range am.Apps {
-		state := loadDeployState(info.Name)
+		state, derr := loadDeployState(info.Name)
+		if derr != nil {
+			logs.Warning("monitor", "cannot read deployment state for %s: %v", info.Name, derr)
+			continue
+		}
 		if state == nil {
 			continue
 		}
@@ -266,7 +227,11 @@ func reconcileOrphanContainers(am *app.AppManager) {
 	known := map[string]bool{}
 	anyDocker := false
 	for _, info := range am.Apps {
-		state := loadDeployState(info.Name)
+		state, derr := loadDeployState(info.Name)
+		if derr != nil {
+			logs.Warning("monitor", "cannot read deployment state for %s, skipping orphan check: %v", info.Name, derr)
+			continue
+		}
 		if state == nil {
 			continue
 		}
@@ -277,9 +242,7 @@ func reconcileOrphanContainers(am *app.AppManager) {
 			known[id] = true
 		}
 	}
-	// Skip entirely when this host has never run a docker-runtime deploy: no
-	// reason to shell out to docker (which may not even be installed) on a
-	// native-only VPS.
+
 	if !anyDocker && len(known) == 0 {
 		return
 	}

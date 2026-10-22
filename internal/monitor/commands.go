@@ -179,8 +179,6 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 		return RollbackHandler(cmd.Payload)
 	}
 
-	// Validated before dispatch, not inside the fallback: the in-process
-	// branches below would otherwise accept an override and ignore it.
 	overrideArgs, err := rebuildOverrideArgs(cmd.Payload)
 	if err != nil {
 		return err
@@ -193,7 +191,13 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 
 	logs.Info("monitor", "executing command '%s' for app '%s' (ID: %s)", cmd.Payload.Type, target.Name, target.ID)
 
-	if state := deploy.LoadZeroDowntime(target.Name); state != nil {
+	state, derr := deploy.LoadZeroDowntime(target.Name)
+	if derr != nil {
+		return NotStarted(phelixerr.Wrapf(phelixerr.CodeConfiguration, derr,
+			"cannot read deployment state for app %q", target.Name))
+	}
+
+	if state != nil {
 		logs.Info("monitor", "app '%s' is deploy-managed (mode %s); running '%s' through the CLI",
 			target.Name, state.Mode, cmd.Payload.Type)
 	} else {

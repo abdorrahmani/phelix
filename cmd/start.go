@@ -59,9 +59,14 @@ var StartCmd = &cobra.Command{
 					continue
 				}
 
-				// Zero-downtime deployments restore through their own path so
-				// the public port stays proxy-owned (never classic-bound).
-				if loadDeployState(a.Name) != nil {
+				state, derr := loadDeployState(a.Name)
+				if derr != nil {
+					fmt.Printf("    %s Failed to start %s (ID: %s): %v\n", color.RedString("✗"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), derr)
+					failed = append(failed, fmt.Sprintf("%s: %v", a.Name, derr))
+					continue
+				}
+
+				if state != nil {
 					info, gerr := GetAppInfo(a.ID)
 					if gerr == nil {
 						if serr := runDeployAwareStart(info); serr != nil {
@@ -118,7 +123,11 @@ var StartCmd = &cobra.Command{
 		// the active slot from its recorded binary and re-establish the proxy
 		// route. Launching a classic process on the public port would fight
 		// the proxy for ownership.
-		if loadDeployState(name) != nil {
+		state, derr := loadDeployState(name)
+		if derr != nil {
+			return derr
+		}
+		if state != nil {
 			return runDeployAwareStart(appInfo)
 		}
 
