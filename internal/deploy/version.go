@@ -376,8 +376,16 @@ func VersionPaths(appName string, ver int) (binaryPath, envPath string, err erro
 		list := formatAvailableVersions(vf)
 		return "", "", phelixerr.Newf(phelixerr.CodeVersionNotFound, "deploy: binary for v%d missing for %q; available: %s", ver, appName, list)
 	}
-	envPath, _ = envSnapshotPath(appName, ver)
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+	envPath, err = envSnapshotPath(appName, ver)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := os.Stat(envPath); err != nil {
+		if !os.IsNotExist(err) {
+
+			return "", "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
+				"deploy: env snapshot for v%d of %q is not readable", ver, appName)
+		}
 		envPath = ""
 	}
 	return binaryPath, envPath, nil

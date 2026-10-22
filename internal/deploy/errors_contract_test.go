@@ -200,6 +200,49 @@ func TestVersionPaths_MissingVersion_CodeVersionNotFound(t *testing.T) {
 	}
 }
 
+// TestVersionPaths_MissingEnvSnapshotIsEmptyNotError: a version built without
+// an env snapshot yields an empty path, and the caller starts the instance
+// with no overlay.
+func TestVersionPaths_MissingEnvSnapshotIsEmptyNotError(t *testing.T) {
+	resetHome(t)
+	app := "vp-no-env"
+	createTestVersion(t, app, 1, false)
+
+	_, envPath, err := VersionPaths(app, 1)
+	if err != nil {
+		t.Fatalf("missing env snapshot must not be an error: %v", err)
+	}
+	if envPath != "" {
+		t.Fatalf("envPath = %q, want empty", envPath)
+	}
+}
+
+// TestVersionPaths_PresentEnvSnapshotIsReturned: the snapshot that does exist
+// must come back, so the deploy actually injects the environment.
+func TestVersionPaths_PresentEnvSnapshotIsReturned(t *testing.T) {
+	resetHome(t)
+	app := "vp-env"
+	createTestVersion(t, app, 1, false)
+	envPath, err := envSnapshotPath(app, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte(`{"version":1,"app_id":"a","entries":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, got, err := VersionPaths(app, 1)
+	if err != nil {
+		t.Fatalf("VersionPaths: %v", err)
+	}
+	if got != envPath {
+		t.Fatalf("envPath = %q, want %q", got, envPath)
+	}
+}
+
 func TestParseVersionArg_Invalid_CodeInvalidArgument(t *testing.T) {
 	if _, err := ParseVersionArg("abc"); err == nil || !phelixerr.IsCode(err, phelixerr.CodeInvalidArgument) {
 		t.Fatalf("want INVALID_ARGUMENT, got %v / %s", err, phelixerr.CodeOf(err))

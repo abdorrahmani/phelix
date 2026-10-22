@@ -89,6 +89,8 @@ func TestLoadInvalidConfigs(t *testing.T) {
 		{"bad interval", "name: api\nhealth:\n  endpoints:\n    - name: x\n      path: /a\n      interval: fast\n", "invalid interval"},
 		{"bad mode", "name: api\nhealth:\n  endpoints:\n    - name: x\n      path: /a\n      mode: tcp\n", "invalid mode"},
 		{"negative retries", "name: api\nhealth:\n  endpoints:\n    - name: x\n      path: /a\n      retries: -2\n", "invalid retries"},
+		{"bad timeout", "name: api\nhealth:\n  endpoints:\n    - name: x\n      path: /a\n      timeout: soon\n", "invalid timeout"},
+		{"bad codes", "name: api\nhealth:\n  endpoints:\n    - name: x\n      path: /a\n      codes: ok\n", "invalid codes"},
 		{"bad port", "name: api\nport: 70000\n", "invalid port"},
 	}
 	for _, tc := range cases {
@@ -107,6 +109,31 @@ func TestLoadInvalidConfigs(t *testing.T) {
 func TestLoadMalformedYAML(t *testing.T) {
 	if _, err := Load(write(t, "name: [unclosed\n")); err == nil {
 		t.Error("malformed yaml accepted")
+	}
+}
+
+// TestLoadHealthCodesTimeoutReplace: the health endpoint schema exposes the
+// checker's own settings, so `phelix.yaml` can configure what `phelix health
+// set --codes/--timeout` can.
+func TestLoadHealthCodesTimeoutReplace(t *testing.T) {
+	cfg, err := Load(write(t, `name: api
+health:
+  replace: true
+  endpoints:
+    - name: x
+      path: /a
+      codes: "200,204"
+      timeout: 3s
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Health.Replace {
+		t.Error("replace not parsed")
+	}
+	ep := cfg.Health.Endpoints[0]
+	if ep.ExpectedCodes != "200,204" || ep.Timeout != "3s" {
+		t.Errorf("endpoint = %+v, want codes 200,204 / timeout 3s", ep)
 	}
 }
 

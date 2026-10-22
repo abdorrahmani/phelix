@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
@@ -27,8 +29,31 @@ func fakeDeployStateBlueGreen(appName, active string) *deploy.DeployState {
 func TestLoadDeployState_ClassicAppsAreNil(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	if got := loadDeployState("never-deployed-app"); got != nil {
+	got, err := loadDeployState("never-deployed-app")
+	if err != nil {
+		t.Fatalf("absent deploy state must be (nil, nil), got error %v", err)
+	}
+	if got != nil {
 		t.Fatalf("absent deploy state must be nil, got %+v", got)
+	}
+}
+
+// TestLoadDeployState_CorruptIsAnError: a deploy.json that exists but cannot
+// be decoded must be surfaced, never collapsed into "classic" — the classic
+// path binds the public port the proxy owns.
+func TestLoadDeployState_CorruptIsAnError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".phelix", "apps", "broken-app")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "deploy.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if state, err := loadDeployState("broken-app"); err == nil {
+		t.Fatalf("corrupt deploy.json must be an error, got state %+v", state)
 	}
 }
 

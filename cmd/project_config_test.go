@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/spf13/cobra"
 )
@@ -131,6 +133,113 @@ func TestSyncProjectHealthNoBlockNoOp(t *testing.T) {
 	}
 	if _, err := os.Stat(appsDir); !os.IsNotExist(err) {
 		t.Errorf("health config written without a health block (err = %v)", err)
+	}
+}
+
+// TestSyncProjectHealthMerges: a build must not delete endpoints configured by
+// `phelix health add` just because phelix.yaml does not mention them.
+func TestSyncProjectHealthMerges(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cm, err := health.InitConfigManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cm.Mutate("app-1", "myapp", func(hc *health.AppHealthConfig) error {
+		hc.Endpoints["manual"] = &health.HealthCheckConfig{
+			Name: "manual", URL: "https://example.com/health",
+			Interval: "30s", Retries: 7, ExpectedCodes: "200,204", Timeout: "5s",
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &project.Config{Health: &project.HealthConfig{Endpoints: []project.HealthEndpoint{
+		{Name: "readiness", Path: "/ready"},
+	}}}
+	if err := syncProjectHealth(cfg, "app-1", "myapp", 3000); err != nil {
+		t.Fatalf("syncProjectHealth: %v", err)
+	}
+
+	got := cm.GetConfig("app-1")
+	if got == nil || got.Endpoints["manual"] == nil {
+		t.Fatalf("manually configured endpoint was dropped by the build: %+v", got)
+	}
+	if got.Endpoints["manual"].URL != "https://example.com/health" {
+		t.Errorf("manual endpoint mutated: %+v", got.Endpoints["manual"])
+	}
+	if ep := got.Endpoints["readiness"]; ep == nil || ep.URL != "http://localhost:3000/ready" {
+		t.Errorf("declared endpoint not applied: %+v", ep)
+	}
+}
+
+// TestSyncProjectHealthReplaceIsExplicit: `health: replace: true` opts into
+// dropping undeclared endpoints, and the dropped names are announced.
+func TestSyncProjectHealthReplaceIsExplicit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cm, err := health.InitConfigManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cm.Mutate("app-1", "myapp", func(hc *health.AppHealthConfig) error {
+		hc.Endpoints["manual"] = &health.HealthCheckConfig{Name: "manual", URL: "https://example.com/health"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &project.Config{Health: &project.HealthConfig{
+		Replace:   true,
+		Endpoints: []project.HealthEndpoint{{Name: "readiness", Path: "/ready"}},
+	}}
+	out := captureStdout(t, func() {
+		if err := syncProjectHealth(cfg, "app-1", "myapp", 3000); err != nil {
+			t.Fatalf("syncProjectHealth: %v", err)
+		}
+	})
+
+	if got := cm.GetConfig("app-1"); got.Endpoints["manual"] != nil {
+		t.Errorf("replace: true must drop undeclared endpoints, got %+v", got.Endpoints)
+	}
+	if !strings.Contains(out, "manual") {
+		t.Errorf("dropped endpoint name not announced:\n%s", out)
+	}
+}
+
+// TestSyncProjectHealthKeepsSettingsOnRedeclare: re-declaring an endpoint by
+// name without interval/retries keeps what `phelix health set` configured.
+func TestSyncProjectHealthKeepsSettingsOnRedeclare(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	cm, err := health.InitConfigManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cm.Mutate("app-1", "myapp", func(hc *health.AppHealthConfig) error {
+		hc.Endpoints["default"] = &health.HealthCheckConfig{
+			Name: "default", URL: "http://localhost:3000/old",
+			Interval: "45s", Retries: 9, ExpectedCodes: "204", Timeout: "3s",
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &project.Config{Health: &project.HealthConfig{Endpoints: []project.HealthEndpoint{
+		{Name: "default", Path: "/health"},
+	}}}
+	if err := syncProjectHealth(cfg, "app-1", "myapp", 3000); err != nil {
+		t.Fatalf("syncProjectHealth: %v", err)
+	}
+
+	ep := cm.GetConfig("app-1").Endpoints["default"]
+	if ep.URL != "http://localhost:3000/health" {
+		t.Errorf("URL = %q, want the newly declared path", ep.URL)
+	}
+	if ep.Interval != "45s" || ep.Retries != 9 || ep.ExpectedCodes != "204" || ep.Timeout != "3s" {
+		t.Errorf("undeclared settings were reset: %+v", ep)
 	}
 }
 

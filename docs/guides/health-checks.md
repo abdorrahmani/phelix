@@ -40,9 +40,12 @@ configuration on every `phelix build` / `phelix rebuild`, so:
 - `phelix health list <app>` and `phelix health status <app>` show them.
 - Zero-downtime deploys use the first endpoint's `path`/`mode` as the deploy
   health tier (same as `phelix health set`).
-- The `phelix health set/add/remove` commands keep working; a `health:` block in
-  the config replaces the persisted endpoints at the next build/rebuild, while
-  apps without a `health:` block keep whatever was set via the commands.
+- The `phelix health set/add/remove` commands keep working. A `health:` block in
+  the config **merges**: the endpoints it declares are added or updated (fields
+  it leaves out keep their current value) and endpoints it does not mention
+  survive. Set `health: replace: true` to drop undeclared endpoints the names
+  removed are printed. Apps without a `health:` block keep whatever was set
+  via the commands.
 
 See the [configuration reference](../reference/configuration.md) for the full
 `health.endpoints[]` field table.

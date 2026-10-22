@@ -124,9 +124,11 @@ func (d *DockerVersionSource) Build(_ context.Context) (string, string, error) {
 		return "", "", err
 	}
 
-	envPath, _ := envSnapshotPath(d.AppName, ver)
-	// A missing env snapshot is tolerated (older versions may lack one); the
-	// launcher simply starts the container with no overlay.
+	envPath, err := envSnapshotPath(d.AppName, ver)
+	if err != nil {
+		return "", "", err
+	}
+
 	return imageRef, envPath, nil
 }
 

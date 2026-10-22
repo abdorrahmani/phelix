@@ -8,22 +8,14 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/fatih/color"
 )
 
-// This file keeps the application lifecycle record (apps.json, AppInfo) in
-// agreement with zero-downtime deployment state (deploy.json) and reality
-// (live, identity-verified processes).
-//
-// Root problem being fixed: the blue-green path starts and stops instances
-// that the AppManager knows nothing about, so apps.json keeps saying
-// "stopped, pid 0" while the proxy happily serves traffic. list/status read
-// apps.json and reported the contradiction.
-
 // loadDeployState returns the app's deploy state, or nil when the app is not
 // managed by a zero-downtime strategy.
-func loadDeployState(appName string) *deploy.DeployState {
+func loadDeployState(appName string) (*deploy.DeployState, error) {
 	return deploy.LoadZeroDowntime(appName)
 }
 
@@ -109,7 +101,11 @@ func reconcileAppWithDeploy(appName string) {
 	if !ok {
 		return
 	}
-	state := loadDeployState(appName)
+	state, err := loadDeployState(appName)
+	if err != nil {
+		logs.Warning("lifecycle", "cannot read deployment state for %s: %v", appName, err)
+		return
+	}
 	if state == nil {
 		return
 	}
@@ -143,7 +139,10 @@ func runDeployAwareStop(appInfo *app.AppInfo) error {
 	}
 	defer release()
 
-	state := loadDeployState(appInfo.Name)
+	state, err := loadDeployState(appInfo.Name)
+	if err != nil {
+		return err
+	}
 	if state == nil {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "no zero-downtime deployment for %s", appInfo.Name)
 	}
@@ -191,7 +190,10 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 	}
 	defer release()
 
-	state := loadDeployState(appInfo.Name)
+	state, err := loadDeployState(appInfo.Name)
+	if err != nil {
+		return err
+	}
 	if state == nil {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "no zero-downtime deployment for %s", appInfo.Name)
 	}
@@ -241,7 +243,10 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 // start/stop/rebuild run the classic path. versions.json survives so rollback
 // history is kept. A no-op for apps without a zero-downtime deployment.
 func migrateToClassic(appName string) error {
-	state := loadDeployState(appName)
+	state, err := loadDeployState(appName)
+	if err != nil {
+		return err
+	}
 	if state == nil {
 		return nil
 	}
@@ -270,27 +275,18 @@ func stopPublicPortOwner(ctx context.Context, appName string, publicPort int) er
 		}
 	}
 	if info == nil || info.Status != "running" || info.PID <= 0 {
-		// Port is held by something Phelix doesn't manage; report it so the
-		// user gets an actionable error instead of a cryptic bind failure.
 		return phelixerr.Newf(phelixerr.CodePortUnavailable,
 			"public port %d is held by an unmanaged process; free it and retry", publicPort)
 	}
+
 	fmt.Printf("  %s Stopping classic instance (pid %d) to hand public port %d to the proxy...\n",
 		color.BlueString("→"), info.PID, publicPort)
+
 	if err := app.Manager.StopApplication(info.ID); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "could not stop classic instance of %s", appName)
 	}
-	return nil
-}
 
-// isDeployManagedApp reports whether the identifier resolves to an app that
-// is managed by a zero-downtime deployment.
-func isDeployManagedApp(identifier string) bool {
-	info, err := GetAppInfo(identifier)
-	if err != nil {
-		return false
-	}
-	return loadDeployState(info.Name) != nil
+	return nil
 }
 
 // deployCmdTimeout bounds proxy-control calls made directly by commands.

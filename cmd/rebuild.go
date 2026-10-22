@@ -150,7 +150,6 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 	}
 	tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
 
-	// Deploy succeeded — promote the version.
 	if rec != nil {
 		if err := deploy.PromoteVersion(name, rec.Version, "classic"); err != nil {
 			fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
@@ -211,14 +210,16 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 	if strategy == "" && cfg != nil && cfg.Deploy != nil {
 		strategy = cfg.Deploy.Strategy
 	}
-	deployed := loadDeployState(appName)
+	deployed, derr := loadDeployState(appName)
+	if derr != nil {
+		return derr
+	}
 	if strategy == "" && deployed != nil {
 		strategy = string(deployed.Mode)
 	}
 
 	switch strategy {
 	case "", project.StrategyClassic:
-		// Classic is the default path; nothing to set.
 	case project.StrategyBlueGreen:
 		rebuildBlueGreen = true
 	case project.StrategyRolling:
@@ -230,8 +231,6 @@ func applyConfigDeployStrategy(cmd *cobra.Command, cfg *project.Config, appName 
 			rebuildReplicas = len(deployed.Replicas)
 		}
 	case project.StrategyCanary, project.StrategyProgressive:
-		// The rollout plan (steps, verification window, thresholds) lives in
-		// phelix.yaml; project.Load has already validated its shape.
 		plan, err := rolloutPlanFromProject(cfg, strategy)
 		if err != nil {
 			return err
@@ -548,8 +547,6 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 	fmt.Printf("%s Automatic rollback enabled\n", color.BlueString("→"))
 
 	if failedVer <= 0 {
-		// No version was recorded (build failed after PrepareBuild but the
-		// error still classified as deploy-phase): nothing to roll back from.
 		fmt.Printf("%s No version was recorded for this deployment; nothing to roll back\n",
 			color.YellowString("⚠"))
 		return deployErr
@@ -575,8 +572,6 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 	reconcileAppWithDeploy(name)
 	if !res.Restored {
 		if phelixerr.IsCode(res.Err, phelixerr.CodeRollbackTargetNotFound) {
-			// No previous known-good version: report it, do not fabricate a
-			// rollback target.
 			emitAutoRollbackEvent(appInfo, name, "", failedVer, 0,
 				deploy.AutoRollbackReason(failedVer, deployErr), false, res.Err, tracker.DeploymentID())
 			fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n",

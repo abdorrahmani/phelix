@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,16 +17,22 @@ import (
 // except that endpoints are declared by path; the full URL is derived from
 // the application's port when the configuration is applied.
 type HealthEndpoint struct {
-	Name     string `yaml:"name"`
-	Path     string `yaml:"path"`
-	Interval string `yaml:"interval,omitempty"`
-	Retries  int    `yaml:"retries,omitempty"`
-	Mode     string `yaml:"mode,omitempty"`
+	Name          string `yaml:"name"`
+	Path          string `yaml:"path"`
+	Interval      string `yaml:"interval,omitempty"`
+	Retries       int    `yaml:"retries,omitempty"`
+	Mode          string `yaml:"mode,omitempty"`
+	ExpectedCodes string `yaml:"codes,omitempty"`
+	Timeout       string `yaml:"timeout,omitempty"`
 }
 
 // HealthConfig groups the health endpoints declared in phelix.yaml.
 type HealthConfig struct {
 	Endpoints []HealthEndpoint `yaml:"endpoints"`
+	// Replace opts into discarding endpoints the file does not declare.
+	// Without it the file merges: declared names are added/updated, and the
+	// endpoints configured some other way (`phelix health add`) survive.
+	Replace bool `yaml:"replace,omitempty"`
 }
 
 // DeployConfig selects the deployment strategy used by `phelix rebuild`.
@@ -504,6 +511,25 @@ var supportedHealthModes = map[string]bool{
 	"auto": true, "http": true, "tcp-only": true, "none": true,
 }
 
+// validExpectedCodes reports whether s is in the form the health checker
+// understands: "200-299" or a comma list like "200,201,404".
+func validExpectedCodes(s string) bool {
+	parse := func(v string) bool {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		return err == nil && n >= 100 && n <= 599
+	}
+	if strings.Contains(s, "-") {
+		parts := strings.Split(s, "-")
+		return len(parts) == 2 && parse(parts[0]) && parse(parts[1])
+	}
+	for part := range strings.SplitSeq(s, ",") {
+		if !parse(part) {
+			return false
+		}
+	}
+	return true
+}
+
 var supportedStrategies = map[string]bool{
 	StrategyClassic: true, StrategyBlueGreen: true, StrategyRolling: true,
 	StrategyCanary: true, StrategyProgressive: true,
@@ -539,11 +565,7 @@ func (c *Config) validate() error {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.runtime: docker requires a zero-downtime strategy\nHint: set deploy.strategy to blue-green, rolling, canary, or progressive")
 		}
-		// deploy.network attaches app containers to a user-defined Docker network,
-		// which only the docker runtime can do. Rejected up front for any other
-		// runtime (mirrors the docker+classic rejection above) rather than silently
-		// ignored on a native deploy. A whitespace-only value is a typo, not "no
-		// network", so it is refused too.
+
 		if net := strings.TrimSpace(c.Deploy.Network); net != "" {
 			if strings.TrimSpace(c.Deploy.Runtime) != RuntimeDocker {
 				return phelixerr.Newf(phelixerr.CodeConfiguration,
@@ -553,9 +575,7 @@ func (c *Config) validate() error {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.network must not be blank\nHint: set a Docker network name (e.g. myproj_appnet) or remove the key")
 		}
-		// deploy.docker selects the image-build strategy and only applies to the
-		// docker runtime (mirrors the deploy.network rule). build must be one of
-		// the two known strategies, and build: compose needs a service name.
+
 		if c.Deploy.Docker != nil {
 			if strings.TrimSpace(c.Deploy.Runtime) != RuntimeDocker {
 				return phelixerr.Newf(phelixerr.CodeConfiguration,
@@ -613,6 +633,17 @@ func (c *Config) validate() error {
 				return phelixerr.Newf(phelixerr.CodeConfiguration,
 					"configuration error: health.endpoints[%d] (%s) has invalid interval %q\nHint: use a duration like 10s or 1m", i, ep.Name, ep.Interval)
 			}
+		}
+		if ep.Timeout != "" {
+			if _, err := time.ParseDuration(ep.Timeout); err != nil {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: health.endpoints[%d] (%s) has invalid timeout %q\nHint: use a duration like 5s or 30s", i, ep.Name, ep.Timeout)
+			}
+		}
+
+		if ep.ExpectedCodes != "" && !validExpectedCodes(ep.ExpectedCodes) {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: health.endpoints[%d] (%s) has invalid codes %q\nHint: use a range like 200-299 or a comma list like 200,201", i, ep.Name, ep.ExpectedCodes)
 		}
 		if ep.Retries < 0 {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
