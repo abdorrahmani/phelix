@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -41,7 +43,6 @@ func loadProjectConfigFrom(dir string) (*project.Config, error) {
 // syncProjectHealth applies the health endpoints declared in phelix.yaml to
 // the app's persisted health configuration (the same store that
 // `phelix health list/status` and the deploy health tiers read).
-
 func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) error {
 	if cfg == nil || cfg.Health == nil || len(cfg.Health.Endpoints) == 0 {
 		return nil
@@ -52,24 +53,53 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize health config", err)
 	}
 
+	var dropped []string
 	_, err = configMgr.Mutate(appID, appName, func(hc *health.AppHealthConfig) error {
-		hc.Endpoints = make(map[string]*health.HealthCheckConfig, len(cfg.Health.Endpoints))
+		declared := make(map[string]bool, len(cfg.Health.Endpoints))
+		if cfg.Health.Replace {
+			for name := range hc.Endpoints {
+				declared[name] = false
+			}
+		}
+
+		if hc.Endpoints == nil {
+			hc.Endpoints = make(map[string]*health.HealthCheckConfig, len(cfg.Health.Endpoints))
+		}
+
 		for _, ep := range cfg.Health.Endpoints {
-			interval := ep.Interval
-			if interval == "" {
-				interval = "10s"
+			declared[ep.Name] = true
+			prev := hc.Endpoints[ep.Name]
+			next := &health.HealthCheckConfig{Interval: "10s", Retries: 3, ExpectedCodes: "200-299", Timeout: "10s"}
+
+			if prev != nil {
+				*next = *prev
 			}
-			retries := ep.Retries
-			if retries == 0 {
-				retries = 3
+
+			next.Name = ep.Name
+			next.URL = fmt.Sprintf("http://localhost:%d%s", appPort, ep.Path)
+			if ep.Interval != "" {
+				next.Interval = ep.Interval
 			}
-			hc.Endpoints[ep.Name] = &health.HealthCheckConfig{
-				Name:          ep.Name,
-				URL:           fmt.Sprintf("http://localhost:%d%s", appPort, ep.Path),
-				Interval:      interval,
-				Retries:       retries,
-				ExpectedCodes: "200-299",
-				Timeout:       "10s",
+
+			if ep.Retries != 0 {
+				next.Retries = ep.Retries
+			}
+
+			if ep.ExpectedCodes != "" {
+				next.ExpectedCodes = ep.ExpectedCodes
+			}
+			if ep.Timeout != "" {
+				next.Timeout = ep.Timeout
+			}
+			hc.Endpoints[ep.Name] = next
+		}
+
+		if cfg.Health.Replace {
+			for name, keep := range declared {
+				if !keep {
+					dropped = append(dropped, name)
+					delete(hc.Endpoints, name)
+				}
 			}
 		}
 
@@ -83,6 +113,12 @@ func syncProjectHealth(cfg *project.Config, appID, appName string, appPort int) 
 	})
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save health config", err)
+	}
+
+	if len(dropped) > 0 {
+		sort.Strings(dropped)
+		fmt.Printf("  %s health.replace: true removed %d endpoint(s) not declared in %s: %s\n",
+			color.YellowString("⚠"), len(dropped), project.FileName, strings.Join(dropped, ", "))
 	}
 
 	fmt.Printf("  %s Applied %d health endpoint(s) from %s\n",

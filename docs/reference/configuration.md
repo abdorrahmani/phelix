@@ -74,6 +74,9 @@ webhook:
 | `health.endpoints[].interval` | no | Monitoring check interval (e.g. `10s`, `1m`). Default `10s`. |
 | `health.endpoints[].retries` | no | Consecutive failures before marking DOWN. Default `3`. |
 | `health.endpoints[].mode` | no | Deploy health tier: `auto` (default), `http`, `tcp-only`, `none`. |
+| `health.endpoints[].codes` | no | Expected HTTP status codes for the endpoint check: a range (`200-299`) or a list (`200,204`). Default `200-299`. |
+| `health.endpoints[].timeout` | no | Per-request timeout (e.g. `5s`). Default `10s`. |
+| `health.replace` | no | Default `false`: the block merges with endpoints configured by `phelix health add/set`. `true` drops the endpoints the file does not declare (their names are printed). |
 | `deploy.strategy` | no | `classic` (default), `blue-green`, `rolling`, `canary`, or `progressive`. |
 | `deploy.replicas` | no | Replica count for `rolling` (requires `deploy.strategy: rolling`). |
 | `deploy.runtime` | no | `native` (default) or `docker` — run instances as containers. `docker` requires a zero-downtime strategy (see [Docker runtime](../guides/docker-runtime.md)). |
