@@ -45,12 +45,22 @@ func TestSyncAppInfo_DerivedFromLivenessNotPersistedStatus(t *testing.T) {
 		"1": {Slot: "1", Status: "running", PID: 999998, BinaryPath: "/nonexistent"},
 	})
 
-	if err := syncAppInfoWithDeploy(info, loadDeployState(info.Name)); err != nil {
+	if err := syncAppInfoWithDeploy(info, mustLoadDeployState(t, info.Name)); err != nil {
 		t.Fatal(err)
 	}
 	if info.Status != "stopped" || info.PID != 0 {
 		t.Fatalf("all-dead replicas must reconcile to stopped/0, got %s/%d", info.Status, info.PID)
 	}
+}
+
+// mustLoadDeployState is the test-side wrapper for the (state, error) helper.
+func mustLoadDeployState(t *testing.T, appName string) *deploy.DeployState {
+	t.Helper()
+	state, err := loadDeployState(appName)
+	if err != nil {
+		t.Fatalf("loadDeployState(%q): %v", appName, err)
+	}
+	return state
 }
 
 // TestSyncAppInfo_DegradedWhenSomeReplicasDie: one live replica out of two ->
@@ -62,7 +72,7 @@ func TestSyncAppInfo_DegradedWhenSomeReplicasDie(t *testing.T) {
 		"1": {Slot: "1", Status: "running", PID: os.Getpid(), BinaryPath: selfBinaryOrSkip(t)},
 	})
 
-	if err := syncAppInfoWithDeploy(info, loadDeployState(info.Name)); err != nil {
+	if err := syncAppInfoWithDeploy(info, mustLoadDeployState(t, info.Name)); err != nil {
 		t.Fatal(err)
 	}
 	if info.Status != "degraded" {
@@ -82,7 +92,7 @@ func TestSyncAppInfo_StaleRecordNeverOverridesFreshDeploy(t *testing.T) {
 		"0": {Slot: "0", Status: "stopped", PID: 0},
 	})
 
-	if err := syncAppInfoWithDeploy(info, loadDeployState(info.Name)); err != nil {
+	if err := syncAppInfoWithDeploy(info, mustLoadDeployState(t, info.Name)); err != nil {
 		t.Fatal(err)
 	}
 	if info.Status != "stopped" || info.PID != 0 {
