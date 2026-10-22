@@ -53,31 +53,28 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 	binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
 	cmd := exec.Command(binaryPath)
 	cmd.Dir = app.Directory
-	// Capture stdout and stderr separately so each line in the app log file
-	// carries an exact [stdout]/[stderr] marker and level (see AppLogWriter).
+
 	stdoutW := logs.NewAppLogWriter(f, logs.StreamStdout)
 	stderrW := logs.NewAppLogWriter(f, logs.StreamStderr)
-	// Hand the child the raw file descriptor rather than an OS pipe: a pipe's
-	// read end dies with this short-lived CLI process, so the app's next write
-	// would get SIGPIPE and be killed — losing every later log line. Writing
-	// straight into the shared log file needs no parent-side reader at all.
+
 	cmd.Stdout = stdoutW.File()
 	cmd.Stderr = stderrW.File()
-	// Detach into its own session so the app survives this CLI invocation
-	// exiting, plus terminal hangup / Ctrl+C on `phelix start`.
+
 	cmd.SysProcAttr = detachedSysProcAttr()
 
-	// Inject encrypted environment variables
 	envVars := os.Environ() // Start with current environment
 	appEnvVars, err := env.Instance.GetAllEnvVars(id)
-	if err == nil {
-		// If env vars exist, append them to the process environment
-		for key, value := range appEnvVars {
-			envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
-		}
+
+	if err != nil {
+		f.Close()
+		return phelixerr.Wrapf(phelixerr.CodeEncryption, err,
+			"failed to load environment variables for application %q (ID: %s)", name, id)
 	}
-	// Port contract: Phelix owns the runtime port. Override any inherited or
-	// app-stored PORT so the managed application listens on the requested one.
+
+	for key, value := range appEnvVars {
+		envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
+	}
+
 	envVars = append(envVars, fmt.Sprintf("PORT=%d", portNum))
 	cmd.Env = envVars
 
@@ -103,14 +100,10 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 	app.LogFile = logFile
 	app.BuildStatus = "built"
 	app.UpdatedAt = time.Now()
-	// The app was intentionally started; it should be restored the next time
-	// the monitor daemon launches (e.g. after a machine reboot).
+
 	app.AutoStart = true
 	app.logFileHandle = f
 
-	// Runtime port verification: the process existing is not success. Poll
-	// until the application accepts connections on its port OR dies. A process
-	// that stays alive but never binds usually means a hardcoded port.
 	addr := fmt.Sprintf("127.0.0.1:%d", portNum)
 	deadline := time.Now().Add(startupListenTimeout)
 	listening := false
@@ -129,9 +122,7 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 		if !m.isProcessRunning(app.PID) {
 			app.Status = "failed"
 			app.PID = 0
-			// classify a cgroup memory OOM kill before the cleanup
-			// lease is released, so a memory-limit death is not reported as a
-			// generic crash. Every other exit keeps the existing error.
+
 			if oomErr := app.classifyResourceExit(); oomErr != nil {
 				return oomErr
 			}
@@ -142,8 +133,6 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 			)
 		}
 
-		// Kill only the instance Phelix just started — never a pre-existing
-		// one — so a failed validation cannot leak a stray process.
 		m.stopNewlyStarted(app)
 
 		return phelixerr.Newf(
@@ -228,8 +217,7 @@ func (m *AppManager) waitAndCloseLog(app *AppInfo) {
 	if app.Cmd != nil && app.Cmd.Process != nil {
 		_ = app.Cmd.Wait()
 	}
-	// The child was reaped; its cgroup evidence window is over, so release the
-	// cleanup lease before the log handle.
+
 	app.closeResourceInstance()
 	if app.logFileHandle != nil {
 		app.logFileHandle.Close()
@@ -242,11 +230,7 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 	if app.PID <= 0 {
 		return nil
 	}
-	// A process that has already exited (including a zombie that has not yet
-	// been reaped by its parent) no longer holds resources such as the app's
-	// listening port. Treat it as stopped instead of trying to signal its stale
-	// PID. gopsutil's IsRunning reports zombies as running because their /proc
-	// entry still exists.
+
 	if !m.isProcessRunning(app.PID) {
 		return nil
 	}
@@ -275,24 +259,18 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 
 		select {
 		case <-time.After(5 * time.Second):
-			// Graceful stop timed out — fall back to SIGKILL. This is a
-			// recovery path, not a failure of the stop itself, so it does not
-			// return an error; the SIGKILL outcome is verified below.
+
 			_ = app.Cmd.Process.Kill()
-			<-done // reap the child so it doesn't linger as zombie
+			<-done
 		case <-done:
-			// The process exited. Its exit status is conveyed by the
-			// final waitForProcessExit check; a non-zero exit here is not
-			// an error of the stop operation itself.
+
 		}
 	} else {
-		// app.Cmd is nil (loaded from persisted state) — operate by PID.
 		proc, err := os.FindProcess(app.PID)
 		if err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "failed to find process %d", app.PID)
 		}
 
-		// Send SIGTERM and poll until the process exits or 5 s elapses.
 		if err := proc.Signal(syscall.SIGTERM); err != nil {
 			return phelixerr.Wrapf(
 				phelixerr.CodeProcessFailed,
@@ -304,17 +282,13 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 
 		terminated := m.waitForProcessExit(app.PID, 5*time.Second)
 		if !terminated {
-			// Graceful stop timed out — fall back to SIGKILL (recovery path;
-			// the SIGKILL outcome is verified below).
+
 			_ = proc.Kill()
-			// Give SIGKILL a moment to take effect.
 			time.Sleep(500 * time.Millisecond)
 		}
 
 	}
 
-	// SIGKILL is asynchronous for a process managed by an earlier invocation,
-	// so give the kernel a short, bounded interval to finish termination.
 	if !m.waitForProcessExit(app.PID, time.Second) {
 		return phelixerr.Newf(
 			phelixerr.CodeProcessFailed,
@@ -323,8 +297,6 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 		)
 	}
 
-	// Reap the child (if we own it) and release the log file handle that was
-	// kept open for the child's stdout/stderr.
 	m.waitAndCloseLog(app)
 	app.Cmd = nil
 
@@ -369,13 +341,11 @@ func (m *AppManager) getProcessMetrics(pid int) (uint64, float64, error) {
 	var ramUsage uint64
 	var cpuUsage float64
 
-	// Try to get memory info
 	memInfo, err := p.MemoryInfo()
 	if err == nil && memInfo != nil {
 		ramUsage = memInfo.RSS
 	}
 
-	// Try to get CPU usage
 	cpuPercent, err := p.CPUPercent()
 	if err == nil {
 		cpuUsage = cpuPercent
