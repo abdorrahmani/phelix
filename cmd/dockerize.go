@@ -73,18 +73,11 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			return err
 		}
 
-		// Project configuration (phelix.yaml) supplies the matrix profile —
-		// the same three-way convergence (CLI flags > matrix profile >
-		// default) the build command applies. A present-but-invalid file
-		// fails fast here, exactly like `phelix build`.
 		projCfg, err := loadProjectConfig()
 		if err != nil {
 			return err
 		}
 
-		// Conflicting matrix flags fail fast (same rule as `phelix build`):
-		// an explicit --matrix=false next to dimension flags must not
-		// silently drop the requested versions/platforms.
 		if ferr := matrixFlagConflict(cmd.Flags().Changed("matrix"), dockerizeMatrix, dockerizeGoVersions, dockerizeRustVersions, dockerizePlatforms); ferr != nil {
 			return ferr
 		}
@@ -107,12 +100,10 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			}
 		}
 
-		// Load state
 		if err := app.Manager.LoadState(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 		}
 
-		// Get project root
 		currentDir, err := os.Getwd()
 		if err != nil {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
@@ -124,13 +115,6 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			return phelixerr.Wrap(phelixerr.CodeUnsupportedProject, "could not detect project language", err)
 		}
 
-		// --- Matrix dockerize path ---
-		// Active under the same rules as `phelix build`: --matrix, dimension
-		// flags, or an enabled phelix.yaml matrix profile (an explicit
-		// --matrix=false disables it). CLI flags, the YAML profile, and the
-		// wizard converge into one normalized profile before expansion. The
-		// Docker daemon is only required once something would actually build
-		// (--matrix-dry-run must work without it).
 		langEnum := builder.ParseLanguage(string(lang))
 		matrixIn := dockerizeMatrixResolveInput(cmd, projCfg, langEnum)
 		if matrix.IsActive(matrixIn) {
@@ -140,7 +124,6 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			return runDockerizeMatrixMode(name, langEnum, currentDir, matrixIn)
 		}
 
-		// Check Docker availability (the classic path builds immediately).
 		if err := docker.CheckDockerAvailable(); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available", err)
 		}
@@ -148,12 +131,10 @@ encryption mechanism as environment variables (via the internal/env package).`,
 		fmt.Printf("%s Dockerizing application %s (%s)\n",
 			color.BlueString("→"), color.CyanString("'%s'", name), color.GreenString(string(lang)))
 
-		// --- Dockerfile / .dockerignore generation ---
 		if err := ensureDockerfileAndIgnore(currentDir, lang); err != nil {
 			return err
 		}
 
-		// --- Build image ---
 		imageName := name
 		if dockerizeTag != "" {
 			imageName = name + ":" + dockerizeTag
@@ -161,23 +142,20 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			imageName = name + ":latest"
 		}
 
-		// If registry is specified, prefix the image name
 		if dockerizeRegistry != "" {
 			imageName = dockerizeRegistry + "/" + imageName
 		}
 
-		// Parse build args into a map (malformed entries fail fast).
 		buildArgsMap, err := parseDockerBuildArgs(dockerizeBuildArgs)
 		if err != nil {
 			return err
 		}
 
-		// OCI-standard labels
 		gitCommit := deploy.DetectGitCommit(currentDir)
 		labels := map[string]string{
 			"org.opencontainers.image.version":  dockerizeTag,
 			"org.opencontainers.image.revision": gitCommit,
-			"org.opencontainers.image.created":  fmt.Sprintf("%d", os.Getpid()), // placeholder; real timestamp set by Docker
+			"org.opencontainers.image.created":  time.Now().UTC().Format(time.RFC3339),
 		}
 
 		fmt.Printf("  %s Building Docker image %s...\n", color.BlueString("→"), color.CyanString(imageName))
@@ -194,9 +172,6 @@ encryption mechanism as environment variables (via the internal/env package).`,
 
 		fmt.Printf("  %s Image built in %s\n", color.GreenString("✓"), color.YellowString(buildResult.Duration.String()))
 
-		// --- Record version in the versioning system ---
-		// Store the Docker image reference so future rollback logic can use
-		// "docker run <image>" as a BuildSource implementation.
 		logger := &colorLogger{}
 		_, verErr := deploy.RecordDockerBuild(
 			name, imageName, dockerizeTag, gitCommit,
@@ -208,7 +183,6 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			fmt.Printf("  %s Docker image recorded in version history\n", color.GreenString("✓"))
 		}
 
-		// --- Push to registry ---
 		if dockerizePush {
 			fmt.Printf("  %s Pushing to registry...\n", color.BlueString("→"))
 			if err := docker.PushImage(docker.PushConfig{
@@ -220,7 +194,6 @@ encryption mechanism as environment variables (via the internal/env package).`,
 			fmt.Printf("  %s Pushed successfully\n", color.GreenString("✓"))
 		}
 
-		// --- Generate docker-compose.yml ---
 		if dockerizeCompose {
 			if docker.HasExistingCompose(currentDir) {
 				fmt.Printf("  %s Using existing docker-compose.yml\n", color.YellowString("Note:"))
@@ -359,16 +332,6 @@ type dockerizeMatrixOutcome struct {
 // `phelix build` (CLI flags > phelix.yaml matrix profile > default; list
 // replacement; an explicit --matrix=false disables an enabled profile), so
 // both commands validate and expand the same way.
-//
-// Each combination gets its own image tag
-// ({app}:{tag|latest}-{lang}{version}-{arch}[-{variant}]); with multi-arch
-// enabled, the per-version platform images are additionally assembled into
-// one multi-arch manifest list per toolchain version.
-//
-// Push semantics are fail-closed by default: if any combination failed to
-// build, we refuse to push any image. This prevents publishing a
-// partial/inconsistent release where some platforms work and others don't.
-// The --push-partial flag overrides this behavior.
 func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*dockerizeMatrixOutcome, error) {
 	prof, active, err := matrix.Resolve(p.In)
 	if err != nil {
@@ -387,10 +350,6 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 		return nil, err
 	}
 
-	// A multi-arch manifest list is assembled from registry references by
-	// `docker buildx imagetools create` — the source images must already be
-	// pushed, so multi-arch without push cannot work (it would fail after
-	// building everything, or worse, assemble from stale remote images).
 	if p.MultiArch && !p.Push {
 		return nil, phelixerr.New(phelixerr.CodeInvalidArgument,
 			"multi-arch tags assemble the manifest list from pushed registry images — enable push (optionally with push_partial)")
@@ -411,19 +370,14 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 		return &dockerizeMatrixOutcome{Plan: plan}, nil
 	}
 
-	// The daemon is required from here on (image builds); the dry-run exit
-	// above is deliberately daemon-free.
 	if err := docker.CheckDockerAvailable(); err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeDockerDaemonUnavailable, "docker is not available", err)
 	}
 
-	// A Dockerfile (and .dockerignore) must exist for `docker build` —
-	// generate them when absent, exactly like the single-image path.
 	if err := ensureDockerfileAndIgnore(p.ProjectRoot, docker.Language(string(p.Lang))); err != nil {
 		return nil, err
 	}
 
-	// Ensure buildx is available for multi-arch builds.
 	if err := matrix.EnsureBuildx(); err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeDocker, "docker buildx is required for this build", err)
 	}
@@ -437,8 +391,6 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 		Debug:       p.Debug,
 	}
 
-	// Build each combination (retry budget and concurrency come from the
-	// resolved profile, so CLI > phelix.yaml > default applies here too).
 	startTime := time.Now()
 	execCfg := matrix.ExecutorConfig{
 		Concurrency: prof.Concurrency,
@@ -453,7 +405,6 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 	}
 	results := matrix.Execute(plan, dmb.BuildDockerImage, execCfg)
 
-	// Generate report.
 	report := matrix.GenerateReport(p.Name, results, startTime)
 	report.PrintTerminal()
 
@@ -464,7 +415,6 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 
 	outcome := &dockerizeMatrixOutcome{Plan: plan, Results: results, Report: report}
 
-	// Handle push with fail-closed semantics.
 	if p.Push {
 		if err := dmb.PushImages(results, p.PushPartial); err != nil {
 			return outcome, phelixerr.Wrap(phelixerr.CodeDocker, "docker image push failed", err)
@@ -478,9 +428,6 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 		}
 	}
 
-	// Assemble multi-arch manifest lists (one per toolchain version) when
-	// requested. This runs after the push so the source images already exist
-	// in the registry when the manifest is created.
 	if p.MultiArch {
 		byVersion, order := groupSuccessByVersion(results)
 		for _, ver := range order {
@@ -494,7 +441,6 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 		}
 	}
 
-	// Record successful artifacts in the versioning system.
 	if report.Succeeded > 0 {
 		artifacts := make([]deploy.MatrixArtifact, 0, report.Succeeded)
 		for _, r := range results {
@@ -505,10 +451,8 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 				Platform: r.Combination.Platform,
 				Version:  r.Combination.Version,
 				ImageTag: r.Artifact,
-				// The builder resolves each image's content digest — the
-				// image-world equivalent of a binary's SHA-256.
-				SHA256: r.SHA256,
-				Status: r.Status,
+				SHA256:   r.SHA256,
+				Status:   r.Status,
 			})
 		}
 
