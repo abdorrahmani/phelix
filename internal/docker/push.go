@@ -1,13 +1,9 @@
 package docker
 
 import (
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
-	"github.com/abdorrahmani/phelix/internal/env"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -24,19 +20,11 @@ type PushConfig struct {
 // The user's Docker CLI login is used for the actual push — we verify
 // the user is logged in first and give a clear error if not.
 func PushImage(cfg PushConfig) error {
-	// Verify docker is available
 	if err := CheckDockerAvailable(); err != nil {
 		return err
 	}
 
-	// If a custom registry is specified, ensure the image is tagged for it
-	imageRef := cfg.ImageName
-	if cfg.Registry != "" {
-		// Ensure the image reference includes the registry prefix
-		if !strings.Contains(cfg.ImageName, "/") || !strings.ContainsAny(cfg.ImageName, ".:/") {
-			imageRef = cfg.Registry + "/" + cfg.ImageName
-		}
-	}
+	imageRef := imageRefFor(cfg.ImageName, cfg.Registry)
 
 	// Attempt to push
 	cmd := exec.Command("docker", "push", imageRef)
@@ -44,10 +32,6 @@ func PushImage(cfg PushConfig) error {
 	if err != nil {
 		outputStr := string(output)
 
-		// Distinguish "not logged in" from other push failures. The raw docker
-		// output is only inspected locally to make this distinction; it is never
-		// embedded verbatim in the returned error (it may contain registry auth
-		// details). The exit status stays reachable through the wrapped cause.
 		if isAuthError(outputStr) {
 			return phelixerr.Newf(
 				phelixerr.CodePermissionDenied,
@@ -61,92 +45,6 @@ func PushImage(cfg PushConfig) error {
 	}
 
 	return nil
-}
-
-// StoreRegistryCredentials encrypts and stores registry credentials using
-// the same AES-256-GCM mechanism as env vars.
-func StoreRegistryCredentials(registry, username, passwordOrToken string) error {
-	masterKey, err := env.GetMasterKey()
-	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeEncryption, "failed to get master key for credential storage", err)
-	}
-
-	// Store username
-	encUser, err := env.EncryptData(username, masterKey)
-	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeEncryption, "failed to encrypt username", err)
-	}
-	// Store password/token
-	encPass, err := env.EncryptData(passwordOrToken, masterKey)
-	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeEncryption, "failed to encrypt password", err)
-	}
-
-	// Write to ~/.phelix/registry/<registry>.enc
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to resolve home directory", err)
-	}
-	regDir := filepath.Join(home, ".phelix", "registry")
-	if err := os.MkdirAll(regDir, 0o700); err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create registry credentials directory %s", regDir)
-	}
-
-	credFile := filepath.Join(regDir, registrySlug(registry)+".enc")
-	content := fmt.Sprintf("username:%s\npassword:%s", encUser, encPass)
-	if err := os.WriteFile(credFile, []byte(content), 0o600); err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write registry credentials %s", credFile)
-	}
-	return nil
-}
-
-// LoadRegistryCredentials retrieves and decrypts stored registry credentials.
-func LoadRegistryCredentials(registry string) (username, password string, err error) {
-	masterKey, err := env.GetMasterKey()
-	if err != nil {
-		return "", "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to get master key", err)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to resolve home directory", err)
-	}
-
-	credFile := filepath.Join(home, ".phelix", "registry", registrySlug(registry)+".enc")
-	data, err := os.ReadFile(credFile)
-	if os.IsNotExist(err) {
-		return "", "", phelixerr.Newf(phelixerr.CodeNotFound, "no stored credentials for registry %q", registry)
-	}
-	if err != nil {
-		return "", "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read registry credentials %s", credFile)
-	}
-
-	// Parse the stored format: "username:<enc>\npassword:<enc>"
-	lines := strings.SplitN(string(data), "\n", 2)
-	if len(lines) < 2 {
-		return "", "", phelixerr.Newf(phelixerr.CodeEncryption, "corrupted credential file for %q", registry)
-	}
-
-	for _, line := range lines {
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		switch parts[0] {
-		case "username":
-			username, err = env.DecryptData(parts[1], masterKey)
-			if err != nil {
-				return "", "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to decrypt username", err)
-			}
-		case "password":
-			password, err = env.DecryptData(parts[1], masterKey)
-			if err != nil {
-				return "", "", phelixerr.Wrap(phelixerr.CodeEncryption, "failed to decrypt password", err)
-			}
-		}
-	}
-
-	return username, password, nil
 }
 
 // isAuthError checks Docker push output for authentication-related errors.
@@ -165,13 +63,14 @@ func registryHost(registry string) string {
 	if registry == "" {
 		return "docker.io"
 	}
-	// Strip protocol if present
+
 	h := strings.TrimPrefix(registry, "https://")
 	h = strings.TrimPrefix(h, "http://")
-	// Take only the host part (before any path)
+
 	if idx := strings.Index(h, "/"); idx != -1 {
 		h = h[:idx]
 	}
+
 	return h
 }
 
@@ -185,5 +84,22 @@ func registrySlug(registry string) string {
 	if s == "" {
 		return "docker_io"
 	}
+
 	return s
+}
+
+// imageRefFor qualifies an image name with the registry unless the name is
+// already registry-qualified: a first path element containing "." or ":", or
+// the special name "localhost". This keeps a ref like myreg.io/app from being
+// pushed as registry/myreg.io/app.
+func imageRefFor(imageName, registry string) string {
+	if registry == "" {
+		return imageName
+	}
+
+	if first, _, ok := strings.Cut(imageName, "/"); ok && (strings.ContainsAny(first, ".:")) || first == "localhost" {
+		return imageName
+	}
+
+	return registry + "/" + imageName
 }

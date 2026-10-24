@@ -31,9 +31,6 @@ var StartCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
-		// Interactive: when no app is named but stdin is a TTY, let the user
-		// pick one app or "All applications". Non-TTY keeps the original
-		// start-all behavior so scripts are unaffected.
 		if len(args) == 0 && IsInteractive() {
 			chosen, err := PromptApp(true, "Select application to start")
 			if err != nil {
@@ -81,8 +78,6 @@ var StartCmd = &cobra.Command{
 
 				fmt.Printf("  %s Starting %s (ID: %s) on port %d...\n", color.BlueString("→"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), a.Port)
 				if err := app.Manager.StartApplication(a.ID, a.Port, a.Name); err != nil {
-					// Collect per-app failures and return a single aggregated
-					// error at the end so the CLI renders one error block.
 					fmt.Printf("    %s Failed to start %s (ID: %s): %v\n", color.RedString("✗"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), err)
 					failed = append(failed, fmt.Sprintf("%s: %v", a.Name, err))
 					continue
@@ -119,10 +114,6 @@ var StartCmd = &cobra.Command{
 			return nil
 		}
 
-		// Zero-downtime deployments restore through their own path: relaunch
-		// the active slot from its recorded binary and re-establish the proxy
-		// route. Launching a classic process on the public port would fight
-		// the proxy for ownership.
 		state, derr := loadDeployState(name)
 		if derr != nil {
 			return derr
@@ -192,9 +183,11 @@ func ensureNewApplication(name string, port int) error {
 		return err
 	}
 
-	id := app.Manager.GenerateAppID()
+	id, err := app.Manager.GenerateAppID()
+	if err != nil {
+		return err
+	}
 
-	// Get current directory
 	cwd, err := os.Getwd()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to get current directory", err)
@@ -210,7 +203,6 @@ func ensureNewApplication(name string, port int) error {
 		)
 	}
 
-	// Validate tools
 	if err := buildMgr.ValidateTools(lang); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain validation failed", err)
 	}

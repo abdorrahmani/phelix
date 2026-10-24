@@ -155,3 +155,22 @@ func TestPushConfig_ImageRefConstruction(t *testing.T) {
 		}
 	}
 }
+
+func TestImageRefFor(t *testing.T) {
+	cases := []struct{ name, image, registry, want string }{
+		{"unqualified gets the registry", "myapp:v1.2.3", "ghcr.io/user", "ghcr.io/user/myapp:v1.2.3"},
+		{"qualified stays qualified", "ghcr.io/other/myapp:v1", "ghcr.io/user", "ghcr.io/other/myapp:v1"},
+		{"host:port is qualified", "localhost:5000/myapp:v1", "ghcr.io/user", "localhost:5000/myapp:v1"},
+		{"localhost is qualified", "localhost/myapp:v1", "ghcr.io/user", "localhost/myapp:v1"},
+		{"dotless namespace is not a registry", "myorg/app:v1", "ghcr.io", "ghcr.io/myorg/app:v1"},
+		{"docker hub namespace gets the registry", "library/myapp:v1", "docker.io", "docker.io/library/myapp:v1"},
+		{"no registry leaves the ref alone", "myapp:v1", "", "myapp:v1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := imageRefFor(tc.image, tc.registry); got != tc.want {
+				t.Fatalf("imageRefFor(%q, %q) = %q, want %q", tc.image, tc.registry, got, tc.want)
+			}
+		})
+	}
+}

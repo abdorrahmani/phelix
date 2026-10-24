@@ -193,7 +193,11 @@ var BuildCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
 		}
 
-		id := app.Manager.GenerateAppID()
+		id, err := app.Manager.GenerateAppID()
+		if err != nil {
+			return err
+		}
+
 		fmt.Printf("%s Building application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(id))
 		fmt.Printf("  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
 

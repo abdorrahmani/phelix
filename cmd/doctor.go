@@ -52,8 +52,7 @@ var DoctorCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Machine mode: check lines detour to stderr for the whole command so
-		// the JSON envelope stays alone on stdout.
+
 		if doctorJSON {
 			restore := machine.EnterJSON()
 			defer restore()
@@ -98,9 +97,7 @@ var DoctorCmd = &cobra.Command{
 		if failed > 0 {
 			fmt.Println()
 			fmt.Println("Your application is not currently Phelix-compatible.")
-			// Machine mode emits ONLY the boundary's single error envelope
-			// (VALIDATION_ERROR, exit 3) — writing a checks envelope here
-			// too would put two JSON documents on one stdout.
+
 			return phelixerr.New(phelixerr.CodeValidation, "doctor found failing checks")
 		}
 		return writeEnvelopeResult(machine.Success("", buildDoctorResult(results, passed, warned, failed)))
@@ -131,8 +128,6 @@ func buildDoctorResult(results []checkResult, passed, warned, failed int) *docto
 }
 
 func init() {
-	DoctorCmd.Flags().BoolVar(&buildDebug, "debug", false, "Show verbose diagnostics")
-	_ = buildDebug // shared flag var; no extra behavior yet
 	DoctorCmd.Flags().BoolVar(&doctorJSON, "json", false,
 		"Output machine-readable JSON (stdout carries only the result envelope; check output moves to stderr)")
 }
@@ -142,7 +137,6 @@ var doctorJSON bool
 func runDoctorChecks(dir string) []checkResult {
 	var results []checkResult
 
-	// --- Project detection ---
 	buildMgr := builder.NewBuildManager()
 	lang := buildMgr.DetectLanguage(dir)
 	if lang.IsSupported() {
@@ -156,10 +150,9 @@ func runDoctorChecks(dir string) []checkResult {
 			detail:  "not found",
 			message: "\nNo Go or Rust project detected in this directory.\nA go.mod (Go) or Cargo.toml (Rust) is required.\n",
 		})
-		return results // nothing else can run without a project
+		return results
 	}
 
-	// --- Toolchain ---
 	if toolchain.IsInstalled(lang) {
 		results = append(results, checkResult{
 			name:   langToolchainName(lang),
@@ -174,14 +167,12 @@ func runDoctorChecks(dir string) []checkResult {
 		})
 	}
 
-	// --- Buildability ---
 	if err := buildMgr.ValidateTools(lang); err == nil {
 		results = append(results, checkResult{name: "Build tools", pass: true, detail: "ready"})
 	} else {
 		results = append(results, checkResult{name: "Build tools", warn: true, detail: strings.TrimSpace(err.Error())})
 	}
 
-	// --- phelix.yaml ---
 	cfg, cfgErr := project.Load(dir)
 	switch {
 	case cfgErr == nil:
@@ -211,7 +202,6 @@ func runDoctorChecks(dir string) []checkResult {
 		})
 	}
 
-	// --- PORT configuration (the key diagnostic) ---
 	hits, readsPORT := project.ScanHardcodedPort(dir)
 	switch {
 	case len(hits) > 0 && !readsPORT:
@@ -229,8 +219,6 @@ func runDoctorChecks(dir string) []checkResult {
 			message: b.String(),
 		})
 	case len(hits) > 0 && readsPORT:
-		// Reads PORT somewhere but also has literal listeners; may be a default
-		// fallback like ListenAndServe(":"+port). Not confident enough to fail.
 		h := hits[0]
 		results = append(results, checkResult{
 			name: "PORT configuration", warn: true,
