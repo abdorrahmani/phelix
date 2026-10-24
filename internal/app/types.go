@@ -10,7 +10,7 @@ import (
 
 // AppManagerInterface defines the contract for application management
 type AppManagerInterface interface {
-	GenerateAppID() string
+	GenerateAppID() (string, error)
 	StartApplication(id string, port int, name string) error
 	StopApplication(id string) error
 	RestartApplication(id string) error

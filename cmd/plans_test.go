@@ -52,7 +52,10 @@ func withAppStore(t *testing.T) *app.AppInfo {
 		t.Fatalf("LoadState: %v", err)
 	}
 	name := fmt.Sprintf("pln-test-%d", time.Now().UnixNano()%1e9)
-	id := app.Manager.GenerateAppID()
+	id, err := app.Manager.GenerateAppID()
+	if err != nil {
+		t.Fatalf("GenerateAppID: %v", err)
+	}
 	info := &app.AppInfo{
 		ID:        id,
 		Name:      name,

@@ -236,16 +236,17 @@ func warnIfComposeManaged(ctx context.Context, log deploy.Logger, appName, svc s
 // image build → container start → health → proxy enrol. There is no active
 // instance to displace on a brand-new app, so the proxy simply binds the
 // public port. Subsequent deploys use `phelix rebuild` unchanged.
-//
-// The host Go/Rust toolchain is not required here — the image is built with the
-// toolchain inside the container — so this checks for Docker instead.
 func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name string, publicPort int, currentDir string, lang builder.Language, op *opRun) error {
 	if err := docker.CheckDockerAvailable(); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeDockerDaemonUnavailable, err,
 			"docker runtime: Docker is required to build and run %q as a container", name)
 	}
 
-	id := app.Manager.GenerateAppID()
+	id, err := app.Manager.GenerateAppID()
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("%s Building application %s (ID: %s) as a container\n",
 		color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(id))
 	fmt.Printf("  Language: %s\n", color.GreenString(string(lang)))

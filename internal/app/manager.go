@@ -3,6 +3,7 @@ package app
 import (
 	"crypto/rand"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -28,20 +29,19 @@ var Manager AppManagerInterface = &AppManager{
 // GenerateAppID generates an independent RFC 4122 version 4 application ID.
 // The ID is persisted in apps.json and is never derived from an agent/server
 // identity or the app name.
-func (m *AppManager) GenerateAppID() string {
+func (m *AppManager) GenerateAppID() (string, error) {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		// crypto/rand failures are exceptional. Keep a unique, time-based
-		// fallback so this API remains non-erroring for existing callers.
-		return fmt.Sprintf("app-%d", time.Now().UnixNano())
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return "", phelixerr.Wrap(phelixerr.CodeUnknown, "failed to genrate application ID", err)
 	}
+
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 // StartApplication starts an application with the given parameters
@@ -93,9 +93,6 @@ func (m *AppManager) StopApplication(id string) error {
 	}
 
 	if app.Status != "running" {
-		// State can be stale when an earlier Phelix invocation was terminated or
-		// the child was reaped by another parent. Stopping an already-exited app
-		// is successful and makes `phelix stop` safe to retry.
 		if !m.isProcessRunning(app.PID) {
 			app.Status = "stopped"
 			app.PID = 0
@@ -114,8 +111,6 @@ func (m *AppManager) StopApplication(id string) error {
 	app.Status = "stopped"
 	app.PID = 0
 	app.Cmd = nil
-	// An explicit stop clears auto-start intent: the app must not be restored
-	// automatically the next time the monitor daemon launches.
 	app.AutoStart = false
 	return m.SaveState()
 }
@@ -152,17 +147,12 @@ func (m *AppManager) ListApplications() []AppListItem {
 	defer m.Lock.Unlock()
 
 	if err := m.LoadState(); err != nil {
-		// ListApplications cannot fail the caller (its signature returns only a
-		// list), but the diagnostic must not pollute stdout — a caller's
-		// processable output. Emit it on the daemon log instead; callers that
-		// need strict behavior check LoadState themselves.
 		logs.Warning("app", "failed to load state: %v", err)
 		return nil
 	}
 
 	var appList []AppListItem
 	for id, app := range m.Apps {
-		// Verify process status for running applications
 		if app.Status == "running" {
 			m.verifyProcessStatus(app)
 		}
@@ -264,7 +254,6 @@ func (m *AppManager) RemoveApplication(id string) error {
 		}
 	}
 
-	// Remove the application binary if it exists
 	if app.Directory != "" {
 		binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
 		if err := os.Remove(binaryPath); err != nil && !os.IsNotExist(err) {
@@ -272,16 +261,13 @@ func (m *AppManager) RemoveApplication(id string) error {
 		}
 	}
 
-	// Remove the log file if it exists
 	if app.LogFile != "" {
 		if err := os.Remove(app.LogFile); err != nil && !os.IsNotExist(err) {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to remove log file %s", app.LogFile)
 		}
 	}
 
-	// Remove the application from the map
 	delete(m.Apps, id)
 
-	// Save the updated state
 	return m.SaveState()
 }
