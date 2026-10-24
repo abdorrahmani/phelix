@@ -16,6 +16,11 @@ const (
 	Rust Language = "rust"
 )
 
+// Ambiguous marks a root that carries both a Rust marker (Cargo.toml) and a
+// Go marker (go.mod or main.go). It is deliberately unsupported: guessing
+// would silently build the wrong project.
+const Ambiguous Language = "ambiguous (Cargo.toml and a Go marker at the project root)"
+
 // ParseLanguage converts a string to a Language type
 func ParseLanguage(s string) Language {
 	lang := Language(strings.ToLower(strings.TrimSpace(s)))
