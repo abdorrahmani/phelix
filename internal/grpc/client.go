@@ -58,17 +58,9 @@ func NewClient() *Client {
 // configured backend. Production traffic always uses TLS; only explicit
 // "dev" mode (see config.yml) is allowed to fall back to plaintext, and only
 // for local development against a backend that doesn't terminate TLS.
-//
-// This is intentionally NOT configurable from the production config file —
-// there is no insecure fallback for the production backend. As a fail-safe
-// against a production build accidentally shipping the dev-mode embedded
-// config, the known production host is ALWAYS dialed with TLS, even when
-// mode is "dev".
 func transportCredentials() credentials.TransportCredentials {
 	cfg := config.Get()
 	if cfg == nil {
-		// No config loaded: default to TLS. Failing open to plaintext would
-		// send the session token over an unauthenticated transport.
 		return credentials.NewTLS(agentTLSConfig())
 	}
 	return transportCredentialsFor(cfg.App.Mode, cfg.App.GRPCUrl)
@@ -84,10 +76,7 @@ func transportCredentialsFor(mode, target string) credentials.TransportCredentia
 	if mode == "dev" && isProductionBackend(target) {
 		logs.WarningFile("grpc", "[gRPC] dev mode requested for production backend %s: refusing insecure transport, using TLS", target)
 	}
-	// #nosec G402 -- default TLS config: verifies the server certificate
-	// against the system trust store (plus optional SPKI pinning, see
-	// agentTLSConfig), which is what we want for the production backend (no
-	// InsecureSkipVerify, no custom CA override).
+
 	return credentials.NewTLS(agentTLSConfig())
 }
 
@@ -95,10 +84,6 @@ func transportCredentialsFor(mode, target string) credentials.TransportCredentia
 func (c *Client) Connect() error {
 	cfg := config.Get()
 	if cfg == nil {
-		// No config loaded yet — this client is not configured to talk to
-		// any backend. Return a proper error instead of dereferencing a nil
-		// pointer; callers that run in the background (e.g. the rollback
-		// event sender) must be able to handle the failure.
 		return phelixerr.New(phelixerr.CodeConfiguration, "gRPC client has no configuration loaded")
 	}
 	if cfg.App.GRPCUrl == "" {
@@ -106,14 +91,8 @@ func (c *Client) Connect() error {
 		return nil
 	}
 
-	// No session → the backend would reject every RPC for lack of auth. Skip
-	// connecting entirely so short-lived CLI commands (build/rebuild/start)
-	// don't block on a doomed dial. Callers that keep retrying (the monitor
-	// daemon, rollback sender) will pick up the session automatically once the
-	// user runs 'phelix auth login'.
 	if !sessionAvailable() {
-		// Logged out (or never logged in) while this runtime is up: record why
-		// dashboard sync is off, separately from the local runtime status.
+
 		connstate.MarkDisconnected()
 		return phelixerr.New(
 			phelixerr.CodeUnauthenticated,
@@ -121,7 +100,6 @@ func (c *Client) Connect() error {
 		)
 	}
 
-	// Initialize server if not already done (needed for CLI commands)
 	if err := server.Initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC] Failed to initialize server: %v", err)
 		return nil
@@ -170,8 +148,6 @@ func (c *Client) Connect() error {
 	c.unreadySince = time.Time{}
 	c.mu.Unlock()
 
-	// A full redial replaces the ClientConn outright. Close the previous one
-	// (if any) so its background transport/backoff goroutines don't leak.
 	if oldConn != nil && oldConn != conn {
 		_ = oldConn.Close()
 	}
@@ -215,17 +191,14 @@ func (c *Client) Close() {
 
 	select {
 	case <-c.done:
-		// Already closed
 		return
 	default:
 		close(c.done)
 	}
 
-	// Stop agent stream
 	c.stopAgentStream()
 
-	// Stop the monitoring stream
-	stopMonitorStream()
+	stopMonitorStreamIfOwner(c)
 
 	if c.conn != nil {
 		if err := c.conn.Close(); err != nil {
@@ -296,15 +269,9 @@ func (c *Client) reconnectIfNeeded() {
 		return
 	}
 
-	// TransientFailure and Idle both mean "not currently connected", but
-	// gRPC's own background reconnection may be paused (e.g. an idle
-	// ClientConn only resumes connecting when Connect() or an RPC is
-	// invoked). Nudge it directly rather than waiting indefinitely.
 	logs.WarningFile("grpc", "[gRPC] Connection state: %v (unready for %s), nudging", state, stuckFor.Round(time.Second))
 	conn.Connect()
 
-	// If nudging repeatedly hasn't helped within the threshold, the
-	// ClientConn itself may be wedged. Escalate to a full redial.
 	if stuckFor >= staleConnectionThreshold {
 		logs.WarningFile("grpc", "[gRPC] Connection stuck in %v for %s, forcing full reconnect", state, stuckFor.Round(time.Second))
 		c.mu.Lock()
@@ -354,17 +321,10 @@ func (c *Client) sendMetadataOnce() {
 		return
 	}
 
-	// Server-level data follows the watching opt-in (app.AnyWatched): with
-	// no watched app the agent transmits nothing about itself — not even
-	// presence/heartbeat metadata. The sync resumes on the next tick after a
-	// `phelix watch` opt-in.
 	if !app.AnyWatched() {
 		return
 	}
 
-	// E2: while parked by the backend's failed-auth budget, skip the sync —
-	// each attempt is rejected before validation but still costs a round
-	// trip, and the budget message already told us the window.
 	c.authParkMu.Lock()
 	parked := time.Now().Before(c.authParkUntil)
 	c.authParkMu.Unlock()
@@ -392,8 +352,6 @@ func (c *Client) sendMetadataOnce() {
 
 	resp, err := c.serviceClient.SyncMetadata(authCtx, md)
 	if err != nil {
-		// The failed-auth budget (E2): park authenticated sync for the
-		// budget window rather than re-attempting on the normal cadence.
 		if authBudgetError(err) {
 			c.authParkMu.Lock()
 			c.authParkUntil = time.Now().Add(authBudgetBackoff)
@@ -401,12 +359,9 @@ func (c *Client) sendMetadataOnce() {
 			logs.ErrorFile("grpc", "[gRPC] %v", rateLimitedAuthError(err))
 			return
 		}
+
 		logs.ErrorFile("grpc", "[gRPC] Metadata sync failed: %v", err)
-		// A credentials rejection is not a network failure: retrying forever
-		// with the same revoked key would hammer the backend. Stop
-		// authenticated sync (streams keep failing fast) and record why, but
-		// leave the local runtime and managed apps untouched. 'phelix auth
-		// login' restores normal operation with the same agent_id.
+
 		code := phelixerr.CodeOf(phelixerr.FromGRPC(err))
 		if code == phelixerr.CodeUnauthenticated || code == phelixerr.CodeSessionExpired {
 			c.handleAuthRejected()
@@ -423,12 +378,9 @@ func (c *Client) sendMetadataOnce() {
 
 // startVersionSync periodically sends version lists for all managed apps.
 func (c *Client) startVersionSync() {
-	// Use a longer interval than metadata sync — version lists change less
-	// frequently and carry more data.
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 
-	// Send initial sync after a short delay to let the connection stabilize.
 	select {
 	case <-c.done:
 		return

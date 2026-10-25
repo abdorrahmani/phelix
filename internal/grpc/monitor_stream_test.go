@@ -227,6 +227,69 @@ func TestMonitorStream_SendsServerInfoAndMetrics(t *testing.T) {
 	}
 }
 
+// TestMonitorStream_SurvivesUnrelatedClientClose pins the ownership rule of
+// the stream manager: a transient client closing itself must not cancel the
+// monitor stream another client is running. The rollback reporter and the
+// logout notification both open short-lived clients in production; before
+// ownership was checked, their Close cancelled whatever stream was
+// installed, silently stopping all monitoring traffic.
+func TestMonitorStream_SurvivesUnrelatedClientClose(t *testing.T) {
+	setupTestSession(t)
+	watchOneApp(t)
+
+	origInterval := monitorMetricsInterval
+	monitorMetricsInterval = 20 * time.Millisecond
+	defer func() { monitorMetricsInterval = origInterval }()
+
+	origCollector := monitorStream.metricsCollector
+	origExecutor := monitorStream.commandExecutor
+	monitorStream.metricsCollector = fakeMetricsCollector{}
+	monitorStream.commandExecutor = &fakeCommandExecutor{}
+	defer func() {
+		monitorStream.metricsCollector = origCollector
+		monitorStream.commandExecutor = origExecutor
+	}()
+
+	backend := newFakeMonitorBackend()
+	c, _, cleanup := dialBufconn(t, backend)
+	defer cleanup()
+
+	streamErrCh := make(chan error, 1)
+	go func() {
+		streamErrCh <- c.runMonitorStream()
+	}()
+
+	isAppMetrics := func(ev *pb.MonitorEvent) bool {
+		_, ok := ev.Payload.(*pb.MonitorEvent_AppMetrics)
+		return ok
+	}
+
+	if ev := backend.eventsWithPayload(isAppMetrics, 3*time.Second); ev == nil {
+		t.Fatal("timed out waiting for the first app metrics event")
+	}
+
+	// A transient client that never owned the stream closes itself while
+	// the stream is live.
+	transient := NewClient()
+	transient.Close()
+
+	// The stream must keep delivering: a second event proves the close did
+	// not cancel the active stream.
+	backend.mu.Lock()
+	backend.received = nil
+	backend.mu.Unlock()
+	if ev := backend.eventsWithPayload(isAppMetrics, 3*time.Second); ev == nil {
+		t.Fatal("app metrics stopped after an unrelated client closed: Close must not cancel a stream it does not own")
+	}
+
+	close(c.done)
+	select {
+	case <-streamErrCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the monitor stream to end")
+	}
+}
+
 func TestMonitorStream_HandlesBackendCommand(t *testing.T) {
 	setupTestSession(t)
 	watchOneApp(t)

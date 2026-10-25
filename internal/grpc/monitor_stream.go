@@ -69,6 +69,12 @@ type monitorStreamManager struct {
 	stream pb.PhelixService_MonitorStreamClient
 	cancel context.CancelFunc
 
+	// owner is the Client whose runMonitorStream installed the current
+	// stream. Only that client may stop the stream through Close; any other
+	// client closing itself (a rollback-reporter or logout-notification
+	// transient connection) must leave the daemon's monitor stream alone.
+	owner *Client
+
 	metricsCollector monitor.MetricsCollector
 	commandExecutor  monitor.CommandExecutor
 
@@ -334,6 +340,7 @@ func (c *Client) runMonitorStream() error {
 	monitorStream.mu.Lock()
 	monitorStream.stream = stream
 	monitorStream.cancel = cancel
+	monitorStream.owner = c
 	monitorStream.serverInfoSent = false
 	monitorStream.mu.Unlock()
 
@@ -342,6 +349,7 @@ func (c *Client) runMonitorStream() error {
 		if monitorStream.stream == stream {
 			monitorStream.stream = nil
 			monitorStream.cancel = nil
+			monitorStream.owner = nil
 		}
 		monitorStream.mu.Unlock()
 	}()
@@ -889,4 +897,21 @@ func stopMonitorStream() {
 		monitorStream.cancel()
 	}
 	monitorStream.stream = nil
+}
+
+// stopMonitorStreamIfOwner cancels the active monitor stream only when it
+// belongs to c. A client that never ran the monitor stream (the rollback
+// reporter's or logout notification's transient connection) closes itself
+// without disturbing the stream another client owns.
+func stopMonitorStreamIfOwner(c *Client) {
+	monitorStream.mu.Lock()
+	defer monitorStream.mu.Unlock()
+	if monitorStream.owner != c {
+		return
+	}
+	if monitorStream.cancel != nil {
+		monitorStream.cancel()
+	}
+	monitorStream.stream = nil
+	monitorStream.owner = nil
 }
