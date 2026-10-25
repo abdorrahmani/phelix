@@ -351,6 +351,13 @@ func TestMonitorStream_MatrixCommandAsyncAndIdempotent(t *testing.T) {
 	monitorMetricsInterval = 500 * time.Millisecond
 	defer func() { monitorMetricsInterval = origInterval }()
 
+	// The test asserts that ServerMetrics keeps flowing while a matrix
+	// command is held, and server metrics ride the server tick, so that
+	// cadence must be shortened too.
+	origServerInterval := serverMetricsInterval
+	serverMetricsInterval = 500 * time.Millisecond
+	defer func() { serverMetricsInterval = origServerInterval }()
+
 	origCollector := monitorStream.metricsCollector
 	monitorStream.metricsCollector = fakeMetricsCollector{}
 	defer func() { monitorStream.metricsCollector = origCollector }()

@@ -438,11 +438,15 @@ func TestMonitorStream_ServerDataRequiresAnyWatched(t *testing.T) {
 
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 20 * time.Millisecond
+
+	origServerInterval := serverMetricsInterval
+	serverMetricsInterval = 20 * time.Millisecond
 	origCollector, origExecutor := monitorStream.metricsCollector, monitorStream.commandExecutor
 	monitorStream.metricsCollector = selfLogMetricsCollector{}
 	monitorStream.commandExecutor = &fakeCommandExecutor{}
 	t.Cleanup(func() {
 		monitorMetricsInterval = origInterval
+		serverMetricsInterval = origServerInterval
 		monitorStream.metricsCollector = origCollector
 		monitorStream.commandExecutor = origExecutor
 	})

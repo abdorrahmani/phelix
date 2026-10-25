@@ -151,6 +151,10 @@ func TestMonitorStream_SendsServerInfoAndMetrics(t *testing.T) {
 	monitorMetricsInterval = 20 * time.Millisecond
 	defer func() { monitorMetricsInterval = origInterval }()
 
+	origServerInterval := serverMetricsInterval
+	serverMetricsInterval = 20 * time.Millisecond
+	defer func() { serverMetricsInterval = origServerInterval }()
+
 	origCollector := monitorStream.metricsCollector
 	origExecutor := monitorStream.commandExecutor
 	monitorStream.metricsCollector = fakeMetricsCollector{}

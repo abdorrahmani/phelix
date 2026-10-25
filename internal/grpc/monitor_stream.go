@@ -25,6 +25,14 @@ import (
 // tests can shorten it instead of waiting on the real interval.
 var monitorMetricsInterval = 2 * time.Second
 
+// serverMetricsInterval is the cadence for the server-level slice of the
+// monitor snapshot (sendServerTick): host-wide metrics and the daemon's own
+// logs. Host memory, disk, load and process counts do not change
+// meaningfully within the app tick interval, and collecting them blocks for
+// a full second because the CPU sampler measures across its interval. A var
+// (not a const) so tests can shorten it, like monitorMetricsInterval.
+var serverMetricsInterval = 30 * time.Second
+
 const monitorCommandSettleDelay = 2 * time.Second
 
 // monitorStreamRetryDelay is how long to wait before re-opening the
@@ -143,10 +151,6 @@ func (s *monitorStreamManager) send(event *pb.MonitorEvent) error {
 		return phelixerr.New(phelixerr.CodeConnection, "monitor stream is not connected")
 	}
 	if err := s.stream.Send(event); err != nil {
-		// E4: the backend's explicit 4 MiB MaxRecvMsgSize. This is a client
-		// bug (an oversized event), not a transient failure — log it loudly
-		// with the payload type so the offending producer is identifiable,
-		// then surface the error to the caller as usual.
 		if messageTooLargeError(err) {
 			oversizedEventLog(eventPayloadName(event))
 		}
@@ -218,23 +222,9 @@ func (c *Client) StartMonitorStream() {
 // etc.). It relies on the Client's own connection-level reconnect/backoff
 // (see reconnect.go) to recover the underlying gRPC connection; here we only
 // need to re-open the logical stream once the connection is healthy again.
-//
-// Two conditions end the loop instead of retrying:
-//
-//   - The backend actively rejects the credentials (gRPC Unauthenticated on
-//     the stream). Retrying with the same revoked token would hammer the
-//     backend every 2s and re-send the full snapshot set each time, so we
-//     stop the client entirely (handleAuthRejected) and wait for
-//     'phelix auth login'.
-//   - There is no valid local session. The loop parks for
-//     monitorStreamNoSessionDelay and re-checks, instead of spinning on an
-//     attach that can never succeed.
 func (c *Client) monitorStreamLoop() {
 	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream loop started")
 
-	// Consecutive stream-rate budget terminations (E1): each repeat earns a
-	// longer pause, so a budget-tripping stream stops re-sending its full
-	// snapshot burst at the floor delay. Any other outcome resets it.
 	rateStrikes := 0
 
 	for {
@@ -259,10 +249,6 @@ func (c *Client) monitorStreamLoop() {
 			continue
 		}
 
-		// Server data — starting with the ServerInfo snapshot that binds the
-		// stream — flows only while at least one app is watched. With nothing
-		// watched an open stream has nothing to say and never binds, so park
-		// (like the no-session case) rather than open-and-be-reaped.
 		if !app.AnyWatched() {
 			select {
 			case <-c.done:
@@ -279,11 +265,6 @@ func (c *Client) monitorStreamLoop() {
 				return
 			}
 
-			// Backend rate-limit budgets (E1–E3) are not transient network
-			// failures: reconnecting at the normal 2s cadence is exactly the
-			// abuse pattern they guard against. Back off for the budget's
-			// window instead; only a genuine idle-timeout/disconnect keeps
-			// the normal cadence.
 			policy := classifyStreamError(err)
 			if policy.reason != "" {
 				delay := policy.delay
@@ -376,37 +357,16 @@ func (c *Client) runMonitorStream() error {
 		c.replayPendingWebhookResults(webhookLedger)
 	}
 
-	// Send server identity once per (re)connection, mirroring the legacy
-	// WebSocket "servers" message sent on connect/reconnect — but only while
-	// at least one app is watched (see sendMonitorServerInfo); with nothing
-	// watched the snapshot is deferred to the first tick after opting in.
 	if err := c.sendMonitorServerInfo(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
 
-	// Deployment state resync: pushed on every (re)connection so a backend that
-	// missed a deployment's events — it restarted, or the connection was down
-	// while the deploy ran — converges on the real topology instead of waiting
-	// for the next deploy.
 	c.sendDeploymentSnapshots()
 
-	// Health resync, same reason and same shape: a full snapshot per app on
-	// every (re)connection is what makes health configuration changes and
-	// deletions durable across a disconnect. Nothing else carries them, so this
-	// must run on every stream open, not just the first.
 	c.sendHealthSnapshots()
 
-	// Matrix resync: the full state of every ACTIVE run (execution lock held),
-	// so a backend that missed a run's lifecycle events converges on the real
-	// state. Runs that are not executing are not resynced — they are durable
-	// history, queryable with a matrix_status command.
 	c.sendMatrixSnapshots()
 
-	// Version-history resync: the full versions.json of every watched app
-	// (including build reports), so the backend converges on the real history
-	// without depending on the per-build events it may have missed. The legacy
-	// rollback-RPC piggy-back (SendVersionListForApp) still runs on reconnect
-	// too, for backends that have not adopted VersionSync yet.
 	c.sendVersionSyncs()
 
 	recvErrCh := make(chan error, 1)
@@ -417,17 +377,13 @@ func (c *Client) runMonitorStream() error {
 	ticker := time.NewTicker(monitorMetricsInterval)
 	defer ticker.Stop()
 
-	// Deployment topology changes only during a deploy, which reports its own
-	// events; the periodic snapshot is a slow safety net against divergence,
-	// not a metrics feed. Active matrix runs ride the same cadence: their
-	// per-combination state changes through events, and this snapshot is the
-	// reconnect-independent safety net.
+	serverTicker := time.NewTicker(serverMetricsInterval)
+	defer serverTicker.Stop()
+
+
 	deployTicker := time.NewTicker(deploymentResyncInterval)
 	defer deployTicker.Stop()
 
-	// Health, by contrast, changes on its own as endpoints are probed, so its
-	// snapshot IS the update channel — at the endpoint check cadence, not the
-	// metrics cadence.
 	healthTicker := time.NewTicker(healthSnapshotInterval)
 	defer healthTicker.Stop()
 
@@ -449,6 +405,11 @@ func (c *Client) runMonitorStream() error {
 			c.sendDeploymentSnapshots()
 			c.sendMatrixSnapshots()
 			c.sendVersionSyncs()
+		case <-serverTicker.C:
+			if monitorStream.isPaused() {
+				continue
+			}
+			c.sendServerTick()
 		case <-healthTicker.C:
 			if monitorStream.isPaused() {
 				continue
@@ -473,28 +434,16 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 		switch p := msg.Payload.(type) {
 		case *pb.MonitorControl_Command:
-			// Matrix commands have their own dispatch: async execution, a
-			// separate ledger, and structured results. They never reach the
-			// lifecycle executor.
 			if isMatrixCommand(p.Command.GetType()) {
 				c.handleMatrixCommand(p.Command, matrixLedger)
 				continue
 			}
-			// Webhook management commands have their own dispatch too:
-			// ledger-guarded mutations and synchronous queries over the
-			// existing webhook subsystem. They never reach the lifecycle
-			// executor (there is deliberately no command that executes a
-			// webhook deployment remotely — deployments originate from the
-			// local HTTP webhook server only).
+
 			if isWebhookCommand(p.Command.GetType()) {
 				c.handleWebhookCommand(p.Command, webhookLedger)
 				continue
 			}
-			// Read-only rollback queries (version list, history) have their own
-			// dispatch: synchronous, no ledger entry, no authorization gate.
-			// Their answer travels as a RollbackLifecycleEvent correlated by
-			// request_id, exactly like a local --list / history sync — the
-			// command result is only an acknowledgement.
+
 			if isRollbackQueryCommand(p.Command.GetType()) {
 				c.handleRollbackQueryCommand(p.Command)
 				continue
@@ -550,9 +499,6 @@ func commandErrorResult(req *pb.MonitorCommandRequest, err error) *pb.MonitorCom
 		Command:   req.GetType(),
 		AppName:   req.GetAppName(),
 		Status:    "error",
-		// Error chains from the local executor can embed command output and
-		// environment values; redact before the result is serialized to the
-		// backend (same treatment as matrix command results).
 		Error:     phelixerr.Redact(err.Error()),
 		Timestamp: time.Now().UnixMilli(),
 	}
@@ -584,10 +530,7 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 	logs.InfoFile("grpc", "[gRPC Monitor] received command: type=%s app=%s", req.GetType(), req.GetAppName())
 
 	isRollback := req.GetType() == monitor.CommandRollback
-	// A rollback dry-run is a read-only preview: it mutates nothing, so it
-	// takes no durable idempotency slot (consistent with how RemoteRollback
-	// leaves it ungated, and with the local --dry-run path). ledgerGuarded is
-	// therefore rollback-execute only.
+
 	ledgerGuarded := isRollback && !req.GetDryRun()
 	if isRollback {
 		if req.GetRequestId() == "" {
@@ -595,8 +538,7 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 				phelixerr.New(phelixerr.CodeInvalidArgument, "rollback command requires a request_id")))
 			return
 		}
-		// The one authoritative verify-window range check, on the raw ms before
-		// the single conversion below (overflow-safe). RemoteRollback trusts it.
+
 		rawMS := req.GetVerifyDurationMs()
 		if rawMS < 0 || rawMS > maxRemoteVerifyDurationMS {
 			_ = sendCommandResultLogged(commandErrorResult(req, phelixerr.Newf(
@@ -661,20 +603,13 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 
 	switch {
 	case !ledgerGuarded:
-		// Dry-run and non-rollback commands keep no durable result.
 		_ = sendCommandResultLogged(result)
 	case execErr != nil && errors.Is(execErr, monitor.ErrRemoteCommandNotStarted):
-		// Pre-flight refusal (validation, app/target resolution, or the authz
-		// gate) — nothing mutated. Release the key so a corrected retry under
-		// the same request_id executes instead of replaying the refusal; still
-		// report why to the backend.
 		if relErr := ledger.release(req.GetRequestId()); relErr != nil {
 			logs.ErrorFile("grpc", "[gRPC Monitor] failed to release never-started rollback key: %v", relErr)
 		}
 		_ = sendCommandResultLogged(result)
 	default:
-		// Committed outcome (success, or an execution failure after state could
-		// have changed): persist the terminal result durably and replay-protect.
 		if err := ledger.complete(req.GetRequestId(), result); err != nil {
 			result = commandErrorResult(req, phelixerr.Wrap(phelixerr.CodeUnavailable,
 				"rollback completed but its durable result could not be recorded", err))
@@ -686,9 +621,6 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 		}
 	}
 
-	// Give the command a moment to fully settle before resuming metrics,
-	// mirroring the legacy WebSocket behavior. Stream shutdown cancels the wait
-	// so an old receive loop cannot retain mutable command dependencies.
 	timer := time.NewTimer(monitorCommandSettleDelay)
 	defer timer.Stop()
 	select {
@@ -702,13 +634,6 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 
 // sendMonitorServerInfo sends the ServerInfo snapshot once per stream
 // (re)connection, mirroring the legacy "servers" WebSocket message.
-//
-// Server-level data follows the watching opt-in (app.AnyWatched): with no
-// watched app there is nothing for the backend to attribute the server to,
-// so its identity is not sent either. A stream that opened in that state
-// keeps this call as a deferred retry — the metrics tick (sendMonitorTick)
-// invokes it until watching is enabled, and the once-per-stream flag below
-// prevents duplicates once it has been delivered.
 func (c *Client) sendMonitorServerInfo() error {
 	if !app.AnyWatched() {
 		return nil
@@ -750,43 +675,19 @@ func (s *monitorStreamManager) markServerInfoSent() {
 	s.mu.Unlock()
 }
 
-// sendMonitorTick sends one full snapshot of server metrics, per-app
-// resource usage, per-app details, and logs — mirroring the legacy
-// WebSocket sendMetrics() tick (server_metrics + metrics + apps + app_logs +
-// self_logs), sent every monitorMetricsInterval.
-//
-// Server-level data follows the watching opt-in (app.AnyWatched): a server
-// whose every app has opted out of monitoring transmits nothing about itself
-// — no server metrics, no self logs. The ServerInfo send inside the gate is
-// the deferred half of the once-per-stream identity snapshot, so a stream
-// that opened while nothing was watched delivers it on the first tick after
-// a `phelix watch` opt-in, in time to attribute the metrics that start
-// flowing. Per-app payloads are filtered by watching at the collection
-// boundary (monitor.MetricsCollector).
+// sendMonitorTick sends the per-app slice of the monitor snapshot: app
+// resource usage, per-app details, and app logs, sent every
+// monitorMetricsInterval. It also retries the deferred ServerInfo snapshot:
+// a stream that opened while nothing was watched delivers it on the first
+// tick after a watch opt-in, and sendMonitorServerInfo is a no-op once the
+// identity has been delivered on this stream. Server-level metrics and self
+// logs ride the slower sendServerTick. Per-app payloads are filtered by
+// watching at the collection boundary (monitor.MetricsCollector).
 func (c *Client) sendMonitorTick() {
 	serverID := server.GetServerID()
 
-	anyWatched := app.AnyWatched()
-	if anyWatched {
-		if err := c.sendMonitorServerInfo(); err != nil {
-			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
-		}
-
-		if metrics, err := monitorStream.metricsCollector.CollectServerMetrics(); err != nil {
-			logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect server metrics: %v", err)
-		} else {
-			event := &pb.MonitorEvent{
-				ServerId:  serverID,
-				Timestamp: time.Now().UnixMilli(),
-				Payload: &pb.MonitorEvent_ServerMetrics{
-					ServerMetrics: toProtoServerMetrics(metrics),
-				},
-			}
-			if err := monitorStream.send(event); err != nil {
-				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server metrics: %v", err)
-				return
-			}
-		}
+	if err := c.sendMonitorServerInfo(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
 
 	for _, m := range monitorStream.metricsCollector.CollectAppMetrics() {
@@ -834,13 +735,35 @@ func (c *Client) sendMonitorTick() {
 			}
 		}
 	}
+}
 
-	// Self logs are the daemon's own server-level data: they ride the same
-	// any-watched gate as the server metrics above rather than the per-app
-	// collection filters.
-	if !anyWatched {
+// sendServerTick sends the server-level slice of the monitor snapshot:
+// host-wide metrics and the daemon's own logs, sent every
+// serverMetricsInterval. Server-level data follows the watching opt-in
+// (app.AnyWatched): with no watched app there is nothing for the backend to
+// attribute the data to, so nothing is sent for the server itself.
+func (c *Client) sendServerTick() {
+	if !app.AnyWatched() {
 		return
 	}
+	serverID := server.GetServerID()
+
+	if metrics, err := monitorStream.metricsCollector.CollectServerMetrics(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect server metrics: %v", err)
+	} else {
+		event := &pb.MonitorEvent{
+			ServerId:  serverID,
+			Timestamp: time.Now().UnixMilli(),
+			Payload: &pb.MonitorEvent_ServerMetrics{
+				ServerMetrics: toProtoServerMetrics(metrics),
+			},
+		}
+		if err := monitorStream.send(event); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server metrics: %v", err)
+			return
+		}
+	}
+
 	if entries, err := monitorStream.metricsCollector.CollectSelfLogs(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect self logs: %v", err)
 	} else {
