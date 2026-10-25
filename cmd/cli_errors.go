@@ -129,7 +129,8 @@ func ExitCodeFor(err error) int {
 		return ExitBuild
 	case phelixerr.CodeDeployFailed, phelixerr.CodeInstanceStartFailed,
 		phelixerr.CodeHealthCheckFailed, phelixerr.CodeDeployLocked,
-		phelixerr.CodeCanaryRegression, phelixerr.CodeResourceOOM:
+		phelixerr.CodeCanaryRegression, phelixerr.CodeResourceOOM,
+		phelixerr.CodeWorkspaceLocked:
 		return ExitDeploy
 	case phelixerr.CodeRollbackFailed:
 		return ExitRollback
