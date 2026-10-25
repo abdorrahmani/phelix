@@ -20,7 +20,6 @@ import (
 	"github.com/shirou/gopsutil/load"
 	"github.com/shirou/gopsutil/mem"
 	gopsutilnet "github.com/shirou/gopsutil/net"
-	"github.com/shirou/gopsutil/process"
 )
 
 var (
@@ -90,38 +89,41 @@ func getLoadAverage() (float64, float64, float64, error) {
 
 // getProcessCount returns the number of running processes
 func getProcessCount() (uint32, error) {
-	processes, err := process.Processes()
+	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return 0, err
 	}
-	return uint32(len(processes)), nil
+
+	var n uint32
+	for _, e := range entries {
+		name := e.Name()
+		if name[0] >= '0' && name[0] <= '9' {
+			n++
+		}
+	}
+
+	return n, nil
 }
 
 // Initialize initializes the server information
 func Initialize() error {
-	// The Phelix runtime owns this ID. It is deliberately independent from the
-	// host machine ID so multiple containers on one host are distinct agents.
 	if _, err := loadOrGenerateAgentID(); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeServer, "failed to load/generate agent ID", err)
 	}
 
-	// Get hostname
 	hostname, err := os.Hostname()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get hostname", err)
 	}
 
-	// Get IP addresses
 	ipv4List, ipv6List, err := network.GetPublicIPs()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeNetwork, "failed to get public IPs", err)
 	}
 
-	// Convert IP lists to comma-separated strings
 	ipv4 := strings.Join(ipv4List, ",")
 	ipv6 := strings.Join(ipv6List, ",")
 
-	// Get CPU info
 	cpuInfo, err := cpu.Info()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get CPU info", err)
@@ -131,49 +133,40 @@ func Initialize() error {
 		cpuInfoStr = cpuInfo[0].ModelName
 	}
 
-	// Get memory info
 	memInfo, err := mem.VirtualMemory()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get memory info", err)
 	}
 
-	// Get disk info
 	diskInfo, err := disk.Usage("/")
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get disk info", err)
 	}
 
-	// Get OS info
 	hostInfo, err := host.Info()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get host info", err)
 	}
 
-	// Get uptime and last reboot
 	uptime := time.Duration(hostInfo.Uptime) * time.Second
 	lastReboot := time.Now().Add(-uptime)
 
-	// Format uptime string
 	days := int(uptime.Hours() / 24)
 	hours := int(uptime.Hours()) % 24
 	minutes := int(uptime.Minutes()) % 60
 	uptimeStr := fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
 
-	// Get OS full details
 	osFull := fmt.Sprintf("%s,%s %s", hostInfo.OS, hostInfo.Platform, hostInfo.PlatformVersion)
 
-	// Get region, architecture, and kernel version
 	region := getServerRegion()
 	arch := getArchitecture()
 	kernelVersion := getKernelVersion()
 
-	// Get swap info
 	swapInfo, err := mem.SwapMemory()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeServer, "failed to get swap info", err)
 	}
 
-	// Collect network interface names and MACs
 	ifaces, _ := net.Interfaces()
 	var ifaceList []string
 	for _, iface := range ifaces {
@@ -184,7 +177,6 @@ func Initialize() error {
 		ifaceList = append(ifaceList, fmt.Sprintf("%s(%s)", iface.Name, mac))
 	}
 
-	// Determine server status based on system metrics
 	status := "healthy"
 	if memInfo.UsedPercent > 90 || diskInfo.UsedPercent > 90 {
 		status = "warning"
@@ -216,9 +208,6 @@ func Initialize() error {
 		SwapTotal:     int64(swapInfo.Total),
 	}
 
-	// Attach the effective server settings (the server's real configuration,
-	// auto-detected and persisted across restarts). Detection is
-	// sync.Once-guarded and never fails.
 	if s := EnsureSettings(); s != nil {
 		serverInfo.Connection = &s.Connection
 		serverInfo.Alert = &s.Alert
@@ -259,11 +248,7 @@ func formatUUID(b []byte) string {
 // initializations cannot mint two different IDs for one data directory; the
 // write is crash-safe (write a temp file, fsync, then atomically rename over
 // the final path) so a crash mid-write never leaves a truncated agent-id.
-//
-// Returning the ID (rather than the caller reading the package global after
-// the call) is what makes concurrent callers race-free: each goroutine keeps
-// its own copy instead of reading a global that another goroutine may still
-// be mutating.
+
 func loadOrGenerateAgentID() (string, error) {
 	agentIDMu.Lock()
 	defer agentIDMu.Unlock()
@@ -279,10 +264,6 @@ func loadOrGenerateAgentID() (string, error) {
 			return "", phelixerr.New(phelixerr.CodeConfiguration, "agent ID file is empty")
 		}
 		if !validAgentIDFormat(agentID) {
-			// A non-UUID value means the persisted runtime identity is
-			// corrupted (truncated write, external edit). Loading it would
-			// silently change the agent's identity — the safest behavior is
-			// to fail loudly rather than mint a new ID for an existing runtime.
 			return "", phelixerr.New(phelixerr.CodeConfiguration, "agent ID file contains an invalid ID")
 		}
 		return agentID, nil
@@ -307,8 +288,7 @@ func loadOrGenerateAgentID() (string, error) {
 		_ = os.Remove(tmpFile)
 		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to write agent ID temp file", err)
 	}
-	// Flush metadata + data to disk before publishing the ID under its final
-	// name, so a crash cannot leave an empty/partial agent-id at the real path.
+
 	if err := f.Sync(); err != nil {
 		f.Close()
 		_ = os.Remove(tmpFile)
@@ -346,49 +326,41 @@ func GetServerID() string {
 
 // CollectMetrics collects current server metrics
 func CollectMetrics() (*Metrics, error) {
-	// Get memory info
 	memInfo, err := mem.VirtualMemory()
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get memory info", err)
 	}
 
-	// Get CPU usage
 	cpuPercent, err := cpu.Percent(time.Second, false)
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get CPU usage", err)
 	}
 
-	// Get disk info
 	diskInfo, err := disk.Usage("/")
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get disk info", err)
 	}
 
-	// Get network stats
 	networkIn, networkOut, err := getNetworkStats()
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeNetwork, "failed to get network stats", err)
 	}
 
-	// Get load average
 	loadAvg1, loadAvg5, loadAvg15, err := getLoadAverage()
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get load average", err)
 	}
 
-	// Get swap info
 	swapInfo, err := mem.SwapMemory()
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get swap info", err)
 	}
 
-	// Get process count
 	procCount, err := getProcessCount()
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get process count", err)
 	}
 
-	// Update server status based on current metrics
 	if serverInfo != nil {
 		status := "healthy"
 		if memInfo.UsedPercent > 90 || diskInfo.UsedPercent > 90 {
@@ -400,7 +372,6 @@ func CollectMetrics() (*Metrics, error) {
 		serverInfo.Status = status
 	}
 
-	// Compute swap percent
 	var swapPercent float64
 	if swapInfo.Total > 0 {
 		swapPercent = (float64(swapInfo.Used) / float64(swapInfo.Total)) * 100
