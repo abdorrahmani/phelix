@@ -49,6 +49,14 @@ or run this command directly to keep it attached to a terminal.`,
 // startup errors (e.g. app state cannot be loaded).
 func runMonitor() error {
 
+	// Local profiling server, started before everything else so startup is
+	// profileable too. Disabled unless PHELIX_PPROF holds a bind address;
+	// loopback by default (see pprof.go). The returned shutdown func is nil
+	// when profiling is disabled, so guard the deferred call.
+	if stopPprof := startPprofIfEnabled(); stopPprof != nil {
+		defer stopPprof()
+	}
+
 	if err := app.Manager.LoadState(); err != nil {
 		return err
 	}

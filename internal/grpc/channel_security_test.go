@@ -172,6 +172,10 @@ func TestMonitorStream_RedactsStreamedLogs(t *testing.T) {
 	monitorMetricsInterval = 20 * time.Millisecond
 	defer func() { monitorMetricsInterval = origInterval }()
 
+	origServerInterval := serverMetricsInterval
+	serverMetricsInterval = 20 * time.Millisecond
+	defer func() { serverMetricsInterval = origServerInterval }()
+
 	swapMonitorStreamDeps(t, secretLogsCollector{}, &fakeCommandExecutor{})
 
 	backend := newFakeMonitorBackend()
@@ -183,8 +187,6 @@ func TestMonitorStream_RedactsStreamedLogs(t *testing.T) {
 		streamErrCh <- c.runMonitorStream()
 	}()
 
-	// App log: the DATABASE_URL password and the GitHub token must be masked,
-	// while the rest of the line stays useful for debugging.
 	appLog := backend.eventsWithPayload(func(ev *pb.MonitorEvent) bool {
 		entry, ok := ev.Payload.(*pb.MonitorEvent_LogEntry)
 		return ok && entry.LogEntry.GetSource() == pb.LogSource_LOG_SOURCE_APPLICATION
@@ -224,10 +226,6 @@ func TestMonitorStream_RedactsStreamedLogs(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Auth rejection stops the loops
-// ---------------------------------------------------------------------------
-
 // TestMonitorStreamLoop_StopsOnAuthRejection proves that a revoked session
 // does not produce an infinite 2-second retry loop: the backend answers
 // Unauthenticated exactly once before the client tears itself down.
@@ -248,8 +246,6 @@ func TestMonitorStreamLoop_StopsOnAuthRejection(t *testing.T) {
 		close(loopDone)
 	}()
 
-	// handleAuthRejected must close the client (its done channel) and record
-	// the auth_expired state.
 	select {
 	case <-c.done:
 	case <-time.After(5 * time.Second):
@@ -387,10 +383,6 @@ func waitForCondition(timeout, poll time.Duration, cond func() bool) bool {
 	return cond()
 }
 
-// ---------------------------------------------------------------------------
-// Error-message redaction on the wire
-// ---------------------------------------------------------------------------
-
 func TestCommandErrorResult_Redacted(t *testing.T) {
 	req := &pb.MonitorCommandRequest{RequestId: "r-1", Type: "restart", AppName: "shop"}
 	res := commandErrorResult(req, errors.New("stop failed: password=hunter2 token=abc123xyz"))
@@ -416,10 +408,6 @@ func TestNewApplicationEvent_RedactsErrorMessage(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// isAuthRejection
-// ---------------------------------------------------------------------------
-
 func TestIsAuthRejection(t *testing.T) {
 	revoked := status.Error(codes.Unauthenticated, "session revoked")
 	cases := []struct {
@@ -432,9 +420,6 @@ func TestIsAuthRejection(t *testing.T) {
 		{"wrapped unauthenticated status", phelixerr.Wrap(phelixerr.CodeConnection, "open monitor stream", revoked), true},
 		{"unavailable status", status.Error(codes.Unavailable, "backend down"), false},
 		{"plain error", errors.New("connection refused"), false},
-		// A LOCAL "no session" failure is not a backend rejection: it must not
-		// trigger the auth-rejected shutdown path (the stream loop parks
-		// instead, waiting for 'phelix auth login').
 		{"local unauthenticated structured error", phelixerr.New(phelixerr.CodeUnauthenticated, "no active session found"), false},
 	}
 	for _, tc := range cases {
@@ -453,4 +438,4 @@ func TestIsAuthRejection_StreamRecvShape(t *testing.T) {
 	}
 }
 
-var _ = context.Background // keep context import if future doubles need it
+var _ = context.Background

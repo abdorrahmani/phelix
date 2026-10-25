@@ -313,7 +313,7 @@ func (d *Daemon) checkEndpoint(appID, appName, endpointName string, handle *chec
 		}
 
 		d.updateEndpointState(appID, appName, endpointName, &config, result, handle)
-		logs.Debug("health", "%s.%s: %s (latency: %v ms)", appName, endpointName, result.Status, result.LatencyMs)
+		logs.Debug("health", "%s.%s: %s (latency: %s)", appName, endpointName, result.Status, formatLatencyDisplay(result.LatencyMs))
 
 		select {
 		case <-d.stopChan:

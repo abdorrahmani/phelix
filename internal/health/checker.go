@@ -13,14 +13,18 @@ import (
 
 // Checker performs individual health checks
 type Checker struct {
-	httpClient *http.Client
+	// transport is shared across probes so HTTP health checks reuse
+	// connections.
+	transport *http.Transport
 }
 
 // NewChecker creates a new health checker
 func NewChecker() *Checker {
 	return &Checker{
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+		transport: &http.Transport{
+			MaxIdleConns:        16,
+			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:     90 * time.Second,
 		},
 	}
 }
@@ -41,9 +45,9 @@ func (c *Checker) Check(config *HealthCheckConfig) *HealthCheckResult {
 		}
 	}
 
-	// Create a client with the specified timeout
 	client := &http.Client{
-		Timeout: timeout,
+		Timeout:   timeout,
+		Transport: c.transport,
 	}
 
 	start := time.Now()
@@ -83,22 +87,18 @@ func (c *Checker) Check(config *HealthCheckConfig) *HealthCheckResult {
 func (c *Checker) performCheck(config *HealthCheckConfig, client *http.Client) (*int, error) {
 	url := config.URL
 
-	// Check if it's an HTTP(S) URL
 	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
 		return c.httpCheck(url, client)
 	}
 
-	// Check if it's a host:port combination
 	if strings.Contains(url, ":") {
 		return c.tcpCheck(url, client.Timeout)
 	}
 
-	// Try to parse as TCP port on localhost
 	if _, err := strconv.Atoi(url); err == nil {
 		return c.tcpCheck("localhost:"+url, client.Timeout)
 	}
 
-	// Check if it's a PID
 	if pid, err := strconv.Atoi(url); err == nil {
 		return c.pidCheck(pid)
 	}
@@ -126,7 +126,7 @@ func (c *Checker) tcpCheck(addr string, timeout time.Duration) (*int, error) {
 	}
 	conn.Close()
 
-	statusCode := 200 // Assume 200 for successful TCP connection
+	statusCode := 200
 	return &statusCode, nil
 }
 
@@ -137,7 +137,6 @@ func (c *Checker) pidCheck(pid int) (*int, error) {
 		return nil, fmt.Errorf("process not found: %v", err)
 	}
 
-	// Send signal 0 to check if process is alive (without actually sending a signal)
 	err = process.Signal(os.Signal(nil))
 	if err != nil {
 		return nil, fmt.Errorf("process not responding: %v", err)
@@ -150,11 +149,9 @@ func (c *Checker) pidCheck(pid int) (*int, error) {
 // isStatusCodeHealthy checks if a status code falls within the expected range
 func isStatusCodeHealthy(statusCode int, expectedCodes string) bool {
 	if expectedCodes == "" {
-		// Default to 200-299
 		expectedCodes = "200-299"
 	}
 
-	// Parse ranges like "200-299" or "200,201,404"
 	if strings.Contains(expectedCodes, "-") {
 		parts := strings.Split(expectedCodes, "-")
 		if len(parts) == 2 {
@@ -164,9 +161,8 @@ func isStatusCodeHealthy(statusCode int, expectedCodes string) bool {
 		}
 	}
 
-	// Check individual codes
-	codes := strings.Split(expectedCodes, ",")
-	for _, code := range codes {
+	codes := strings.SplitSeq(expectedCodes, ",")
+	for code := range codes {
 		if expectedCode, _ := strconv.Atoi(strings.TrimSpace(code)); expectedCode == statusCode {
 			return true
 		}
