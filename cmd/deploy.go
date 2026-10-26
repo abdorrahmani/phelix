@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/machine"
@@ -15,6 +16,17 @@ var deployUnlockJSON bool
 var DeployCmd = &cobra.Command{
 	Use:   "deploy",
 	Short: "Manage deployment state",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if wsDeployAll {
+			if wsDeployJSON {
+				restore := machine.EnterJSON()
+				defer restore()
+			}
+			return runWorkspaceDeployAll(deployWorkspaceService)
+		}
+		return cmd.Help()
+	},
 }
 
 var deployUnlockCmd = &cobra.Command{
@@ -71,5 +83,14 @@ var deployUnlockCmd = &cobra.Command{
 func init() {
 	deployUnlockCmd.Flags().BoolVar(&deployUnlockJSON, "json", false,
 		"Output machine-readable JSON (stdout carries only the result envelope; progress moves to stderr)")
+	DeployCmd.Flags().BoolVar(&wsDeployAll, "all", false,
+		"Deploy every service of the workspace (phelix.workspace.yaml, go.work, or Cargo workspace) in depends_on order; the first failure halts the mesh")
+	DeployCmd.Flags().BoolVar(&wsDeployJSON, "json", false,
+		"Output machine-readable JSON (stdout carries only the result envelope; progress moves to stderr)")
+	DeployCmd.Flags().BoolVar(&wsDeployAutoRollback, "auto-rollback", false,
+		"Restore the previous version of a service whose deploy fails; the mesh still halts at the first failure")
+	DeployCmd.Flags().DurationVar(&wsDeployTimeout, "build-timeout", builder.DefaultBuildTimeout,
+		"How long one compiler invocation may run per service before it is cancelled (exit 20, BUILD_TIMEOUT)")
+	DeployCmd.Flags().IntVar(&wsPortBase, "port-base", 8080, "First port auto-assigned to services without an explicit port")
 	DeployCmd.AddCommand(deployUnlockCmd)
 }

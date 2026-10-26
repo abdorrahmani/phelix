@@ -34,6 +34,13 @@ var StatusCmd = &cobra.Command{
 			defer restore()
 		}
 
+		if wsStatus {
+			if len(args) > 0 {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--workspace cannot be combined with an app argument")
+			}
+			return runWorkspaceStatus()
+		}
+
 		if len(args) == 0 {
 			if !IsInteractive() {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix status <ID|AppName>")
@@ -232,6 +239,8 @@ func buildStatusResult(status app.AppStatus) *statusResult {
 func init() {
 	StatusCmd.Flags().BoolVar(&statusJSON, "json", false,
 		"Output machine-readable JSON (stdout carries only the result envelope; tables move to stderr)")
+	StatusCmd.Flags().BoolVar(&wsStatus, "workspace", false,
+		"Show one overview of every service in the workspace (phelix.workspace.yaml, go.work, or Cargo workspace): version, health, and port")
 }
 
 // displayHTTPMetrics samples an optionally configured Caddy endpoint. Two
