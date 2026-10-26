@@ -2,6 +2,7 @@ package builder
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -77,4 +78,30 @@ func TestPrepareBuild_SharesOneScanWithBuild(t *testing.T) {
 	if bc.Config.Scan != bm.scanProject(root) {
 		t.Fatal("PrepareBuild must reuse the manager's cached scan")
 	}
+}
+
+// Workspace builds share one manager across service goroutines, so the scan
+// cache is hit concurrently with different roots. Without the mutex this test
+// trips -race.
+func TestBuildManager_ScanCacheIsConcurrencySafe(t *testing.T) {
+	bm := NewBuildManager()
+	roots := make([]string, 4)
+	for i := range roots {
+		roots[i] = t.TempDir()
+		writeTestFile(t, filepath.Join(roots[i], "go.mod"), "module x\n")
+	}
+
+	var wg sync.WaitGroup
+	for _, root := range roots {
+		for range 4 {
+			wg.Add(1)
+			go func(dir string) {
+				defer wg.Done()
+				if got := bm.DetectLanguage(dir); got != Go {
+					t.Errorf("DetectLanguage(%q) = %q, want go", dir, got)
+				}
+			}(root)
+		}
+	}
+	wg.Wait()
 }
