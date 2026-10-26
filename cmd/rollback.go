@@ -52,6 +52,22 @@ var RollbackCmd = &cobra.Command{
 		defer phelixgrpc.StopRollbackSender(5 * time.Second)
 		defer phelixgrpc.StopDeploymentSender(5 * time.Second)
 
+		if wsRollbackAll {
+			if len(args) > 0 {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--all cannot be combined with an app argument (the workspace manifest defines the services)")
+			}
+			if rollbackTo != "" || rollbackList || rollbackDryRun || rollbackVerify != "" || rollbackRequestKey != "" {
+				return phelixerr.New(phelixerr.CodeInvalidArgument,
+					"--all rolls every service back to its own previous version; it cannot be combined with --to, --list, --dry-run, --verify, or --request-key")
+			}
+			reasonExplicit := cmd.Flags().Changed("reason")
+			reason, rerr := deploy.ValidateRollbackReason(rollbackReason, reasonExplicit)
+			if rerr != nil {
+				return rerr
+			}
+			return runWorkspaceRollbackAll(workspaceRollbackService, reason)
+		}
+
 		if len(args) == 0 {
 			if !IsInteractive() {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <AppName>; usage: phelix rollback <AppName> [--to VERSION] [--list]")
@@ -361,6 +377,8 @@ func init() {
 		"With --list: maximum versions to show (0 = all, the default)")
 	RollbackCmd.Flags().StringVar(&rollbackVerify, "verify", "",
 		"Observe rollback stability for a duration (e.g. 30s, 1m, 2m30s) after the rollback completes")
+	RollbackCmd.Flags().BoolVar(&wsRollbackAll, "all", false,
+		"Roll every service of the workspace (phelix.workspace.yaml, go.work, or Cargo workspace) back to its previous version in reverse dependency order")
 }
 
 // errRollbackCancelled marks a user cancellation (Esc / Ctrl-C in the picker)
