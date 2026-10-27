@@ -262,6 +262,21 @@ services:
 	}
 }
 
+func TestOrchestrateWorkspaceDeploy_RestoresEnvelopesAfterFailure(t *testing.T) {
+	workspaceTestEnv(t, "services:\n  auth: { path: ./auth, port: 8081 }\n", "auth")
+	seedApps(t)
+
+	deployOne := func(_ *workspace.Service, _ *app.AppInfo) (int, int, string, error) {
+		return 0, 0, "", fmt.Errorf("health check failed")
+	}
+	if err := orchestrateWorkspaceDeploy(deployOne); err == nil {
+		t.Fatalf("expected a deploy failure")
+	}
+	if envelopeSuppressed {
+		t.Fatalf("envelope suppression leaked past the failed deploy")
+	}
+}
+
 func TestResolveWorkspaceStrategy_Table(t *testing.T) {
 	cases := []struct {
 		name       string

@@ -76,7 +76,10 @@ func runWorkspaceStatus() error {
 }
 
 // buildWorkspaceServiceStatus derives one service's row from deployment
-// reality, never from possibly-stale status strings.
+// reality, never from possibly-stale status strings. Reconcile reloads the
+// registry, so the record is read again afterwards; the pre-reconcile pointer
+// belongs to a discarded map. A classic service keeps no deploy.json, so the
+// reconciled app record is its lifecycle truth.
 func buildWorkspaceServiceStatus(svc *workspace.Service) workspaceServiceStatusView {
 	view := workspaceServiceStatusView{
 		Name:      svc.Name,
@@ -90,8 +93,6 @@ func buildWorkspaceServiceStatus(svc *workspace.Service) workspaceServiceStatusV
 		return view
 	}
 
-	// Reconcile reloads the registry, so the record must be read again
-	// afterwards; the pre-reconcile pointer belongs to a discarded map.
 	reconcileAppWithDeploy(svc.Name)
 	info := findRegisteredApp(svc.Name)
 	if info == nil {
@@ -108,8 +109,6 @@ func buildWorkspaceServiceStatus(svc *workspace.Service) workspaceServiceStatusV
 			view.Port = lifecycle.PublicPort
 		}
 	} else if meta != nil {
-		// Classic deploys keep no deploy.json; the reconciled app record is
-		// the lifecycle truth for them.
 		view.Status = info.Status
 	} else {
 		view.Status = "not deployed"

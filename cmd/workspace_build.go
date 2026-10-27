@@ -98,6 +98,8 @@ func workspaceMarkBuildFailed(id string) {
 }
 
 // workspaceMarkBuildSucceeded records a completed build on the app record.
+// A workspace build compiles only, so a service that is not running is left
+// stopped rather than keeping the initializing placeholder forever.
 func workspaceMarkBuildSucceeded(id string) {
 	wsAppStateMu.Lock()
 	defer wsAppStateMu.Unlock()
@@ -108,6 +110,9 @@ func workspaceMarkBuildSucceeded(id string) {
 	}
 	if info, exists := appManager.Apps[id]; exists {
 		info.BuildStatus = "success"
+		if info.Status != "running" {
+			info.Status = "stopped"
+		}
 		info.UpdatedAt = time.Now()
 		_ = appManager.SaveState()
 	}

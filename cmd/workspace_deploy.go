@@ -59,7 +59,9 @@ func runWorkspaceDeployAll(deployOne workspaceDeployServiceFn) error {
 
 // orchestrateWorkspaceDeploy is the injectable core of `phelix deploy --all`;
 // tests pass a fake deployOne to exercise ordering and halting without
-// compiling anything.
+// compiling anything. Suppressing envelopes for the duration keeps stdout to
+// one envelope for the whole run: the per-service rebuild path would
+// otherwise write its own.
 func orchestrateWorkspaceDeploy(deployOne workspaceDeployServiceFn) error {
 	ws, err := workspaceFromCWD()
 	if err != nil {
@@ -88,9 +90,8 @@ func orchestrateWorkspaceDeploy(deployOne workspaceDeployServiceFn) error {
 	}
 
 	printWorkspaceHeader(ws, "deploying")
-	// One command, one envelope: the per-service rebuild path must not write
-	// its own machine envelope while orchestration is in flight.
 	restore := suppressEnvelopes()
+	defer restore()
 	startedAt := time.Now()
 	views := make([]workspaceDeployServiceView, 0, len(ws.Services))
 	for _, name := range order {
