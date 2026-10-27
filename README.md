@@ -108,6 +108,14 @@ phelix build myapp --matrix --go-versions 1.26,1.27 --platforms linux/amd64,linu
 ```
 → [Matrix builds](docs/guides/matrix-builds.md)
 
+**Deploy a monorepo as one unit**
+```bash
+phelix build --all        # phelix.workspace.yaml, go.work, or a Cargo workspace
+phelix deploy --all       # depends_on order; halts the mesh on failure
+phelix status --workspace # one table: version, health, and port per service
+```
+→ [Workspaces](docs/guides/workspaces.md)
+
 **Deploy on push**
 ```bash
 PHELIX_WEBHOOK_SECRET=… phelix webhook
@@ -148,6 +156,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Zero-Downtime Deployments](docs/guides/zero-downtime-deployments.md)
 - [Canary & Progressive Rollouts](docs/guides/canary-and-progressive-rollouts.md)
 - [Rollback](docs/guides/rollback.md)
+- [Workspaces](docs/guides/workspaces.md)
 - [Health Checks](docs/guides/health-checks.md)
 - [Environment Variables](docs/guides/environment-variables.md)
 - [Build Reports](docs/guides/build-reports.md)

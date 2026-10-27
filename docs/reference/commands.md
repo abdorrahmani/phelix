@@ -29,9 +29,13 @@ config file supplies both, the command runs without asking anything.
 | `--platforms` | — | Targets, e.g. `linux/amd64,linux/arm64` |
 | `--matrix-concurrency` | 3 | Max parallel matrix builds |
 | `--matrix-dry-run` | `false` | Print the plan without building |
+| `--all` | `false` | Build every service of the workspace in dependency order (see [Workspaces](../guides/workspaces.md)) |
+| `--concurrency` | `3` | With `--all`: max parallel service builds within one dependency level |
+| `--port-base` | `8080` | With `--all`: first port assigned to services that declare none |
 
 ```bash
 phelix build myapp -p 8080 --tag "v1.2.3"
+phelix build --all
 ```
 
 ### `phelix rebuild <ID|AppName> [flags]`
@@ -143,6 +147,7 @@ blue-green/rolling.
 | `--dry-run` | `false` | Preview the rollback plan without changing application, process, proxy, or deployment state |
 | `--reason` | — | Record why the rollback was performed (stored in rollback history; max 500 characters) |
 | `--verify` | — | Observe rollback stability for a Go duration (e.g. `30s`, `1m`, `2m30s`) after the rollback completes |
+| `--all` | `false` | Roll every workspace service back to its own previous version in reverse dependency order. Cannot be combined with `--to`, `--list`, `--dry-run`, `--verify`, or `--request-key` |
 
 ### `phelix rollback history <AppName> [--limit N]`
 
@@ -160,6 +165,7 @@ Shows the recorded rollback outcomes for one application, newest first.
 | `phelix stop <ID\|AppName>` | Stop a running app. |
 | `phelix restart <ID\|AppName>` | Restart an app. |
 | `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing. |
+| `phelix status --workspace` | One overview of every workspace service: derived lifecycle status, version, health, port, and strategy. |
 | `phelix list` | Table of all apps with version, status, watching, deploy, and proxy columns. |
 | `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. |
 | `phelix remove <ID\|AppName> [--purge]` | Stop and delete an app from management. `--purge` also deletes `~/.phelix/apps/<Name>/` (version history, build artifacts, encrypted env snapshots). Irreversible. |
@@ -224,6 +230,20 @@ phelix proxy --foreground   # run attached (for process supervisors / systemd)
 `phelix deploy unlock <AppName>` releases a stale per-app deploy lock (the lock is
 an OS file lock normally released automatically; see
 [deployment architecture](../architecture/deployment.md)).
+
+### `phelix deploy --all [flags]`
+
+Deploys every service of the workspace in `depends_on` order, one at a time,
+halting the whole mesh on the first failure. See
+[Workspaces](../guides/workspaces.md).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--all` | `false` | Workspace mode (required; `deploy` alone prints help) |
+| `--json` | `false` | One machine envelope for the whole run |
+| `--auto-rollback` | `false` | Restore the failing service's previous version, then halt |
+| `--build-timeout` | `30m` | Deadline for one service's compiler invocation |
+| `--port-base` | `8080` | First port assigned to services that declare none |
 
 ## Docker image building
 
