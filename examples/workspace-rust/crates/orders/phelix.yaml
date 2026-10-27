@@ -1,0 +1,10 @@
+# Project configuration for the orders crate. The workspace manifest owns the
+# name, port, and dependency order; this file only declares the health probe.
+watching: disable
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto

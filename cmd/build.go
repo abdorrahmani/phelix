@@ -60,6 +60,16 @@ var BuildCmd = &cobra.Command{
 			defer restore()
 		}
 
+		if wsBuildAll {
+			if len(args) > 0 {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--all cannot be combined with a NAME argument (the workspace manifest defines the services)")
+			}
+			if matrixFlag || matrixResume != "" {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--all cannot be combined with matrix flags")
+			}
+			return runWorkspaceBuildAll(buildWorkspaceService)
+		}
+
 		projCfg, err := loadProjectConfig()
 		if err != nil {
 			return err
@@ -320,6 +330,10 @@ var BuildCmd = &cobra.Command{
 
 func init() {
 	BuildCmd.Flags().IntVarP(&buildPort, "port", "p", defaultPort, "Port to run the application on")
+	BuildCmd.Flags().BoolVar(&wsBuildAll, "all", false,
+		"Build every service of the workspace (phelix.workspace.yaml, go.work, or Cargo workspace) in dependency order, parallelizing within a level")
+	BuildCmd.Flags().IntVar(&wsConcurrency, "concurrency", 3, "Max parallel service builds within one dependency level when --all is set")
+	BuildCmd.Flags().IntVar(&wsPortBase, "port-base", 8080, "First port auto-assigned to services without an explicit port when --all is set")
 	BuildCmd.Flags().StringArrayVarP(&buildArgs, "build-arg", "a", nil, "Extra build argument to pass to the underlying build tool; can be provided multiple times")
 	BuildCmd.Flags().StringVar(&buildTag, "tag", "", "Optional tag for this build (e.g. \"hotfix-auth-bug\"); stored as metadata alongside the auto-incremented version")
 	BuildCmd.Flags().DurationVar(&buildTimeout, "build-timeout", builder.DefaultBuildTimeout,

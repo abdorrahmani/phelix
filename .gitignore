@@ -25,6 +25,11 @@ bin
 # Go workspace file
 go.work
 go.work.sum
+!examples/workspace-go/go.work
+!examples/workspace-go/go.work.sum
+
+# Cargo build output
+target/
 
 # env file
 .env
@@ -38,3 +43,6 @@ go.work.sum
 
 /.mimosa/
 /builds/
+
+pprof-report
+marketing

@@ -123,6 +123,12 @@ const (
 	// The rollout engine restores the stable version before returning this.
 	CodeCanaryRegression Code = "CANARY_REGRESSION"
 
+	// CodeWorkspaceLocked: a workspace-level orchestration operation (build
+	// --all or deploy --all) is already in progress for this workspace.
+	// Distinct from DEPLOY_LOCKED (the per-app lock) so automation can tell
+	// whole-mesh contention from single-service contention.
+	CodeWorkspaceLocked Code = "WORKSPACE_LOCKED"
+
 	// Rollback.
 	CodeRollbackFailed         Code = "ROLLBACK_FAILED"
 	CodeRollbackTargetNotFound Code = "ROLLBACK_TARGET_NOT_FOUND"

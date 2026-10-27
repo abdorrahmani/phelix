@@ -193,6 +193,38 @@ func TestRustBuild_BinNameResolution(t *testing.T) {
 	}
 }
 
+// TestRustBuild_WorkspaceMemberUsesWorkspaceTarget: a crate inside a Cargo
+// workspace builds into the workspace root's target dir, so resolving the
+// binary from the crate directory alone reports a missing artifact.
+func TestRustBuild_WorkspaceMemberUsesWorkspaceTarget(t *testing.T) {
+	fakeCargoDir(t, `exit 0`)
+	root := writeCargoProject(t, "[workspace]\nmembers = [\"member\"]\n")
+	member := filepath.Join(root, "member")
+	if err := os.MkdirAll(member, 0o755); err != nil {
+		t.Fatalf("mkdir member: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "Cargo.toml"),
+		[]byte("[package]\nname = \"lab\"\nversion = \"0.1.0\"\n"), 0o644); err != nil {
+		t.Fatalf("write member Cargo.toml: %v", err)
+	}
+	target := filepath.Join(root, "target", "debug")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	want := filepath.Join(target, "lab")
+	if err := os.WriteFile(want, []byte("elf"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	got, err := NewRustBuilder().GetBinaryPath(rustBuildConfig(t, member))
+	if err != nil {
+		t.Fatalf("GetBinaryPath: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want the workspace target binary %q", got, want)
+	}
+}
+
 // TestRustBuildAndCopy_SuccessCopiesArtifact: the happy path — artifact found
 // and copied to the versioned output path.
 func TestRustBuildAndCopy_SuccessCopiesArtifact(t *testing.T) {

@@ -1,0 +1,15 @@
+name: workspace-rust
+
+services:
+  gateway:
+    path: ./crates/gateway
+    port: 8180
+    depends_on: [auth, orders]
+  auth:
+    path: ./crates/auth
+    port: 8181
+    strategy: blue-green
+  orders:
+    path: ./crates/orders
+    port: 8182
+    depends_on: [auth]

@@ -2,6 +2,7 @@ package builder
 
 import (
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/buildreport"
@@ -14,6 +15,10 @@ const DefaultBuildTimeout = 30 * time.Minute
 type BuildManager struct {
 	factory *BuilderFactory
 
+	// scanMu guards the scan cache below. Workspace builds share one manager
+	// across service goroutines, and the cache is keyed by project root, so
+	// concurrent scans of different services would otherwise race on it.
+	scanMu  sync.Mutex
 	scan    *ProjectScan
 	scanFor string
 
@@ -36,6 +41,9 @@ func NewBuildManager() *BuildManager {
 
 // scanProject scans the project directory and caches the result
 func (bm *BuildManager) scanProject(root string) *ProjectScan {
+	bm.scanMu.Lock()
+	defer bm.scanMu.Unlock()
+
 	if bm.scan != nil && bm.scanFor == root {
 		return bm.scan
 	}

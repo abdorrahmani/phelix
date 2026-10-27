@@ -215,11 +215,24 @@ func (o *opRun) writeResultEnv(env *machine.Envelope) error {
 	return writeEnvelopeResult(env)
 }
 
+// envelopeSuppressed silences envelope printing while workspace
+// orchestration drives several single-app operations inside one command:
+// exactly one envelope, the workspace's own, reaches stdout.
+var envelopeSuppressed bool
+
+// suppressEnvelopes turns writeEnvelopeResult into a no-op until the
+// returned restore runs. Operation records and idempotency staging keep
+// working; only the stdout envelope is withheld.
+func suppressEnvelopes() (restore func()) {
+	envelopeSuppressed = true
+	return func() { envelopeSuppressed = false }
+}
+
 // writeEnvelopeResult writes a success envelope on stdout in machine mode —
 // the shared terminal step for results that are not staged through opRun
 // (e.g. a matrix build, whose operation identity is the run ID).
 func writeEnvelopeResult(env *machine.Envelope) error {
-	if !machine.Active() {
+	if envelopeSuppressed || !machine.Active() {
 		return nil
 	}
 	if err := machine.WriteEnvelope(env); err != nil {

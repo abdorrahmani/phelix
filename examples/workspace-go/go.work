@@ -1,0 +1,7 @@
+go 1.27
+
+use (
+	./gateway
+	./services/auth
+	./services/orders
+)
