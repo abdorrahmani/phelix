@@ -107,7 +107,7 @@ func (rb *RustBuilder) GetBinaryPath(config BuildConfig) (string, error) {
 	if isRelease {
 		buildType = "release"
 	}
-	targetDir := filepath.Join(config.ProjectRoot, "target", buildType)
+	targetDir := filepath.Join(rb.cargoTargetDir(config.ProjectRoot), buildType)
 
 	pkgName := rb.getPackageNameFromCargo(config.ProjectRoot)
 	var candidates []string
@@ -235,6 +235,46 @@ func (rb *RustBuilder) getPackageNameFromCargo(projectRoot string) string {
 		}
 	}
 	return ""
+}
+
+// cargoTargetDir resolves where cargo writes build output for projectRoot.
+// A member of a Cargo workspace builds into the workspace root's target
+// directory, not the crate's own, so the crate directory alone is wrong.
+// CARGO_TARGET_DIR wins when set, matching cargo's own precedence.
+func (rb *RustBuilder) cargoTargetDir(projectRoot string) string {
+	if dir := os.Getenv("CARGO_TARGET_DIR"); dir != "" {
+		if filepath.IsAbs(dir) {
+			return dir
+		}
+		return filepath.Join(projectRoot, dir)
+	}
+	dir := projectRoot
+	for {
+		if hasWorkspaceSection(filepath.Join(dir, "Cargo.toml")) {
+			return filepath.Join(dir, "target")
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return filepath.Join(projectRoot, "target")
+}
+
+// hasWorkspaceSection reports whether a Cargo.toml declares [workspace], which
+// makes it the target directory owner for every member below it.
+func hasWorkspaceSection(cargoPath string) bool {
+	raw, err := os.ReadFile(cargoPath)
+	if err != nil {
+		return false
+	}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if strings.TrimSpace(line) == "[workspace]" {
+			return true
+		}
+	}
+	return false
 }
 
 // findMostRecentBinary finds the most recently modified executable file in
