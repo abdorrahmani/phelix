@@ -1,5 +1,4 @@
 {
-  "$id": "https://raw.githubusercontent.com/abdorrahmani/phelix/master/schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Project configuration for Phelix. Every field is optional: commands resolve missing values from flags, defaults or interactive prompts.",
   "properties": {

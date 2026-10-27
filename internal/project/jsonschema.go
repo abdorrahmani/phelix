@@ -9,18 +9,17 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
-const configSchemaURL = "https://raw.githubusercontent.com/abdorrahmani/phelix/master/schema.json"
-
 // SchemaJSON renders the JSON Schema (draft 2020-12) that describes
 // phelix.yaml. Property names and nesting come from the yaml tags of the
 // configuration structs, so a renamed field cannot drift from the schema, and
 // the enum, range and presence hints reuse the same tables validate consults.
 // The document deliberately leaves additionalProperties open: the loader
 // ignores unknown keys, and the schema must never reject a file Phelix accepts.
+// It carries no $id: the file ships with the repository and an editor resolves
+// it from the local path.
 func SchemaJSON() ([]byte, error) {
 	root := configSchemaFor(reflect.TypeFor[Config](), "")
 	root["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-	root["$id"] = configSchemaURL
 	root["title"] = "phelix.yaml"
 	root["description"] = "Project configuration for Phelix. Every field is optional: commands resolve missing values from flags, defaults or interactive prompts."
 	doc, err := json.MarshalIndent(root, "", "  ")
