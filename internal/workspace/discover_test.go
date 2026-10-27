@@ -176,6 +176,14 @@ func TestDiscover_NoWorkspaceFound(t *testing.T) {
 	}
 }
 
+func TestDiscover_MalformedCargoFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "Cargo.toml"), "[workspace\nmembers = [\n")
+	if _, err := Discover(root); err == nil {
+		t.Fatalf("Discover() = nil error, want malformed Cargo.toml to fail")
+	}
+}
+
 func TestDiscoverRunnables_FiltersLibraries(t *testing.T) {
 	root := t.TempDir()
 	goModuleWithMain(t, filepath.Join(root, "services", "auth"))

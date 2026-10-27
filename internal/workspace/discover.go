@@ -55,7 +55,7 @@ func Discover(root string) (*Discovery, error) {
 	if raw, err := os.ReadFile(cargoPath); err == nil {
 		members, perr := cargoMembers(root, raw)
 		if perr != nil {
-			return nil, err
+			return nil, perr
 		}
 		if err := requireDirs(root, members, "Cargo.toml"); err != nil {
 			return nil, err
@@ -231,8 +231,8 @@ func expandMemberGlob(root, pattern string) ([]string, error) {
 	return dirs, nil
 }
 
-// requireDirs verifies every declared member exists below root and never
-// escapes it.
+// requireDirs verifies every declared member exists and is a directory. The
+// root boundary is enforced later, where member paths become service paths.
 func requireDirs(root string, members []string, source string) error {
 	for _, member := range members {
 		full := member
