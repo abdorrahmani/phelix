@@ -256,10 +256,29 @@ func addDiscoveredMembers(w *Workspace, members []string) error {
 
 // AssignPorts gives every service without an explicit port a public port,
 // walking up from base and skipping ports the workspace already uses. The
-// base itself is validated like any other port.
+// base itself is validated like any other port. A service that already ran
+// keeps the port recorded in the workspace state, so build and deploy agree on
+// it across separate invocations.
 func AssignPorts(w *Workspace, base int) error {
 	if err := phelixport.Validate(base); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "invalid workspace port base %d", base)
+	}
+	state, err := LoadState(w.Name)
+	if err != nil {
+		return err
+	}
+	recorded := map[string]int{}
+	if state != nil {
+		for _, svc := range state.Services {
+			if svc.Port > 0 {
+				recorded[svc.Name] = svc.Port
+			}
+		}
+	}
+	for _, svc := range w.Services {
+		if svc.Port == 0 {
+			svc.Port = recorded[svc.Name]
+		}
 	}
 	used := map[int]bool{}
 	for _, svc := range w.Services {

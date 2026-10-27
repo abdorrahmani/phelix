@@ -49,7 +49,7 @@ services:
 | Field | Meaning |
 |---|---|
 | `path` | Service directory, relative to the workspace root. Must exist; paths escaping the root are rejected. |
-| `port` | Public port. Leave it out to have one assigned from `--port-base`. |
+| `port` | Public port. Leave it out to have one assigned from `--port-base`; the assignment is recorded, so later runs keep the same port. |
 | `strategy` | `classic`, `blue-green`, or `rolling`. Empty defers to the service's own `phelix.yaml`, then its persisted deploy mode. |
 | `replicas` | Rolling replica count. Only valid together with `strategy: rolling`. |
 | `depends_on` | Services that must be built or deployed first. Cycles and unknown names are rejected. |
@@ -64,7 +64,8 @@ deploy halts the whole mesh on the first failure. A service whose own
 `phelix.yaml` asks for either degrades to classic inside a workspace deploy.
 
 `discover: true` merges runnable members of a native `go.work` or Cargo
-workspace into the manifest. Explicit entries win on a name collision.
+workspace into the manifest. Explicit entries win on a name collision, and a
+manifest service may list a discovered member in `depends_on`.
 
 ## Commands
 

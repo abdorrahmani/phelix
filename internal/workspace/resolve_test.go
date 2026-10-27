@@ -108,6 +108,27 @@ services:
 	}
 }
 
+func TestResolve_DependsOnDiscoveredMember(t *testing.T) {
+	root := seedMeshRepo(t)
+	writeFile(t, filepath.Join(root, GoWorkFile), "go 1.27\n\nuse (\n\t./services/auth\n\t./services/orders\n)\n")
+	writeManifest(t, root, `
+discover: true
+services:
+  orders: { path: ./services/orders, depends_on: [auth] }
+`)
+	w, err := Resolve(root)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	order, err := w.TopoOrder()
+	if err != nil {
+		t.Fatalf("TopoOrder: %v", err)
+	}
+	if !reflect.DeepEqual(order, []string{"auth", "orders"}) {
+		t.Fatalf("order = %v, want the discovered dependency respected", order)
+	}
+}
+
 func TestResolve_ManifestWithDiscoverMergesMembers(t *testing.T) {
 	root := seedMeshRepo(t)
 	writeManifest(t, root, `
@@ -163,6 +184,29 @@ func TestAssignPorts_InvalidBaseFails(t *testing.T) {
 	w := &Workspace{Services: []*Service{{Name: "auth"}}}
 	if err := AssignPorts(w, 99999); err == nil {
 		t.Fatalf("AssignPorts with bad base should fail")
+	}
+}
+
+func TestAssignPorts_ReusesRecordedPort(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	first := &Workspace{Name: "mesh", Services: []*Service{{Name: "auth"}, {Name: "orders"}}}
+	if err := AssignPorts(first, 9000); err != nil {
+		t.Fatalf("AssignPorts: %v", err)
+	}
+	state := &State{}
+	state.SyncMembership(first)
+	if err := SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	second := &Workspace{Name: "mesh", Services: []*Service{{Name: "auth"}, {Name: "orders"}}}
+	if err := AssignPorts(second, 9000); err != nil {
+		t.Fatalf("AssignPorts on second run: %v", err)
+	}
+	if second.Service("auth").Port != first.Service("auth").Port || second.Service("orders").Port != first.Service("orders").Port {
+		t.Fatalf("ports drifted between runs: %d/%d then %d/%d",
+			first.Service("auth").Port, first.Service("orders").Port,
+			second.Service("auth").Port, second.Service("orders").Port)
 	}
 }
 

@@ -115,9 +115,10 @@ func validateServiceName(name string) error {
 }
 
 // Validate checks the manifest's internal consistency: service names, ports,
-// strategies, replica configuration, and dependency references. Filesystem
-// and graph checks (paths that exist, dependencies without cycles) belong to
-// Resolve, which has the workspace root.
+// strategies, replica configuration, and dependency references. With discover
+// enabled a dependency may name a member that only discovery supplies, so the
+// reference check waits for Resolve, which has the merged service set.
+// Filesystem and graph checks belong to Resolve too.
 func (m *Manifest) Validate() error {
 	for name, spec := range m.Services {
 		if err := validateServiceName(name); err != nil {
@@ -156,6 +157,9 @@ func (m *Manifest) Validate() error {
 		for _, dep := range spec.DependsOn {
 			if dep == name {
 				return phelixerr.Newf(phelixerr.CodeConfiguration, "%s: service %q depends on itself", FileName, name)
+			}
+			if m.Discover {
+				continue
 			}
 			if _, ok := m.Services[dep]; !ok {
 				return phelixerr.Newf(
