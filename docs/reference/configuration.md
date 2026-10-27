@@ -281,9 +281,9 @@ Point a YAML language server at it by adding a comment to the top of the file:
 ```
 
 That gives completion and hover documentation in VS Code, Neovim, Helix and any
-other editor using the YAML language server. The document is published at
-`https://raw.githubusercontent.com/abdorrahmani/phelix/master/schema.json` for
-projects that prefer a URL over a checked-in copy.
+other editor using the YAML language server. The `$schema` comment can also
+point at a checked-in copy elsewhere in the repository, or at a URL if you host
+one.
 
 ## Related
 
