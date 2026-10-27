@@ -1,0 +1,15 @@
+name: workspace-go
+
+services:
+  gateway:
+    path: ./gateway
+    port: 8080
+    depends_on: [auth, orders]
+  auth:
+    path: ./services/auth
+    port: 8081
+    strategy: blue-green
+  orders:
+    path: ./services/orders
+    port: 8082
+    depends_on: [auth]
