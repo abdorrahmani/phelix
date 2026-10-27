@@ -139,6 +139,8 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Docker image built from a compose service (Rust)](examples/docker-compose-aware-rust/): the same, in Rust.
 - [Docker multiservice (Go)](examples/docker-compose-multiservice-go/): several app services, one shared backing tier.
 - [Docker multiservice (Rust)](examples/docker-compose-multiservice-rust/): the same, in Rust.
+- [Go workspace](examples/workspace-go/): three services, one `phelix.workspace.yaml`, one `build --all`.
+- [Rust workspace](examples/workspace-rust/): the same, as a Cargo workspace.
 
 ## Documentation
 

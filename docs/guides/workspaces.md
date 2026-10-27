@@ -166,3 +166,12 @@ phelix status --workspace --json | jq '.result.services[] | {name, status, versi
   own.
 - `deploy --all` requires services to be registered first. Run
   `phelix build --all` once so each service has a directory and port on record.
+
+## Examples
+
+Two runnable workspaces, one per language:
+
+- [`examples/workspace-go`](../../examples/workspace-go/): a `go.work` with a
+  gateway, an auth service, and an orders service that calls auth.
+- [`examples/workspace-rust`](../../examples/workspace-rust/): the same mesh as
+  a Cargo workspace.
