@@ -2,8 +2,25 @@ package project
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 )
+
+// TestSchemaJSONFileIsUpToDate keeps the published schema.json in step with
+// the structs: regenerate it with `phelix config schema > schema.json`.
+func TestSchemaJSONFileIsUpToDate(t *testing.T) {
+	want, err := SchemaJSON()
+	if err != nil {
+		t.Fatalf("SchemaJSON: %v", err)
+	}
+	got, err := os.ReadFile("../../schema.json")
+	if err != nil {
+		t.Fatalf("read published schema.json: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatal("schema.json is stale; regenerate it with: phelix config schema > schema.json")
+	}
+}
 
 func TestSchemaJSONMapsConfiguration(t *testing.T) {
 	raw, err := SchemaJSON()

@@ -1,0 +1,374 @@
+{
+  "$id": "https://raw.githubusercontent.com/abdorrahmani/phelix/master/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Project configuration for Phelix. Every field is optional: commands resolve missing values from flags, defaults or interactive prompts.",
+  "properties": {
+    "deploy": {
+      "description": "Deployment strategy and runtime.",
+      "properties": {
+        "autoscaling": {
+          "description": "Replica autoscaling. Parsed, validated and resolved, but no component executes scaling decisions yet.",
+          "properties": {
+            "cooldown": {
+              "description": "Wait between scaling decisions as a duration. Defaults to 60s.",
+              "type": "string"
+            },
+            "cpu": {
+              "properties": {
+                "scale_down": {
+                  "description": "CPU percent that triggers a scale down. Defaults to 30.",
+                  "type": "number"
+                },
+                "scale_up": {
+                  "description": "CPU percent that triggers a scale up. Defaults to 70.",
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "evaluation_windows": {
+              "description": "Consecutive samples a condition must hold. Defaults to 1.",
+              "type": "integer"
+            },
+            "interval": {
+              "description": "Evaluation cadence as a duration. Defaults to 15s.",
+              "type": "string"
+            },
+            "latency": {
+              "properties": {
+                "scale_down_p95": {
+                  "description": "Proxy p95 latency that triggers a scale down. Defaults to 150ms.",
+                  "type": "string"
+                },
+                "scale_up_p95": {
+                  "description": "Proxy p95 latency that triggers a scale up. Defaults to 500ms.",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "max_replicas": {
+              "description": "Upper replica bound. Defaults to deploy.replicas.",
+              "type": "integer"
+            },
+            "min_replicas": {
+              "description": "Lower replica bound. Defaults to 1.",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "docker": {
+          "description": "Where the image comes from under runtime: docker.",
+          "properties": {
+            "build": {
+              "description": "dockerfile (default) generates or reuses a Dockerfile; compose builds a named compose service.",
+              "enum": [
+                "compose",
+                "dockerfile"
+              ],
+              "type": "string"
+            },
+            "compose_file": {
+              "description": "Compose file to build from, resolved against the build directory. Defaults to docker-compose.yml.",
+              "type": "string"
+            },
+            "service": {
+              "description": "Compose service that builds this app's image. Required when build is compose.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "network": {
+          "description": "Docker network attached to each app container. Only valid with runtime: docker.",
+          "type": "string"
+        },
+        "replicas": {
+          "description": "Replica count. Only valid with strategy: rolling.",
+          "type": "integer"
+        },
+        "rollout": {
+          "description": "Canary and progressive rollout settings.",
+          "properties": {
+            "canary": {
+              "description": "Canary traffic share as a whole percentage, written as 5 or \"5%\".",
+              "maximum": 99,
+              "minimum": 1,
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            "duration": {
+              "description": "Verification window before promotion, as a duration (2m).",
+              "type": "string"
+            },
+            "steps": {
+              "description": "Progressive steps. Shares must strictly increase and end at 100.",
+              "items": {
+                "properties": {
+                  "duration": {
+                    "description": "How long the share is observed, as a duration.",
+                    "type": "string"
+                  },
+                  "traffic": {
+                    "description": "Canary share for this step as a whole percentage.",
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "string"
+                    ]
+                  }
+                },
+                "required": [
+                  "traffic"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "verification": {
+              "description": "Regression bounds compared against the stable version.",
+              "properties": {
+                "interval": {
+                  "description": "Health and metrics poll cadence as a duration.",
+                  "type": "string"
+                },
+                "max_error_delta": {
+                  "description": "Percentage points the canary error rate may exceed the baseline.",
+                  "type": "number"
+                },
+                "max_error_rate": {
+                  "description": "Absolute canary error-rate cap, in percent.",
+                  "type": "number"
+                },
+                "max_p95_factor": {
+                  "description": "Canary p95 latency ceiling relative to the baseline, at least 1.",
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "runtime": {
+          "description": "native (default) runs host processes; docker runs each instance as a container, which requires a zero-downtime strategy.",
+          "enum": [
+            "docker",
+            "native"
+          ],
+          "type": "string"
+        },
+        "strategy": {
+          "description": "classic (default), blue-green, rolling, canary or progressive.",
+          "enum": [
+            "blue-green",
+            "canary",
+            "classic",
+            "progressive",
+            "rolling"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "health": {
+      "description": "Health endpoints applied to the app on every build or rebuild.",
+      "properties": {
+        "endpoints": {
+          "description": "Endpoints checked by the health daemon and by deploys.",
+          "items": {
+            "properties": {
+              "codes": {
+                "description": "Expected HTTP statuses: a range (200-299) or a list (200,204).",
+                "type": "string"
+              },
+              "interval": {
+                "type": "string"
+              },
+              "mode": {
+                "description": "Deploy health tier: auto (default), http, tcp-only or none.",
+                "enum": [
+                  "auto",
+                  "http",
+                  "none",
+                  "tcp-only"
+                ],
+                "type": "string"
+              },
+              "name": {
+                "description": "Endpoint name. Must be unique within the file.",
+                "type": "string"
+              },
+              "path": {
+                "description": "HTTP path on localhost. Must start with /.",
+                "pattern": "^/",
+                "type": "string"
+              },
+              "retries": {
+                "type": "integer"
+              },
+              "timeout": {
+                "description": "Per-request timeout as a duration (5s). Defaults to 10s.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "replace": {
+          "description": "True drops endpoints configured outside this file instead of merging with them.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "matrix": {
+      "description": "Build matrix profile: toolchain versions by platform.",
+      "properties": {
+        "concurrency": {
+          "description": "Maximum parallel builds.",
+          "type": "integer"
+        },
+        "enabled": {
+          "description": "Turns the matrix profile on for builds that name no matrix flags.",
+          "type": "boolean"
+        },
+        "exclude": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Combinations to drop. Keys are dimensions only.",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "go": {
+          "description": "Go toolchain versions. Mutually exclusive with matrix.rust.",
+          "properties": {
+            "versions": {
+              "items": {
+                "description": "Toolchain version, quoted or bare (\"1.27\" or 1.27).",
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "include": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Extra combinations or attributes. Keys are dimensions (go, rust, lang, version, platform, os, arch, variant) or metadata.",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "platforms": {
+          "items": {
+            "description": "Target in os/arch form (linux/amd64, linux/arm64/v8).",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "retries": {
+          "description": "Extra attempts per failed combination.",
+          "type": "integer"
+        },
+        "rust": {
+          "description": "Rust toolchain versions. Mutually exclusive with matrix.go.",
+          "properties": {
+            "versions": {
+              "items": {
+                "description": "Toolchain version, quoted or bare (\"1.78\" or 1.78).",
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "name": {
+      "description": "Application name used by build, rebuild, health and rollback. Optional: build prompts for it when it is missing.",
+      "type": "string"
+    },
+    "port": {
+      "description": "Public application port. Defaults to 8080.",
+      "maximum": 65535,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "resources": {
+      "description": "Per-instance CPU and memory limits, enforced through cgroups v2 on Linux only.",
+      "properties": {
+        "cpu": {
+          "description": "CPU ceiling in millicores (500m) or cores (0.5).",
+          "type": "string"
+        },
+        "memory": {
+          "description": "Memory ceiling with binary units (512Mi, 1Gi).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "watching": {
+      "description": "Backend monitoring opt-in: enable or disable. When absent the app keeps its persisted flag.",
+      "enum": [
+        "enable",
+        "disable"
+      ],
+      "type": "string"
+    },
+    "webhook": {
+      "dependentRequired": {
+        "enabled": [
+          "branch",
+          "secret_env"
+        ]
+      },
+      "description": "Git push webhook trigger. Without this block the app never accepts deliveries.",
+      "properties": {
+        "branch": {
+          "description": "Bare branch name whose pushes trigger a rebuild, not a full ref.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Turns the webhook trigger on for this app.",
+          "type": "boolean"
+        },
+        "secret_env": {
+          "description": "Name of the environment variable holding the HMAC-SHA256 secret. The secret itself is never stored in phelix.yaml.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "phelix.yaml",
+  "type": "object"
+}
