@@ -252,6 +252,39 @@ strictly increasing shares ending at the `100%` promotion, non-negative duration
 `canary` within `1-99`, and verification thresholds (positive interval, error
 rates within `0-100`, p95 factor ≥ 1).
 
+### Checking the file without running a command
+
+```bash
+phelix config lint          # validate phelix.yaml in the current directory
+phelix config lint --json   # the machine envelope, for scripts and agents
+```
+
+`lint` calls the same loader every command uses, so it reports exactly what
+`build`, `rebuild` or `deploy` would report: exit `0` when the file is valid,
+`40` (`CONFIGURATION_ERROR`) when it is not, `12` (`NOT_FOUND`) when there is no
+file to check.
+
+## Editor support
+
+`schema.json` in the repository root describes every key of `phelix.yaml`
+(types, enums, ranges, required fields and the webhook dependency), generated
+from the same structs the loader decodes into. Print it at any time with:
+
+```bash
+phelix config schema > schema.json
+```
+
+Point a YAML language server at it by adding a comment to the top of the file:
+
+```yaml
+# yaml-language-server: $schema=./schema.json
+```
+
+That gives completion and hover documentation in VS Code, Neovim, Helix and any
+other editor using the YAML language server. The document is published at
+`https://raw.githubusercontent.com/abdorrahmani/phelix/master/schema.json` for
+projects that prefer a URL over a checked-in copy.
+
 ## Related
 
 - [Command reference](commands.md) — how commands resolve these values.
