@@ -70,6 +70,32 @@ func TestMonitorEvent_RoundTrip(t *testing.T) {
 		},
 		{
 			ServerId:  "srv-1",
+			Timestamp: 3500,
+			Payload: &MonitorEvent_AppTraffic{
+				AppTraffic: &AppTrafficStat{
+					AppId:            "app-1",
+					ServerId:         "srv-1",
+					AppName:          "myapp",
+					PublicPort:       8080,
+					InFlight:         2,
+					Requests:         100,
+					Errors:           5,
+					ErrorRatePercent: 5,
+					P95LatencyMs:     42.5,
+					Backends: []*AppTrafficBackend{{
+						Label:            "replica-0",
+						Host:             "127.0.0.1:9001",
+						Requests:         60,
+						Errors:           1,
+						ErrorRatePercent: 1.67,
+						P95LatencyMs:     30,
+						SharePercent:     60,
+					}},
+				},
+			},
+		},
+		{
+			ServerId:  "srv-1",
 			Timestamp: 4000,
 			Payload: &MonitorEvent_AppInfo{
 				AppInfo: &ApplicationInfo{

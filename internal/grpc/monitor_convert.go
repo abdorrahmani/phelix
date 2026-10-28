@@ -1,6 +1,8 @@
 package grpc
 
 import (
+	"time"
+
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
@@ -144,6 +146,36 @@ func toProtoAppMetrics(m monitor.AppMetrics) *pb.AppResourceMetrics {
 		CpuUsage:    m.CPUUsage,
 		MemoryUsage: m.MemoryUsage,
 	}
+}
+
+// toProtoAppTraffic converts monitor.AppTraffic to its protobuf
+// representation. Durations cross the wire as milliseconds because the
+// dashboard graphs them against other ms-valued series.
+func toProtoAppTraffic(t monitor.AppTraffic) *pb.AppTrafficStat {
+	out := &pb.AppTrafficStat{
+		AppId:            t.AppID,
+		ServerId:         t.ServerID,
+		AppName:          t.AppName,
+		PublicPort:       int32(t.PublicPort),
+		InFlight:         t.InFlight,
+		Requests:         t.Requests,
+		Errors:           t.Errors,
+		ErrorRatePercent: t.ErrorRate(),
+		P95LatencyMs:     float64(t.P95) / float64(time.Millisecond),
+		Backends:         make([]*pb.AppTrafficBackend, 0, len(t.Backends)),
+	}
+	for _, b := range t.Backends {
+		out.Backends = append(out.Backends, &pb.AppTrafficBackend{
+			Label:            b.Label,
+			Host:             b.Host,
+			Requests:         b.Requests,
+			Errors:           b.Errors,
+			ErrorRatePercent: b.ErrorRate(),
+			P95LatencyMs:     float64(b.P95) / float64(time.Millisecond),
+			SharePercent:     b.Share,
+		})
+	}
+	return out
 }
 
 // toProtoAppInfo converts monitor.AppDetails to its protobuf representation.
