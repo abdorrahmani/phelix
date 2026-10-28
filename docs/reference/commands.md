@@ -92,6 +92,33 @@ Never modifies application source code. If a hardcoded listen port is detected,
 prints a warning and points to `phelix doctor`. It also accepts `--runtime docker`
 to write a docker-runtime config (see [Docker runtime](../guides/docker-runtime.md)).
 
+### `phelix config lint`
+
+Validates `phelix.yaml` in the current directory and nothing else: it calls the
+same loader the build and deploy commands use, so the verdict matches what they
+would report, without building, starting or touching anything.
+
+```text
+$ phelix config lint
+  ✓ /home/me/api/phelix.yaml is valid (1 health endpoint(s), strategy classic)
+```
+
+Exit codes follow the standard contract: `0` valid, `40`
+(`CONFIGURATION_ERROR`) invalid, `12` (`NOT_FOUND`) when the directory has no
+`phelix.yaml`. Unknown keys are ignored, exactly as the loader ignores them.
+`--json` emits the machine envelope with `{path, valid}`.
+
+### `phelix config schema`
+
+Prints the JSON Schema (draft 2020-12) of `phelix.yaml` on stdout, generated from
+the configuration structs. Use it for editor completion and hover text; the
+repository also ships the same document as `schema.json` (see
+[Configuration § Editor support](configuration.md#editor-support)).
+
+```bash
+phelix config schema > schema.json
+```
+
 ### `phelix doctor`
 
 Diagnoses whether the current project is Phelix-compatible: project detection,

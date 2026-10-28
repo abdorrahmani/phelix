@@ -169,3 +169,58 @@ func TestCLIStatus_StoppedApp_Succeeds(t *testing.T) {
 		t.Fatalf("expected app name in status output: %q", stdout)
 	}
 }
+
+// TestCLIConfigLint_ExitCodes pins the script-facing contract of
+// `phelix config lint`: a valid file exits 0, an invalid one 40 with one
+// rendered error on stderr, and a missing file 12.
+func TestCLIConfigLint_ExitCodes(t *testing.T) {
+	cases := []struct {
+		name     string
+		content  string
+		wantCode int
+	}{
+		{"valid", "name: demo\nport: 3000\n", ExitOK},
+		{"invalid", "name: demo\ndeploy:\n  strategy: nonsense\n", ExitConfig},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(home, ".phelix"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			projectDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(projectDir, "phelix.yaml"), []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(phelixBin(t), "config", "lint")
+			cmd.Dir = projectDir
+			cmd.Env = append(os.Environ(), "HOME="+home)
+			var stdout, stderr strings.Builder
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			code := 0
+			if ee, ok := err.(*exec.ExitError); ok {
+				code = ee.ExitCode()
+			}
+			if code != tc.wantCode {
+				t.Fatalf("exit = %d, want %d; stdout=%q stderr=%q", code, tc.wantCode, stdout.String(), stderr.String())
+			}
+			if tc.wantCode != ExitOK && strings.Count(stderr.String(), "Error:") != 1 {
+				t.Fatalf("expected exactly one rendered error, got %q", stderr.String())
+			}
+		})
+	}
+
+	home := t.TempDir()
+	cmd := exec.Command(phelixBin(t), "config", "lint")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	err := cmd.Run()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	}
+	if code != ExitNotFound {
+		t.Fatalf("missing phelix.yaml exit = %d, want %d", code, ExitNotFound)
+	}
+}
