@@ -14,6 +14,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/machine"
+	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
@@ -142,11 +143,74 @@ type statusProxyView struct {
 	InFlight   int64  `json:"in_flight,omitempty"`
 }
 
+type statusTrafficBackendView struct {
+	Label        string  `json:"label,omitempty"`
+	Host         string  `json:"host"`
+	Requests     int64   `json:"requests"`
+	Errors       int64   `json:"errors"`
+	ErrorRate    float64 `json:"error_rate_percent"`
+	P95LatencyMS float64 `json:"p95_latency_ms"`
+	Share        float64 `json:"share_percent"`
+}
+
+type statusTrafficView struct {
+	Requests     int64                      `json:"requests"`
+	Errors       int64                      `json:"errors"`
+	ErrorRate    float64                    `json:"error_rate_percent"`
+	P95LatencyMS float64                    `json:"p95_latency_ms"`
+	Backends     []statusTrafficBackendView `json:"backends"`
+}
+
 type statusResult struct {
 	App     statusAppView      `json:"app"`
 	Version *statusVersionView `json:"version,omitempty"`
 	Deploy  *statusDeployView  `json:"deploy,omitempty"`
 	Proxy   *statusProxyView   `json:"proxy,omitempty"`
+	Traffic *statusTrafficView `json:"traffic,omitempty"`
+}
+
+// buildStatusTraffic projects the proxy's per-backend counters onto the
+// machine contract. Absent traffic means the app was never proxied.
+func buildStatusTraffic(stats []proxy.BackendStat) *statusTrafficView {
+	if len(stats) == 0 {
+		return nil
+	}
+	summary := proxy.Summarize(stats)
+	tv := &statusTrafficView{
+		Requests:     summary.Requests,
+		Errors:       summary.Errors,
+		ErrorRate:    summary.ErrorRate(),
+		P95LatencyMS: float64(summary.P95) / float64(time.Millisecond),
+		Backends:     make([]statusTrafficBackendView, 0, len(stats)),
+	}
+	for _, s := range stats {
+		tv.Backends = append(tv.Backends, statusTrafficBackendView{
+			Label:        s.Label,
+			Host:         s.Host,
+			Requests:     s.Requests,
+			Errors:       s.Errors,
+			ErrorRate:    s.ErrorRate(),
+			P95LatencyMS: float64(s.P95()) / float64(time.Millisecond),
+			Share:        s.Share(summary.Requests),
+		})
+	}
+	return tv
+}
+
+// loadProxyStats reads one app's cumulative backend counters from the proxy
+// daemon, silently returning nothing when it is not running.
+func loadProxyStats(appName string) []proxy.BackendStat {
+	client := newProxyClientOrNull()
+	if client == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	stats, err := client.Stats(ctx, appName)
+	if err != nil {
+		return nil
+	}
+	return stats
 }
 
 // buildStatusResult projects the reconciled app status, version history,
@@ -232,6 +296,7 @@ func buildStatusResult(status app.AppStatus) *statusResult {
 		pv.InFlight = ps.InFlight
 	}
 	res.Proxy = pv
+	res.Traffic = buildStatusTraffic(loadProxyStats(status.Name))
 
 	return res
 }
@@ -306,6 +371,32 @@ func formatMetricDuration(duration time.Duration) string {
 		return "-"
 	}
 	return duration.String()
+}
+
+// displayTraffic renders the proxy's cumulative traffic counters for the app
+// and its per-backend split. It is the only place `status` answers "which app
+// is slow right now": error share, p95 latency and replica distribution.
+func displayTraffic(stats []proxy.BackendStat) {
+	if len(stats) == 0 {
+		return
+	}
+	summary := proxy.Summarize(stats)
+	fmt.Printf("  Traffic:       %d requests, %.2f%% errors, p95 %s\n",
+		summary.Requests,
+		summary.ErrorRate(),
+		formatMetricDuration(summary.P95.Round(time.Millisecond)))
+	for _, s := range stats {
+		label := s.Label
+		if label == "" {
+			label = s.Host
+		}
+		fmt.Printf("    %-12s %d requests (%.1f%%), %.2f%% errors, p95 %s\n",
+			label,
+			s.Requests,
+			s.Share(summary.Requests),
+			s.ErrorRate(),
+			formatMetricDuration(s.P95().Round(time.Millisecond)))
+	}
 }
 
 func displayStatus(status app.AppStatus) {
@@ -526,6 +617,7 @@ func displayDeployAndProxy(appName string) {
 			fmt.Println()
 		}
 		fmt.Printf("  In-flight:     %d\n", ps.InFlight)
+		displayTraffic(loadProxyStats(appName))
 		// Invariant: for blue-green, the slot the deployment calls active MUST
 		// be the one the proxy routes to. Anything else means traffic and
 		// deploy.json disagree — surface it instead of rendering two "green"

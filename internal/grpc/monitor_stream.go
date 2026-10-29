@@ -380,7 +380,6 @@ func (c *Client) runMonitorStream() error {
 	serverTicker := time.NewTicker(serverMetricsInterval)
 	defer serverTicker.Stop()
 
-
 	deployTicker := time.NewTicker(deploymentResyncInterval)
 	defer deployTicker.Stop()
 
@@ -700,6 +699,20 @@ func (c *Client) sendMonitorTick() {
 		}
 		if err := monitorStream.send(event); err != nil {
 			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send app metrics: %v", err)
+			return
+		}
+	}
+
+	for _, t := range monitor.CollectAppTraffic() {
+		event := &pb.MonitorEvent{
+			ServerId:  serverID,
+			Timestamp: time.Now().UnixMilli(),
+			Payload: &pb.MonitorEvent_AppTraffic{
+				AppTraffic: toProtoAppTraffic(t),
+			},
+		}
+		if err := monitorStream.send(event); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send app traffic for %s: %v", t.AppName, err)
 			return
 		}
 	}

@@ -133,6 +133,49 @@ message AppResourceMetrics {
   uint64 memory_usage = 4;
 }
 
+// AppTrafficStat mirrors monitor.AppTraffic: the live request traffic of one
+// watched app, read from the proxy daemon. Counters are cumulative since the
+// daemon started, so the backend derives rates by diffing two snapshots; a
+// daemon restart resets them to zero. Sent every monitoring tick for each
+// watched app enrolled with the proxy. Absence means "not proxied", never
+// "zero traffic".
+message AppTrafficStat {
+  string app_id = 1;
+  string server_id = 2;
+  string app_name = 3;
+  int32 public_port = 4;
+  // in_flight is the requests the proxy is serving right now.
+  int64 in_flight = 5;
+  // requests and errors are cumulative counts; errors are 5xx responses plus
+  // requests that never reached the backend (dial failure, timeout).
+  int64 requests = 6;
+  int64 errors = 7;
+  // error_rate_percent is errors/requests, sent for convenience.
+  double error_rate_percent = 8;
+  // p95_latency is the app-level 95th percentile latency in milliseconds,
+  // estimated from the proxy's cumulative latency histogram. 0 means no
+  // request has been timed yet.
+  double p95_latency_ms = 9;
+  // backends is the per-instance breakdown, one entry per routing target the
+  // app has had traffic on. Share is the percent of requests that backend
+  // served, so the backend can show traffic distribution across replicas.
+  repeated AppTrafficBackend backends = 10;
+}
+
+// AppTrafficBackend is one routing target's slice of an app's traffic.
+message AppTrafficBackend {
+  // label is the instance label the proxy routes with: a blue-green slot
+  // ("blue"/"green") or a rolling replica ("replica-0"). Empty when the
+  // target is no longer enrolled but still has recorded traffic.
+  string label = 1;
+  string host = 2;
+  int64 requests = 3;
+  int64 errors = 4;
+  double error_rate_percent = 5;
+  double p95_latency_ms = 6;
+  double share_percent = 7;
+}
+
 // ApplicationInfo mirrors monitor.AppDetails. Sent on every monitoring tick,
 // exactly like the old "apps" WebSocket message.
 message ApplicationInfo {
@@ -400,6 +443,7 @@ message MonitorEvent {
     ServerInfo server_info = 10;
     ServerMetrics server_metrics = 11;
     AppResourceMetrics app_metrics = 12;
+    AppTrafficStat app_traffic = 21;
     ApplicationInfo app_info = 13;
     MonitorLogEntry log_entry = 14;
     MonitorCommandResult command_result = 15;

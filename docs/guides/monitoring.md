@@ -75,7 +75,8 @@ and `phelix status` (Watching column), and takes effect on the monitor daemon's
 next reporting tick — no restart needed.
 
 **When `watching` is enabled**, the app participates in backend monitoring as
-usual: app metrics, health snapshots, app logs, deployment topology, and
+usual: app metrics, request traffic (request count, error rate, p95 latency,
+per-replica share), health snapshots, app logs, deployment topology, and
 dashboard registration flow to `phelix.anophel.com`.
 
 **When `watching` is disabled**, none of that data is sent for the app — the

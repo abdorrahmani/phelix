@@ -51,7 +51,7 @@ identical to the CLI.
 | `rollback` | `op_…` | `{app, from_version, to_version, strategy, port, verification}` |
 | `rollback --dry-run` / `--list` | — | plan view / `{app, count, versions[]}` |
 | `deploy unlock` | — (lock management) | `{app, unlocked}` |
-| `status <app>` | — | `{app{}, version?, deploy?, proxy{}}` |
+| `status <app>` | none | `{app{}, version?, deploy?, proxy{}, traffic?}` |
 | `list` | — | `{apps[], proxy_up, proxy_enrolled_apps}` |
 | `doctor` | — | `{checks[], summary{}}` (exit 3 on failing checks) |
 | `health list` / `health status` | — | endpoints / check results |
@@ -73,6 +73,29 @@ identical to the CLI.
 | `session show <session-id>` | — | the session record + resolved references |
 | `session list` | — | `{sessions[], count, truncated}` |
 | `session checkpoint/complete/fail/cancel <session-id>` | — | the updated session record |
+
+### `status <app>` traffic block
+
+`traffic` is present only while the proxy daemon is running and has recorded
+traffic for the app; absence means "never proxied", never "zero traffic".
+
+```json
+{
+  "requests": 1200,
+  "errors": 9,
+  "error_rate_percent": 0.75,
+  "p95_latency_ms": 42.5,
+  "backends": [
+    {"label": "replica-0", "host": "127.0.0.1:9001", "requests": 900,
+     "errors": 6, "error_rate_percent": 0.67, "p95_latency_ms": 38,
+     "share_percent": 75}
+  ]
+}
+```
+
+`requests` and `errors` are cumulative since the proxy daemon started; a
+daemon restart resets them to zero. `p95_latency_ms` is estimated from the
+proxy's latency histogram and is `0` until a request has been timed.
 
 ## Plans (Phase 3)
 

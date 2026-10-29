@@ -17,6 +17,11 @@ backoff.
   (re)connect and every 10s tick.
 - The daemon sends app info, resource metrics, and logs of every **watched** app
   roughly every 2s.
+- Request traffic for every watched app enrolled with the proxy daemon
+  (`AppTrafficStat`: request/error counts, p95 latency, in-flight requests,
+  per-backend share) rides the same 2s tick, read from the proxy control socket
+  by `monitor.CollectAppTraffic`. Absence means "not proxied"; counters are
+  cumulative since the proxy daemon started, so a restart resets them.
 - Backend rate limits are honored: `ResourceExhausted` on the stream backs the loop
   off (≥30s, escalating) instead of the normal 2s cadence; auth-throttle windows
   park the metadata sync; `DeadlineExceeded` idle timeouts are treated as an
@@ -33,6 +38,14 @@ re-checks every 5s, and the first `phelix watch` opt-in re-opens it within secon
 Consequently, dashboard-issued remote commands cannot reach a server while none of
 its apps are watched. See [Monitoring guide](../guides/monitoring.md) for the
 user-facing behavior.
+
+## Traffic snapshots
+
+`monitor.CollectAppTraffic` reads `Status` and `Stats` from the proxy control
+socket once per metrics tick and rolls the per-backend counters up per app
+(`internal/proxy.Summarize`). The same helper feeds `phelix status` and the
+`AppTrafficStat` message, so the terminal and the dashboard can never disagree.
+Counters are cumulative; windowed rates are the consumer's job.
 
 ## Snapshot semantics
 

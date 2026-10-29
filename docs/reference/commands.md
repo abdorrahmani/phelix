@@ -191,7 +191,7 @@ Shows the recorded rollback outcomes for one application, newest first.
 | `phelix start [<ID\|AppName>] [--port P] [--ensure]` | Start an app (or all apps if none given). `--ensure` builds if missing and rebuilds if startup fails. |
 | `phelix stop <ID\|AppName>` | Stop a running app. |
 | `phelix restart <ID\|AppName>` | Restart an app. |
-| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing. |
+| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing, and live request traffic (request/error counts, p95 latency, per-backend share). |
 | `phelix status --workspace` | One overview of every workspace service: derived lifecycle status, version, health, port, and strategy. |
 | `phelix list` | Table of all apps with version, status, watching, deploy, and proxy columns. |
 | `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. |
