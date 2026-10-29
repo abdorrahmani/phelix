@@ -64,32 +64,42 @@ func SelfLogPath() string {
 }
 
 // CollectAppLogs collects new log lines from every target application's log
-// file and returns them as a unified slice. Failures to read a single app are
-// logged and skipped — one broken app must not block the others.
+// files and returns them as a unified slice. Each app is read from its active
+// file and from any plain rotated file: after a rotation the app keeps
+// writing into the renamed file until it restarts, so both are live sources.
+// Failures to read a single app are logged and skipped — one broken app must
+// not block the others.
 func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error) {
 	var results []LogEntry
+	keys := make(map[string]bool)
 
 	for _, t := range targets {
 		logFile := AppLogPath(t.ID)
 
-		out, err := appCollector.Collect(t.ID, logFile, func(line string) LogEntry {
-			return appEntryFromLine(t, line, serverID)
-		})
-		if err != nil {
-			Error("logs", "failed to collect logs for app %s: %v", t.ID, err)
-			continue
-		}
 		minRank := -1
 		if t.LogLevel != "" {
 			minRank = levelRank(LogLevel(t.LogLevel))
 		}
-		for _, e := range out {
-			if minRank >= 0 && levelRank(e.Level) < minRank {
+		paths := append(PlainRotatedPaths(logFile, t.MaxFiles), logFile)
+		for _, p := range paths {
+			key := t.ID + ":" + p
+			keys[key] = true
+			out, err := appCollector.Collect(key, p, func(line string) LogEntry {
+				return appEntryFromLine(t, line, serverID)
+			})
+			if err != nil {
+				Error("logs", "failed to collect logs for app %s: %v", t.ID, err)
 				continue
 			}
-			results = append(results, e)
+			for _, e := range out {
+				if minRank >= 0 && levelRank(e.Level) < minRank {
+					continue
+				}
+				results = append(results, e)
+			}
 		}
 	}
+	appCollector.Prune(func(key string) bool { return keys[key] })
 
 	return results, nil
 }
@@ -133,27 +143,20 @@ func appEntryFromLine(t AppLogTarget, line, serverID string) LogEntry {
 	}
 }
 
-// RemovePreviousLogs checks the size of each given app's local log file and
-// trims it if it exceeds the maximum allowed size. Targets come from the
-// caller (the app manager) to keep this package free of app imports.
-func RemovePreviousLogs(targets []AppLogTarget) {
+// RotateAppLogs rotates every given app's log file when it exceeds its
+// configured size, keeping gzip archives of older rotations. Targets come
+// from the caller (the app manager) to keep this package free of app
+// imports.
+func RotateAppLogs(targets []AppLogTarget) {
 	for _, t := range targets {
 		logFile := AppLogPath(t.ID)
-
-		info, err := os.Stat(logFile)
+		rotated, err := RotateLogFile(logFile, t.MaxSizeMB, t.MaxFiles, t.Compress)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			Error("logs", "failed to stat log file %s: %v", logFile, err)
+			Error("logs", "failed to rotate log file %s: %v", logFile, err)
 			continue
 		}
-
-		if info.Size() > MaxLogSize {
-			Info("logs", "trimming oversized log file %s (%d bytes)", logFile, info.Size())
-			if err := trimLogFile(logFile); err != nil {
-				Error("logs", "failed to trim log file %s: %v", logFile, err)
-			}
+		if rotated {
+			Info("logs", "rotated log file %s", logFile)
 		}
 	}
 }

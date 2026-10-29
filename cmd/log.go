@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,10 @@ import (
 	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/spf13/cobra"
 )
+
+// maxBufferedLines bounds the in-memory history window when no --lines bound
+// is given: retention archives mean a scan can span several files.
+const maxBufferedLines = 10000
 
 var (
 	logLines    int
@@ -100,21 +105,11 @@ type logResult struct {
 }
 
 func showLogView(spec logViewSpec, since *time.Time) error {
-	f, err := os.Open(spec.Path)
-	if err != nil {
-		return phelixerr.Wrapf(
-			phelixerr.CodeFilesystem,
-			err,
-			"failed to open log file %s",
-			spec.Path,
-		)
-	}
-	defer f.Close()
-
-	lines, total, err := readLogHistory(f, logLines, since)
+	history, err := readLogHistoryFiles(spec.Path, logLines, since)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read historical logs", err)
 	}
+	lines, total := history.lines, history.total
 
 	truncated := since == nil && total > len(lines)
 
@@ -151,8 +146,86 @@ func showLogView(spec logViewSpec, since *time.Time) error {
 	if logNoFollow {
 		return nil
 	}
+	f, err := os.Open(spec.Path)
+	if err != nil {
+		return phelixerr.Wrapf(
+			phelixerr.CodeFilesystem,
+			err,
+			"failed to open log file %s",
+			spec.Path,
+		)
+	}
+	defer f.Close()
 	return streamNewLogs(f)
 }
+
+// logHistory is the result of scanning one log path's history: the retained
+// lines (newest last) and the total number of lines scanned.
+type logHistory struct {
+	lines []string
+	total int
+}
+
+// readLogHistoryFiles scans the full history of a log path: the gzip
+// archives and plain rotations first (oldest to newest), then the active
+// file. Rotation archives are transparently decompressed so `phelix log`
+// covers everything the on-disk retention still holds.
+func readLogHistoryFiles(path string, n int, since *time.Time) (logHistory, error) {
+	var h logHistory
+	paths := logs.LogHistoryPaths(path, 0)
+	if len(paths) == 0 {
+		f, err := os.Open(path)
+		if err != nil {
+			return h, err
+		}
+		f.Close()
+		return h, nil
+	}
+	for _, p := range paths {
+		rc, err := openMaybeGz(p)
+		if err != nil {
+			return h, err
+		}
+		lines, total, err := readLogHistory(rc, n, since)
+		rc.Close()
+		if err != nil {
+			return h, err
+		}
+		h.lines = append(h.lines, lines...)
+		h.total += total
+	}
+	if n > 0 && len(h.lines) > n {
+		h.lines = h.lines[len(h.lines)-n:]
+	}
+	return h, nil
+}
+
+// openMaybeGz opens a history path, transparently decompressing gzip
+// archives.
+func openMaybeGz(path string) (io.ReadCloser, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if !logs.IsGzipPath(path) {
+		return f, nil
+	}
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return readCloser{Reader: gr, closer: f}, nil
+}
+
+// readCloser pairs a gzip reader with the file underneath it so one Close
+// releases both.
+type readCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (rc readCloser) Close() error { return rc.closer.Close() }
 
 // parseLogSince parses --since as either a Go duration relative to now
 // ("30m", "2h") or an RFC3339 timestamp. Empty means no filter.
@@ -196,18 +269,10 @@ func linePredates(line string, since time.Time) bool {
 // readLogHistory returns up to n trailing lines (n <= 0 means all), plus the
 // total number of lines scanned. When since is set, lines with a parseable
 // timestamp before it are filtered out of the result (but still counted).
-func readLogHistory(f *os.File, n int, since *time.Time) ([]string, int, error) {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, 0, err
-	}
-
-	// Upper bound for the in-memory window when n <= 0: the log files are
-	// trimmed by retention, but a scan must never buffer an unbounded file.
-	const maxBufferedLines = 10000
-
+func readLogHistory(r io.Reader, n int, since *time.Time) ([]string, int, error) {
 	total := 0
 	var lines []string
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		total++

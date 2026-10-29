@@ -35,6 +35,20 @@ func InitFileLog() {
 	initFileLogLocked()
 }
 
+// ReopenFileLog closes the current self log handle so subsequent writes go to
+// the fresh file at SelfLogPath. Called after the self log rotates: the
+// daemon's writer, unlike a managed app's, is in-process and can follow the
+// rotation immediately.
+func ReopenFileLog() {
+	logMu.Lock()
+	defer logMu.Unlock()
+	if logFileHandle != nil {
+		_ = logFileHandle.Close()
+		logFileHandle = nil
+	}
+	initFileLogLocked()
+}
+
 func initFileLogLocked() {
 	if logFileHandle != nil {
 		return

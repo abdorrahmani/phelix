@@ -97,8 +97,22 @@ func (c *GenericLogCollector) Collect(key, path string, mapper func(string) LogE
 	return out, nil
 }
 
+// Prune closes and forgets the readers whose key is no longer collected, for
+// example a rotated file that has since been compressed or shifted away.
+// keep reports whether a key is still active.
+func (c *GenericLogCollector) Prune(keep func(string) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, rs := range c.readers {
+		if !keep(k) {
+			_ = rs.file.Close()
+			delete(c.readers, k)
+		}
+	}
+}
+
 // maybeReopen checks whether the file at path still refers to the same inode
-// as the collector's open handle (e.g. the log was trimmed, or the app was
+// as the collector's open handle (e.g. the log was rotated, or the app was
 // restarted and its log file recreated). If it changed, it closes the stale
 // handle and reopens the new file, clamping the read position so we don't
 // rescan lines that no longer exist.
@@ -208,52 +222,6 @@ func trimTrailingNewline(s string) string {
 		return trimTrailingNewline(s[:len(s)-1])
 	}
 	return s
-}
-
-// trimLogFile reduces the size of the log file to at most MaxLogSize by
-// keeping the file's own inode: it rewrites the tail back into the same
-// file. This matters because both the app process and the log collectors
-// hold the file open across their lifetime — a rename-and-recreate approach
-// would leave them attached to the detached old inode and they would stop
-// seeing new output.
-func trimLogFile(logFile string) error {
-	info, err := os.Stat(logFile)
-	if err != nil {
-		return err
-	}
-	if info.Size() <= MaxLogSize {
-		return nil
-	}
-
-	// Read the trailing MaxLogSize bytes.
-	tail := info.Size() - MaxLogSize
-	data := make([]byte, MaxLogSize)
-	f, err := os.Open(logFile)
-	if err != nil {
-		return err
-	}
-	if _, err := f.ReadAt(data, tail); err != nil {
-		f.Close()
-		return err
-	}
-	f.Close()
-
-	if len(data) > 0 && data[0] != '\n' {
-		if i := strings.IndexByte(string(data), '\n'); i >= 0 {
-			data = data[i+1:]
-		}
-	}
-
-	// Rewrite in place, preserving the inode.
-	w, err := os.OpenFile(logFile, os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	if _, err := w.Write(data); err != nil {
-		w.Close()
-		return err
-	}
-	return w.Close()
 }
 
 var timeLayout = "2006/01/02 15:04:05"

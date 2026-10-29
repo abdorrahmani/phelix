@@ -383,60 +383,6 @@ func TestGenericLogCollector_AppendsNewLinesSameInode(t *testing.T) {
 func identityMapper(s string) LogEntry { return LogEntry{Log: s} }
 
 // ---------------------------------------------------------------------------
-// trimLogFile — inode preservation
-// ---------------------------------------------------------------------------
-
-func TestTrimLogFile_KeepsInode(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "big.log")
-
-	// Build a file just over MaxLogSize.
-	over := MaxLogSize + 1024
-	var sb bytes.Buffer
-	for sb.Len() < over {
-		sb.WriteString("padding line ::::::::::::::::::::::::::::::::::::::::::::::::\n")
-	}
-	if err := os.WriteFile(path, sb.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := trimLogFile(path); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !os.SameFile(before, after) {
-		t.Fatal("trimLogFile changed the file's inode — open collectors lose the file")
-	}
-	if after.Size() > MaxLogSize {
-		t.Fatalf("file still %d bytes, want ≤ %d", after.Size(), MaxLogSize)
-	}
-}
-
-func TestTrimLogFile_DoesNotTouchSmallFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "small.log")
-	if err := os.WriteFile(path, []byte("tiny\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	before, _ := os.Stat(path)
-	if err := trimLogFile(path); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := os.Stat(path)
-	if !os.SameFile(before, after) || after.Size() != before.Size() {
-		t.Fatalf("small file was modified: size %d → %d", before.Size(), after.Size())
-	}
-}
-
-// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

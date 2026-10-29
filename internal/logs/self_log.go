@@ -1,17 +1,32 @@
 package logs
 
 import (
-	"os"
 	"time"
 )
 
-// CollectSelfLogs collects recent log entries from the local phelix.log file.
+// CollectSelfLogs collects recent log entries from the local phelix.log file
+// and any plain rotated archives of it.
 func CollectSelfLogs(serverID string) ([]LogEntry, error) {
 	path := SelfLogPath()
 
-	return selfCollector.Collect(serverID, path, func(line string) LogEntry {
-		return selfEntryFromLine(line, serverID)
-	})
+	var results []LogEntry
+	keys := make(map[string]bool)
+	paths := append(PlainRotatedPaths(path, 0), path)
+	for _, p := range paths {
+		key := serverID + ":" + p
+		keys[key] = true
+		out, err := selfCollector.Collect(key, p, func(line string) LogEntry {
+			return selfEntryFromLine(line, serverID)
+		})
+		if err != nil {
+			Error("logs", "failed to collect self logs from %s: %v", p, err)
+			continue
+		}
+		results = append(results, out...)
+	}
+	selfCollector.Prune(func(key string) bool { return keys[key] })
+
+	return results, nil
 }
 
 // selfEntryFromLine turns one raw phelix.log line into a LogEntry. JSON
@@ -42,22 +57,17 @@ func selfEntryFromLine(line, serverID string) LogEntry {
 	}
 }
 
-// RemoveSelfLogs checks the size of the local phelix.log file and trims it if
-// it exceeds the maximum allowed size.
-func RemoveSelfLogs() {
-	logFile := SelfLogPath()
-
-	info, err := os.Stat(logFile)
+// RotateSelfLogs rotates the daemon's own log file when it exceeds the
+// default threshold and reopens the writer onto the fresh file, so self logs
+// keep flowing into the active path after the rotation.
+func RotateSelfLogs() {
+	rotated, err := RotateLogFile(SelfLogPath(), 0, 0, true)
 	if err != nil {
-		Error("logs", "could not stat log file %s: %v", logFile, err)
+		Error("logs", "failed to rotate self log: %v", err)
 		return
 	}
-
-	if info.Size() > MaxLogSize {
-		Warning("logs", "phelix log file %s too large (%d bytes)", logFile, info.Size())
-		if err := trimLogFile(logFile); err != nil {
-			Error("logs", "failed to trim log file %s: %v", logFile, err)
-			return
-		}
+	if rotated {
+		Info("logs", "rotated self log file")
+		ReopenFileLog()
 	}
 }

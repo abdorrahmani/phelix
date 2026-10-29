@@ -89,7 +89,7 @@ func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
 		if !a.Watching {
 			continue
 		}
-		targets = append(targets, logs.AppLogTarget{ID: a.ID})
+		targets = append(targets, a.LogTarget())
 	}
 	return logs.CollectAppLogs(targets, server.GetServerID())
 }
