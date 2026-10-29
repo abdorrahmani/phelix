@@ -121,7 +121,7 @@ func (h *selfHandler) Handle(_ context.Context, r slog.Record) error {
 		logMu.Unlock()
 	}
 	if h.echo {
-		_, _ = fmt.Fprintln(os.Stderr, rec.textLine())
+		_, _ = fmt.Fprintln(os.Stderr, rec.TextLine())
 	}
 	return nil
 }

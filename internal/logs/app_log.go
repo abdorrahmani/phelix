@@ -67,7 +67,7 @@ func SelfLogPath() string {
 // files and returns them as a unified slice. Each app is read from its active
 // file and from any plain rotated file: after a rotation the app keeps
 // writing into the renamed file until it restarts, so both are live sources.
-// Failures to read a single app are logged and skipped — one broken app must
+// Failures to read a single app are logged and skipped; one broken app must
 // not block the others.
 func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error) {
 	var results []LogEntry

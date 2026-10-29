@@ -177,7 +177,7 @@ func TestCollectAccessLogsRoundTrip(t *testing.T) {
 	logs.AppendAccessRecord(logs.LogRecord{
 		TS: now, Level: logs.LevelWarning, Source: logs.SourceProxy,
 		App: "orders", AppID: "apps_1", RequestID: "req_42",
-		Msg: "GET /slow 404",
+		Msg:    "GET /slow 404",
 		Fields: map[string]string{"status": "404", "path": "/slow"},
 	})
 

@@ -113,7 +113,7 @@ func sensitiveFieldKey(key string) bool {
 // textLine renders the human-readable terminal view of a record, in the
 // legacy "2006/01/02 15:04:05 [LEVEL] [component] message" shape operators
 // already know, converted to local time.
-func (r LogRecord) textLine() string {
+func (r LogRecord) TextLine() string {
 	s := r.sanitized()
 	t, err := time.Parse(RFC3339Milli, s.TS)
 	if err != nil {
