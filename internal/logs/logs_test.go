@@ -13,7 +13,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestParseLogLine_StructuredApp(t *testing.T) {
-	raw := "2026/08/19 14:22:31 [ERROR] [stderr] connection refused: dial tcp 10.0.0.1:5432"
+	raw := "2026/08/19 14:22:31 [error] [stderr] connection refused: dial tcp 10.0.0.1:5432"
 	p := parseLogLine(raw)
 
 	if p.Level != LevelError {
@@ -62,7 +62,7 @@ func TestParseLogLine_NormalizesWarn(t *testing.T) {
 }
 
 func TestParseLogLine_StructuredStdoutIsInfo(t *testing.T) {
-	p := parseLogLine("2026/08/19 14:22:31 [INFO] [stdout] GET /health 200")
+	p := parseLogLine("2026/08/19 14:22:31 [info] [stdout] GET /health 200")
 	if p.Level != LevelInfo || p.Stream != StreamStdout {
 		t.Errorf("got level=%q stream=%q, want INFO/stdout", p.Level, p.Stream)
 	}
@@ -119,8 +119,8 @@ func TestAppLogWriter_PrefixesEveryLine(t *testing.T) {
 		t.Fatalf("got %d lines, want 3:\n%s", len(lines), got)
 	}
 	for i, l := range lines {
-		if !bytes.Contains(l, []byte("[INFO] [stdout] ")) {
-			t.Errorf("line %d missing INFO/stdout prefix: %q", i, l)
+		if !bytes.Contains(l, []byte("[info] [stdout] ")) {
+			t.Errorf("line %d missing info/stdout prefix: %q", i, l)
 		}
 		if i == 0 && !bytes.Contains(l, []byte("a")) {
 			t.Errorf("line 0 should contain 'a': %q", l)
@@ -134,8 +134,8 @@ func TestAppLogWriter_StderrDefaultsToError(t *testing.T) {
 	if _, err := w.Write([]byte("boom\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got := buf.String(); !bytes.Contains([]byte(got), []byte("[ERROR] [stderr] boom")) {
-		t.Errorf("stderr line not prefixed ERROR/stderr: %q", got)
+	if got := buf.String(); !bytes.Contains([]byte(got), []byte("[error] [stderr] boom")) {
+		t.Errorf("stderr line not prefixed error/stderr: %q", got)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestAppLogWriter_HoldsPartialLineUntilNewline(t *testing.T) {
 	if _, err := w.Write([]byte(" two\n")); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("[INFO] [stdout] part1 two")) {
+	if !bytes.Contains(buf.Bytes(), []byte("[info] [stdout] part1 two")) {
 		t.Errorf("buffered fragment not joined onto complete line: %q", buf.String())
 	}
 }
@@ -201,7 +201,7 @@ func TestCollectAppLogs_AppendsOnSuccess(t *testing.T) {
 	}
 	// Write one structured app log line to the file. Cold-start picks up the
 	// last N lines, so it must be seen on the first collect.
-	line := time.Now().Format(timeLayout) + " [INFO] [stdout] hello\n"
+	line := time.Now().Format(timeLayout) + " [info] [stdout] hello\n"
 	if err := os.WriteFile(logFile, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
 	}

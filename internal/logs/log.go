@@ -123,8 +123,6 @@ func (c *GenericLogCollector) maybeReopen(rs *readerState, path string) error {
 		return nil
 	}
 
-	// Inode changed — the path now points at a different file. Reopen and
-	// start fresh (cold-start lines) since the previous file is gone.
 	f, err := openLog(path)
 	if err != nil {
 		return err
@@ -239,7 +237,6 @@ func trimLogFile(logFile string) error {
 	}
 	f.Close()
 
-	// Drop a possibly-leading partial line.
 	if len(data) > 0 && data[0] != '\n' {
 		if i := strings.IndexByte(string(data), '\n'); i >= 0 {
 			data = data[i+1:]
@@ -296,7 +293,6 @@ func parseLogLine(line string) ParsedLog {
 		return pl
 	}
 
-	// Legacy fallback: extract timestamp if present.
 	if ts := timePrefix.FindString(raw); ts != "" {
 		if t, err := time.Parse(timeLayout, ts); err == nil {
 			pl.Timestamp = t
@@ -306,7 +302,6 @@ func parseLogLine(line string) ParsedLog {
 
 	msg := strings.ToLower(strings.TrimSpace(pl.Message))
 
-	// detect level
 	switch {
 	case strings.Contains(msg, "error"),
 		strings.Contains(msg, "failed"),
@@ -328,13 +323,34 @@ func parseLogLine(line string) ParsedLog {
 	return pl
 }
 
-// normalizeLevel maps a parsed level token to the canonical spelling used on
-// the wire. "WARN" is folded into "WARNING"; anything else is passed through.
+// normalizeLevel maps any level token found on disk or on the wire to the
+// canonical lowercase spelling. Legacy lines carry uppercase markers
+// ("INFO", "WARNING", "WARN", "ERROR", "DEBUG"); anything unrecognized is
+// treated as info.
 func normalizeLevel(l LogLevel) LogLevel {
-	switch l {
-	case LevelWarn:
+	switch LogLevel(strings.ToLower(strings.TrimSpace(string(l)))) {
+	case LevelDebug, "dbg":
+		return LevelDebug
+	case LevelWarning, "warning":
 		return LevelWarning
+	case LevelError, "err", "fatal":
+		return LevelError
 	default:
-		return l
+		return LevelInfo
+	}
+}
+
+// levelRank orders levels for filtering: debug < info < warn < error. An
+// unknown level ranks as info.
+func levelRank(l LogLevel) int {
+	switch normalizeLevel(l) {
+	case LevelDebug:
+		return 0
+	case LevelWarning:
+		return 2
+	case LevelError:
+		return 3
+	default:
+		return 1
 	}
 }

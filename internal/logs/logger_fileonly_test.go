@@ -59,7 +59,7 @@ func TestInfoFile_WritesFileNotStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read phelix.log: %v", err)
 	}
-	if !strings.Contains(string(data), "[INFO] [grpc] file-only message: action=start") {
+	if !strings.Contains(string(data), "[info] [grpc] file-only message: action=start") {
 		t.Fatalf("file-only line missing from phelix.log: %q", string(data))
 	}
 }
@@ -89,7 +89,7 @@ func TestInfo_WritesFileAndStderr(t *testing.T) {
 	stderrBytes, _ := io.ReadAll(r)
 	_ = r.Close()
 
-	if !strings.Contains(string(stderrBytes), "[INFO] [daemon] observable message") {
+	if !strings.Contains(string(stderrBytes), "[info] [daemon] observable message") {
 		t.Fatalf("Info did not mirror to stderr: %q", string(stderrBytes))
 	}
 
@@ -98,7 +98,7 @@ func TestInfo_WritesFileAndStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read phelix.log: %v", err)
 	}
-	if !strings.Contains(string(data), "[INFO] [daemon] observable message") {
+	if !strings.Contains(string(data), "[info] [daemon] observable message") {
 		t.Fatalf("Info line missing from phelix.log: %q", string(data))
 	}
 }

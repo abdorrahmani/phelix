@@ -14,18 +14,16 @@ const lastNOnColdStart = 5
 const maxLinesPerTick = 200
 
 // LogLevel is the severity of a log entry. It is a string so it can be sent
-// verbatim over the wire (MonitorLogEntry.level) and matched against the
-// on-disk `[LEVEL]` marker.
+// verbatim over the wire (MonitorLogEntry.level) and stored verbatim in a
+// LogRecord. The canonical spellings are lowercase: debug, info, warn, error.
+// Legacy lines carrying uppercase markers are normalized by normalizeLevel.
 type LogLevel string
 
 const (
-	LevelInfo    LogLevel = "INFO"
-	LevelWarning LogLevel = "WARNING"
-	LevelError   LogLevel = "ERROR"
-	LevelDebug   LogLevel = "DEBUG"
-	// LevelWarn is a parse-tolerant alias for WARNING. Lines authored with
-	// `[WARN]` are normalized to LevelWarning by parseLogLine.
-	LevelWarn LogLevel = "WARN"
+	LevelDebug   LogLevel = "debug"
+	LevelInfo    LogLevel = "info"
+	LevelWarning LogLevel = "warn"
+	LevelError   LogLevel = "error"
 )
 
 // LogStream identifies whether an application log line originated on the
@@ -46,7 +44,7 @@ var (
 	// The bracketed tag is either "stdout"/"stderr" (app logs) or a
 	// component name (self logs). Unknown/legacy lines fall back to the
 	// heuristic parse in parseLogLine.
-	structuredLine = regexp.MustCompile(`^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s+\[(INFO|WARNING|WARN|ERROR|DEBUG)\]\s+\[([^\]]+)\]\s?(.*)$`)
+	structuredLine = regexp.MustCompile(`(?i)^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s+\[(INFO|WARNING|WARN|ERROR|DEBUG)\]\s+\[([^\]]+)\]\s?(.*)$`)
 )
 
 // ParsedLog is the result of interpreting a single raw log line.
