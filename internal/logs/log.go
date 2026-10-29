@@ -2,6 +2,7 @@ package logs
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -257,15 +258,47 @@ func trimLogFile(logFile string) error {
 
 var timeLayout = "2006/01/02 15:04:05"
 
-// parseLogLine interprets a single raw log line into a ParsedLog.
-//
-// Two formats are understood:
-//
-//  1. Structured (authored by phelix's capture/writer layers):
-//     "2006/01/02 15:04:05 [INFO] [stdout] message" — the level, stream
-//     (app logs) or component (self logs) and message are taken verbatim.
-//  2. Legacy (raw app output, or older phelix.log lines): the level is
-//     inferred from keywords in the message and the stream is unknown.
+// RecordFromLine interprets one raw log line. Lines written since the unified
+// record format are JSON and parse directly; anything else falls back to the
+// legacy text marker parser. ok is false only for blank lines.
+func RecordFromLine(line string) (LogRecord, bool) {
+	raw := strings.TrimSpace(line)
+	if raw == "" {
+		return LogRecord{}, false
+	}
+
+	if strings.HasPrefix(raw, "{") {
+		var rec LogRecord
+		if err := json.Unmarshal([]byte(raw), &rec); err == nil && rec.Source != "" {
+			rec.Level = normalizeLevel(rec.Level)
+			rec.Msg = strings.TrimSpace(rec.Msg)
+			if rec.TS == "" {
+				rec.TS = time.Now().UTC().Format(RFC3339Milli)
+			}
+			return rec, true
+		}
+	}
+
+	p := parseLogLine(raw)
+	rec := LogRecord{
+		Level:     p.Level,
+		Msg:       p.Message,
+		Stream:    p.Stream,
+		Component: p.Component,
+	}
+	if !p.Timestamp.IsZero() {
+		rec.TS = p.Timestamp.UTC().Format(RFC3339Milli)
+	}
+	return rec, true
+}
+
+// parseLogLine interprets a legacy text line into a ParsedLog. Two shapes are
+// understood: phelix-authored marker lines
+// "2006/01/02 15:04:05 [LEVEL] [stream-or-component] message", whose level,
+// stream/component and message are taken verbatim, and raw unmarked output
+// whose level is inferred from keywords in the message. This parser exists
+// only to read log files written before the unified record format; it is
+// scheduled for removal once old files have rotated out.
 func parseLogLine(line string) ParsedLog {
 	raw := strings.TrimSpace(line)
 
@@ -277,50 +310,58 @@ func parseLogLine(line string) ParsedLog {
 		Stream:    StreamUnknown,
 	}
 
-	// Structured format first.
-	if m := structuredLine.FindStringSubmatch(raw); m != nil {
-		if t, err := time.Parse(timeLayout, m[1]); err == nil {
+	if len(raw) > len(timeLayout) && raw[len(timeLayout)] == ' ' {
+		if t, err := time.Parse(timeLayout, raw[:len(timeLayout)]); err == nil {
 			pl.Timestamp = t
+			rest := strings.TrimSpace(raw[len(timeLayout):])
+			if strings.HasPrefix(rest, "[") {
+				if end := strings.IndexByte(rest, ']'); end > 0 {
+					pl.Level = normalizeLevel(LogLevel(rest[1:end]))
+					rest = strings.TrimSpace(rest[end+1:])
+					if strings.HasPrefix(rest, "[") {
+						if tagEnd := strings.IndexByte(rest, ']'); tagEnd > 0 {
+							tag := strings.ToLower(strings.TrimSpace(rest[1:tagEnd]))
+							if tag == string(StreamStdout) || tag == string(StreamStderr) {
+								pl.Stream = LogStream(tag)
+							} else {
+								pl.Component = tag
+							}
+							rest = strings.TrimSpace(rest[tagEnd+1:])
+						}
+					}
+					pl.Message = rest
+					return pl
+				}
+			}
+			pl.Message = rest
 		}
-		pl.Level = normalizeLevel(LogLevel(m[2]))
-		tag := strings.ToLower(strings.TrimSpace(m[3]))
-		if tag == string(StreamStdout) || tag == string(StreamStderr) {
-			pl.Stream = LogStream(tag)
-		} else {
-			pl.Component = tag
-		}
-		pl.Message = m[4]
-		return pl
 	}
 
-	if ts := timePrefix.FindString(raw); ts != "" {
-		if t, err := time.Parse(timeLayout, ts); err == nil {
-			pl.Timestamp = t
-			pl.Message = strings.TrimSpace(strings.TrimPrefix(raw, ts))
-		}
-	}
+	pl.Level = textLevel(pl.Message)
+	return pl
+}
 
-	msg := strings.ToLower(strings.TrimSpace(pl.Message))
-
+// textLevel infers a level from keywords in a raw message. This is the last
+// resort for lines that carry no explicit level anywhere.
+func textLevel(msg string) LogLevel {
+	low := strings.ToLower(strings.TrimSpace(msg))
 	switch {
-	case strings.Contains(msg, "error"),
-		strings.Contains(msg, "failed"),
-		strings.Contains(msg, "panic"):
-		pl.Level = LevelError
+	case strings.Contains(low, "error"),
+		strings.Contains(low, "failed"),
+		strings.Contains(low, "panic"):
+		return LevelError
 
-	case strings.Contains(msg, "warn"),
-		strings.Contains(msg, "⚠"):
-		pl.Level = LevelWarning
+	case strings.Contains(low, "warn"),
+		strings.Contains(low, "⚠"):
+		return LevelWarning
 
-	case strings.Contains(msg, "debug"),
-		strings.Contains(msg, "[gin-debug]"):
-		pl.Level = LevelDebug
+	case strings.Contains(low, "debug"),
+		strings.Contains(low, "[gin-debug]"):
+		return LevelDebug
 
 	default:
-		pl.Level = LevelInfo
+		return LevelInfo
 	}
-
-	return pl
 }
 
 // normalizeLevel maps any level token found on disk or on the wire to the

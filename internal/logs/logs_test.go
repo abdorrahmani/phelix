@@ -449,3 +449,33 @@ func setHome(t *testing.T, dir string) {
 	t.Setenv("HOME", dir)
 	t.Setenv("PHELIX_DATA_DIR", "")
 }
+
+func TestCollectAppLogs_JSONRecordEnrichment(t *testing.T) {
+	dir := t.TempDir()
+	setHome(t, dir)
+
+	target := AppLogTarget{ID: "apps_json", Name: "orders", Version: "v19"}
+	logFile := AppLogPath(target.ID)
+	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"ts":"` + time.Now().UTC().Format(RFC3339Milli) + `","level":"warn","source":"app","msg":"slow request","request_id":"req_9"}` + "\n"
+	if err := os.WriteFile(logFile, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := CollectAppLogs([]AppLogTarget{target}, "srv-1")
+	if err != nil {
+		t.Fatalf("CollectAppLogs returned error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	e := got[0]
+	if e.App != "orders" || e.Version != "v19" || e.Level != LevelWarning || e.RequestID != "req_9" || e.Log != "slow request" {
+		t.Errorf("entry not enriched from record and target: %+v", e)
+	}
+	if e.Stream != StreamUnknown {
+		t.Errorf("JSON records carry no stream, got %q", e.Stream)
+	}
+}

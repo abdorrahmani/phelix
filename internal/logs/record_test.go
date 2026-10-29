@@ -107,3 +107,62 @@ func TestParseRecordTime(t *testing.T) {
 		t.Errorf("RFC3339 without millis must still parse")
 	}
 }
+
+func TestRecordFromLine_JSON(t *testing.T) {
+	line := `{"ts":"2026-10-29T18:00:00.123Z","level":"warn","source":"app","app":"orders","msg":"slow request","request_id":"req_1","fields":{"path":"/x"}}`
+	rec, ok := RecordFromLine(line)
+	if !ok {
+		t.Fatalf("JSON record line did not parse")
+	}
+	if rec.Level != LevelWarning || rec.App != "orders" || rec.Msg != "slow request" {
+		t.Errorf("unexpected record: %+v", rec)
+	}
+	if rec.RequestID != "req_1" {
+		t.Errorf("request_id = %q, want req_1", rec.RequestID)
+	}
+	if rec.Fields["path"] != "/x" {
+		t.Errorf("fields = %v", rec.Fields)
+	}
+
+	rec, ok = RecordFromLine(`{"ts":"2026-10-29T18:00:00.123Z","level":"ERROR","source":"self","msg":"bad"}`)
+	if !ok || rec.Level != LevelError {
+		t.Errorf("uppercase level token must normalize: ok=%v level=%q", ok, rec.Level)
+	}
+}
+
+func TestRecordFromLine_RejectsNonRecordJSON(t *testing.T) {
+	rec, ok := RecordFromLine(`{"unrelated":"json blob"}`)
+	if !ok {
+		t.Fatalf("non-record JSON must fall through to the text path, not drop")
+	}
+	if rec.Msg != `{"unrelated":"json blob"}` {
+		t.Errorf("non-record JSON must pass through as raw text, got %q", rec.Msg)
+	}
+}
+
+func TestRecordFromLine_Legacy(t *testing.T) {
+	rec, ok := RecordFromLine("2026/08/19 14:22:31 [ERROR] [stderr] boom")
+	if !ok {
+		t.Fatalf("legacy marker line did not parse")
+	}
+	if rec.Level != LevelError || rec.Stream != StreamStderr || rec.Msg != "boom" {
+		t.Errorf("unexpected record: %+v", rec)
+	}
+	if got := ParseRecordTime(rec.TS).Format(timeLayout); got != "2026/08/19 14:22:31" {
+		t.Errorf("ts = %q", rec.TS)
+	}
+
+	rec, ok = RecordFromLine("just some bare text")
+	if !ok || rec.Level != LevelInfo || rec.Msg != "just some bare text" || rec.TS != "" {
+		t.Errorf("bare text: ok=%v rec=%+v", ok, rec)
+	}
+}
+
+func TestRecordFromLine_Blank(t *testing.T) {
+	if _, ok := RecordFromLine(""); ok {
+		t.Errorf("empty line must not parse")
+	}
+	if _, ok := RecordFromLine("   \n"); ok {
+		t.Errorf("whitespace line must not parse")
+	}
+}

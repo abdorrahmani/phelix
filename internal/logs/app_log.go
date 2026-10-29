@@ -38,9 +38,18 @@ var (
 
 // AppLogTarget identifies one managed application whose log file should be
 // collected. Paths are derived from the app ID (see AppLogPath), keeping the
-// logs package free of any dependency on the app manager.
+// logs package free of any dependency on the app manager. The caller
+// enriches targets with what the log file itself cannot carry: the app's
+// human-readable name, its serving version, and its logging configuration.
 type AppLogTarget struct {
-	ID string
+	ID        string
+	Name      string
+	Version   string
+	JSONLogs  bool
+	LogLevel  string
+	MaxSizeMB int
+	MaxFiles  int
+	Compress  bool
 }
 
 // AppLogPath returns the on-disk path for an application's combined
@@ -64,20 +73,7 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 		logFile := AppLogPath(t.ID)
 
 		out, err := appCollector.Collect(t.ID, logFile, func(line string) LogEntry {
-			p := parseLogLine(line)
-			if p.Timestamp.IsZero() {
-				p.Timestamp = time.Now()
-			}
-			return LogEntry{
-				ID:        t.ID,
-				ServerID:  serverID,
-				AppID:     t.ID,
-				Log:       p.Message,
-				Date:      p.Timestamp,
-				Level:     p.Level,
-				Stream:    p.Stream,
-				Component: p.Component,
-			}
+			return appEntryFromLine(t, line, serverID)
 		})
 		if err != nil {
 			Error("logs", "failed to collect logs for app %s: %v", t.ID, err)
@@ -87,6 +83,44 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 	}
 
 	return results, nil
+}
+
+// appEntryFromLine turns one raw line from an app's log file into a LogEntry.
+// JSON record lines carry their own level and correlation fields; legacy
+// lines fall back to stream-based and keyword-based level inference. The
+// target's name and version enrich every line: the file only stores the app
+// id, and the human-readable name plus the serving version are what the
+// dashboard groups by.
+func appEntryFromLine(t AppLogTarget, line, serverID string) LogEntry {
+	now := time.Now().UTC().Format(RFC3339Milli)
+	rec, ok := RecordFromLine(line)
+	if !ok {
+		rec = LogRecord{TS: now, Level: LevelInfo}
+	}
+	rec.Source = SourceApp
+	rec.App = t.Name
+	rec.AppID = t.ID
+	if rec.TS == "" {
+		rec.TS = now
+	}
+	if rec.Version == "" {
+		rec.Version = t.Version
+	}
+	return LogEntry{
+		ID:        t.ID,
+		ServerID:  serverID,
+		AppID:     t.ID,
+		App:       rec.App,
+		Log:       rec.Msg,
+		Date:      ParseRecordTime(rec.TS),
+		Level:     rec.Level,
+		Stream:    rec.Stream,
+		Component: rec.Component,
+		Version:   rec.Version,
+		DeployID:  rec.DeployID,
+		RequestID: rec.RequestID,
+		Fields:    rec.Fields,
+	}
 }
 
 // RemovePreviousLogs checks the size of each given app's local log file and
