@@ -80,8 +80,6 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 			}
 		})
 		if err != nil {
-			// The file may not exist yet (app started but emitted nothing), or
-			// was deleted. Skip this app rather than failing the whole batch.
 			Error("logs", "failed to collect logs for app %s: %v", t.ID, err)
 			continue
 		}

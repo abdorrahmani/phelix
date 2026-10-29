@@ -10,35 +10,6 @@ import (
 	"time"
 )
 
-// This file provides the standardized, leveled logger every part of the
-// Phelix agent uses for its own ("self") logs. It achieves two goals:
-//
-//  1. Consistency — every self log line is written in the same structured
-//     format the parser understands and the backend displays:
-//     "2006/01/02 15:04:05 [LEVEL] [component] message"
-//
-//  2. Delivery — self logs must reach the backend. They do so by being
-//     written to ~/.phelix/logs/phelix.log, which the monitor daemon tails
-//     and forwards as MonitorLogEntry{source: LOG_SOURCE_SELF}. The global
-//     Go "log" package is pointed at the same file so even code that still
-//     calls log.Printf lands in the same place (assigned [INFO] [misc]).
-//
-// Two write paths exist:
-//
-//   - Info/Warning/Error/Debug — write to the log file AND mirror to stderr.
-//     This is for daemon-level activity an operator running `phelix monitor`
-//     in the foreground (or under systemd) should see on the terminal.
-//
-//   - InfoFile/WarningFile/ErrorFile/DebugFile — write to the log file ONLY.
-//     This is for short-lived CLI operations whose self-logs exist to reach
-//     the backend (event reporting, version sync, …). Echoing them to stderr
-//     would pollute the user's command output, so they are kept off the
-//     terminal.
-//
-// Use Info/Warning/Error/Debug(component, format, args...) throughout. Keep
-// the component short and stable — it is what the backend groups self logs
-// by. See the registry in docs/logging-backend.md.
-
 var (
 	logFileHandle *os.File
 	logMu         sync.Mutex
@@ -60,8 +31,6 @@ func initFileLogLocked() {
 
 	logDir := filepath.Join(dataDir(), "logs")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
-		// Fall back to stderr only — the daemon still needs its diagnostics
-		// somewhere, and self-log delivery degrades to the terminal.
 		log.SetOutput(os.Stderr)
 		log.SetFlags(log.LstdFlags)
 		return
@@ -76,8 +45,6 @@ func initFileLogLocked() {
 
 	logFileHandle = f
 
-	// Global logger → the same file, with flags off: we already add our own
-	// timestamp, so left-over log.Printf call sites shouldn't double-prefix.
 	log.SetOutput(f)
 	log.SetFlags(0)
 }
@@ -85,7 +52,7 @@ func initFileLogLocked() {
 // formatLevel renders a self-log line in the canonical structured format
 // understood by the parser and the backend:
 // "2006/01/02 15:04:05 [LEVEL] [component] message".
-func formatLevel(level LogLevel, component, format string, args ...interface{}) string {
+func formatLevel(level LogLevel, component, format string, args ...any) string {
 	msg := fmt.Sprintf(format, args...)
 	return time.Now().Format(timeLayout) + " [" + string(level) + "] [" + component + "] " + msg
 }
@@ -94,8 +61,8 @@ func formatLevel(level LogLevel, component, format string, args ...interface{}) 
 // echoing it to stderr. This is the transport path for short-lived CLI
 // operations whose logs must reach the backend but must not clutter the
 // user's terminal output.
-func writeLevelFile(level LogLevel, component, format string, args ...interface{}) {
-	InitFileLog() // ensure file output exists before first write
+func writeLevelFile(level LogLevel, component, format string, args ...any) {
+	InitFileLog()
 
 	line := formatLevel(level, component, format, args...)
 
@@ -111,8 +78,6 @@ func writeLevelFile(level LogLevel, component, format string, args ...interface{
 // what gets shipped to the backend.
 func writeLevel(level LogLevel, component, format string, args ...interface{}) {
 	writeLevelFile(level, component, format, args...)
-
-	// Mirror to stderr so operators see daemon activity on the terminal too.
 	_, _ = fmt.Fprintln(os.Stderr, formatLevel(level, component, format, args...))
 }
 
