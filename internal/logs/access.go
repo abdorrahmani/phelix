@@ -78,13 +78,16 @@ func CollectAccessLogs(serverID string) ([]LogEntry, error) {
 	path := AccessLogPath()
 
 	var results []LogEntry
+	var stored []LogRecord
 	keys := make(map[string]bool)
 	paths := append(PlainRotatedPaths(path, 0), path)
 	for _, p := range paths {
 		key := "access:" + p
 		keys[key] = true
 		out, err := accessCollector.Collect(key, p, func(line string) LogEntry {
-			return accessEntryFromLine(line, serverID)
+			entry, rec := accessEntryFromLine(line, serverID)
+			stored = append(stored, rec)
+			return entry
 		})
 		if err != nil {
 			continue
@@ -92,12 +95,13 @@ func CollectAccessLogs(serverID string) ([]LogEntry, error) {
 		results = append(results, out...)
 	}
 	accessCollector.Prune(func(key string) bool { return keys[key] })
+	StoreRecords(stored)
 
 	return results, nil
 }
 
 // accessEntryFromLine turns one raw access-log line into a LogEntry.
-func accessEntryFromLine(line, serverID string) LogEntry {
+func accessEntryFromLine(line, serverID string) (LogEntry, LogRecord) {
 	now := time.Now().UTC().Format(RFC3339Milli)
 	rec, ok := RecordFromLine(line)
 	if !ok {
@@ -118,5 +122,5 @@ func accessEntryFromLine(line, serverID string) LogEntry {
 		RequestID: rec.RequestID,
 		Component: rec.Component,
 		Fields:    rec.Fields,
-	}
+	}, rec
 }

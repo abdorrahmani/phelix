@@ -10,13 +10,16 @@ func CollectSelfLogs(serverID string) ([]LogEntry, error) {
 	path := SelfLogPath()
 
 	var results []LogEntry
+	var stored []LogRecord
 	keys := make(map[string]bool)
 	paths := append(PlainRotatedPaths(path, 0), path)
 	for _, p := range paths {
 		key := serverID + ":" + p
 		keys[key] = true
 		out, err := selfCollector.Collect(key, p, func(line string) LogEntry {
-			return selfEntryFromLine(line, serverID)
+			entry, rec := selfEntryFromLine(line, serverID)
+			stored = append(stored, rec)
+			return entry
 		})
 		if err != nil {
 			Error("logs", "failed to collect self logs from %s: %v", p, err)
@@ -25,6 +28,7 @@ func CollectSelfLogs(serverID string) ([]LogEntry, error) {
 		results = append(results, out...)
 	}
 	selfCollector.Prune(func(key string) bool { return keys[key] })
+	StoreRecords(stored)
 
 	return results, nil
 }
@@ -32,7 +36,7 @@ func CollectSelfLogs(serverID string) ([]LogEntry, error) {
 // selfEntryFromLine turns one raw phelix.log line into a LogEntry. JSON
 // record lines written by the slog handler carry their own level and
 // component; legacy text lines fall back to the marker parser.
-func selfEntryFromLine(line, serverID string) LogEntry {
+func selfEntryFromLine(line, serverID string) (LogEntry, LogRecord) {
 	now := time.Now().UTC().Format(RFC3339Milli)
 	rec, ok := RecordFromLine(line)
 	if !ok {
@@ -54,7 +58,7 @@ func selfEntryFromLine(line, serverID string) LogEntry {
 		DeployID:  rec.DeployID,
 		RequestID: rec.RequestID,
 		Fields:    rec.Fields,
-	}
+	}, rec
 }
 
 // RotateSelfLogs rotates the daemon's own log file when it exceeds the

@@ -159,6 +159,10 @@ func runMonitor() error {
 		}
 	}()
 
+	if logs.LogStoreEnabled() {
+		go logs.StartStoreRetention(done)
+	}
+
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()

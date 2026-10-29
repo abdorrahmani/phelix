@@ -71,6 +71,7 @@ func SelfLogPath() string {
 // not block the others.
 func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error) {
 	var results []LogEntry
+	var stored []LogRecord
 	keys := make(map[string]bool)
 
 	for _, t := range targets {
@@ -85,7 +86,11 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 			key := t.ID + ":" + p
 			keys[key] = true
 			out, err := appCollector.Collect(key, p, func(line string) LogEntry {
-				return appEntryFromLine(t, line, serverID)
+				entry, rec := appEntryFromLine(t, line, serverID)
+				if minRank < 0 || levelRank(rec.Level) >= minRank {
+					stored = append(stored, rec)
+				}
+				return entry
 			})
 			if err != nil {
 				Error("logs", "failed to collect logs for app %s: %v", t.ID, err)
@@ -100,6 +105,7 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 		}
 	}
 	appCollector.Prune(func(key string) bool { return keys[key] })
+	StoreRecords(stored)
 
 	return results, nil
 }
@@ -111,7 +117,7 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 // version enrich every line: the file only stores the app id, and the
 // human-readable name plus the serving version are what the dashboard groups
 // by.
-func appEntryFromLine(t AppLogTarget, line, serverID string) LogEntry {
+func appEntryFromLine(t AppLogTarget, line, serverID string) (LogEntry, LogRecord) {
 	now := time.Now()
 	rec, ok := detectAppRecord(line, t.JSONLogs, now)
 	if !ok {
@@ -140,7 +146,7 @@ func appEntryFromLine(t AppLogTarget, line, serverID string) LogEntry {
 		DeployID:  rec.DeployID,
 		RequestID: rec.RequestID,
 		Fields:    rec.Fields,
-	}
+	}, rec
 }
 
 // RotateAppLogs rotates every given app's log file when it exceeds its
