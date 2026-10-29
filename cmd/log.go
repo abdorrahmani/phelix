@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,9 @@ var (
 	logNoFollow bool
 	logSince    string
 	logJSON     bool
+	logLevel    string
+	logVersion  string
+	logApp      string
 )
 
 var LogCmd = &cobra.Command{
@@ -55,6 +59,23 @@ var LogCmd = &cobra.Command{
 		since, err := parseLogSince(logSince)
 		if err != nil {
 			return err
+		}
+
+		if len(args) > 0 && logApp != "" && args[0] != logApp {
+			return phelixerr.New(phelixerr.CodeInvalidArgument,
+				"use either the positional app argument or --app, not both")
+		}
+		if len(args) == 0 && logApp != "" {
+			args = []string{logApp}
+		}
+
+		if logLevel != "" || logVersion != "" {
+			if !logs.LogStoreEnabled() {
+				return phelixerr.New(phelixerr.CodeInvalidArgument,
+					"--level/--version query the long-term store, which is disabled; "+
+						"start the monitor daemon with PHELIX_LOG_STORE=1 to enable it")
+			}
+			return showLogStoreQuery(args, since)
 		}
 
 		if len(args) == 0 {
@@ -227,11 +248,80 @@ type readCloser struct {
 
 func (rc readCloser) Close() error { return rc.closer.Close() }
 
+// logStoreResult is the machine-contract result of a store query.
+type logStoreResult struct {
+	App     string           `json:"app,omitempty"`
+	Level   string           `json:"level,omitempty"`
+	Version string           `json:"version,omitempty"`
+	Count   int              `json:"count"`
+	Items   []logs.LogRecord `json:"items"`
+}
+
+// showLogStoreQuery runs the long-term store query. The positional argument
+// (or --app) narrows the query to one app; without it, every app's records
+// are searched. --lines doubles as the result cap.
+func showLogStoreQuery(args []string, since *time.Time) error {
+	appName := ""
+	if len(args) > 0 {
+		appInfo, err := GetAppInfo(args[0])
+		if err != nil {
+			return err
+		}
+		appName = appInfo.Name
+	}
+
+	s, err := logs.OpenLogStore()
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to open the log store", err)
+	}
+	defer s.Close()
+
+	records, err := s.Query(appName, logs.LogLevel(logLevel), logVersion, "", sinceOrZero(since), logLines)
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "log store query failed", err)
+	}
+
+	if machine.Active() {
+		return writeEnvelopeResult(machine.Success("", logStoreResult{
+			App:     appName,
+			Level:   logLevel,
+			Version: logVersion,
+			Count:   len(records),
+			Items:   records,
+		}))
+	}
+
+	for _, rec := range records {
+		fmt.Println(rec.TextLine())
+	}
+	if len(records) == 0 {
+		fmt.Println("  (no matching records in the long-term store)")
+	}
+	return nil
+}
+
+// sinceOrZero maps a nil since to the zero time the store query expects.
+func sinceOrZero(since *time.Time) time.Time {
+	if since == nil {
+		return time.Time{}
+	}
+	return *since
+}
+
 // parseLogSince parses --since as either a Go duration relative to now
-// ("30m", "2h") or an RFC3339 timestamp. Empty means no filter.
+// ("30m", "2h"), a day count ("30d"), or an RFC3339 timestamp. Empty means
+// no filter.
 func parseLogSince(raw string) (*time.Time, error) {
 	if raw == "" {
 		return nil, nil
+	}
+	if strings.HasSuffix(raw, "d") {
+		if days, err := strconv.Atoi(strings.TrimSuffix(raw, "d")); err == nil && days > 0 {
+			t := time.Now().AddDate(0, 0, -days)
+			return &t, nil
+		}
+		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid --since %q: day counts look like 30d", raw)
 	}
 	if d, err := time.ParseDuration(raw); err == nil {
 		if d <= 0 {
@@ -349,4 +439,10 @@ func init() {
 		"Only show lines logged after this point: a Go duration (30m, 2h) or RFC3339 timestamp")
 	LogCmd.Flags().BoolVar(&logJSON, "json", false,
 		"Output a bounded machine-readable snapshot (implies --no-follow; cannot be combined with following)")
+	LogCmd.Flags().StringVar(&logLevel, "level", "",
+		"Query the long-term store for a level (debug, info, warn, error); requires the monitor to run with PHELIX_LOG_STORE=1")
+	LogCmd.Flags().StringVar(&logVersion, "version", "",
+		"Query the long-term store for one serving version (e.g. v18); requires the store")
+	LogCmd.Flags().StringVar(&logApp, "app", "",
+		"App name for the store query (alternative to the positional argument)")
 }
