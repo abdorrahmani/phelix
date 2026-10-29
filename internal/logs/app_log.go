@@ -79,29 +79,39 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 			Error("logs", "failed to collect logs for app %s: %v", t.ID, err)
 			continue
 		}
-		results = append(results, out...)
+		minRank := -1
+		if t.LogLevel != "" {
+			minRank = levelRank(LogLevel(t.LogLevel))
+		}
+		for _, e := range out {
+			if minRank >= 0 && levelRank(e.Level) < minRank {
+				continue
+			}
+			results = append(results, e)
+		}
 	}
 
 	return results, nil
 }
 
 // appEntryFromLine turns one raw line from an app's log file into a LogEntry.
-// JSON record lines carry their own level and correlation fields; legacy
-// lines fall back to stream-based and keyword-based level inference. The
-// target's name and version enrich every line: the file only stores the app
-// id, and the human-readable name plus the serving version are what the
-// dashboard groups by.
+// JSON output (Go slog, Rust tracing) carries the app's real level and
+// correlation fields; plain text falls back to explicit markers, the stream
+// default and the keyword heuristics, in that order. The target's name and
+// version enrich every line: the file only stores the app id, and the
+// human-readable name plus the serving version are what the dashboard groups
+// by.
 func appEntryFromLine(t AppLogTarget, line, serverID string) LogEntry {
-	now := time.Now().UTC().Format(RFC3339Milli)
-	rec, ok := RecordFromLine(line)
+	now := time.Now()
+	rec, ok := detectAppRecord(line, t.JSONLogs, now)
 	if !ok {
-		rec = LogRecord{TS: now, Level: LevelInfo}
+		rec = LogRecord{TS: now.UTC().Format(RFC3339Milli), Level: LevelInfo}
 	}
 	rec.Source = SourceApp
 	rec.App = t.Name
 	rec.AppID = t.ID
 	if rec.TS == "" {
-		rec.TS = now
+		rec.TS = now.UTC().Format(RFC3339Milli)
 	}
 	if rec.Version == "" {
 		rec.Version = t.Version
