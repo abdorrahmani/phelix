@@ -50,6 +50,10 @@ type Request struct {
 	PublicPort int      `json:"public_port,omitempty"`
 	Primary    *Target  `json:"primary,omitempty"`
 	Backends   []Target `json:"backends,omitempty"`
+	// AccessLog carries the app's access-log mode ("all", "off" or empty for
+	// default sampling) on enroll; empty means "keep the mode the daemon
+	// already has" when re-enrolling an existing app.
+	AccessLog string `json:"access_log,omitempty"`
 }
 
 // Response is the wire format from daemon -> client.
@@ -76,6 +80,7 @@ type persistedApp struct {
 	PublicPort int      `json:"public_port"`
 	Primary    Target   `json:"primary"`
 	Backends   []Target `json:"backends,omitempty"`
+	AccessLog  string   `json:"access_log,omitempty"`
 }
 
 // proxyPersistFile is the on-disk shape of ~/.phelix/proxy-state.json. The
@@ -215,8 +220,11 @@ func (d *Daemon) startAppProxy(p *Proxy) error {
 	return nil
 }
 
-// EnrollApp adds an app to the daemon and starts proxying on its public port.
-func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backends []Target) error {
+// EnrollApp adds an app to the daemon and starts proxying on its public
+// port. accessMode is the app's access-log setting (see AccessLogAll); an
+// empty value keeps the previous mode on re-enroll and applies default
+// sampling on first enroll.
+func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backends []Target, accessMode string) error {
 	if appName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "proxy: appName is required")
 	}
@@ -234,11 +242,15 @@ func (d *Daemon) EnrollApp(appName string, publicPort int, primary Target, backe
 	if existing != nil && existing.PublicPort == publicPort {
 		// Same public port: swap membership under the live listener.
 		existing.SetTarget(primary, backends...)
+		if accessMode != "" {
+			existing.AccessMode = accessMode
+		}
 		d.persistState()
 		return nil
 	}
 
 	p := New(appName, publicPort, primary)
+	p.AccessMode = accessMode
 	if len(backends) > 0 {
 		p.SetTarget(primary, backends...)
 	}
@@ -314,6 +326,7 @@ func (d *Daemon) snapshotPersist() proxyPersistFile {
 			PublicPort: p.PublicPort,
 			Primary:    st.primary,
 			Backends:   append([]Target(nil), st.targets...),
+			AccessLog:  p.AccessMode,
 		})
 	}
 	sort.Slice(out.Apps, func(i, j int) bool { return out.Apps[i].AppName < out.Apps[j].AppName })
@@ -414,6 +427,7 @@ func (d *Daemon) restoreState() {
 		}
 		primary, backends := reconcileBackends(app.Primary, app.Backends)
 		p := New(app.AppName, app.PublicPort, primary)
+		p.AccessMode = app.AccessLog
 		if len(backends) > 0 {
 			p.SetTarget(primary, backends...)
 		}
@@ -503,7 +517,7 @@ func (d *Daemon) handleConn(conn net.Conn) {
 			writeResponse(conn, Response{OK: false, Error: "primary is required for add"})
 			return
 		}
-		if err := d.EnrollApp(req.AppName, req.PublicPort, *req.Primary, req.Backends); err != nil {
+		if err := d.EnrollApp(req.AppName, req.PublicPort, *req.Primary, req.Backends, req.AccessLog); err != nil {
 			writeResponse(conn, Response{OK: false, Error: err.Error()})
 			return
 		}
@@ -632,7 +646,14 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Add enrols a new app.
 func (c *Client) Add(ctx context.Context, appName string, publicPort int, primary Target, backends ...Target) error {
-	resp, err := c.Do(ctx, Request{Op: OpAdd, AppName: appName, PublicPort: publicPort, Primary: &primary, Backends: backends})
+	resp, err := c.Do(ctx, Request{
+		Op:         OpAdd,
+		AppName:    appName,
+		PublicPort: publicPort,
+		Primary:    &primary,
+		Backends:   backends,
+		AccessLog:  resolveAccessMode(appName, ""),
+	})
 	if err != nil {
 		return err
 	}
