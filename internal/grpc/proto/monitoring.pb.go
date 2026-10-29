@@ -29,6 +29,10 @@ const (
 	LogSource_LOG_SOURCE_UNSPECIFIED LogSource = 0
 	LogSource_LOG_SOURCE_APPLICATION LogSource = 1
 	LogSource_LOG_SOURCE_SELF        LogSource = 2
+	// LOG_SOURCE_PROXY marks proxy access-log entries: one sampled record per
+	// request the reverse proxy served, carrying request_id and the traffic
+	// fields. Only sent inside log_batch.
+	LogSource_LOG_SOURCE_PROXY LogSource = 3
 )
 
 // Enum value maps for LogSource.
@@ -37,11 +41,13 @@ var (
 		0: "LOG_SOURCE_UNSPECIFIED",
 		1: "LOG_SOURCE_APPLICATION",
 		2: "LOG_SOURCE_SELF",
+		3: "LOG_SOURCE_PROXY",
 	}
 	LogSource_value = map[string]int32{
 		"LOG_SOURCE_UNSPECIFIED": 0,
 		"LOG_SOURCE_APPLICATION": 1,
 		"LOG_SOURCE_SELF":        2,
+		"LOG_SOURCE_PROXY":       3,
 	}
 )
 
@@ -1731,7 +1737,12 @@ func (x *AppStorage) GetTempDir() string {
 }
 
 // MonitorLogEntry mirrors logs.LogEntry. Sent on every monitoring tick for
-// both application and self logs.
+// both application and self logs (individually, as log_entry) and for proxy
+// access logs (only inside log_batch).
+//
+// level carries the canonical lowercase spelling: debug, info, warn, error.
+// Older agents sent uppercase markers; the unified record format defines
+// lowercase as the wire contract.
 type MonitorLogEntry struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Id       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1746,7 +1757,22 @@ type MonitorLogEntry struct {
 	Stream LogStream `protobuf:"varint,8,opt,name=stream,proto3,enum=phelix.LogStream" json:"stream,omitempty"`
 	// component is populated for self (daemon) logs (e.g. "monitor", "health",
 	// "grpc") and empty for application logs.
-	Component     string `protobuf:"bytes,9,opt,name=component,proto3" json:"component,omitempty"`
+	Component string `protobuf:"bytes,9,opt,name=component,proto3" json:"component,omitempty"`
+	// app is the human-readable application name (empty for self logs).
+	App string `protobuf:"bytes,10,opt,name=app,proto3" json:"app,omitempty"`
+	// version is the serving version the line belongs to, e.g. "v19" (best
+	// effort; empty when the agent cannot resolve it).
+	Version string `protobuf:"bytes,11,opt,name=version,proto3" json:"version,omitempty"`
+	// deploy_id links every line produced by one deployment operation. Empty
+	// when the line was not produced inside a deployment.
+	DeployId string `protobuf:"bytes,12,opt,name=deploy_id,json=deployId,proto3" json:"deploy_id,omitempty"`
+	// request_id is set on proxy access entries and on any log line emitted
+	// while processing that request.
+	RequestId string `protobuf:"bytes,13,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// fields carries the record's extra structured data. Values are strings;
+	// the agent redacts credential material out of them and never stores
+	// environment variables here.
+	Fields        map[string]string `protobuf:"bytes,14,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1844,6 +1870,102 @@ func (x *MonitorLogEntry) GetComponent() string {
 	return ""
 }
 
+func (x *MonitorLogEntry) GetApp() string {
+	if x != nil {
+		return x.App
+	}
+	return ""
+}
+
+func (x *MonitorLogEntry) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *MonitorLogEntry) GetDeployId() string {
+	if x != nil {
+		return x.DeployId
+	}
+	return ""
+}
+
+func (x *MonitorLogEntry) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *MonitorLogEntry) GetFields() map[string]string {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+// MonitorLogBatch batches log entries that would otherwise be sent one
+// MonitorEvent per line. A batch holds at most 200 entries or 500 KB of
+// entries, whichever comes first, and is flushed at least every 200 ms.
+// dropped counts the lines the agent discarded because its batch queue was
+// full: dropping is deliberate backpressure, preferable to blocking the log
+// collectors. Backends that consume both log_batch and the legacy per-line
+// log_entry stream must deduplicate by (server_id, date, log, request_id):
+// during the transition the agent sends every application and self entry
+// twice, once per channel.
+type MonitorLogBatch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entries       []*MonitorLogEntry     `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	Dropped       int64                  `protobuf:"varint,2,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MonitorLogBatch) Reset() {
+	*x = MonitorLogBatch{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MonitorLogBatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MonitorLogBatch) ProtoMessage() {}
+
+func (x *MonitorLogBatch) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MonitorLogBatch.ProtoReflect.Descriptor instead.
+func (*MonitorLogBatch) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *MonitorLogBatch) GetEntries() []*MonitorLogEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *MonitorLogBatch) GetDropped() int64 {
+	if x != nil {
+		return x.Dropped
+	}
+	return 0
+}
+
 // MonitorCommandRequest mirrors the old "command" WebSocket message payload
 // (monitor.CommandPayload): a remote-control instruction from the backend,
 // e.g. restart/stop/start a specific managed application.
@@ -1928,7 +2050,7 @@ type MonitorCommandRequest struct {
 
 func (x *MonitorCommandRequest) Reset() {
 	*x = MonitorCommandRequest{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[14]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1940,7 +2062,7 @@ func (x *MonitorCommandRequest) String() string {
 func (*MonitorCommandRequest) ProtoMessage() {}
 
 func (x *MonitorCommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[14]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1953,7 +2075,7 @@ func (x *MonitorCommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorCommandRequest.ProtoReflect.Descriptor instead.
 func (*MonitorCommandRequest) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{14}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *MonitorCommandRequest) GetRequestId() string {
@@ -2103,7 +2225,7 @@ type MonitorCommandResult struct {
 
 func (x *MonitorCommandResult) Reset() {
 	*x = MonitorCommandResult{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[15]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2115,7 +2237,7 @@ func (x *MonitorCommandResult) String() string {
 func (*MonitorCommandResult) ProtoMessage() {}
 
 func (x *MonitorCommandResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[15]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2128,7 +2250,7 @@ func (x *MonitorCommandResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorCommandResult.ProtoReflect.Descriptor instead.
 func (*MonitorCommandResult) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{15}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *MonitorCommandResult) GetRequestId() string {
@@ -2262,6 +2384,7 @@ type MonitorEvent struct {
 	//	*MonitorEvent_AppHealth
 	//	*MonitorEvent_MatrixRun
 	//	*MonitorEvent_VersionSync
+	//	*MonitorEvent_LogBatch
 	Payload       isMonitorEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2269,7 +2392,7 @@ type MonitorEvent struct {
 
 func (x *MonitorEvent) Reset() {
 	*x = MonitorEvent{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[16]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2281,7 +2404,7 @@ func (x *MonitorEvent) String() string {
 func (*MonitorEvent) ProtoMessage() {}
 
 func (x *MonitorEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[16]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2294,7 +2417,7 @@ func (x *MonitorEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorEvent.ProtoReflect.Descriptor instead.
 func (*MonitorEvent) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{16}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *MonitorEvent) GetServerId() string {
@@ -2426,6 +2549,15 @@ func (x *MonitorEvent) GetVersionSync() *VersionSync {
 	return nil
 }
 
+func (x *MonitorEvent) GetLogBatch() *MonitorLogBatch {
+	if x != nil {
+		if x, ok := x.Payload.(*MonitorEvent_LogBatch); ok {
+			return x.LogBatch
+		}
+	}
+	return nil
+}
+
 type isMonitorEvent_Payload interface {
 	isMonitorEvent_Payload()
 }
@@ -2505,6 +2637,14 @@ type MonitorEvent_VersionSync struct {
 	VersionSync *VersionSync `protobuf:"bytes,20,opt,name=version_sync,json=versionSync,proto3,oneof"`
 }
 
+type MonitorEvent_LogBatch struct {
+	// log_batch carries a batch of log entries (see MonitorLogBatch). Older
+	// backends ignore the unknown oneof case and keep consuming the legacy
+	// per-line log_entry events, which the agent keeps sending until the
+	// backend declares support for batching.
+	LogBatch *MonitorLogBatch `protobuf:"bytes,22,opt,name=log_batch,json=logBatch,proto3,oneof"`
+}
+
 func (*MonitorEvent_ServerInfo) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_ServerMetrics) isMonitorEvent_Payload() {}
@@ -2529,6 +2669,8 @@ func (*MonitorEvent_MatrixRun) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_VersionSync) isMonitorEvent_Payload() {}
 
+func (*MonitorEvent_LogBatch) isMonitorEvent_Payload() {}
+
 // MonitorControl is a single message sent from the backend to the CLI
 // monitor daemon over the same long-lived MonitorStream. It mirrors the old
 // "command" and "ping" WebSocket message types sent by the backend.
@@ -2545,7 +2687,7 @@ type MonitorControl struct {
 
 func (x *MonitorControl) Reset() {
 	*x = MonitorControl{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[17]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2557,7 +2699,7 @@ func (x *MonitorControl) String() string {
 func (*MonitorControl) ProtoMessage() {}
 
 func (x *MonitorControl) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[17]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2570,7 +2712,7 @@ func (x *MonitorControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorControl.ProtoReflect.Descriptor instead.
 func (*MonitorControl) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{17}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *MonitorControl) GetPayload() isMonitorControl_Payload {
@@ -2630,7 +2772,7 @@ type VersionSync struct {
 
 func (x *VersionSync) Reset() {
 	*x = VersionSync{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[18]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2642,7 +2784,7 @@ func (x *VersionSync) String() string {
 func (*VersionSync) ProtoMessage() {}
 
 func (x *VersionSync) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[18]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2655,7 +2797,7 @@ func (x *VersionSync) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VersionSync.ProtoReflect.Descriptor instead.
 func (*VersionSync) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{18}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *VersionSync) GetAppId() string {
@@ -2701,7 +2843,7 @@ type VersionEntry struct {
 
 func (x *VersionEntry) Reset() {
 	*x = VersionEntry{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[19]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2713,7 +2855,7 @@ func (x *VersionEntry) String() string {
 func (*VersionEntry) ProtoMessage() {}
 
 func (x *VersionEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[19]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2726,7 +2868,7 @@ func (x *VersionEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VersionEntry.ProtoReflect.Descriptor instead.
 func (*VersionEntry) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{19}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *VersionEntry) GetVersion() int32 {
@@ -2994,7 +3136,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"AppStorage\x12\x18\n" +
 	"\avolumes\x18\x01 \x03(\tR\avolumes\x12\x19\n" +
 	"\bdata_dir\x18\x02 \x01(\tR\adataDir\x12\x19\n" +
-	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\x85\x02\n" +
+	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\xe5\x03\n" +
 	"\x0fMonitorLogEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x15\n" +
@@ -3004,7 +3146,20 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05level\x18\x06 \x01(\tR\x05level\x12)\n" +
 	"\x06source\x18\a \x01(\x0e2\x11.phelix.LogSourceR\x06source\x12)\n" +
 	"\x06stream\x18\b \x01(\x0e2\x11.phelix.LogStreamR\x06stream\x12\x1c\n" +
-	"\tcomponent\x18\t \x01(\tR\tcomponent\"\xb2\x03\n" +
+	"\tcomponent\x18\t \x01(\tR\tcomponent\x12\x10\n" +
+	"\x03app\x18\n" +
+	" \x01(\tR\x03app\x12\x18\n" +
+	"\aversion\x18\v \x01(\tR\aversion\x12\x1b\n" +
+	"\tdeploy_id\x18\f \x01(\tR\bdeployId\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\r \x01(\tR\trequestId\x12;\n" +
+	"\x06fields\x18\x0e \x03(\v2#.phelix.MonitorLogEntry.FieldsEntryR\x06fields\x1a9\n" +
+	"\vFieldsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
+	"\x0fMonitorLogBatch\x121\n" +
+	"\aentries\x18\x01 \x03(\v2\x17.phelix.MonitorLogEntryR\aentries\x12\x18\n" +
+	"\adropped\x18\x02 \x01(\x03R\adropped\"\xb2\x03\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -3041,7 +3196,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\rmatrix_docker\x18\f \x01(\v2\x1a.phelix.MatrixDockerResultR\fmatrixDocker\x125\n" +
 	"\fwebhook_jobs\x18\r \x03(\v2\x12.phelix.WebhookJobR\vwebhookJobs\x12A\n" +
 	"\x0ewebhook_config\x18\x0e \x01(\v2\x1a.phelix.WebhookConfigStateR\rwebhookConfig\x12F\n" +
-	"\x12webhook_deliveries\x18\x0f \x03(\v2\x17.phelix.WebhookDeliveryR\x11webhookDeliveries\"\x9c\x06\n" +
+	"\x12webhook_deliveries\x18\x0f \x03(\v2\x17.phelix.WebhookDeliveryR\x11webhookDeliveries\"\xd4\x06\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
@@ -3062,7 +3217,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"app_health\x18\x12 \x01(\v2\x19.phelix.AppHealthSnapshotH\x00R\tappHealth\x127\n" +
 	"\n" +
 	"matrix_run\x18\x13 \x01(\v2\x16.phelix.MatrixRunStateH\x00R\tmatrixRun\x128\n" +
-	"\fversion_sync\x18\x14 \x01(\v2\x13.phelix.VersionSyncH\x00R\vversionSyncB\t\n" +
+	"\fversion_sync\x18\x14 \x01(\v2\x13.phelix.VersionSyncH\x00R\vversionSync\x126\n" +
+	"\tlog_batch\x18\x16 \x01(\v2\x17.phelix.MonitorLogBatchH\x00R\blogBatchB\t\n" +
 	"\apayload\"z\n" +
 	"\x0eMonitorControl\x129\n" +
 	"\acommand\x18\x01 \x01(\v2\x1d.phelix.MonitorCommandRequestH\x00R\acommand\x12\"\n" +
@@ -3090,11 +3246,12 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"deployMode\x12!\n" +
 	"\fdocker_image\x18\n" +
 	" \x01(\tR\vdockerImage\x126\n" +
-	"\fbuild_report\x18\v \x01(\v2\x13.phelix.BuildReportR\vbuildReport*X\n" +
+	"\fbuild_report\x18\v \x01(\v2\x13.phelix.BuildReportR\vbuildReport*n\n" +
 	"\tLogSource\x12\x1a\n" +
 	"\x16LOG_SOURCE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16LOG_SOURCE_APPLICATION\x10\x01\x12\x13\n" +
-	"\x0fLOG_SOURCE_SELF\x10\x02*U\n" +
+	"\x0fLOG_SOURCE_SELF\x10\x02\x12\x14\n" +
+	"\x10LOG_SOURCE_PROXY\x10\x03*U\n" +
 	"\tLogStream\x12\x1a\n" +
 	"\x16LOG_STREAM_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11LOG_STREAM_STDOUT\x10\x01\x12\x15\n" +
@@ -3113,7 +3270,7 @@ func file_internal_grpc_proto_monitoring_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_grpc_proto_monitoring_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(LogSource)(0),                // 0: phelix.LogSource
 	(LogStream)(0),                // 1: phelix.LogStream
@@ -3131,26 +3288,28 @@ var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(*AppLogging)(nil),            // 13: phelix.AppLogging
 	(*AppStorage)(nil),            // 14: phelix.AppStorage
 	(*MonitorLogEntry)(nil),       // 15: phelix.MonitorLogEntry
-	(*MonitorCommandRequest)(nil), // 16: phelix.MonitorCommandRequest
-	(*MonitorCommandResult)(nil),  // 17: phelix.MonitorCommandResult
-	(*MonitorEvent)(nil),          // 18: phelix.MonitorEvent
-	(*MonitorControl)(nil),        // 19: phelix.MonitorControl
-	(*VersionSync)(nil),           // 20: phelix.VersionSync
-	(*VersionEntry)(nil),          // 21: phelix.VersionEntry
-	(*MatrixOptions)(nil),         // 22: phelix.MatrixOptions
-	(*WebhookOptions)(nil),        // 23: phelix.WebhookOptions
-	(*MatrixRunState)(nil),        // 24: phelix.MatrixRunState
-	(*MatrixRunSummary)(nil),      // 25: phelix.MatrixRunSummary
-	(*MatrixPlanPreview)(nil),     // 26: phelix.MatrixPlanPreview
-	(*MatrixDockerResult)(nil),    // 27: phelix.MatrixDockerResult
-	(*WebhookJob)(nil),            // 28: phelix.WebhookJob
-	(*WebhookConfigState)(nil),    // 29: phelix.WebhookConfigState
-	(*WebhookDelivery)(nil),       // 30: phelix.WebhookDelivery
-	(*Pong)(nil),                  // 31: phelix.Pong
-	(*DeploymentSnapshot)(nil),    // 32: phelix.DeploymentSnapshot
-	(*AppHealthSnapshot)(nil),     // 33: phelix.AppHealthSnapshot
-	(*Ping)(nil),                  // 34: phelix.Ping
-	(*BuildReport)(nil),           // 35: phelix.BuildReport
+	(*MonitorLogBatch)(nil),       // 16: phelix.MonitorLogBatch
+	(*MonitorCommandRequest)(nil), // 17: phelix.MonitorCommandRequest
+	(*MonitorCommandResult)(nil),  // 18: phelix.MonitorCommandResult
+	(*MonitorEvent)(nil),          // 19: phelix.MonitorEvent
+	(*MonitorControl)(nil),        // 20: phelix.MonitorControl
+	(*VersionSync)(nil),           // 21: phelix.VersionSync
+	(*VersionEntry)(nil),          // 22: phelix.VersionEntry
+	nil,                           // 23: phelix.MonitorLogEntry.FieldsEntry
+	(*MatrixOptions)(nil),         // 24: phelix.MatrixOptions
+	(*WebhookOptions)(nil),        // 25: phelix.WebhookOptions
+	(*MatrixRunState)(nil),        // 26: phelix.MatrixRunState
+	(*MatrixRunSummary)(nil),      // 27: phelix.MatrixRunSummary
+	(*MatrixPlanPreview)(nil),     // 28: phelix.MatrixPlanPreview
+	(*MatrixDockerResult)(nil),    // 29: phelix.MatrixDockerResult
+	(*WebhookJob)(nil),            // 30: phelix.WebhookJob
+	(*WebhookConfigState)(nil),    // 31: phelix.WebhookConfigState
+	(*WebhookDelivery)(nil),       // 32: phelix.WebhookDelivery
+	(*Pong)(nil),                  // 33: phelix.Pong
+	(*DeploymentSnapshot)(nil),    // 34: phelix.DeploymentSnapshot
+	(*AppHealthSnapshot)(nil),     // 35: phelix.AppHealthSnapshot
+	(*Ping)(nil),                  // 36: phelix.Ping
+	(*BuildReport)(nil),           // 37: phelix.BuildReport
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	3,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -3163,36 +3322,39 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	14, // 7: phelix.ApplicationInfo.storage:type_name -> phelix.AppStorage
 	0,  // 8: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
 	1,  // 9: phelix.MonitorLogEntry.stream:type_name -> phelix.LogStream
-	22, // 10: phelix.MonitorCommandRequest.matrix:type_name -> phelix.MatrixOptions
-	23, // 11: phelix.MonitorCommandRequest.webhook:type_name -> phelix.WebhookOptions
-	24, // 12: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
-	25, // 13: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
-	26, // 14: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
-	27, // 15: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
-	28, // 16: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
-	29, // 17: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
-	30, // 18: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
-	2,  // 19: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	6,  // 20: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	7,  // 21: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	8,  // 22: phelix.MonitorEvent.app_traffic:type_name -> phelix.AppTrafficStat
-	10, // 23: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	15, // 24: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	17, // 25: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	31, // 26: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	32, // 27: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
-	33, // 28: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
-	24, // 29: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
-	20, // 30: phelix.MonitorEvent.version_sync:type_name -> phelix.VersionSync
-	16, // 31: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	34, // 32: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	21, // 33: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
-	35, // 34: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
-	35, // [35:35] is the sub-list for method output_type
-	35, // [35:35] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	23, // 10: phelix.MonitorLogEntry.fields:type_name -> phelix.MonitorLogEntry.FieldsEntry
+	15, // 11: phelix.MonitorLogBatch.entries:type_name -> phelix.MonitorLogEntry
+	24, // 12: phelix.MonitorCommandRequest.matrix:type_name -> phelix.MatrixOptions
+	25, // 13: phelix.MonitorCommandRequest.webhook:type_name -> phelix.WebhookOptions
+	26, // 14: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
+	27, // 15: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
+	28, // 16: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
+	29, // 17: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
+	30, // 18: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
+	31, // 19: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
+	32, // 20: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
+	2,  // 21: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	6,  // 22: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	7,  // 23: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	8,  // 24: phelix.MonitorEvent.app_traffic:type_name -> phelix.AppTrafficStat
+	10, // 25: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	15, // 26: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	18, // 27: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	33, // 28: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	34, // 29: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
+	35, // 30: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
+	26, // 31: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
+	21, // 32: phelix.MonitorEvent.version_sync:type_name -> phelix.VersionSync
+	16, // 33: phelix.MonitorEvent.log_batch:type_name -> phelix.MonitorLogBatch
+	17, // 34: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	36, // 35: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	22, // 36: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
+	37, // 37: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
+	38, // [38:38] is the sub-list for method output_type
+	38, // [38:38] is the sub-list for method input_type
+	38, // [38:38] is the sub-list for extension type_name
+	38, // [38:38] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -3206,7 +3368,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 	file_internal_grpc_proto_matrix_proto_init()
 	file_internal_grpc_proto_webhook_proto_init()
 	file_internal_grpc_proto_buildreport_proto_init()
-	file_internal_grpc_proto_monitoring_proto_msgTypes[16].OneofWrappers = []any{
+	file_internal_grpc_proto_monitoring_proto_msgTypes[17].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
 		(*MonitorEvent_AppMetrics)(nil),
@@ -3219,8 +3381,9 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_AppHealth)(nil),
 		(*MonitorEvent_MatrixRun)(nil),
 		(*MonitorEvent_VersionSync)(nil),
+		(*MonitorEvent_LogBatch)(nil),
 	}
-	file_internal_grpc_proto_monitoring_proto_msgTypes[17].OneofWrappers = []any{
+	file_internal_grpc_proto_monitoring_proto_msgTypes[18].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),
 		(*MonitorControl_Ping)(nil),
 	}
@@ -3230,7 +3393,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_monitoring_proto_rawDesc), len(file_internal_grpc_proto_monitoring_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   20,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

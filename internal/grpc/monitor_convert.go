@@ -300,7 +300,7 @@ func toProtoLogStream(s logs.LogStream) pb.LogStream {
 // every monitor-stream log passes through, so redaction here covers both
 // sources on every tick and every replay.
 func toProtoLogEntry(e logs.LogEntry, source pb.LogSource) *pb.MonitorLogEntry {
-	return &pb.MonitorLogEntry{
+	out := &pb.MonitorLogEntry{
 		Id:        e.ID,
 		ServerId:  e.ServerID,
 		AppId:     e.AppID,
@@ -310,5 +310,29 @@ func toProtoLogEntry(e logs.LogEntry, source pb.LogSource) *pb.MonitorLogEntry {
 		Source:    source,
 		Stream:    toProtoLogStream(e.Stream),
 		Component: e.Component,
+		App:       e.App,
+		Version:   e.Version,
+		DeployId:  e.DeployID,
+		RequestId: e.RequestID,
+	}
+	if len(e.Fields) > 0 {
+		fields := make(map[string]string, len(e.Fields))
+		for k, v := range e.Fields {
+			fields[k] = phelixerr.Redact(v)
+		}
+		out.Fields = fields
+	}
+	return out
+}
+
+// toProtoLogSource maps a record source onto the wire enum.
+func toProtoLogSource(source string) pb.LogSource {
+	switch source {
+	case logs.SourceProxy:
+		return pb.LogSource_LOG_SOURCE_PROXY
+	case logs.SourceSelf:
+		return pb.LogSource_LOG_SOURCE_SELF
+	default:
+		return pb.LogSource_LOG_SOURCE_APPLICATION
 	}
 }

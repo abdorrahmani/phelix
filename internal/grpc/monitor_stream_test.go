@@ -32,8 +32,9 @@ func (fakeMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 	return &server.Metrics{ServerID: "srv-1", CPUUsagePercent: 5}, nil
 }
 
-func (fakeMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error)  { return nil, nil }
-func (fakeMetricsCollector) CollectSelfLogs() ([]logs.LogEntry, error) { return nil, nil }
+func (fakeMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error)    { return nil, nil }
+func (fakeMetricsCollector) CollectSelfLogs() ([]logs.LogEntry, error)   { return nil, nil }
+func (fakeMetricsCollector) CollectAccessLogs() ([]logs.LogEntry, error) { return nil, nil }
 
 // fakeCommandExecutor records executed commands and lets tests control the
 // result.

@@ -49,6 +49,11 @@ const (
 	// existing webhook subsystem — durable jobs, delivery ledger, and the
 	// phelix.yaml webhook configuration).
 	CapabilityWebhookManagement = "webhook_management"
+	// CapabilityLogBatch: the agent batches monitor log entries into
+	// MonitorLogBatch events (log_batch oneof case) alongside the legacy
+	// per-line log_entry events, with bounded queueing and a dropped-lines
+	// counter.
+	CapabilityLogBatch = "log_batch"
 )
 
 // agentCapabilities is the registry of capabilities this agent build

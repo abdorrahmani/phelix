@@ -1,8 +1,11 @@
 package monitor
 
 import (
+	"strconv"
+
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
@@ -83,15 +86,27 @@ func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
 	// Resolve the app manager's registered apps into plain log targets. The
 	// logs package itself stays app-agnostic. Unwatched apps are excluded so
-	// their log tail never reaches the backend.
+	// their log tail never reaches the backend. The serving version is
+	// resolved best effort so every line is attributable to the deployment
+	// that produced it.
 	targets := make([]logs.AppLogTarget, 0)
 	for _, a := range app.Manager.ListApplications() {
 		if !a.Watching {
 			continue
 		}
-		targets = append(targets, a.LogTarget())
+		t := a.LogTarget()
+		if v, err := deploy.CurrentVersion(a.Name); err == nil && v > 0 {
+			t.Version = "v" + strconv.Itoa(v)
+		}
+		targets = append(targets, t)
 	}
 	return logs.CollectAppLogs(targets, server.GetServerID())
+}
+
+// CollectAccessLogs tails the proxy daemon's sampled access log; the entries
+// ship to the backend inside the log batch only.
+func (c *appMetricsCollector) CollectAccessLogs() ([]logs.LogEntry, error) {
+	return logs.CollectAccessLogs(server.GetServerID())
 }
 
 func (c *appMetricsCollector) CollectSelfLogs() ([]logs.LogEntry, error) {

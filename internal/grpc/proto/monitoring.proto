@@ -261,6 +261,10 @@ enum LogSource {
   LOG_SOURCE_UNSPECIFIED = 0;
   LOG_SOURCE_APPLICATION = 1;
   LOG_SOURCE_SELF = 2;
+  // LOG_SOURCE_PROXY marks proxy access-log entries: one sampled record per
+  // request the reverse proxy served, carrying request_id and the traffic
+  // fields. Only sent inside log_batch.
+  LOG_SOURCE_PROXY = 3;
 }
 
 // LogStream identifies whether an application log line originated on the
@@ -273,7 +277,12 @@ enum LogStream {
 }
 
 // MonitorLogEntry mirrors logs.LogEntry. Sent on every monitoring tick for
-// both application and self logs.
+// both application and self logs (individually, as log_entry) and for proxy
+// access logs (only inside log_batch).
+//
+// level carries the canonical lowercase spelling: debug, info, warn, error.
+// Older agents sent uppercase markers; the unified record format defines
+// lowercase as the wire contract.
 message MonitorLogEntry {
   string id = 1;
   string server_id = 2;
@@ -288,6 +297,35 @@ message MonitorLogEntry {
   // component is populated for self (daemon) logs (e.g. "monitor", "health",
   // "grpc") and empty for application logs.
   string component = 9;
+  // app is the human-readable application name (empty for self logs).
+  string app = 10;
+  // version is the serving version the line belongs to, e.g. "v19" (best
+  // effort; empty when the agent cannot resolve it).
+  string version = 11;
+  // deploy_id links every line produced by one deployment operation. Empty
+  // when the line was not produced inside a deployment.
+  string deploy_id = 12;
+  // request_id is set on proxy access entries and on any log line emitted
+  // while processing that request.
+  string request_id = 13;
+  // fields carries the record's extra structured data. Values are strings;
+  // the agent redacts credential material out of them and never stores
+  // environment variables here.
+  map<string, string> fields = 14;
+}
+
+// MonitorLogBatch batches log entries that would otherwise be sent one
+// MonitorEvent per line. A batch holds at most 200 entries or 500 KB of
+// entries, whichever comes first, and is flushed at least every 200 ms.
+// dropped counts the lines the agent discarded because its batch queue was
+// full: dropping is deliberate backpressure, preferable to blocking the log
+// collectors. Backends that consume both log_batch and the legacy per-line
+// log_entry stream must deduplicate by (server_id, date, log, request_id):
+// during the transition the agent sends every application and self entry
+// twice, once per channel.
+message MonitorLogBatch {
+  repeated MonitorLogEntry entries = 1;
+  int64 dropped = 2;
 }
 
 // MonitorCommandRequest mirrors the old "command" WebSocket message payload
@@ -479,6 +517,11 @@ message MonitorEvent {
     // docker image, the build report) and no false coupling to rollback. An
     // older backend ignores the unknown oneof case.
     VersionSync version_sync = 20;
+    // log_batch carries a batch of log entries (see MonitorLogBatch). Older
+    // backends ignore the unknown oneof case and keep consuming the legacy
+    // per-line log_entry events, which the agent keeps sending until the
+    // backend declares support for batching.
+    MonitorLogBatch log_batch = 22;
   }
 }
 
