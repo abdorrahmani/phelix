@@ -133,12 +133,32 @@ func (b *logBatcher) drain(sender func(*pb.MonitorEvent) error) {
 		}
 		if err := sender(event); err != nil {
 			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send log batch (%d entries): %v", len(entries), err)
+			b.requeue(entries, dropped)
 			return
 		}
 		if len(rest) == 0 && dropped == 0 {
 			return
 		}
 	}
+}
+
+// requeue puts a failed batch back at the front of the queue. The queue stays
+// bounded: if concurrent adds filled it, the oldest entries are dropped and
+// counted rather than growing without limit.
+func (b *logBatcher) requeue(entries []*pb.MonitorLogEntry, dropped int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if overflow := len(b.pending) + len(entries) - maxQueueLines; overflow > 0 {
+		entries = entries[:len(entries)-overflow]
+		dropped += int64(overflow)
+	}
+	b.pending = append(append([]*pb.MonitorLogEntry(nil), entries...), b.pending...)
+	b.bytes = 0
+	for _, e := range b.pending {
+		b.bytes += entrySize(e)
+	}
+	b.dropped += dropped
 }
 
 // stop ends the run loop.

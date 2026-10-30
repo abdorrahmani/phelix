@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -96,6 +97,29 @@ func TestLogBatcher_BytesLimitFlushes(t *testing.T) {
 	}
 	if total != 130 {
 		t.Errorf("entries = %d, want 130", total)
+	}
+}
+
+func TestLogBatcher_RequeuesFailedBatch(t *testing.T) {
+	b := newLogBatcher()
+	defer b.stop()
+	b.add(makeEntries(3, 10))
+
+	fail := true
+	b.drain(func(event *pb.MonitorEvent) error {
+		if fail {
+			fail = false
+			return errors.New("stream unavailable")
+		}
+		return nil
+	})
+
+	batches := batchDrain(t, b)
+	if len(batches) != 1 || len(batches[0].Entries) != 3 {
+		t.Fatalf("failed batch was not requeued: %+v", batches)
+	}
+	if batches[0].Dropped != 0 {
+		t.Errorf("dropped = %d, want 0", batches[0].Dropped)
 	}
 }
 

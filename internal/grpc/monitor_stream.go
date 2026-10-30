@@ -199,10 +199,14 @@ func eventPayloadName(event *pb.MonitorEvent) string {
 		return "server_metrics"
 	case *pb.MonitorEvent_AppMetrics:
 		return "app_metrics"
+	case *pb.MonitorEvent_AppTraffic:
+		return "app_traffic"
 	case *pb.MonitorEvent_AppInfo:
 		return "app_info"
 	case *pb.MonitorEvent_LogEntry:
 		return "log_entry"
+	case *pb.MonitorEvent_LogBatch:
+		return "log_batch"
 	case *pb.MonitorEvent_CommandResult:
 		return "command_result"
 	case *pb.MonitorEvent_DeploymentSnapshot:
@@ -763,8 +767,9 @@ func (c *Client) sendMonitorTick() {
 	} else {
 		batch := make([]*pb.MonitorLogEntry, 0, len(entries))
 		for _, e := range entries {
-			entry := toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_APPLICATION)
-			batch = append(batch, entry)
+			batch = append(batch, toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_APPLICATION))
+		}
+		for _, entry := range batch {
 			event := &pb.MonitorEvent{
 				ServerId:  serverID,
 				Timestamp: time.Now().UnixMilli(),
@@ -774,8 +779,7 @@ func (c *Client) sendMonitorTick() {
 			}
 			if err := monitorStream.send(event); err != nil {
 				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send app log: %v", err)
-				monitorStream.queueBatchEntries(batch)
-				return
+				break
 			}
 		}
 		monitorStream.queueBatchEntries(batch)
@@ -824,8 +828,9 @@ func (c *Client) sendServerTick() {
 	} else {
 		batch := make([]*pb.MonitorLogEntry, 0, len(entries))
 		for _, e := range entries {
-			entry := toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_SELF)
-			batch = append(batch, entry)
+			batch = append(batch, toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_SELF))
+		}
+		for _, entry := range batch {
 			event := &pb.MonitorEvent{
 				ServerId:  serverID,
 				Timestamp: time.Now().UnixMilli(),
@@ -835,8 +840,7 @@ func (c *Client) sendServerTick() {
 			}
 			if err := monitorStream.send(event); err != nil {
 				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send self log: %v", err)
-				monitorStream.queueBatchEntries(batch)
-				return
+				break
 			}
 		}
 		monitorStream.queueBatchEntries(batch)
