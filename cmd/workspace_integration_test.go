@@ -157,6 +157,41 @@ func TestCLIBuildAll_RejectsNameWithAll(t *testing.T) {
 	}
 }
 
+func TestCLIDeployAll_EnforcedAuthorizationLeavesVersionsUnchanged(t *testing.T) {
+	home, wsDir := newCLIWorkspace(t, true)
+	phelixDir := filepath.Join(home, ".phelix")
+	authzDir := filepath.Join(phelixDir, "authz")
+	if err := os.MkdirAll(authzDir, 0o700); err != nil {
+		t.Fatalf("mkdir authz: %v", err)
+	}
+	policy := `{"schema_version":"1","mode":"enforced","rules":[]}`
+	if err := os.WriteFile(filepath.Join(authzDir, "policy.json"), []byte(policy), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+
+	versionsPath := filepath.Join(phelixDir, "apps", "auth", "versions.json")
+	before, err := os.ReadFile(versionsPath)
+	if err != nil {
+		t.Fatalf("read versions before deploy: %v", err)
+	}
+
+	code, _, stderr := runPhelixIn(t, home, wsDir, "deploy", "--all")
+	if code != ExitPermission {
+		t.Fatalf("exit = %d, want %d (PERMISSION); stderr=%q", code, ExitPermission, stderr)
+	}
+	if !strings.Contains(stderr, "plan") {
+		t.Fatalf("stderr = %q, want a plan-based denial", stderr)
+	}
+
+	after, err := os.ReadFile(versionsPath)
+	if err != nil {
+		t.Fatalf("read versions after deploy: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("versions changed under a denied deploy:\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
 func TestCLIDeployAll_UnregisteredServiceFailsClosed(t *testing.T) {
 	home, wsDir := newCLIWorkspace(t, false)
 	code, _, stderr := runPhelixIn(t, home, wsDir, "deploy", "--all")
