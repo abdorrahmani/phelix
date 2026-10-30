@@ -100,6 +100,7 @@ func (s *LogStore) Insert(records []LogRecord) error {
 		return err
 	}
 	for _, r := range records {
+		r = r.sanitized()
 		ts := ParseRecordTime(r.TS)
 		if ts.IsZero() {
 			ts = time.Now()

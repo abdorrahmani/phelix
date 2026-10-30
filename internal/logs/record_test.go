@@ -108,6 +108,22 @@ func TestParseRecordTime(t *testing.T) {
 	}
 }
 
+func TestSensitiveFieldKeyVariants(t *testing.T) {
+	cases := map[string]bool{
+		"password":     true,
+		"access_token": true,
+		"db_password":  true,
+		"api-key":      true,
+		"user":         false,
+		"author":       false,
+	}
+	for key, want := range cases {
+		if got := IsSensitiveFieldKey(key); got != want {
+			t.Errorf("IsSensitiveFieldKey(%q) = %v, want %v", key, got, want)
+		}
+	}
+}
+
 func TestRecordFromLine_JSON(t *testing.T) {
 	line := `{"ts":"2026-10-29T18:00:00.123Z","level":"warn","source":"app","app":"orders","msg":"slow request","request_id":"req_1","fields":{"path":"/x"}}`
 	rec, ok := RecordFromLine(line)

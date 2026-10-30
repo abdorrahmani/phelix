@@ -96,6 +96,13 @@ func (r LogRecord) sanitized() LogRecord {
 	return out
 }
 
+// IsSensitiveFieldKey reports whether a field name looks like it carries
+// credential material. The check is case-insensitive and also matches near
+// variants such as access_token or db_password.
+func IsSensitiveFieldKey(key string) bool {
+	return sensitiveFieldKey(key)
+}
+
 // sensitiveFieldKey reports whether a field name looks like it carries
 // credential material.
 func sensitiveFieldKey(key string) bool {
@@ -104,6 +111,9 @@ func sensitiveFieldKey(key string) bool {
 	low = strings.ReplaceAll(low, " ", "_")
 	for _, bad := range sensitiveFieldKeys {
 		if low == bad {
+			return true
+		}
+		if bad != "auth" && strings.Contains(low, bad) {
 			return true
 		}
 	}

@@ -318,6 +318,9 @@ func toProtoLogEntry(e logs.LogEntry, source pb.LogSource) *pb.MonitorLogEntry {
 	if len(e.Fields) > 0 {
 		fields := make(map[string]string, len(e.Fields))
 		for k, v := range e.Fields {
+			if logs.IsSensitiveFieldKey(k) {
+				continue
+			}
 			fields[k] = phelixerr.Redact(v)
 		}
 		out.Fields = fields
