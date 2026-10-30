@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
@@ -168,6 +169,48 @@ func workspaceHealthSummary(appID string) (string, []workspaceEndpointHealthView
 	return "unhealthy", views
 }
 
+// workspaceStatusSummary rolls the table up into one line: health counts and
+// whether every deployed service is on the same version.
+func workspaceStatusSummary(views []workspaceServiceStatusView) string {
+	healthy, unhealthy := 0, 0
+	var versioned []workspaceServiceStatusView
+	versions := map[int]bool{}
+	for _, view := range views {
+		switch view.Health {
+		case "healthy":
+			healthy++
+		case "unhealthy":
+			unhealthy++
+		}
+		if view.Version > 0 {
+			versioned = append(versioned, view)
+			versions[view.Version] = true
+		}
+	}
+
+	parts := make([]string, 0, 3)
+	if healthy > 0 || unhealthy > 0 {
+		parts = append(parts, fmt.Sprintf("%d healthy", healthy))
+		if unhealthy > 0 {
+			parts = append(parts, fmt.Sprintf("%d unhealthy", unhealthy))
+		}
+	}
+	switch {
+	case len(versions) > 1:
+		labels := make([]string, 0, len(versioned))
+		for _, view := range versioned {
+			labels = append(labels, fmt.Sprintf("%s v%d", view.Name, view.Version))
+		}
+		parts = append(parts, "inconsistent: "+strings.Join(labels, " ≠ "))
+	case len(versioned) > 1:
+		parts = append(parts, "versions consistent")
+	}
+	if len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%d service(s)", len(views)))
+	}
+	return strings.Join(parts, " · ")
+}
+
 // renderWorkspaceStatus prints the human overview table.
 func renderWorkspaceStatus(ws *workspace.Workspace, views []workspaceServiceStatusView) {
 	printWorkspaceHeader(ws, "status")
@@ -212,6 +255,7 @@ func renderWorkspaceStatus(ws *workspace.Workspace, views []workspaceServiceStat
 		})
 	}
 	_ = table.Render()
+	fmt.Println(color.New(color.Faint).Sprint(workspaceStatusSummary(views)))
 }
 
 // colorWorkspaceStatus colors the derived lifecycle status.
