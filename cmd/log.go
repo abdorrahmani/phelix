@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -346,6 +347,15 @@ const logTimeLayout = "2006/01/02 15:04:05"
 // strictly before since. Lines without a parseable prefix are conservatively
 // kept — an untimestamped line must not be silently dropped.
 func linePredates(line string, since time.Time) bool {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "{") {
+		var rec logs.LogRecord
+		if err := json.Unmarshal([]byte(trimmed), &rec); err == nil {
+			if ts := logs.ParseRecordTime(rec.TS); !ts.IsZero() {
+				return ts.Before(since)
+			}
+		}
+	}
 	if len(line) < len(logTimeLayout) {
 		return false
 	}

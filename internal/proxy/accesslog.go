@@ -77,6 +77,7 @@ func (m *accessMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.next.ServeHTTP(rec, r)
 
 	m.proxy.recordAccess(r, rec, requestID, start, time.Since(start))
+	m.proxy.chosen.Delete(requestID)
 }
 
 // recordAccess samples one completed request into the access log.

@@ -338,7 +338,7 @@ func textLevel(msg string) LogLevel {
 // treated as info.
 func normalizeLevel(l LogLevel) LogLevel {
 	switch LogLevel(strings.ToLower(strings.TrimSpace(string(l)))) {
-	case LevelDebug, "dbg":
+	case LevelDebug, "dbg", "trace":
 		return LevelDebug
 	case LevelWarning, "warning":
 		return LevelWarning

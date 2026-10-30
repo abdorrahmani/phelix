@@ -145,13 +145,16 @@ func gzipFile(path string) error {
 	w := gzip.NewWriter(dst)
 	if _, err := io.Copy(w, src); err != nil {
 		dst.Close()
+		os.Remove(path + ".gz")
 		return err
 	}
 	if err := w.Close(); err != nil {
 		dst.Close()
+		os.Remove(path + ".gz")
 		return err
 	}
 	if err := dst.Close(); err != nil {
+		os.Remove(path + ".gz")
 		return err
 	}
 	return os.Remove(path)
@@ -166,7 +169,7 @@ func PlainRotatedPaths(path string, maxFiles int) []string {
 		maxFiles = defaultRotationMaxFiles
 	}
 	var out []string
-	for i := 1; i <= maxFiles; i++ {
+	for i := maxFiles; i >= 1; i-- {
 		p := rotatedPath(path, i)
 		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
 			out = append(out, p)
