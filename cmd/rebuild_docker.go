@@ -293,7 +293,22 @@ func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name str
 		return err
 	}
 
-	if err := runZeroDowntimeDeploy(appInfo, name, publicPort, currentDir, op); err != nil {
+	spec := &rebuildSpec{
+		AppInfo:      appInfo,
+		Name:         name,
+		Port:         publicPort,
+		SourceDir:    currentDir,
+		Strategy:     rebuildStrategy,
+		Replicas:     rebuildReplicas,
+		BuildMgr:     builder.NewBuildManager(),
+		Args:         buildArgs,
+		Tag:          buildTag,
+		AutoRollback: rebuildAutoRollback,
+		BlueGreen:    rebuildBlueGreen,
+		Rollout:      rolloutPlan,
+		Timeout:      rebuildTimeout,
+	}
+	if err := runZeroDowntimeDeploy(spec, op); err != nil {
 		discardAppEntry(id, name)
 		return err
 	}
