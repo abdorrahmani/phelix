@@ -87,9 +87,7 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 			keys[key] = true
 			out, err := appCollector.Collect(key, p, func(line string) LogEntry {
 				entry, rec := appEntryFromLine(t, line, serverID)
-				if minRank < 0 || levelRank(rec.Level) >= minRank {
-					stored = append(stored, rec)
-				}
+				stored = append(stored, rec)
 				return entry
 			})
 			if err != nil {
