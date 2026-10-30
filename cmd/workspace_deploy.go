@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -43,6 +48,35 @@ type workspaceDeployServiceView struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
+// workspaceDeployLog collects one service's progress off the shared stdout so
+// parallel deploys cannot interleave their lines.
+type workspaceDeployLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *workspaceDeployLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *workspaceDeployLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+var workspaceDeployLogs sync.Map
+
+// workspaceDeployOutput returns the buffered destination for one service.
+func workspaceDeployOutput(name string) io.Writer {
+	if out, ok := workspaceDeployLogs.Load(name); ok {
+		return out.(io.Writer)
+	}
+	return os.Stdout
+}
+
 // workspaceDeployServiceFn is one workspace deploy step: build and deploy a
 // single service through the regular rebuild path, returning the promoted
 // version, the public port, and the effective strategy.
@@ -70,8 +104,12 @@ func orchestrateWorkspaceDeploy(deployOne workspaceDeployServiceFn) error {
 	if err := workspace.AssignPorts(ws, wsPortBase); err != nil {
 		return err
 	}
-	order, err := ws.TopoOrder()
+	levels, err := ws.TopoLevels()
 	if err != nil {
+		return err
+	}
+	order := flattenWorkspaceLevels(levels)
+	if err := authorizeWorkspaceServices(authz.ActionRebuild, order); err != nil {
 		return err
 	}
 
@@ -81,9 +119,6 @@ func orchestrateWorkspaceDeploy(deployOne workspaceDeployServiceFn) error {
 	}
 	defer release()
 
-	if err := loadAppStateForWorkspace(); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
-	}
 	state, err := loadWorkspaceState(ws)
 	if err != nil {
 		return err
@@ -94,31 +129,53 @@ func orchestrateWorkspaceDeploy(deployOne workspaceDeployServiceFn) error {
 	defer restore()
 	startedAt := time.Now()
 	views := make([]workspaceDeployServiceView, 0, len(ws.Services))
-	for _, name := range order {
-		svc := ws.Service(name)
-		info := findRegisteredApp(name)
-		if info == nil {
-			wsErr := phelixerr.Newf(
-				phelixerr.CodeValidation,
-				"service %q is not registered yet\nHint: run 'phelix build --all' first",
-				name,
-			)
-			state.RecordServiceResult(name, "deploy", "failed", 0, phelixerr.Redact(wsErr.Error()))
+	for _, level := range levels {
+		levelErr := runParallelLevel(level, wsConcurrency, func(name string) error {
+			svc := ws.Service(name)
+			info := findRegisteredApp(name)
+			if info == nil {
+				wsErr := phelixerr.Newf(
+					phelixerr.CodeValidation,
+					"service %q is not registered yet\nHint: run 'phelix build --all' first",
+					name,
+				)
+				wsPrintMu.Lock()
+				state.RecordServiceResult(name, "deploy", "failed", 0, phelixerr.Redact(wsErr.Error()))
+				fmt.Printf("  %s %s failed: %v\n", color.RedString("✗"), color.CyanString(name), wsErr)
+				wsPrintMu.Unlock()
+				return wsErr
+			}
+
+			serviceStart := time.Now()
+			serviceLog := &workspaceDeployLog{}
+			workspaceDeployLogs.Store(name, serviceLog)
+			wsPrintMu.Lock()
+			fmt.Printf("  %s %s deploying...\n", color.BlueString("→"), color.CyanString(name))
+			wsPrintMu.Unlock()
+			version, port, strategy, deployErr := deployOne(svc, info)
+			workspaceDeployLogs.Delete(name)
+			elapsed := time.Since(serviceStart)
+
+			wsPrintMu.Lock()
+			defer wsPrintMu.Unlock()
+			if deployErr != nil {
+				state.RecordServiceResult(name, "deploy", "failed", version, phelixerr.Redact(deployErr.Error()))
+				fmt.Printf("  %s %s failed: %v\n", color.RedString("✗"), color.CyanString(name), deployErr)
+				if details := serviceLog.String(); details != "" {
+					fmt.Print(details)
+				}
+				return phelixerr.Wrapf(phelixerr.CodeOf(deployErr), deployErr, "workspace deploy halted at service %q", name)
+			}
+			state.RecordServiceResult(name, "deploy", "succeeded", version, "")
+			views = append(views, workspaceDeployServiceView{Name: name, Version: version, Port: port, Strategy: strategy, DurationMS: elapsed.Milliseconds()})
+			fmt.Printf("  %s %s %s deployed on :%d (%s, %s)\n",
+				color.GreenString("✓"), color.CyanString(name), color.YellowString("v%d", version), port, strategy, elapsed.Round(time.Millisecond))
+			return nil
+		})
+		if levelErr != nil {
 			_ = workspace.SaveState(state)
-			return wsErr
+			return levelErr
 		}
-		serviceStart := time.Now()
-		version, port, strategy, deployErr := deployOne(svc, info)
-		if deployErr != nil {
-			state.RecordServiceResult(name, "deploy", "failed", version, phelixerr.Redact(deployErr.Error()))
-			_ = workspace.SaveState(state)
-			return phelixerr.Wrapf(phelixerr.CodeOf(deployErr), deployErr, "workspace deploy halted at service %q", name)
-		}
-		elapsed := time.Since(serviceStart)
-		state.RecordServiceResult(name, "deploy", "succeeded", version, "")
-		views = append(views, workspaceDeployServiceView{Name: name, Version: version, Port: port, Strategy: strategy, DurationMS: elapsed.Milliseconds()})
-		fmt.Printf("  %s %s %s deployed on :%d (%s, %s)\n",
-			color.GreenString("✓"), color.CyanString(name), color.YellowString("v%d", version), port, strategy, elapsed.Round(time.Millisecond))
 	}
 	if err := workspace.SaveState(state); err != nil {
 		return err
@@ -132,6 +189,15 @@ func orchestrateWorkspaceDeploy(deployOne workspaceDeployServiceFn) error {
 		Source:    ws.Source,
 		Services:  views,
 	}))
+}
+
+// flattenWorkspaceLevels turns dependency levels into their execution order.
+func flattenWorkspaceLevels(levels [][]string) []string {
+	var order []string
+	for _, level := range levels {
+		order = append(order, level...)
+	}
+	return order
 }
 
 // deployWorkspaceService is the real workspace deploy step. It resolves the
@@ -178,33 +244,25 @@ func deployWorkspaceService(svc *workspace.Service, info *app.AppInfo) (int, int
 		)
 	}
 
-	prevStrategy, prevReplicas, prevPlan := rebuildBlueGreen, rebuildReplicas, rolloutPlan
-	prevArgs, prevTag, prevAutoRollback, prevTimeout := rebuildArgs, rebuildTag, rebuildAutoRollback, rebuildTimeout
-	defer func() {
-		rebuildBlueGreen, rebuildReplicas, rolloutPlan = prevStrategy, prevReplicas, prevPlan
-		rebuildArgs, rebuildTag, rebuildAutoRollback, rebuildTimeout = prevArgs, prevTag, prevAutoRollback, prevTimeout
-	}()
-	rebuildBlueGreen = strategy == workspace.StrategyBlueGreen
-	rebuildReplicas = 0
+	deployReplicas := 0
 	if strategy == workspace.StrategyRolling {
-		rebuildReplicas = replicas
+		deployReplicas = replicas
 	}
-	rolloutPlan = nil
-	rebuildArgs = nil
-	rebuildTag = ""
-	rebuildAutoRollback = wsDeployAutoRollback
-	rebuildTimeout = wsDeployTimeout
 
 	spec := &rebuildSpec{
-		ProjCfg:   projCfg,
-		AppInfo:   info,
-		Name:      info.Name,
-		Port:      port,
-		SourceDir: svc.Path,
-		Strategy:  strategy,
-		Replicas:  rebuildReplicas,
-		Lang:      lang,
-		BuildMgr:  buildMgr,
+		ProjCfg:      projCfg,
+		AppInfo:      info,
+		Name:         info.Name,
+		Port:         port,
+		SourceDir:    svc.Path,
+		Strategy:     strategy,
+		Replicas:     deployReplicas,
+		Lang:         lang,
+		BuildMgr:     buildMgr,
+		AutoRollback: wsDeployAutoRollback,
+		BlueGreen:    strategy == workspace.StrategyBlueGreen,
+		Timeout:      wsDeployTimeout,
+		Output:       workspaceDeployOutput(svc.Name),
 	}
 	op := newOpRun(ops.KindRebuild, info.Name, "")
 	var runErr error

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/machine"
@@ -53,6 +54,9 @@ func orchestrateWorkspaceRollback(rollbackOne workspaceRollbackServiceFn, reason
 		return err
 	}
 	order := reverseNames(forward)
+	if err := authorizeWorkspaceServices(authz.ActionRollback, order); err != nil {
+		return err
+	}
 
 	release, err := workspace.AcquireWorkspaceLock(ws.Name, "rollback")
 	if err != nil {
@@ -60,9 +64,6 @@ func orchestrateWorkspaceRollback(rollbackOne workspaceRollbackServiceFn, reason
 	}
 	defer release()
 
-	if err := loadAppStateForWorkspace(); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
-	}
 	state, err := loadWorkspaceState(ws)
 	if err != nil {
 		return err

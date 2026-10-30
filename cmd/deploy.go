@@ -84,7 +84,7 @@ func init() {
 	deployUnlockCmd.Flags().BoolVar(&deployUnlockJSON, "json", false,
 		"Output machine-readable JSON (stdout carries only the result envelope; progress moves to stderr)")
 	DeployCmd.Flags().BoolVar(&wsDeployAll, "all", false,
-		"Deploy every service of the workspace (phelix.workspace.yaml, go.work, or Cargo workspace) in depends_on order; the first failure halts the mesh")
+		"Deploy every service of the workspace (phelix.workspace.yaml, go.work, or Cargo workspace) in parallel dependency layers; the first failure halts the mesh")
 	DeployCmd.Flags().BoolVar(&wsDeployJSON, "json", false,
 		"Output machine-readable JSON (stdout carries only the result envelope; progress moves to stderr)")
 	DeployCmd.Flags().BoolVar(&wsDeployAutoRollback, "auto-rollback", false,
@@ -92,5 +92,6 @@ func init() {
 	DeployCmd.Flags().DurationVar(&wsDeployTimeout, "build-timeout", builder.DefaultBuildTimeout,
 		"How long one compiler invocation may run per service before it is cancelled (exit 20, BUILD_TIMEOUT)")
 	DeployCmd.Flags().IntVar(&wsPortBase, "port-base", 8080, "First port auto-assigned to services without an explicit port")
+	DeployCmd.Flags().IntVar(&wsConcurrency, "concurrency", 3, "Max parallel service deploys within one dependency layer when --all is set")
 	DeployCmd.AddCommand(deployUnlockCmd)
 }
