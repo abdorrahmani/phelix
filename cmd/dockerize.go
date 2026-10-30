@@ -352,7 +352,7 @@ func runDockerizeMatrixCore(p dockerizeMatrixParams, ev matrixDockerEvents) (*do
 
 	if p.MultiArch && !p.Push {
 		return nil, phelixerr.New(phelixerr.CodeInvalidArgument,
-			"multi-arch tags assemble the manifest list from pushed registry images — enable push (optionally with push_partial)")
+			"multi-arch tags assemble the manifest list from pushed registry images; enable --push (optionally with --push-partial)")
 	}
 
 	fmt.Printf("%s Docker matrix build: %s (%d combinations)\n",
