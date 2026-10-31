@@ -198,6 +198,51 @@ Shows the recorded rollback outcomes for one application, newest first.
 | `phelix remove <ID\|AppName> [--purge]` | Stop and delete an app from management. `--purge` also deletes `~/.phelix/apps/<Name>/` (version history, build artifacts, encrypted env snapshots). Irreversible. |
 | `phelix watch <ID\|AppName> [--disable]` | Enable (default) or disable backend monitoring for one app. See [Monitoring](../guides/monitoring.md). |
 
+### `phelix log [<ID|AppName>] [flags]`
+
+Reads a log snapshot and then follows the file until Ctrl+C. With no argument
+it reads the monitor daemon's own log. `--app` is an alternative to the
+positional argument; using both with different values is an error.
+
+Log files live under the Phelix data directory, normally `~/.phelix/logs/`.
+The daemon writes `phelix.log`, and each app has its own file, usually
+`<app_id>.log`. The command reads the active file and every readable rotation,
+oldest first, including `.gz` archives when compression is enabled. Each line
+is passed through the credential redactor before it is printed.
+
+The snapshot defaults to the last 10 lines. In human mode the command then
+tails the active file. `--since` filters the historical scan only, not lines
+that arrive after the tail starts.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lines` | `10` | Number of historical lines to read. With `--level` or `--version` this becomes the query result cap. |
+| `--no-follow` | `false` | Print the snapshot and exit instead of tailing. |
+| `--since` | empty | Keep lines newer than a duration (`30m`, `2h`, `30d`) or an RFC3339 timestamp. |
+| `--json` | `false` | Print a bounded machine-readable snapshot. Implies `--no-follow`. |
+| `--app` | empty | App name for the lookup, as an alternative to the positional argument. |
+| `--level` | empty | Query the long-term store for `debug`, `info`, `warn`, or `error`. |
+| `--version` | empty | Query the long-term store for one serving version, for example `v18`. |
+
+```bash
+phelix log
+phelix log orders
+phelix log orders --lines 200 --no-follow
+phelix log orders --since 2h
+phelix log orders --since 30d --level error --version v18
+phelix log orders --json --lines 50
+```
+
+`--level` and `--version` read the optional SQLite store, not the text files.
+The monitor daemon must run with `PHELIX_LOG_STORE=1` to fill that store. It
+keeps 30 days of records and is indexed by time, app, level, version, and
+request id. When either flag is used, the command returns the query result and
+does not follow.
+
+In `--json` mode a file snapshot returns `source`, `app`, `path`, `items`,
+`count`, and `truncated`. A store query returns `app`, `level`, `version`,
+`count`, and `items`, where each item is the raw stored record.
+
 ## Encrypted environment variables
 
 `phelix env` manages per-app secrets encrypted at rest with **AES-256-GCM**. See
