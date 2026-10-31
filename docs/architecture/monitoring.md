@@ -16,7 +16,8 @@ backoff.
   idempotent statement of that app's configuration + runtime state, pushed on every
   (re)connect and every 10s tick.
 - The daemon sends app info, resource metrics, and logs of every **watched** app
-  roughly every 2s.
+  roughly every 2s. Log entries are also batched into `MonitorLogBatch` with a
+  200 ms flush and a bounded queue. See [Logging pipeline](logging.md).
 - Request traffic for every watched app enrolled with the proxy daemon
   (`AppTrafficStat`: request/error counts, p95 latency, in-flight requests,
   per-backend share) rides the same 2s tick, read from the proxy control socket

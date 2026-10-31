@@ -141,7 +141,7 @@ func runMonitor() error {
 	appTargets := func() []logs.AppLogTarget {
 		var targets []logs.AppLogTarget
 		for _, a := range app.Manager.ListApplications() {
-			targets = append(targets, logs.AppLogTarget{ID: a.ID})
+			targets = append(targets, a.LogTarget())
 		}
 		return targets
 	}
@@ -152,12 +152,16 @@ func runMonitor() error {
 			case <-done:
 				return
 			default:
-				logs.RemovePreviousLogs(appTargets())
-				logs.RemoveSelfLogs()
+				logs.RotateAppLogs(appTargets())
+				logs.RotateSelfLogs()
 				time.Sleep(1 * time.Minute)
 			}
 		}
 	}()
+
+	if logs.LogStoreEnabled() {
+		go logs.StartStoreRetention(done)
+	}
 
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
@@ -167,7 +171,7 @@ func runMonitor() error {
 			case <-done:
 				return
 			case <-ticker.C:
-				logs.RemovePreviousLogs(appTargets())
+				logs.RotateAppLogs(appTargets())
 			}
 		}
 	}()

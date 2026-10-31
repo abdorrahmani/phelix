@@ -13,7 +13,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestParseLogLine_StructuredApp(t *testing.T) {
-	raw := "2026/08/19 14:22:31 [ERROR] [stderr] connection refused: dial tcp 10.0.0.1:5432"
+	raw := "2026/08/19 14:22:31 [error] [stderr] connection refused: dial tcp 10.0.0.1:5432"
 	p := parseLogLine(raw)
 
 	if p.Level != LevelError {
@@ -62,7 +62,7 @@ func TestParseLogLine_NormalizesWarn(t *testing.T) {
 }
 
 func TestParseLogLine_StructuredStdoutIsInfo(t *testing.T) {
-	p := parseLogLine("2026/08/19 14:22:31 [INFO] [stdout] GET /health 200")
+	p := parseLogLine("2026/08/19 14:22:31 [info] [stdout] GET /health 200")
 	if p.Level != LevelInfo || p.Stream != StreamStdout {
 		t.Errorf("got level=%q stream=%q, want INFO/stdout", p.Level, p.Stream)
 	}
@@ -119,8 +119,8 @@ func TestAppLogWriter_PrefixesEveryLine(t *testing.T) {
 		t.Fatalf("got %d lines, want 3:\n%s", len(lines), got)
 	}
 	for i, l := range lines {
-		if !bytes.Contains(l, []byte("[INFO] [stdout] ")) {
-			t.Errorf("line %d missing INFO/stdout prefix: %q", i, l)
+		if !bytes.Contains(l, []byte("[info] [stdout] ")) {
+			t.Errorf("line %d missing info/stdout prefix: %q", i, l)
 		}
 		if i == 0 && !bytes.Contains(l, []byte("a")) {
 			t.Errorf("line 0 should contain 'a': %q", l)
@@ -134,8 +134,8 @@ func TestAppLogWriter_StderrDefaultsToError(t *testing.T) {
 	if _, err := w.Write([]byte("boom\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got := buf.String(); !bytes.Contains([]byte(got), []byte("[ERROR] [stderr] boom")) {
-		t.Errorf("stderr line not prefixed ERROR/stderr: %q", got)
+	if got := buf.String(); !bytes.Contains([]byte(got), []byte("[error] [stderr] boom")) {
+		t.Errorf("stderr line not prefixed error/stderr: %q", got)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestAppLogWriter_HoldsPartialLineUntilNewline(t *testing.T) {
 	if _, err := w.Write([]byte(" two\n")); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte("[INFO] [stdout] part1 two")) {
+	if !bytes.Contains(buf.Bytes(), []byte("[info] [stdout] part1 two")) {
 		t.Errorf("buffered fragment not joined onto complete line: %q", buf.String())
 	}
 }
@@ -201,7 +201,7 @@ func TestCollectAppLogs_AppendsOnSuccess(t *testing.T) {
 	}
 	// Write one structured app log line to the file. Cold-start picks up the
 	// last N lines, so it must be seen on the first collect.
-	line := time.Now().Format(timeLayout) + " [INFO] [stdout] hello\n"
+	line := time.Now().Format(timeLayout) + " [info] [stdout] hello\n"
 	if err := os.WriteFile(logFile, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -383,60 +383,6 @@ func TestGenericLogCollector_AppendsNewLinesSameInode(t *testing.T) {
 func identityMapper(s string) LogEntry { return LogEntry{Log: s} }
 
 // ---------------------------------------------------------------------------
-// trimLogFile — inode preservation
-// ---------------------------------------------------------------------------
-
-func TestTrimLogFile_KeepsInode(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "big.log")
-
-	// Build a file just over MaxLogSize.
-	over := MaxLogSize + 1024
-	var sb bytes.Buffer
-	for sb.Len() < over {
-		sb.WriteString("padding line ::::::::::::::::::::::::::::::::::::::::::::::::\n")
-	}
-	if err := os.WriteFile(path, sb.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := trimLogFile(path); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !os.SameFile(before, after) {
-		t.Fatal("trimLogFile changed the file's inode — open collectors lose the file")
-	}
-	if after.Size() > MaxLogSize {
-		t.Fatalf("file still %d bytes, want ≤ %d", after.Size(), MaxLogSize)
-	}
-}
-
-func TestTrimLogFile_DoesNotTouchSmallFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "small.log")
-	if err := os.WriteFile(path, []byte("tiny\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	before, _ := os.Stat(path)
-	if err := trimLogFile(path); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := os.Stat(path)
-	if !os.SameFile(before, after) || after.Size() != before.Size() {
-		t.Fatalf("small file was modified: size %d → %d", before.Size(), after.Size())
-	}
-}
-
-// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
@@ -448,4 +394,34 @@ func setHome(t *testing.T, dir string) {
 	t.Helper()
 	t.Setenv("HOME", dir)
 	t.Setenv("PHELIX_DATA_DIR", "")
+}
+
+func TestCollectAppLogs_JSONRecordEnrichment(t *testing.T) {
+	dir := t.TempDir()
+	setHome(t, dir)
+
+	target := AppLogTarget{ID: "apps_json", Name: "orders", Version: "v19"}
+	logFile := AppLogPath(target.ID)
+	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"ts":"` + time.Now().UTC().Format(RFC3339Milli) + `","level":"warn","source":"app","msg":"slow request","request_id":"req_9"}` + "\n"
+	if err := os.WriteFile(logFile, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := CollectAppLogs([]AppLogTarget{target}, "srv-1")
+	if err != nil {
+		t.Fatalf("CollectAppLogs returned error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	e := got[0]
+	if e.App != "orders" || e.Version != "v19" || e.Level != LevelWarning || e.RequestID != "req_9" || e.Log != "slow request" {
+		t.Errorf("entry not enriched from record and target: %+v", e)
+	}
+	if e.Stream != StreamUnknown {
+		t.Errorf("JSON records carry no stream, got %q", e.Stream)
+	}
 }

@@ -520,6 +520,67 @@ func TestMonitorStream_ServerDataRequiresAnyWatched(t *testing.T) {
 	stop()
 }
 
+// Self logs must ship on the fast monitor tick, not wait for the slower host
+// metrics tick, and they must appear in both the legacy per-line channel and
+// the batch channel.
+func TestMonitorStream_SelfLogsUseMonitorTick(t *testing.T) {
+	setupTestSession(t)
+	watchOneApp(t)
+
+	origMonitorInterval := monitorMetricsInterval
+	monitorMetricsInterval = 20 * time.Millisecond
+	defer func() { monitorMetricsInterval = origMonitorInterval }()
+
+	origServerInterval := serverMetricsInterval
+	serverMetricsInterval = time.Hour
+	defer func() { serverMetricsInterval = origServerInterval }()
+
+	origCollector, origExecutor := monitorStream.metricsCollector, monitorStream.commandExecutor
+	monitorStream.metricsCollector = selfLogMetricsCollector{}
+	monitorStream.commandExecutor = &fakeCommandExecutor{}
+	defer func() {
+		monitorStream.metricsCollector = origCollector
+		monitorStream.commandExecutor = origExecutor
+	}()
+
+	backend := newFakeMonitorBackend()
+	c, _, cleanup := dialBufconn(t, backend)
+	defer cleanup()
+
+	streamDone := make(chan struct{})
+	go func() {
+		defer close(streamDone)
+		_ = c.runMonitorStream()
+	}()
+	defer func() {
+		stopMonitorStream()
+		select {
+		case <-streamDone:
+		case <-time.After(3 * time.Second):
+			t.Error("timed out waiting for the monitor stream to end")
+		}
+	}()
+
+	if ev := backend.eventsWithPayload(func(ev *pb.MonitorEvent) bool {
+		entry, ok := ev.Payload.(*pb.MonitorEvent_LogEntry)
+		return ok && entry.LogEntry.GetSource() == pb.LogSource_LOG_SOURCE_SELF
+	}, time.Second); ev == nil {
+		t.Fatal("timed out waiting for a self log on the per-line channel")
+	}
+
+	if ev := backend.eventsWithPayload(func(ev *pb.MonitorEvent) bool {
+		batch := ev.GetLogBatch()
+		for _, entry := range batch.GetEntries() {
+			if entry.GetSource() == pb.LogSource_LOG_SOURCE_SELF {
+				return true
+			}
+		}
+		return false
+	}, time.Second); ev == nil {
+		t.Fatal("timed out waiting for a self log in a batch")
+	}
+}
+
 // metadataCallRecorder counts SyncMetadata calls.
 type metadataCallRecorder struct {
 	pb.UnimplementedPhelixServiceServer

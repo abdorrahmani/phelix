@@ -239,7 +239,7 @@ func TestDaemon_StatsOpAndWeightPersistence(t *testing.T) {
 	publicPort := freeTCPPort(t)
 	prim := Target{Host: stable.addr(), Label: "stable", Weight: 95}
 	back := Target{Host: canary.addr(), Label: "canary", Weight: 5}
-	if err := d.EnrollApp("app", publicPort, prim, []Target{back}); err != nil {
+	if err := d.EnrollApp("app", publicPort, prim, []Target{back}, ""); err != nil {
 		t.Fatalf("enroll: %v", err)
 	}
 

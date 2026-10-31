@@ -27,7 +27,7 @@ type AppLogWriter struct {
 	dst    io.Writer
 	stream LogStream
 	level  LogLevel
-	buf    []byte // partial line not yet terminated by '\n'
+	buf    []byte
 }
 
 // NewAppLogWriter wraps dst (the app log file) for a single output stream.
@@ -91,8 +91,6 @@ func (w *AppLogWriter) Close() error {
 // emitLocked writes one prefixed line to the destination writer. Callers must
 // hold w.mu.
 func (w *AppLogWriter) emitLocked(line string) {
-	// Normalize stray carriage returns (e.g. \r\n progress bars) so each
-	// physical line stays one log entry.
 	msg := strings.TrimSuffix(strings.ReplaceAll(line, "\r", ""), "\n")
 
 	ts := time.Now().Format(timeLayout)
