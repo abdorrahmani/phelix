@@ -214,6 +214,10 @@ The snapshot defaults to the last 10 lines. In human mode the command then
 tails the active file. `--since` filters the historical scan only, not lines
 that arrive after the tail starts.
 
+The same `phelix.log` file is shipped to the backend as source `self` while at
+least one app is watched. See the [logging pipeline](../architecture/logging.md)
+for the wire fields and the backend steps.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--lines` | `10` | Number of historical lines to read. With `--level` or `--version` this becomes the query result cap. |

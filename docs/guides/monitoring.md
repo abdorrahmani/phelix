@@ -124,3 +124,5 @@ override the dashboard sends is the same one `--strategy` applies locally; see
 - [Health checks](health-checks.md) — how health snapshots are configured.
 - [Monitoring architecture](../architecture/monitoring.md) — the gRPC stream,
   health-daemon reconcile loop, and snapshot semantics.
+- [Logging pipeline](../architecture/logging.md): self logs, wire fields, and
+  backend changes for log batches.
