@@ -1,55 +1,51 @@
 package logs
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
-// This file provides the standardized, leveled logger every part of the
-// Phelix agent uses for its own ("self") logs. It achieves two goals:
-//
-//  1. Consistency — every self log line is written in the same structured
-//     format the parser understands and the backend displays:
-//     "2006/01/02 15:04:05 [LEVEL] [component] message"
-//
-//  2. Delivery — self logs must reach the backend. They do so by being
-//     written to ~/.phelix/logs/phelix.log, which the monitor daemon tails
-//     and forwards as MonitorLogEntry{source: LOG_SOURCE_SELF}. The global
-//     Go "log" package is pointed at the same file so even code that still
-//     calls log.Printf lands in the same place (assigned [INFO] [misc]).
-//
-// Two write paths exist:
-//
-//   - Info/Warning/Error/Debug — write to the log file AND mirror to stderr.
-//     This is for daemon-level activity an operator running `phelix monitor`
-//     in the foreground (or under systemd) should see on the terminal.
-//
-//   - InfoFile/WarningFile/ErrorFile/DebugFile — write to the log file ONLY.
-//     This is for short-lived CLI operations whose self-logs exist to reach
-//     the backend (event reporting, version sync, …). Echoing them to stderr
-//     would pollute the user's command output, so they are kept off the
-//     terminal.
-//
-// Use Info/Warning/Error/Debug(component, format, args...) throughout. Keep
-// the component short and stable — it is what the backend groups self logs
-// by. See the registry in docs/logging-backend.md.
-
 var (
 	logFileHandle *os.File
 	logMu         sync.Mutex
+
+	selfEchoHandler slog.Handler
+	selfFileHandler slog.Handler
 )
 
+// componentKey is the slog attribute holding the self-log component; every
+// other attribute lands in the record's fields object.
+const componentKey = "component"
+
 // InitFileLog ensures self logs are written to ~/.phelix/logs/phelix.log and
-// re-wires the global logger onto the same sink. Idempotent; safe to call
-// from multiple packages during startup.
+// wires the default slog logger (and through it the standard log package)
+// onto the same sink. Idempotent; safe to call from multiple packages during
+// startup.
 func InitFileLog() {
 	logMu.Lock()
 	defer logMu.Unlock()
+	initFileLogLocked()
+}
+
+// ReopenFileLog closes the current self log handle so subsequent writes go to
+// the fresh file at SelfLogPath. Called after the self log rotates: the
+// daemon's writer, unlike a managed app's, is in-process and can follow the
+// rotation immediately.
+func ReopenFileLog() {
+	logMu.Lock()
+	defer logMu.Unlock()
+	if logFileHandle != nil {
+		_ = logFileHandle.Close()
+		logFileHandle = nil
+	}
 	initFileLogLocked()
 }
 
@@ -59,61 +55,154 @@ func initFileLogLocked() {
 	}
 
 	logDir := filepath.Join(dataDir(), "logs")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		// Fall back to stderr only — the daemon still needs its diagnostics
-		// somewhere, and self-log delivery degrades to the terminal.
-		log.SetOutput(os.Stderr)
-		log.SetFlags(log.LstdFlags)
-		return
+	if err := os.MkdirAll(logDir, 0755); err == nil {
+		if f, ferr := os.OpenFile(filepath.Join(logDir, "phelix.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); ferr == nil {
+			logFileHandle = f
+		}
 	}
 
-	f, err := os.OpenFile(filepath.Join(logDir, "phelix.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.SetOutput(os.Stderr)
-		log.SetFlags(log.LstdFlags)
-		return
-	}
-
-	logFileHandle = f
-
-	// Global logger → the same file, with flags off: we already add our own
-	// timestamp, so left-over log.Printf call sites shouldn't double-prefix.
-	log.SetOutput(f)
+	selfEchoHandler = &selfHandler{file: logFileHandle, echo: true}
+	selfFileHandler = &selfHandler{file: logFileHandle}
+	slog.SetDefault(slog.New(selfEchoHandler))
 	log.SetFlags(0)
 }
 
-// formatLevel renders a self-log line in the canonical structured format
-// understood by the parser and the backend:
-// "2006/01/02 15:04:05 [LEVEL] [component] message".
-func formatLevel(level LogLevel, component, format string, args ...interface{}) string {
-	msg := fmt.Sprintf(format, args...)
-	return time.Now().Format(timeLayout) + " [" + string(level) + "] [" + component + "] " + msg
+// selfHandler is the slog.Handler behind every self log. It writes each
+// record as one JSON LogRecord line to phelix.log and, when echo is set,
+// mirrors a human-readable line to stderr so a daemon running in the
+// foreground or under systemd stays observable.
+type selfHandler struct {
+	file  io.Writer
+	echo  bool
+	attrs []slog.Attr
 }
 
-// writeLevelFile appends a self-log line to ~/.phelix/logs/phelix.log without
-// echoing it to stderr. This is the transport path for short-lived CLI
-// operations whose logs must reach the backend but must not clutter the
-// user's terminal output.
-func writeLevelFile(level LogLevel, component, format string, args ...interface{}) {
-	InitFileLog() // ensure file output exists before first write
+// Enabled reports that every level is handled: DEBUG lines reach the file
+// unconditionally because the file is the transport to the backend.
+func (h *selfHandler) Enabled(context.Context, slog.Level) bool { return true }
 
-	line := formatLevel(level, component, format, args...)
-
-	logMu.Lock()
-	if logFileHandle != nil {
-		_, _ = io.WriteString(logFileHandle, line+"\n")
+// Handle converts the slog record into a LogRecord and writes both views.
+func (h *selfHandler) Handle(_ context.Context, r slog.Record) error {
+	rec := LogRecord{
+		TS:     r.Time.UTC().Format(RFC3339Milli),
+		Level:  levelFromSlog(r.Level),
+		Source: SourceSelf,
+		Msg:    r.Message,
 	}
-	logMu.Unlock()
+	component := ""
+	absorb := func(a slog.Attr) bool {
+		if a.Equal(slog.Attr{}) {
+			return true
+		}
+		if a.Key == componentKey {
+			if s, ok := a.Value.Any().(string); ok {
+				component = s
+			}
+			return true
+		}
+		if rec.Fields == nil {
+			rec.Fields = make(map[string]string)
+		}
+		rec.Fields[a.Key] = a.Value.String()
+		return true
+	}
+	for _, a := range h.attrs {
+		absorb(a)
+	}
+	r.Attrs(absorb)
+	if component == "" {
+		component = "misc"
+	}
+	rec.Component = component
+
+	if line, err := rec.Encode(); err == nil && h.file != nil {
+		logMu.Lock()
+		_, _ = h.file.Write(append(line, '\n'))
+		logMu.Unlock()
+	}
+	if h.echo {
+		_, _ = fmt.Fprintln(os.Stderr, rec.TextLine())
+	}
+	return nil
 }
 
-// writeLevel writes a self-log line to both the log file and stderr. stderr
-// keeps the daemon observable under a terminal/systemd, while the file is
-// what gets shipped to the backend.
-func writeLevel(level LogLevel, component, format string, args ...interface{}) {
-	writeLevelFile(level, component, format, args...)
+// WithAttrs returns a copy of the handler carrying the given attributes on
+// every record it handles; this is the correlation path for slog.With.
+func (h *selfHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	cp := *h
+	cp.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
+	return &cp
+}
 
-	// Mirror to stderr so operators see daemon activity on the terminal too.
-	_, _ = fmt.Fprintln(os.Stderr, formatLevel(level, component, format, args...))
+// WithGroup returns the handler unchanged; self logs do not use groups.
+func (h *selfHandler) WithGroup(string) slog.Handler { return h }
+
+// handlerFor picks the echo or file-only handler instance. Before
+// InitFileLog has run (or when the log file could not be opened) the file is
+// nil and the handler degrades to stderr only.
+func handlerFor(echo bool) slog.Handler {
+	if echo {
+		if selfEchoHandler != nil {
+			return selfEchoHandler
+		}
+		return &selfHandler{echo: true}
+	}
+	if selfFileHandler != nil {
+		return selfFileHandler
+	}
+	return &selfHandler{}
+}
+
+// levelFromSlog maps a slog level onto the canonical LogRecord spelling.
+func levelFromSlog(l slog.Level) LogLevel {
+	switch {
+	case l >= slog.LevelError:
+		return LevelError
+	case l >= slog.LevelWarn:
+		return LevelWarning
+	case l >= slog.LevelInfo:
+		return LevelInfo
+	default:
+		return LevelDebug
+	}
+}
+
+// slogLevel maps the public LogLevel onto slog levels for record creation.
+func slogLevel(l LogLevel) slog.Level {
+	switch normalizeLevel(l) {
+	case LevelDebug:
+		return slog.LevelDebug
+	case LevelWarning:
+		return slog.LevelWarn
+	case LevelError:
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// emitSelf routes one self message through the slog handler. echo controls
+// the stderr mirror: daemon-level activity keeps it, short-lived CLI
+// operations stay quiet on the terminal.
+func emitSelf(level LogLevel, component string, echo bool, format string, args ...any) {
+	InitFileLog()
+
+	msg := fmt.Sprintf(format, args...)
+	r := slog.NewRecord(time.Now(), slogLevel(level), strings.ToValidUTF8(msg, "\uFFFD"), 0)
+	r.Add(slog.String(componentKey, component))
+	_ = handlerFor(echo).Handle(context.Background(), r)
+}
+
+// writeLevel writes a self-log line to the log file and mirrors it to stderr.
+func writeLevel(level LogLevel, component, format string, args ...any) {
+	emitSelf(level, component, true, format, args...)
+}
+
+// writeLevelFile writes a self-log line to the log file without echoing it
+// to stderr. This is the transport path for short-lived CLI operations whose
+// logs must reach the backend but must not clutter the user's terminal.
+func writeLevelFile(level LogLevel, component, format string, args ...any) {
+	emitSelf(level, component, false, format, args...)
 }
 
 // Info logs a level-INFO self message with the given component.
@@ -121,7 +210,7 @@ func Info(component, format string, args ...any) {
 	writeLevel(LevelInfo, component, format, args...)
 }
 
-// Warning logs a level-WARNING self message with the given component.
+// Warning logs a level-WARN self message with the given component.
 func Warning(component, format string, args ...any) {
 	writeLevel(LevelWarning, component, format, args...)
 }
@@ -132,33 +221,32 @@ func Error(component, format string, args ...any) {
 }
 
 // Debug logs a level-DEBUG self message with the given component. DEBUG
-// messages are written to the log file unconditionally — the file is the
+// messages are written to the log file unconditionally; the file is the
 // transport to the backend, not the terminal.
 func Debug(component, format string, args ...any) {
 	writeLevel(LevelDebug, component, format, args...)
 }
 
 // InfoFile logs a level-INFO self message to the log file only (no stderr
-// echo). Used by short-lived CLI operations whose logs exist to reach the
-// backend, not to be shown on the user's terminal.
+// echo). See writeLevelFile.
 func InfoFile(component, format string, args ...any) {
 	writeLevelFile(LevelInfo, component, format, args...)
 }
 
-// WarningFile logs a level-WARNING self message to the log file only (no
-// stderr echo). See InfoFile.
+// WarningFile logs a level-WARN self message to the log file only (no stderr
+// echo). See writeLevelFile.
 func WarningFile(component, format string, args ...any) {
 	writeLevelFile(LevelWarning, component, format, args...)
 }
 
 // ErrorFile logs a level-ERROR self message to the log file only (no stderr
-// echo). See InfoFile.
+// echo). See writeLevelFile.
 func ErrorFile(component, format string, args ...any) {
 	writeLevelFile(LevelError, component, format, args...)
 }
 
 // DebugFile logs a level-DEBUG self message to the log file only (no stderr
-// echo). See InfoFile.
+// echo). See writeLevelFile.
 func DebugFile(component, format string, args ...any) {
 	writeLevelFile(LevelDebug, component, format, args...)
 }

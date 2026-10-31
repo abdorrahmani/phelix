@@ -38,9 +38,18 @@ var (
 
 // AppLogTarget identifies one managed application whose log file should be
 // collected. Paths are derived from the app ID (see AppLogPath), keeping the
-// logs package free of any dependency on the app manager.
+// logs package free of any dependency on the app manager. The caller
+// enriches targets with what the log file itself cannot carry: the app's
+// human-readable name, its serving version, and its logging configuration.
 type AppLogTarget struct {
-	ID string
+	ID        string
+	Name      string
+	Version   string
+	JSONLogs  bool
+	LogLevel  string
+	MaxSizeMB int
+	MaxFiles  int
+	Compress  bool
 }
 
 // AppLogPath returns the on-disk path for an application's combined
@@ -55,63 +64,103 @@ func SelfLogPath() string {
 }
 
 // CollectAppLogs collects new log lines from every target application's log
-// file and returns them as a unified slice. Failures to read a single app are
-// logged and skipped — one broken app must not block the others.
+// files and returns them as a unified slice. Each app is read from its active
+// file and from any plain rotated file: after a rotation the app keeps
+// writing into the renamed file until it restarts, so both are live sources.
+// Failures to read a single app are logged and skipped; one broken app must
+// not block the others.
 func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error) {
 	var results []LogEntry
+	var stored []LogRecord
+	keys := make(map[string]bool)
 
 	for _, t := range targets {
 		logFile := AppLogPath(t.ID)
 
-		out, err := appCollector.Collect(t.ID, logFile, func(line string) LogEntry {
-			p := parseLogLine(line)
-			if p.Timestamp.IsZero() {
-				p.Timestamp = time.Now()
-			}
-			return LogEntry{
-				ID:        t.ID,
-				ServerID:  serverID,
-				AppID:     t.ID,
-				Log:       p.Message,
-				Date:      p.Timestamp,
-				Level:     p.Level,
-				Stream:    p.Stream,
-				Component: p.Component,
-			}
-		})
-		if err != nil {
-			// The file may not exist yet (app started but emitted nothing), or
-			// was deleted. Skip this app rather than failing the whole batch.
-			Error("logs", "failed to collect logs for app %s: %v", t.ID, err)
-			continue
+		minRank := -1
+		if t.LogLevel != "" {
+			minRank = levelRank(LogLevel(t.LogLevel))
 		}
-		results = append(results, out...)
+		paths := append(PlainRotatedPaths(logFile, t.MaxFiles), logFile)
+		for _, p := range paths {
+			key := t.ID + ":" + p
+			keys[key] = true
+			out, err := appCollector.Collect(key, p, func(line string) LogEntry {
+				entry, rec := appEntryFromLine(t, line, serverID)
+				stored = append(stored, rec)
+				return entry
+			})
+			if err != nil {
+				Error("logs", "failed to collect logs for app %s: %v", t.ID, err)
+				continue
+			}
+			for _, e := range out {
+				if minRank >= 0 && levelRank(e.Level) < minRank {
+					continue
+				}
+				results = append(results, e)
+			}
+		}
 	}
+	appCollector.Prune(func(key string) bool { return keys[key] })
+	StoreRecords(stored)
 
 	return results, nil
 }
 
-// RemovePreviousLogs checks the size of each given app's local log file and
-// trims it if it exceeds the maximum allowed size. Targets come from the
-// caller (the app manager) to keep this package free of app imports.
-func RemovePreviousLogs(targets []AppLogTarget) {
+// appEntryFromLine turns one raw line from an app's log file into a LogEntry.
+// JSON output (Go slog, Rust tracing) carries the app's real level and
+// correlation fields; plain text falls back to explicit markers, the stream
+// default and the keyword heuristics, in that order. The target's name and
+// version enrich every line: the file only stores the app id, and the
+// human-readable name plus the serving version are what the dashboard groups
+// by.
+func appEntryFromLine(t AppLogTarget, line, serverID string) (LogEntry, LogRecord) {
+	now := time.Now()
+	rec, ok := detectAppRecord(line, t.JSONLogs, now)
+	if !ok {
+		rec = LogRecord{TS: now.UTC().Format(RFC3339Milli), Level: LevelInfo}
+	}
+	rec.Source = SourceApp
+	rec.App = t.Name
+	rec.AppID = t.ID
+	if rec.TS == "" {
+		rec.TS = now.UTC().Format(RFC3339Milli)
+	}
+	if rec.Version == "" {
+		rec.Version = t.Version
+	}
+	return LogEntry{
+		ID:        t.ID,
+		ServerID:  serverID,
+		AppID:     t.ID,
+		App:       rec.App,
+		Log:       rec.Msg,
+		Date:      ParseRecordTime(rec.TS),
+		Level:     rec.Level,
+		Stream:    rec.Stream,
+		Component: rec.Component,
+		Version:   rec.Version,
+		DeployID:  rec.DeployID,
+		RequestID: rec.RequestID,
+		Fields:    rec.Fields,
+	}, rec
+}
+
+// RotateAppLogs rotates every given app's log file when it exceeds its
+// configured size, keeping gzip archives of older rotations. Targets come
+// from the caller (the app manager) to keep this package free of app
+// imports.
+func RotateAppLogs(targets []AppLogTarget) {
 	for _, t := range targets {
 		logFile := AppLogPath(t.ID)
-
-		info, err := os.Stat(logFile)
+		rotated, err := RotateLogFile(logFile, t.MaxSizeMB, t.MaxFiles, t.Compress)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			Error("logs", "failed to stat log file %s: %v", logFile, err)
+			Error("logs", "failed to rotate log file %s: %v", logFile, err)
 			continue
 		}
-
-		if info.Size() > MaxLogSize {
-			Info("logs", "trimming oversized log file %s (%d bytes)", logFile, info.Size())
-			if err := trimLogFile(logFile); err != nil {
-				Error("logs", "failed to trim log file %s: %v", logFile, err)
-			}
+		if rotated {
+			Info("logs", "rotated log file %s", logFile)
 		}
 	}
 }

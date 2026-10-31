@@ -32,15 +32,9 @@ func main() {
 		Use:     "phelix",
 		Short:   "Phelix - Go/Rust Application Manager",
 		Version: version.Version,
-		// Errors are rendered exactly once by the top-level Execute() handler
-		// below. Silence cobra's own printing so nothing is duplicated.
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// `phelix auth status` requires a valid session before the command
-			// body runs. Returning an error routes it through the central CLI
-			// error renderer (stderr + mapped exit code) instead of printing
-			// directly and os.Exit(1).
 			if cmd.Name() == "auth" && len(args) > 0 && args[0] == "status" {
 				session, err := auth.GetValidSession()
 				if err != nil {
@@ -91,9 +85,7 @@ func main() {
 	rootCmd.AddCommand(cmd.BuildReportCmd)
 	rootCmd.SetVersionTemplate("Phelix CLI {{.Version}}\n")
 
-	// Global flags: --debug is the single debug switch shared by all
-	// subcommands. It is bound to cmd.Debug so the error renderer (which reads
-	// the same variable) discloses the root cause chain only in debug mode.
+
 	rootCmd.PersistentFlags().BoolVar(&cmd.Debug, "debug", false, "Show verbose error details and debug output")
 
 	err = rootCmd.Execute()

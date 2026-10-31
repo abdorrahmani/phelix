@@ -95,6 +95,11 @@ type Proxy struct {
 	// AppName is the app this proxy fronts (used in logs / status).
 	AppName string
 
+	// AccessMode is the app's access-log mode: "" (default sampling: errors
+	// and slow requests), "all", or "off". Set at enroll time from the app's
+	// phelix.yaml.
+	AccessMode string
+
 	state atomic.Value // *proxyState
 	rp    *httputil.ReverseProxy
 
@@ -123,6 +128,12 @@ type Proxy struct {
 	// Director does not dial more than once per TTL window per backend.
 	liveMu      sync.Mutex
 	liveResults map[string]livenessResult
+
+	// chosen maps a request id to the backend host the Director routed it
+	// to. The counting transport stores the pairing, the access middleware
+	// pops it when the request completes, so access records attribute their
+	// backend even with several instances enrolled.
+	chosen sync.Map
 
 	// started guards against double Start.
 	started atomic.Bool
@@ -476,7 +487,7 @@ func (p *Proxy) Start() error {
 func (p *Proxy) Serve(ln net.Listener) error {
 	p.mu.Lock()
 	p.server = &http.Server{
-		Handler:           p.rp,
+		Handler:           &accessMiddleware{proxy: p, next: p.rp},
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	p.mu.Unlock()
@@ -516,6 +527,7 @@ func (t *countingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 			status = resp.StatusCode
 		}
 		t.proxy.recordBackendRequest(host, status, err, time.Since(start))
+		t.proxy.noteChosenBackend(req.Header.Get("X-Request-Id"), host)
 	}
 	return resp, err
 }

@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"bufio"
+	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,11 +19,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// maxBufferedLines bounds the in-memory history window when no --lines bound
+// is given: retention archives mean a scan can span several files.
+const maxBufferedLines = 10000
+
 var (
 	logLines    int
 	logNoFollow bool
 	logSince    string
 	logJSON     bool
+	logLevel    string
+	logVersion  string
+	logApp      string
 )
 
 var LogCmd = &cobra.Command{
@@ -50,6 +60,23 @@ var LogCmd = &cobra.Command{
 		since, err := parseLogSince(logSince)
 		if err != nil {
 			return err
+		}
+
+		if len(args) > 0 && logApp != "" && args[0] != logApp {
+			return phelixerr.New(phelixerr.CodeInvalidArgument,
+				"use either the positional app argument or --app, not both")
+		}
+		if len(args) == 0 && logApp != "" {
+			args = []string{logApp}
+		}
+
+		if logLevel != "" || logVersion != "" {
+			if !logs.LogStoreEnabled() {
+				return phelixerr.New(phelixerr.CodeInvalidArgument,
+					"--level/--version query the long-term store, which is disabled; "+
+						"start the monitor daemon with PHELIX_LOG_STORE=1 to enable it")
+			}
+			return showLogStoreQuery(args, since)
 		}
 
 		if len(args) == 0 {
@@ -100,21 +127,11 @@ type logResult struct {
 }
 
 func showLogView(spec logViewSpec, since *time.Time) error {
-	f, err := os.Open(spec.Path)
-	if err != nil {
-		return phelixerr.Wrapf(
-			phelixerr.CodeFilesystem,
-			err,
-			"failed to open log file %s",
-			spec.Path,
-		)
-	}
-	defer f.Close()
-
-	lines, total, err := readLogHistory(f, logLines, since)
+	history, err := readLogHistoryFiles(spec.Path, logLines, since)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read historical logs", err)
 	}
+	lines, total := history.lines, history.total
 
 	truncated := since == nil && total > len(lines)
 
@@ -151,14 +168,161 @@ func showLogView(spec logViewSpec, since *time.Time) error {
 	if logNoFollow {
 		return nil
 	}
+	f, err := os.Open(spec.Path)
+	if err != nil {
+		return phelixerr.Wrapf(
+			phelixerr.CodeFilesystem,
+			err,
+			"failed to open log file %s",
+			spec.Path,
+		)
+	}
+	defer f.Close()
 	return streamNewLogs(f)
 }
 
+// logHistory is the result of scanning one log path's history: the retained
+// lines (newest last) and the total number of lines scanned.
+type logHistory struct {
+	lines []string
+	total int
+}
+
+// readLogHistoryFiles scans the full history of a log path: the gzip
+// archives and plain rotations first (oldest to newest), then the active
+// file. Rotation archives are transparently decompressed so `phelix log`
+// covers everything the on-disk retention still holds.
+func readLogHistoryFiles(path string, n int, since *time.Time) (logHistory, error) {
+	var h logHistory
+	paths := logs.LogHistoryPaths(path, 0)
+	if len(paths) == 0 {
+		f, err := os.Open(path)
+		if err != nil {
+			return h, err
+		}
+		f.Close()
+		return h, nil
+	}
+	for _, p := range paths {
+		rc, err := openMaybeGz(p)
+		if err != nil {
+			return h, err
+		}
+		lines, total, err := readLogHistory(rc, n, since)
+		rc.Close()
+		if err != nil {
+			return h, err
+		}
+		h.lines = append(h.lines, lines...)
+		h.total += total
+	}
+	if n > 0 && len(h.lines) > n {
+		h.lines = h.lines[len(h.lines)-n:]
+	}
+	return h, nil
+}
+
+// openMaybeGz opens a history path, transparently decompressing gzip
+// archives.
+func openMaybeGz(path string) (io.ReadCloser, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if !logs.IsGzipPath(path) {
+		return f, nil
+	}
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return readCloser{Reader: gr, closer: f}, nil
+}
+
+// readCloser pairs a gzip reader with the file underneath it so one Close
+// releases both.
+type readCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (rc readCloser) Close() error { return rc.closer.Close() }
+
+// logStoreResult is the machine-contract result of a store query.
+type logStoreResult struct {
+	App     string           `json:"app,omitempty"`
+	Level   string           `json:"level,omitempty"`
+	Version string           `json:"version,omitempty"`
+	Count   int              `json:"count"`
+	Items   []logs.LogRecord `json:"items"`
+}
+
+// showLogStoreQuery runs the long-term store query. The positional argument
+// (or --app) narrows the query to one app; without it, every app's records
+// are searched. --lines doubles as the result cap.
+func showLogStoreQuery(args []string, since *time.Time) error {
+	appName := ""
+	if len(args) > 0 {
+		appInfo, err := GetAppInfo(args[0])
+		if err != nil {
+			return err
+		}
+		appName = appInfo.Name
+	}
+
+	s, err := logs.OpenLogStore()
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to open the log store", err)
+	}
+	defer s.Close()
+
+	records, err := s.Query(appName, logs.LogLevel(logLevel), logVersion, "", sinceOrZero(since), logLines)
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "log store query failed", err)
+	}
+
+	if machine.Active() {
+		return writeEnvelopeResult(machine.Success("", logStoreResult{
+			App:     appName,
+			Level:   logLevel,
+			Version: logVersion,
+			Count:   len(records),
+			Items:   records,
+		}))
+	}
+
+	for _, rec := range records {
+		fmt.Println(rec.TextLine())
+	}
+	if len(records) == 0 {
+		fmt.Println("  (no matching records in the long-term store)")
+	}
+	return nil
+}
+
+// sinceOrZero maps a nil since to the zero time the store query expects.
+func sinceOrZero(since *time.Time) time.Time {
+	if since == nil {
+		return time.Time{}
+	}
+	return *since
+}
+
 // parseLogSince parses --since as either a Go duration relative to now
-// ("30m", "2h") or an RFC3339 timestamp. Empty means no filter.
+// ("30m", "2h"), a day count ("30d"), or an RFC3339 timestamp. Empty means
+// no filter.
 func parseLogSince(raw string) (*time.Time, error) {
 	if raw == "" {
 		return nil, nil
+	}
+	if strings.HasSuffix(raw, "d") {
+		if days, err := strconv.Atoi(strings.TrimSuffix(raw, "d")); err == nil && days > 0 {
+			t := time.Now().AddDate(0, 0, -days)
+			return &t, nil
+		}
+		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"invalid --since %q: day counts look like 30d", raw)
 	}
 	if d, err := time.ParseDuration(raw); err == nil {
 		if d <= 0 {
@@ -183,6 +347,15 @@ const logTimeLayout = "2006/01/02 15:04:05"
 // strictly before since. Lines without a parseable prefix are conservatively
 // kept — an untimestamped line must not be silently dropped.
 func linePredates(line string, since time.Time) bool {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "{") {
+		var rec logs.LogRecord
+		if err := json.Unmarshal([]byte(trimmed), &rec); err == nil {
+			if ts := logs.ParseRecordTime(rec.TS); !ts.IsZero() {
+				return ts.Before(since)
+			}
+		}
+	}
 	if len(line) < len(logTimeLayout) {
 		return false
 	}
@@ -196,18 +369,10 @@ func linePredates(line string, since time.Time) bool {
 // readLogHistory returns up to n trailing lines (n <= 0 means all), plus the
 // total number of lines scanned. When since is set, lines with a parseable
 // timestamp before it are filtered out of the result (but still counted).
-func readLogHistory(f *os.File, n int, since *time.Time) ([]string, int, error) {
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, 0, err
-	}
-
-	// Upper bound for the in-memory window when n <= 0: the log files are
-	// trimmed by retention, but a scan must never buffer an unbounded file.
-	const maxBufferedLines = 10000
-
+func readLogHistory(r io.Reader, n int, since *time.Time) ([]string, int, error) {
 	total := 0
 	var lines []string
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		total++
@@ -284,4 +449,10 @@ func init() {
 		"Only show lines logged after this point: a Go duration (30m, 2h) or RFC3339 timestamp")
 	LogCmd.Flags().BoolVar(&logJSON, "json", false,
 		"Output a bounded machine-readable snapshot (implies --no-follow; cannot be combined with following)")
+	LogCmd.Flags().StringVar(&logLevel, "level", "",
+		"Query the long-term store for a level (debug, info, warn, error); requires the monitor to run with PHELIX_LOG_STORE=1")
+	LogCmd.Flags().StringVar(&logVersion, "version", "",
+		"Query the long-term store for one serving version (e.g. v18); requires the store")
+	LogCmd.Flags().StringVar(&logApp, "app", "",
+		"App name for the store query (alternative to the positional argument)")
 }

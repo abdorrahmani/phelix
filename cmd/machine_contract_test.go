@@ -268,7 +268,14 @@ func TestLogSince_ParsesDurationsAndTimestamps(t *testing.T) {
 	if _, err := parseLogSince("2026-10-06T09:15:00Z"); err != nil {
 		t.Fatalf("RFC3339 --since: %v", err)
 	}
-	for _, bad := range []string{"-5m", "yesterday", "0"} {
+	d, err = parseLogSince("30d")
+	if err != nil {
+		t.Fatalf("day-count --since: %v", err)
+	}
+	if time.Since(*d) < 29*24*time.Hour {
+		t.Fatalf("30d must resolve to 30 days back: %v", d)
+	}
+	for _, bad := range []string{"-5m", "yesterday", "0", "0d", "-3d"} {
 		if _, err := parseLogSince(bad); err == nil {
 			t.Errorf("--since %q must be rejected", bad)
 		}

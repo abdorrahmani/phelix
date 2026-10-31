@@ -86,6 +86,12 @@ type monitorStreamManager struct {
 	metricsCollector monitor.MetricsCollector
 	commandExecutor  monitor.CommandExecutor
 
+	// logBatches batches the per-line entries the legacy stream sends
+	// individually (and the access-log entries, which ride the batch only)
+	// into MonitorLogBatch events on its own goroutine.
+	logBatches *logBatcher
+	batchOnce  sync.Once
+
 	pausedMu sync.Mutex
 	paused   bool
 
@@ -105,6 +111,27 @@ func init() { RegisterCapability(CapabilityMonitoring) }
 var monitorStream = &monitorStreamManager{
 	metricsCollector: monitor.NewMetricsCollector(),
 	commandExecutor:  monitor.NewCommandExecutor(),
+	logBatches:       newLogBatcher(),
+}
+
+// ensureLogBatcher starts the batch drain loop once, on first use.
+func (s *monitorStreamManager) ensureLogBatcher() {
+	s.batchOnce.Do(func() {
+		go s.logBatches.run(func(event *pb.MonitorEvent) error {
+			return monitorStream.send(event)
+		})
+	})
+}
+
+// queueBatchEntries queues already converted entries for batched delivery.
+func (s *monitorStreamManager) queueBatchEntries(entries []*pb.MonitorLogEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	s.ensureLogBatcher()
+	if dropped := s.logBatches.add(entries); dropped > 0 {
+		logs.WarningFile("grpc", "[gRPC Monitor] log batch queue full, dropped %d lines", dropped)
+	}
 }
 
 // sendCommandResult wraps a MonitorCommandResult in a MonitorEvent. Delivery
@@ -172,10 +199,14 @@ func eventPayloadName(event *pb.MonitorEvent) string {
 		return "server_metrics"
 	case *pb.MonitorEvent_AppMetrics:
 		return "app_metrics"
+	case *pb.MonitorEvent_AppTraffic:
+		return "app_traffic"
 	case *pb.MonitorEvent_AppInfo:
 		return "app_info"
 	case *pb.MonitorEvent_LogEntry:
 		return "log_entry"
+	case *pb.MonitorEvent_LogBatch:
+		return "log_batch"
 	case *pb.MonitorEvent_CommandResult:
 		return "command_result"
 	case *pb.MonitorEvent_DeploymentSnapshot:
@@ -734,19 +765,34 @@ func (c *Client) sendMonitorTick() {
 	if entries, err := monitorStream.metricsCollector.CollectAppLogs(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect app logs: %v", err)
 	} else {
+		batch := make([]*pb.MonitorLogEntry, 0, len(entries))
 		for _, e := range entries {
+			batch = append(batch, toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_APPLICATION))
+		}
+		for _, entry := range batch {
 			event := &pb.MonitorEvent{
 				ServerId:  serverID,
 				Timestamp: time.Now().UnixMilli(),
 				Payload: &pb.MonitorEvent_LogEntry{
-					LogEntry: toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_APPLICATION),
+					LogEntry: entry,
 				},
 			}
 			if err := monitorStream.send(event); err != nil {
 				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send app log: %v", err)
-				return
+				break
 			}
 		}
+		monitorStream.queueBatchEntries(batch)
+	}
+
+	if entries, err := monitorStream.metricsCollector.CollectAccessLogs(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect access logs: %v", err)
+	} else {
+		batch := make([]*pb.MonitorLogEntry, 0, len(entries))
+		for _, e := range entries {
+			batch = append(batch, toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_PROXY))
+		}
+		monitorStream.queueBatchEntries(batch)
 	}
 }
 
@@ -780,19 +826,24 @@ func (c *Client) sendServerTick() {
 	if entries, err := monitorStream.metricsCollector.CollectSelfLogs(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect self logs: %v", err)
 	} else {
+		batch := make([]*pb.MonitorLogEntry, 0, len(entries))
 		for _, e := range entries {
+			batch = append(batch, toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_SELF))
+		}
+		for _, entry := range batch {
 			event := &pb.MonitorEvent{
 				ServerId:  serverID,
 				Timestamp: time.Now().UnixMilli(),
 				Payload: &pb.MonitorEvent_LogEntry{
-					LogEntry: toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_SELF),
+					LogEntry: entry,
 				},
 			}
 			if err := monitorStream.send(event); err != nil {
 				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send self log: %v", err)
-				return
+				break
 			}
 		}
+		monitorStream.queueBatchEntries(batch)
 	}
 }
 

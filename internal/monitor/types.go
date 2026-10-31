@@ -26,6 +26,7 @@ type MetricsCollector interface {
 	CollectServerMetrics() (*server.Metrics, error)
 	CollectAppLogs() ([]logs.LogEntry, error)
 	CollectSelfLogs() ([]logs.LogEntry, error)
+	CollectAccessLogs() ([]logs.LogEntry, error)
 }
 
 // CommandExecutor executes a remote-control command received from the

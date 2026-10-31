@@ -169,6 +169,11 @@ type AppLoggingConfig struct {
 	RotationMaxFiles int `json:"rotation_max_files,omitempty"`
 	// RotationCompress indicates rotated files are gzip-compressed.
 	RotationCompress bool `json:"rotation_compress,omitempty"`
+	// AccessLog controls the proxy's per-request access log: "all" records
+	// every request, "off" records none, and an empty value samples the
+	// default (4xx/5xx responses and requests slower than the app's p95).
+	// Only reached when the app is enrolled with the proxy daemon.
+	AccessLog string `json:"access_log,omitempty"`
 }
 
 // AppStorageConfig describes where a managed app stores its data on disk.
