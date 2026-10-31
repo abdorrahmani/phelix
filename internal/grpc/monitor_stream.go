@@ -25,12 +25,12 @@ import (
 // tests can shorten it instead of waiting on the real interval.
 var monitorMetricsInterval = 2 * time.Second
 
-// serverMetricsInterval is the cadence for the server-level slice of the
-// monitor snapshot (sendServerTick): host-wide metrics and the daemon's own
-// logs. Host memory, disk, load and process counts do not change
-// meaningfully within the app tick interval, and collecting them blocks for
-// a full second because the CPU sampler measures across its interval. A var
-// (not a const) so tests can shorten it, like monitorMetricsInterval.
+// serverMetricsInterval is the cadence for the host-wide metrics slice of the
+// monitor snapshot (sendServerTick). Host memory, disk, load and process
+// counts do not change meaningfully within the app tick interval, and
+// collecting them blocks for a full second because the CPU sampler measures
+// across its interval. A var (not a const) so tests can shorten it, like
+// monitorMetricsInterval.
 var serverMetricsInterval = 30 * time.Second
 
 const monitorCommandSettleDelay = 2 * time.Second
@@ -765,25 +765,10 @@ func (c *Client) sendMonitorTick() {
 	if entries, err := monitorStream.metricsCollector.CollectAppLogs(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect app logs: %v", err)
 	} else {
-		batch := make([]*pb.MonitorLogEntry, 0, len(entries))
-		for _, e := range entries {
-			batch = append(batch, toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_APPLICATION))
-		}
-		for _, entry := range batch {
-			event := &pb.MonitorEvent{
-				ServerId:  serverID,
-				Timestamp: time.Now().UnixMilli(),
-				Payload: &pb.MonitorEvent_LogEntry{
-					LogEntry: entry,
-				},
-			}
-			if err := monitorStream.send(event); err != nil {
-				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send app log: %v", err)
-				break
-			}
-		}
-		monitorStream.queueBatchEntries(batch)
+		c.sendLogEntries(entries, pb.LogSource_LOG_SOURCE_APPLICATION, "app log")
 	}
+
+	c.sendSelfLogTick()
 
 	if entries, err := monitorStream.metricsCollector.CollectAccessLogs(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect access logs: %v", err)
@@ -796,9 +781,53 @@ func (c *Client) sendMonitorTick() {
 	}
 }
 
-// sendServerTick sends the server-level slice of the monitor snapshot:
-// host-wide metrics and the daemon's own logs, sent every
-// serverMetricsInterval. Server-level data follows the watching opt-in
+// sendLogEntries delivers one source's entries on the legacy per-line channel
+// and queues the same entries for batched delivery. A send failure stops the
+// legacy pass but the batch is still queued, so a reconnect does not lose the
+// collected lines.
+func (c *Client) sendLogEntries(entries []logs.LogEntry, source pb.LogSource, label string) {
+	if len(entries) == 0 {
+		return
+	}
+	serverID := server.GetServerID()
+	batch := make([]*pb.MonitorLogEntry, 0, len(entries))
+	for _, e := range entries {
+		batch = append(batch, toProtoLogEntry(e, source))
+	}
+	for _, entry := range batch {
+		event := &pb.MonitorEvent{
+			ServerId:  serverID,
+			Timestamp: time.Now().UnixMilli(),
+			Payload: &pb.MonitorEvent_LogEntry{
+				LogEntry: entry,
+			},
+		}
+		if err := monitorStream.send(event); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send %s: %v", label, err)
+			break
+		}
+	}
+	monitorStream.queueBatchEntries(batch)
+}
+
+// sendSelfLogTick ships the daemon's own log lines. It runs on the fast
+// monitor tick so self logs reach the backend at the same cadence as app logs,
+// and it is gated by the watching opt-in because server-level data has nothing
+// to attach to while every app is unwatched.
+func (c *Client) sendSelfLogTick() {
+	if !app.AnyWatched() {
+		return
+	}
+	entries, err := monitorStream.metricsCollector.CollectSelfLogs()
+	if err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect self logs: %v", err)
+		return
+	}
+	c.sendLogEntries(entries, pb.LogSource_LOG_SOURCE_SELF, "self log")
+}
+
+// sendServerTick sends the host-wide metrics slice of the monitor snapshot
+// every serverMetricsInterval. It follows the watching opt-in
 // (app.AnyWatched): with no watched app there is nothing for the backend to
 // attribute the data to, so nothing is sent for the server itself.
 func (c *Client) sendServerTick() {
@@ -821,29 +850,6 @@ func (c *Client) sendServerTick() {
 			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server metrics: %v", err)
 			return
 		}
-	}
-
-	if entries, err := monitorStream.metricsCollector.CollectSelfLogs(); err != nil {
-		logs.ErrorFile("grpc", "[gRPC Monitor] failed to collect self logs: %v", err)
-	} else {
-		batch := make([]*pb.MonitorLogEntry, 0, len(entries))
-		for _, e := range entries {
-			batch = append(batch, toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_SELF))
-		}
-		for _, entry := range batch {
-			event := &pb.MonitorEvent{
-				ServerId:  serverID,
-				Timestamp: time.Now().UnixMilli(),
-				Payload: &pb.MonitorEvent_LogEntry{
-					LogEntry: entry,
-				},
-			}
-			if err := monitorStream.send(event); err != nil {
-				logs.ErrorFile("grpc", "[gRPC Monitor] failed to send self log: %v", err)
-				break
-			}
-		}
-		monitorStream.queueBatchEntries(batch)
 	}
 }
 
