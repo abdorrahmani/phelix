@@ -38,6 +38,7 @@ import (
 	"context"
 
 	"github.com/abdorrahmani/phelix/internal/authz"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/plans"
 )
@@ -96,4 +97,24 @@ func authorizeDirectExecution(action, app, appID string) error {
 		Plan:   nil,
 	})
 	return err
+}
+
+// authorizeWorkspaceServices applies the direct execution gate to every
+// registered service before workspace orchestration takes its lock or mints
+// any per-service operation. A refusal therefore leaves no lock, no operation
+// record and no consumed idempotency key behind.
+func authorizeWorkspaceServices(action string, names []string) error {
+	if err := loadAppStateForWorkspace(); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
+	}
+	for _, name := range names {
+		info := findRegisteredApp(name)
+		if info == nil {
+			continue
+		}
+		if err := authorizeDirectExecution(action, name, info.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }

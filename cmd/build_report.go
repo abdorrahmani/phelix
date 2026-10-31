@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 
@@ -64,24 +65,30 @@ func newNativeBuildReport(lang builder.Language, cfg *builder.BuildConfig, binar
 // comparable builds. Never returns an error and never alters the caller's
 // exit code path.
 func emitBuildReport(appName string, rep *buildreport.Report, commit string, rec *deploy.RecordResult, verErr error) {
+	emitBuildReportTo(os.Stdout, appName, rep, commit, rec, verErr)
+}
+
+// emitBuildReportTo writes the build report and its regression analysis to
+// the supplied destination.
+func emitBuildReportTo(out io.Writer, appName string, rep *buildreport.Report, commit string, rec *deploy.RecordResult, verErr error) {
 	if rep == nil {
 		return
 	}
 	if rec != nil && verErr == nil {
 		history, herr := deploy.BuildReportHistory(appName, rec.Version)
 		if herr != nil {
-			buildreport.PrintReport(os.Stdout, buildreport.ReportView{
+			buildreport.PrintReport(out, buildreport.ReportView{
 				AppName: appName,
 				Version: rec.Version,
 				Commit:  commit,
 				Report:  rep,
 			})
-			fmt.Printf("  %s Build report warning:\n", color.YellowString("⚠"))
-			fmt.Printf("  Unable to compare with previous build: %v\n", herr)
+			fmt.Fprintf(out, "  %s Build report warning:\n", color.YellowString("⚠"))
+			fmt.Fprintf(out, "  Unable to compare with previous build: %v\n", herr)
 			return
 		}
 		analysis := buildreport.Analyze(rep, history, buildreport.DefaultConfig())
-		buildreport.PrintReport(os.Stdout, buildreport.ReportView{
+		buildreport.PrintReport(out, buildreport.ReportView{
 			AppName:  appName,
 			Version:  rec.Version,
 			Commit:   commit,
@@ -91,25 +98,29 @@ func emitBuildReport(appName string, rep *buildreport.Report, commit string, rec
 		return
 	}
 
-	// Version recording failed — the build itself succeeded, so show the
-	// raw report with an explanatory warning instead of analysis.
-	buildreport.PrintReport(os.Stdout, buildreport.ReportView{
+	buildreport.PrintReport(out, buildreport.ReportView{
 		AppName: appName,
 		Commit:  commit,
 		Report:  rep,
 	})
-	fmt.Printf("  %s Build report warning:\n", color.YellowString("⚠"))
+	fmt.Fprintf(out, "  %s Build report warning:\n", color.YellowString("⚠"))
 	reason := "version metadata unavailable"
 	if verErr != nil {
 		reason = "unable to compare with previous build: " + verErr.Error()
 	}
-	fmt.Printf("  %s\n", reason)
+	fmt.Fprintf(out, "  %s\n", reason)
 }
 
 // printFailedBuildSummary renders concise post-mortem metrics after a failed
 // build. cfg may be nil (failure before any timing started). Nothing here is
 // persisted: failed builds must not become versions.
 func printFailedBuildSummary(lang builder.Language, cfg *builder.BuildConfig) {
+	printFailedBuildSummaryTo(os.Stdout, lang, cfg)
+}
+
+// printFailedBuildSummaryTo writes the failed-build summary to the supplied
+// destination.
+func printFailedBuildSummaryTo(out io.Writer, lang builder.Language, cfg *builder.BuildConfig) {
 	view := buildreport.FailedReportView{Language: string(lang)}
 	if cfg != nil {
 		if !cfg.BuildEndTime.IsZero() && !cfg.BuildStartTime.IsZero() {
@@ -121,5 +132,5 @@ func printFailedBuildSummary(lang builder.Language, cfg *builder.BuildConfig) {
 			view.Cache = cfg.Observe.CacheStatus.Normalized()
 		}
 	}
-	buildreport.PrintFailedReport(os.Stdout, view)
+	buildreport.PrintFailedReport(out, view)
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -90,6 +91,7 @@ var RebuildCmd = &cobra.Command{
 func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 	appInfo, name, portToUse, buildSource := spec.AppInfo, spec.Name, spec.Port, spec.SourceDir
 	buildMgr := spec.BuildMgr
+	out := spec.writer()
 
 	release, lockErr := deploy.AcquireDeployLock(name, "rebuild")
 	if lockErr != nil {
@@ -102,37 +104,37 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 	defer flushTelemetry()
 	op.setDeploymentID(tracker)
 
-	if err := stopExistingApp(appInfo); err != nil {
+	if err := stopExistingApp(out, appInfo); err != nil {
 		tracker.Failed(err)
 		return err
 	}
 
 	tracker.Building("classic rebuild")
-	rebuildReport, rerr := rebuildApp(appInfo.ID, rebuildArgs, buildMgr, buildSource)
+	rebuildReport, rerr := rebuildApp(out, appInfo.ID, spec.Args, buildMgr, buildSource)
 	if rerr != nil {
 		tracker.Failed(rerr)
 		return rerr
 	}
 
 	gitCommit := deploy.DetectGitCommit(buildSource)
-	logger := &colorLogger{}
+	logger := &colorLogger{Writer: out}
 	rec, verErr := deploy.RecordFreshBuild(
 		name, appInfo.ID,
 		filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID)),
-		gitCommit, rebuildTag,
+		gitCommit, spec.Tag,
 		rebuildReport,
 		deploy.DefaultRetention{Max: 5}, logger,
 	)
 	if verErr != nil {
-		fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
+		fmt.Fprintf(out, "  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
 	} else {
-		fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
+		fmt.Fprintf(out, "  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
 		tracker.SetTargetVersion(rec.Version)
 	}
 
-	emitBuildReport(name, rebuildReport, gitCommit, rec, verErr)
+	emitBuildReportTo(out, name, rebuildReport, gitCommit, rec, verErr)
 
-	fmt.Printf("  %s Starting application on port %d...\n", color.BlueString("→"), portToUse)
+	fmt.Fprintf(out, "  %s Starting application on port %d...\n", color.BlueString("→"), portToUse)
 	if err := app.Manager.StartApplication(appInfo.ID, portToUse, name); err != nil {
 
 		startErr := phelixerr.Wrapf(
@@ -143,8 +145,8 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 			appInfo.ID,
 		)
 		tracker.Failed(startErr)
-		if rec != nil && rebuildAutoRollback {
-			runClassicAutoRollback(name, appInfo, rec.Version, portToUse, startErr)
+		if rec != nil && spec.AutoRollback {
+			runClassicAutoRollback(out, name, appInfo, rec.Version, portToUse, startErr)
 		}
 		return startErr
 	}
@@ -152,20 +154,20 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 
 	if rec != nil {
 		if err := deploy.PromoteVersion(name, rec.Version, "classic"); err != nil {
-			fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
+			fmt.Fprintf(out, "  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
 		}
 	}
 	tracker.PromoteCurrentVersion()
 	tracker.Completed(fmt.Sprintf("running on port %d", portToUse))
 
-	fmt.Printf("%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
+	fmt.Fprintf(out, "%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
 	phelixgrpc.ReportEvent(appInfo.ID, name, "rebuild", true, "", 0, "", "")
 	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	rbVer := 0
 	if rec != nil {
 		rbVer = rec.Version
 	}
-	phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true, rbVer, rebuildTag, gitCommit, rebuildReport, "")
+	phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true, rbVer, spec.Tag, gitCommit, rebuildReport, "")
 
 	op.setResult(&ops.Result{Version: rbVer, Port: portToUse, Strategy: "classic"})
 	return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
@@ -266,12 +268,14 @@ func init() {
 // runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a
 // deploy.Builder closure around the existing rebuildApp path, a proxy.Client
 // for the control socket, and a colorised logger, then runs BlueGreen or
-// Rolling depending on which flag was set. buildSource is the directory to
-// compile (the app's directory, or an isolated --source-dir); the output
-// binary and deployment state always stay with the app. op carries the
-// operation identity: the deployment telemetry ID is correlated into the
-// record and the terminal envelope is written per strategy.
-func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, buildSource string, op *opRun) error {
+// Rolling depending on the resolved spec. The output binary and deployment
+// state always stay with the app. op carries the operation identity: the
+// deployment telemetry ID is correlated into the record and the terminal
+// envelope is written per strategy.
+func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
+	appInfo, name, publicPort, buildSource := spec.AppInfo, spec.Name, spec.Port, spec.SourceDir
+	out := spec.writer()
+
 	socket, err := proxy.DefaultSocketPath()
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeProxy, "could not determine proxy socket path", err)
@@ -279,7 +283,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 
 	// Ensure the proxy daemon is up. If the user hasn't started it yet, spawn
 	// it in the background so blue-green/rolling "just work".
-	fmt.Printf("  %s Ensuring proxy daemon is running...\n", color.BlueString("→"))
+	fmt.Fprintf(out, "  %s Ensuring proxy daemon is running...\n", color.BlueString("→"))
 	if err := proxy.EnsureDaemon(context.Background(), "", 5*time.Second); err != nil {
 		return phelixerr.Wrapf(
 			phelixerr.CodeProxy,
@@ -299,24 +303,24 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		)
 	}
 
-	logger := &colorLogger{}
+	logger := &colorLogger{Writer: out}
 	healthProvider := deploy.DefaultHealthProvider()
 
-	buildMgr := builder.NewBuildManager()
-	buildMgr.SetTimeout(rebuildTimeout)
+	buildMgr := spec.BuildMgr
+	buildMgr.SetTimeout(spec.Timeout)
 	gitCommit := deploy.DetectGitCommit(buildSource)
 	var lastReport *buildreport.Report
 	freshSource := &deploy.FreshBuildSource{
 		AppName:   name,
 		AppID:     appInfo.ID,
-		ExtraArgs: rebuildArgs,
+		ExtraArgs: spec.Args,
 		GitCommit: gitCommit,
-		Tag:       rebuildTag,
+		Tag:       spec.Tag,
 		Retention: deploy.DefaultRetention{Max: 5},
 		Logger:    logger,
 		ReportFn:  func() *buildreport.Report { return lastReport },
 		BuildFn: func(ctx context.Context, appID string, extraArgs []string) (string, error) {
-			report, berr := rebuildApp(appID, extraArgs, buildMgr, buildSource)
+			report, berr := rebuildApp(out, appID, extraArgs, buildMgr, buildSource)
 			lastReport = report
 			if berr != nil {
 				return "", berr
@@ -344,7 +348,7 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 			AppName:   name,
 			AppID:     appInfo.ID,
 			GitCommit: gitCommit,
-			Tag:       rebuildTag,
+			Tag:       spec.Tag,
 			Retention: deploy.DefaultRetention{Max: 5},
 			Logger:    logger,
 			BuildFn:   dockerImageBuilder(buildSource, deployBuild, composeFile, composeService),
@@ -380,30 +384,30 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	}
 
 	strategy := string(deploy.ModeRolling)
-	if rebuildBlueGreen {
+	if spec.BlueGreen {
 		strategy = string(deploy.ModeBlueGreen)
 	}
-	if rolloutPlan != nil {
-		strategy = rolloutPlan.Strategy
+	if spec.Rollout != nil {
+		strategy = spec.Rollout.Strategy
 	}
 	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, strategy)
 	op.setDeploymentID(tracker)
 	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
 
 	deployCtx := context.Background()
-	if rolloutPlan != nil {
+	if spec.Rollout != nil {
 		signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stopSignals()
 		deployCtx = signalCtx
 	}
 
-	if rolloutPlan != nil {
+	if spec.Rollout != nil {
 		ro := &deploy.Rollout{
 			AppName:        name,
 			AppID:          appInfo.ID,
 			PublicPort:     publicPort,
-			Plan:           *rolloutPlan,
-			ExtraArgs:      rebuildArgs,
+			Plan:           *spec.Rollout,
+			ExtraArgs:      spec.Args,
 			Source:         deploySource,
 			Launcher:       launcher,
 			Runtime:        deployRuntime,
@@ -418,35 +422,35 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		reconcileAppWithDeploy(name)
 		if err != nil {
 			release()
-			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
-				proxyClient, healthProvider, logger, tracker, err)
+			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
+				proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 		}
 		release()
-		fmt.Printf("%s %s rollout complete for %s (%d steps)\n",
-			color.GreenString("✓"), rolloutPlan.Strategy, color.CyanString("'%s'", name), len(rolloutPlan.Steps))
+		fmt.Fprintf(out, "%s %s rollout complete for %s (%d steps)\n",
+			color.GreenString("✓"), spec.Rollout.Strategy, color.CyanString("'%s'", name), len(spec.Rollout.Steps))
 		// Build Report + regression analysis (observability only).
-		emitBuildReport(name, lastReport, gitCommit,
+		emitBuildReportTo(out, name, lastReport, gitCommit,
 			&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
-			deploy.TargetVersionOf(deploySource), rebuildTag, gitCommit, lastReport, "")
+			deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport, "")
 		ver := deploy.TargetVersionOf(deploySource)
-		op.setResult(&ops.Result{Version: ver, Port: publicPort, Strategy: rolloutPlan.Strategy})
+		op.setResult(&ops.Result{Version: ver, Port: publicPort, Strategy: spec.Rollout.Strategy})
 		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
 			App:      name,
 			AppID:    appInfo.ID,
 			Version:  ver,
 			Port:     publicPort,
-			Strategy: rolloutPlan.Strategy,
+			Strategy: spec.Rollout.Strategy,
 		}))
 	}
 
-	if rebuildBlueGreen {
+	if spec.BlueGreen {
 		bg := &deploy.BlueGreen{
 			AppName:        name,
 			AppID:          appInfo.ID,
 			PublicPort:     publicPort,
-			ExtraArgs:      rebuildArgs,
+			ExtraArgs:      spec.Args,
 			Source:         deploySource,
 			Launcher:       launcher,
 			Runtime:        deployRuntime,
@@ -462,18 +466,18 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		reconcileAppWithDeploy(name)
 		if err != nil {
 			release()
-			return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
-				proxyClient, healthProvider, logger, tracker, err)
+			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
+				proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 		}
 		release()
-		fmt.Printf("%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
+		fmt.Fprintf(out, "%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
 		// Build Report + regression analysis (observability only; the deploy
 		// outcome above is already committed).
-		emitBuildReport(name, lastReport, gitCommit,
+		emitBuildReportTo(out, name, lastReport, gitCommit,
 			&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
-			deploy.TargetVersionOf(deploySource), rebuildTag, gitCommit, lastReport, "")
+			deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport, "")
 		bgVer := deploy.TargetVersionOf(deploySource)
 		op.setResult(&ops.Result{Version: bgVer, Port: publicPort, Strategy: "blue-green"})
 		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
@@ -490,8 +494,8 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 		AppName:        name,
 		AppID:          appInfo.ID,
 		PublicPort:     publicPort,
-		Replicas:       rebuildReplicas,
-		ExtraArgs:      rebuildArgs,
+		Replicas:       spec.Replicas,
+		ExtraArgs:      spec.Args,
 		Source:         deploySource,
 		Launcher:       launcher,
 		Runtime:        deployRuntime,
@@ -505,18 +509,18 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 	reconcileAppWithDeploy(name)
 	if err != nil {
 		release()
-		return autoRollbackAfterFailedDeploy(appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
-			proxyClient, healthProvider, logger, tracker, err)
+		return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
+			proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 	}
 	release()
-	fmt.Printf("%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
-		color.GreenString("✓"), color.CyanString("'%s'", name), rebuildReplicas)
+	fmt.Fprintf(out, "%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
+		color.GreenString("✓"), color.CyanString("'%s'", name), spec.Replicas)
 	// Build Report + regression analysis (observability only).
-	emitBuildReport(name, lastReport, gitCommit,
+	emitBuildReportTo(out, name, lastReport, gitCommit,
 		&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
-		deploy.TargetVersionOf(deploySource), rebuildTag, gitCommit, lastReport, "")
+		deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport, "")
 	rollVer := deploy.TargetVersionOf(deploySource)
 	op.setResult(&ops.Result{Version: rollVer, Port: publicPort, Strategy: "rolling"})
 	return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
@@ -535,19 +539,19 @@ func runZeroDowntimeDeploy(appInfo *app.AppInfo, name string, publicPort int, bu
 // as triggers: RecoverableDeployFailure classifies the error, and the failed
 // version must have been recorded (a pure build failure has no version to
 // roll back from).
-func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort int,
+func autoRollbackAfterFailedDeploy(out io.Writer, appInfo *app.AppInfo, name string, publicPort int,
 	failedVer int, launcher deploy.InstanceLauncher, proxyClient *proxy.Client,
 	healthProvider deploy.HealthConfigProvider, logger *colorLogger,
-	tracker *deploy.Tracker, deployErr error) error {
+	tracker *deploy.Tracker, autoRollback bool, replicas int, deployErr error) error {
 
-	if !rebuildAutoRollback || !deploy.RecoverableDeployFailure(deployErr) {
+	if !autoRollback || !deploy.RecoverableDeployFailure(deployErr) {
 		return deployErr
 	}
-	fmt.Printf("%s %v\n", color.RedString("✗"), deployErr)
-	fmt.Printf("%s Automatic rollback enabled\n", color.BlueString("→"))
+	fmt.Fprintf(out, "%s %v\n", color.RedString("✗"), deployErr)
+	fmt.Fprintf(out, "%s Automatic rollback enabled\n", color.BlueString("→"))
 
 	if failedVer <= 0 {
-		fmt.Printf("%s No version was recorded for this deployment; nothing to roll back\n",
+		fmt.Fprintf(out, "%s No version was recorded for this deployment; nothing to roll back\n",
 			color.YellowString("⚠"))
 		return deployErr
 	}
@@ -564,7 +568,7 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 		ProxyClient:    proxyClient,
 		HealthProvider: healthProvider,
 		Logger:         logger,
-		Replicas:       rebuildReplicas,
+		Replicas:       replicas,
 		FailedVersion:  failedVer,
 		FailureReason:  deploy.AutoRollbackReason(failedVer, deployErr),
 		Telemetry:      recoveryTracker,
@@ -574,17 +578,17 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 		if phelixerr.IsCode(res.Err, phelixerr.CodeRollbackTargetNotFound) {
 			emitAutoRollbackEvent(appInfo, name, "", failedVer, 0,
 				deploy.AutoRollbackReason(failedVer, deployErr), false, res.Err, tracker.DeploymentID())
-			fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n",
+			fmt.Fprintf(out, "%s Automatic rollback was enabled, but no previous known-good version is available.\n",
 				color.RedString("✗"))
-			fmt.Printf("  %v\n", res.Err)
+			fmt.Fprintf(out, "  %v\n", res.Err)
 			return deployErr
 		}
 		tracker.Failed(deployErr)
 		emitAutoRollbackEvent(appInfo, name, "", failedVer, res.ToVer,
 			deploy.AutoRollbackReason(failedVer, deployErr), false, res.Err, tracker.DeploymentID())
-		fmt.Printf("%s Automatic rollback failed\n", color.RedString("✗"))
-		fmt.Printf("\nPrevious known-good version could not be restored safely.\n")
-		fmt.Printf("Application state may require manual intervention.\n")
+		fmt.Fprintf(out, "%s Automatic rollback failed\n", color.RedString("✗"))
+		fmt.Fprintf(out, "\nPrevious known-good version could not be restored safely.\n")
+		fmt.Fprintf(out, "Application state may require manual intervention.\n")
 		return phelixerr.Wrapf(phelixerr.CodeAutoRollbackFailed, res.Err,
 			"deployment of v%d failed and automatic rollback did not succeed", failedVer)
 	}
@@ -592,12 +596,12 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 		deploy.AutoRollbackReason(failedVer, deployErr), res.AlreadyServing, nil, tracker.DeploymentID())
 	if res.AlreadyServing {
 
-		fmt.Printf("%s Deployment rolled back automatically — %s kept serving\n",
+		fmt.Fprintf(out, "%s Deployment rolled back automatically, %s kept serving\n",
 			color.GreenString("✓"), color.CyanString("v%d", res.ToVer))
 		return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
 			"deployment of v%d failed; previous version v%d is serving again", failedVer, res.ToVer)
 	}
-	fmt.Printf("%s Deployment rolled back automatically\n", color.GreenString("✓"))
+	fmt.Fprintf(out, "%s Deployment rolled back automatically\n", color.GreenString("✓"))
 	return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
 		"deployment of v%d failed; previous version v%d restored automatically", failedVer, res.ToVer)
 }
@@ -608,15 +612,15 @@ func autoRollbackAfterFailedDeploy(appInfo *app.AppInfo, name string, publicPort
 // binary (brief downtime is inherent to classic). History records the
 // recovery as automatic. Promotion of the failed version never happened, so
 // versions.json still names the known-good version as current.
-func runClassicAutoRollback(name string, appInfo *app.AppInfo, failedVer, port int, deployErr error) {
-	logger := &colorLogger{}
-	fmt.Printf("%s Automatic rollback enabled\n", color.BlueString("→"))
+func runClassicAutoRollback(out io.Writer, name string, appInfo *app.AppInfo, failedVer, port int, deployErr error) {
+	logger := &colorLogger{Writer: out}
+	fmt.Fprintf(out, "%s Automatic rollback enabled\n", color.BlueString("→"))
 	target, err := deploy.LastKnownGoodVersion(name)
 	if err != nil || target == failedVer {
 		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, 0,
 			deploy.AutoRollbackReason(failedVer, deployErr), false,
 			phelixerr.New(phelixerr.CodeRollbackTargetNotFound, "no previous known-good version available"), "")
-		fmt.Printf("%s Automatic rollback was enabled, but no previous known-good version is available.\n", color.RedString("✗"))
+		fmt.Fprintf(out, "%s Automatic rollback was enabled, but no previous known-good version is available.\n", color.RedString("✗"))
 		return
 	}
 	logger.Stepf("automatic rollback: restoring v%d", target)
@@ -624,19 +628,19 @@ func runClassicAutoRollback(name string, appInfo *app.AppInfo, failedVer, port i
 	if err != nil {
 		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
 			deploy.AutoRollbackReason(failedVer, deployErr), false, err, "")
-		fmt.Printf("%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
+		fmt.Fprintf(out, "%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
 		return
 	}
 	destBin := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
 	if err := copyFileForRollback(binPath, destBin); err != nil {
 		emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
 			deploy.AutoRollbackReason(failedVer, deployErr), false, err, "")
-		fmt.Printf("%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
+		fmt.Fprintf(out, "%s Automatic rollback failed: %v\n", color.RedString("✗"), err)
 		return
 	}
 	if err := app.Manager.StartApplication(appInfo.ID, port, name); err != nil {
-		fmt.Printf("%s Automatic rollback failed: could not start v%d: %v\n", color.RedString("✗"), target, err)
-		fmt.Printf("Application state may require manual intervention.\n")
+		fmt.Fprintf(out, "%s Automatic rollback failed: could not start v%d: %v\n", color.RedString("✗"), target, err)
+		fmt.Fprintf(out, "Application state may require manual intervention.\n")
 		startErr := phelixerr.Wrapf(phelixerr.CodeRollbackFailed, err, "could not start v%d", target)
 		deploy.RecordRollbackResultSource(name, failedVer, target, "classic",
 			deploy.AutoRollbackReason(failedVer, deployErr), nil, err, deploy.RollbackSourceAutomatic)
@@ -656,33 +660,45 @@ func runClassicAutoRollback(name string, appInfo *app.AppInfo, failedVer, port i
 }
 
 // colorLogger implements deploy.Logger using the project's existing color
-// convention (→ blue, ✓ green, ⚠ yellow, ✗ red).
-type colorLogger struct{}
-
-func (colorLogger) Stepf(f string, a ...any) {
-	fmt.Printf("  %s %s\n", color.BlueString("→"), fmt.Sprintf(f, a...))
-}
-func (colorLogger) Infof(f string, a ...any) { fmt.Printf("    %s\n", fmt.Sprintf(f, a...)) }
-func (colorLogger) Warnf(f string, a ...any) {
-	fmt.Printf("  %s %s\n", color.YellowString("⚠"), fmt.Sprintf(f, a...))
-}
-func (colorLogger) Successf(f string, a ...any) {
-	fmt.Printf("  %s %s\n", color.GreenString("✓"), fmt.Sprintf(f, a...))
-}
-func (colorLogger) Errorf(f string, a ...any) {
-	fmt.Printf("  %s %s\n", color.RedString("✗"), fmt.Sprintf(f, a...))
+// convention.
+type colorLogger struct {
+	Writer io.Writer
 }
 
-func stopExistingApp(appInfo *app.AppInfo) error {
+// writer returns the destination for this logger.
+func (l colorLogger) writer() io.Writer {
+	if l.Writer != nil {
+		return l.Writer
+	}
+	return os.Stdout
+}
+
+func (l colorLogger) Stepf(f string, a ...any) {
+	fmt.Fprintf(l.writer(), "  %s %s\n", color.BlueString("→"), fmt.Sprintf(f, a...))
+}
+func (l colorLogger) Infof(f string, a ...any) {
+	fmt.Fprintf(l.writer(), "    %s\n", fmt.Sprintf(f, a...))
+}
+func (l colorLogger) Warnf(f string, a ...any) {
+	fmt.Fprintf(l.writer(), "  %s %s\n", color.YellowString("⚠"), fmt.Sprintf(f, a...))
+}
+func (l colorLogger) Successf(f string, a ...any) {
+	fmt.Fprintf(l.writer(), "  %s %s\n", color.GreenString("✓"), fmt.Sprintf(f, a...))
+}
+func (l colorLogger) Errorf(f string, a ...any) {
+	fmt.Fprintf(l.writer(), "  %s %s\n", color.RedString("✗"), fmt.Sprintf(f, a...))
+}
+
+func stopExistingApp(out io.Writer, appInfo *app.AppInfo) error {
 	if appInfo.Status != "running" {
-		fmt.Printf("  %s Note: Application %s (ID: %s) was not running\n", color.YellowString("⚠"), color.CyanString("'%s'", appInfo.Name), color.YellowString(appInfo.ID))
+		fmt.Fprintf(out, "  %s Note: Application %s (ID: %s) was not running\n", color.YellowString("⚠"), color.CyanString("'%s'", appInfo.Name), color.YellowString(appInfo.ID))
 		return nil
 	}
 
-	fmt.Printf("  %s Stopping existing application...\n", color.BlueString("→"))
+	fmt.Fprintf(out, "  %s Stopping existing application...\n", color.BlueString("→"))
 	if err := app.Manager.StopApplication(appInfo.ID); err != nil {
 
-		fmt.Printf("  %s Could not stop old process: %v\n", color.YellowString("⚠"), err)
+		fmt.Fprintf(out, "  %s Could not stop old process: %v\n", color.YellowString("⚠"), err)
 	}
 	return nil
 }
@@ -692,7 +708,7 @@ func stopExistingApp(appInfo *app.AppInfo) error {
 // sourceDir is the directory to compile — the app's directory by default, or
 // an isolated source (the webhook's exact-commit worktree) passed via
 // --source-dir. The output binary always lands in the app's directory.
-func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, sourceDir string) (*buildreport.Report, error) {
+func rebuildApp(out io.Writer, id string, extraArgs []string, buildMgr *builder.BuildManager, sourceDir string) (*buildreport.Report, error) {
 	appInfo, err := GetAppInfo(id)
 	if err != nil {
 		return nil, err
@@ -723,7 +739,7 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, s
 
 	outputPath := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", id))
 
-	fmt.Printf("  %s Preparing build environment...\n", color.BlueString("→"))
+	fmt.Fprintf(out, "  %s Preparing build environment...\n", color.BlueString("→"))
 
 	// Prepare build context
 	buildCtx, err := buildMgr.PrepareBuild(
@@ -735,7 +751,7 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, s
 		extraArgs,
 	)
 	if err != nil {
-		printFailedBuildSummary(lang, nil)
+		printFailedBuildSummaryTo(out, lang, nil)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if info, exists := appManager.Apps[id]; exists {
 				info.BuildStatus = "failed"
@@ -746,11 +762,11 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, s
 		return nil, phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild preparation failed", err)
 	}
 
-	fmt.Printf("  %s Rebuilding with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
+	fmt.Fprintf(out, "  %s Rebuilding with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
 
 	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
 
-		printFailedBuildSummary(lang, buildCtx.Config)
+		printFailedBuildSummaryTo(out, lang, buildCtx.Config)
 		if appManager, ok := app.Manager.(*app.AppManager); ok {
 			if info, exists := appManager.Apps[id]; exists {
 				info.BuildStatus = "failed"
@@ -768,7 +784,7 @@ func rebuildApp(id string, extraArgs []string, buildMgr *builder.BuildManager, s
 	}
 
 	duration := buildMgr.GetBuildDuration(buildCtx)
-	fmt.Printf("  %s Rebuild completed in %s\n", color.GreenString("✓"), color.YellowString(duration.String()))
+	fmt.Fprintf(out, "  %s Rebuild completed in %s\n", color.GreenString("✓"), color.YellowString(duration.String()))
 
 	report := newNativeBuildReport(lang, buildCtx.Config, outputPath)
 

@@ -1,24 +1,15 @@
 package cmd
 
-// rebuild_spec.go splits `phelix rebuild` into the two halves Phase 3 plans
-// must share:
-//
-//	buildRebuildSpec — resolve everything the execution path WOULD use
-//	                   (pure reads; also used by `phelix plan create rebuild`)
-//	runRebuildExec   — the existing execution body, driven by that spec
-//
-// This is the "one validated execution specification" requirement: plans
-// capture exactly what buildRebuildSpec resolves, and plan application runs
-// runRebuildExec — the same code path `phelix rebuild` runs — never a
-// parallel simulator.
-
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixport "github.com/abdorrahmani/phelix/internal/port"
 	"github.com/abdorrahmani/phelix/internal/project"
@@ -29,18 +20,31 @@ import (
 
 // rebuildSpec is the resolved execution specification for one rebuild.
 type rebuildSpec struct {
-	ProjCfg   *project.Config
-	AppInfo   *app.AppInfo
-	Name      string
-	Port      int
-	SourceDir string
-	// Strategy is the effective strategy resolution produced: classic,
-	// blue-green, rolling, canary or progressive.
-	Strategy string
-	Replicas int
-	Canary   int
-	Lang     builder.Language
-	BuildMgr *builder.BuildManager
+	ProjCfg      *project.Config
+	AppInfo      *app.AppInfo
+	Name         string
+	Port         int
+	SourceDir    string
+	Strategy     string
+	Replicas     int
+	Canary       int
+	Lang         builder.Language
+	BuildMgr     *builder.BuildManager
+	Args         []string
+	Tag          string
+	AutoRollback bool
+	BlueGreen    bool
+	Rollout      *deploy.RolloutPlan
+	Timeout      time.Duration
+	Output       io.Writer
+}
+
+// writer returns the destination for this rebuild's progress output.
+func (s *rebuildSpec) writer() io.Writer {
+	if s != nil && s.Output != nil {
+		return s.Output
+	}
+	return os.Stdout
 }
 
 // buildRebuildSpec resolves a rebuild exactly the way the rebuild command
@@ -139,16 +143,22 @@ func buildRebuildSpec(cmd *cobra.Command, args []string) (*rebuildSpec, error) {
 	}
 
 	return &rebuildSpec{
-		ProjCfg:   projCfg,
-		AppInfo:   appInfo,
-		Name:      name,
-		Port:      portToUse,
-		SourceDir: buildSource,
-		Strategy:  effectiveStrategy,
-		Replicas:  rebuildReplicas,
-		Canary:    rebuildCanary,
-		Lang:      lang,
-		BuildMgr:  buildMgr,
+		ProjCfg:      projCfg,
+		AppInfo:      appInfo,
+		Name:         name,
+		Port:         portToUse,
+		SourceDir:    buildSource,
+		Strategy:     effectiveStrategy,
+		Replicas:     rebuildReplicas,
+		Canary:       rebuildCanary,
+		Lang:         lang,
+		BuildMgr:     buildMgr,
+		Args:         append([]string(nil), rebuildArgs...),
+		Tag:          rebuildTag,
+		AutoRollback: rebuildAutoRollback,
+		BlueGreen:    rebuildBlueGreen,
+		Rollout:      rolloutPlan,
+		Timeout:      rebuildTimeout,
 	}, nil
 }
 
@@ -159,6 +169,7 @@ func buildRebuildSpec(cmd *cobra.Command, args []string) (*rebuildSpec, error) {
 func runRebuildExec(spec *rebuildSpec, op *opRun) error {
 	appInfo, name, portToUse, buildSource := spec.AppInfo, spec.Name, spec.Port, spec.SourceDir
 	buildMgr, lang, projCfg := spec.BuildMgr, spec.Lang, spec.ProjCfg
+	out := spec.writer()
 
 	resourceCfg, err := loadProjectConfigFrom(buildSource)
 	if err != nil {
@@ -168,16 +179,16 @@ func runRebuildExec(spec *rebuildSpec, op *opRun) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
+	fmt.Fprintf(out, "  %s Checking toolchain...\n", color.BlueString("→"))
 	if err := toolchain.EnsureTool(lang, Confirm); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
 	}
 
-	fmt.Printf("%s Rebuilding application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID))
-	fmt.Printf("  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
+	fmt.Fprintf(out, "%s Rebuilding application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID))
+	fmt.Fprintf(out, "  Language: %s\n", color.GreenString(buildMgr.FormatLanguage(lang)))
 
 	if changed, serr := syncProjectWatching(projCfg, appInfo.ID); serr != nil {
-		fmt.Printf("  %s Warning: could not apply watching from %s: %v\n",
+		fmt.Fprintf(out, "  %s Warning: could not apply watching from %s: %v\n",
 			color.YellowString("⚠"), project.FileName, serr)
 	} else {
 		stateChanged = stateChanged || changed
@@ -190,12 +201,12 @@ func runRebuildExec(spec *rebuildSpec, op *opRun) error {
 	}
 
 	if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil {
-		fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
+		fmt.Fprintf(out, "  %s Warning: could not apply health endpoints from %s: %v\n",
 			color.YellowString("⚠"), project.FileName, serr)
 	}
 
-	if rebuildBlueGreen || rebuildReplicas > 0 || rolloutPlan != nil {
-		return runZeroDowntimeDeploy(appInfo, name, portToUse, buildSource, op)
+	if spec.BlueGreen || spec.Replicas > 0 || spec.Rollout != nil {
+		return runZeroDowntimeDeploy(spec, op)
 	}
 
 	if err := migrateToClassic(name); err != nil {

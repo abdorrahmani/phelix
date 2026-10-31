@@ -233,6 +233,64 @@ services:
 	}
 }
 
+func TestOrchestrateWorkspaceDeploy_ParallelizesOneLevelAndWaitsForIt(t *testing.T) {
+	workspaceTestEnv(t, `
+services:
+  auth: { path: ./auth, port: 8081 }
+  orders: { path: ./orders, port: 8082 }
+  gateway: { path: ./gateway, port: 8083, depends_on: [auth, orders] }
+`, "auth", "orders", "gateway")
+	seedApps(t, "auth", "orders", "gateway")
+	previousConcurrency := wsConcurrency
+	wsConcurrency = 2
+	t.Cleanup(func() { wsConcurrency = previousConcurrency })
+
+	started := make(chan string, 3)
+	release := make(chan struct{})
+	deployOne := func(svc *workspace.Service, _ *app.AppInfo) (int, int, string, error) {
+		started <- svc.Name
+		if svc.Name != "gateway" {
+			<-release
+		}
+		return 1, svc.Port, workspace.StrategyClassic, nil
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- orchestrateWorkspaceDeploy(deployOne) }()
+
+	first := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case name := <-started:
+			first[name] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %v started; the first layer did not run concurrently", first)
+		}
+	}
+	if !first["auth"] || !first["orders"] {
+		t.Fatalf("started = %v, want auth and orders together", first)
+	}
+	close(release)
+
+	select {
+	case name := <-started:
+		if name != "gateway" {
+			t.Fatalf("next start = %q, want gateway after the first layer", name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("gateway did not start after the first layer completed")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("orchestrateWorkspaceDeploy: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deploy did not finish")
+	}
+}
+
 func TestOrchestrateWorkspaceDeploy_SucceedsInOrder(t *testing.T) {
 	workspaceTestEnv(t, `
 services:
@@ -274,6 +332,20 @@ func TestOrchestrateWorkspaceDeploy_RestoresEnvelopesAfterFailure(t *testing.T) 
 	}
 	if envelopeSuppressed {
 		t.Fatalf("envelope suppression leaked past the failed deploy")
+	}
+}
+
+func TestWorkspaceStatusSummary_HealthAndVersionConsistency(t *testing.T) {
+	views := []workspaceServiceStatusView{
+		{Name: "orders", Version: 11, Health: "healthy"},
+		{Name: "gateway", Version: 12, Health: "unhealthy"},
+	}
+	got := workspaceStatusSummary(views)
+	if !strings.Contains(got, "1 healthy") || !strings.Contains(got, "1 unhealthy") {
+		t.Fatalf("summary = %q, want health counts", got)
+	}
+	if !strings.Contains(got, "inconsistent: orders v11 ≠ gateway v12") {
+		t.Fatalf("summary = %q, want the inconsistent versions", got)
 	}
 }
 

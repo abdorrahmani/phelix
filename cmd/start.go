@@ -143,11 +143,11 @@ var StartCmd = &cobra.Command{
 
 			fmt.Printf("%s Rebuilding application %s (ID: %s) with %s...\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), color.GreenString(buildMgr.FormatLanguage(lang)))
 
-			if err := stopExistingApp(appInfo); err != nil {
+			if err := stopExistingApp(os.Stdout, appInfo); err != nil {
 				return err
 			}
 
-			if _, rerr := rebuildApp(appInfo.ID, []string{}, buildMgr, ""); rerr != nil {
+			if _, rerr := rebuildApp(os.Stdout, appInfo.ID, []string{}, buildMgr, ""); rerr != nil {
 				return rerr
 			}
 
