@@ -387,6 +387,11 @@ func (c *Client) runMonitorStream() error {
 	} else {
 		c.replayPendingWebhookResults(webhookLedger)
 	}
+	if err := workerResults.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote worker ledger unavailable; worker commands will fail closed: %v", err)
+	} else {
+		c.replayPendingWorkerResults(workerResults)
+	}
 
 	if err := c.sendMonitorServerInfo(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
@@ -471,6 +476,11 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 			if isWebhookCommand(p.Command.GetType()) {
 				c.handleWebhookCommand(p.Command, webhookLedger)
+				continue
+			}
+
+			if isWorkerCommand(p.Command.GetType()) {
+				c.handleWorkerCommand(p.Command, workerResults)
 				continue
 			}
 

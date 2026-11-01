@@ -207,14 +207,14 @@ type rollingCfgView struct {
 }
 
 type processCfgView struct {
-	RestartPolicy      string `json:"restart_policy,omitempty"`
-	MaxAttempts        int    `json:"max_attempts,omitempty"`
-	BackoffInitial     string `json:"backoff_initial,omitempty"`
-	BackoffMax         string `json:"backoff_max,omitempty"`
-	BackoffMultiplier  float64 `json:"backoff_multiplier,omitempty"`
-	ShutdownSignal     string `json:"shutdown_signal,omitempty"`
-	GracePeriod        string `json:"grace_period,omitempty"`
-	StartupTimeout     string `json:"startup_timeout,omitempty"`
+	RestartPolicy     string  `json:"restart_policy,omitempty"`
+	MaxAttempts       int     `json:"max_attempts,omitempty"`
+	BackoffInitial    string  `json:"backoff_initial,omitempty"`
+	BackoffMax        string  `json:"backoff_max,omitempty"`
+	BackoffMultiplier float64 `json:"backoff_multiplier,omitempty"`
+	ShutdownSignal    string  `json:"shutdown_signal,omitempty"`
+	GracePeriod       string  `json:"grace_period,omitempty"`
+	StartupTimeout    string  `json:"startup_timeout,omitempty"`
 }
 
 type resourcesCfgView struct {
@@ -274,14 +274,14 @@ func buildConfigContext(cfg *project.Config) *inspectConfig {
 	if cfg.Process != nil {
 		ps := cfg.Process.Resolve()
 		view.Process = &processCfgView{
-			RestartPolicy:      ps.RestartPolicy,
-			MaxAttempts:        ps.MaxRestartAttempts,
-			BackoffInitial:     durationString(ps.BackoffInitial),
-			BackoffMax:         durationString(ps.BackoffMax),
-			BackoffMultiplier:  ps.BackoffMultiplier,
-			ShutdownSignal:     ps.ShutdownSignal,
-			GracePeriod:        durationString(ps.GracePeriod),
-			StartupTimeout:     durationString(ps.StartupTimeout),
+			RestartPolicy:     ps.RestartPolicy,
+			MaxAttempts:       ps.MaxRestartAttempts,
+			BackoffInitial:    durationString(ps.BackoffInitial),
+			BackoffMax:        durationString(ps.BackoffMax),
+			BackoffMultiplier: ps.BackoffMultiplier,
+			ShutdownSignal:    ps.ShutdownSignal,
+			GracePeriod:       durationString(ps.GracePeriod),
+			StartupTimeout:    durationString(ps.StartupTimeout),
 		}
 	}
 	if !cfg.Resources.IsZero() {

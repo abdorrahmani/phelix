@@ -20,9 +20,9 @@ var scaleJSON bool
 var scaleRequestKey string
 
 var ScaleCmd = &cobra.Command{
-	Use:   "scale [ID|AppName] --replicas N",
-	Short: "Change a worker's replica count in place, without rebuilding.",
-	Args:  cobra.MaximumNArgs(1),
+	Use:           "scale [ID|AppName] --replicas N",
+	Short:         "Change a worker's replica count in place, without rebuilding.",
+	Args:          cobra.MaximumNArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {

@@ -63,69 +63,69 @@ var InitCmd = &cobra.Command{
 			// Malformed existing file — overwrite path below fixes it.
 		}
 
-	cfg := &project.Config{
-		Name: initName,
-		Port: initPort,
-		// Watching defaults to disabled: a fresh project must not send
-		// monitoring data to the backend until the user opts in (via this
-		// file or `phelix watch`).
-		Watching: project.WatchingDisable,
-		// Generate a complete, working example: one default health
-		// endpoint and the classic strategy. Every generated field is
-		// supported and validated by project.Load.
-		Health: &project.HealthConfig{
-			Endpoints: []project.HealthEndpoint{
-				{Name: "default", Path: "/health", Interval: "10s", Retries: 3, Mode: "auto"},
+		cfg := &project.Config{
+			Name: initName,
+			Port: initPort,
+			// Watching defaults to disabled: a fresh project must not send
+			// monitoring data to the backend until the user opts in (via this
+			// file or `phelix watch`).
+			Watching: project.WatchingDisable,
+			// Generate a complete, working example: one default health
+			// endpoint and the classic strategy. Every generated field is
+			// supported and validated by project.Load.
+			Health: &project.HealthConfig{
+				Endpoints: []project.HealthEndpoint{
+					{Name: "default", Path: "/health", Interval: "10s", Retries: 3, Mode: "auto"},
+				},
 			},
-		},
-		Deploy: &project.DeployConfig{Strategy: project.StrategyClassic},
-	}
-
-	if initType == project.TypeWorker {
-		cfg.Type = project.TypeWorker
-		// A worker has no port and no endpoint probes; the supervision
-		// defaults document themselves in the generated file.
-		cfg.Port = 0
-		cfg.Health = &project.HealthConfig{Mode: project.WorkerHealthProcess}
-		cfg.Process = &project.ProcessConfig{}
-		cfg.Deploy = &project.DeployConfig{
-			Strategy: project.StrategyClassic,
-			Replicas: 1,
+			Deploy: &project.DeployConfig{Strategy: project.StrategyClassic},
 		}
-	}
 
-	if cfg.Name == "" {
-		cfg.Name = inferProjectName()
-	}
-	if IsInteractive() && cfg.Name == "" {
-		entered, err := PromptString("Application name", "")
-		if err != nil {
+		if initType == project.TypeWorker {
+			cfg.Type = project.TypeWorker
+			// A worker has no port and no endpoint probes; the supervision
+			// defaults document themselves in the generated file.
+			cfg.Port = 0
+			cfg.Health = &project.HealthConfig{Mode: project.WorkerHealthProcess}
+			cfg.Process = &project.ProcessConfig{}
+			cfg.Deploy = &project.DeployConfig{
+				Strategy: project.StrategyClassic,
+				Replicas: 1,
+			}
+		}
+
+		if cfg.Name == "" {
+			cfg.Name = inferProjectName()
+		}
+		if IsInteractive() && cfg.Name == "" {
+			entered, err := PromptString("Application name", "")
+			if err != nil {
+				return err
+			}
+			cfg.Name = entered
+		}
+		if err := validateName(cfg.Name); err != nil {
 			return err
 		}
-		cfg.Name = entered
-	}
-	if err := validateName(cfg.Name); err != nil {
-		return err
-	}
 
-	if cfg.Type == project.TypeWorker {
-		if cfg.Port != 0 {
-			return phelixerr.New(phelixerr.CodeInvalidArgument,
-				"--port is not valid with --type worker\nHint: workers do not listen on a port")
+		if cfg.Type == project.TypeWorker {
+			if cfg.Port != 0 {
+				return phelixerr.New(phelixerr.CodeInvalidArgument,
+					"--port is not valid with --type worker\nHint: workers do not listen on a port")
+			}
+			if err := project.Save(dir, cfg); err != nil {
+				return err
+			}
+			fmt.Printf("%s Created %s (name: %s, type: worker, replicas: %d)\n",
+				color.GreenString("✓"), color.CyanString(project.FileName), cfg.Name, cfg.Deploy.Replicas)
+			fmt.Printf("  %s supervision: restart policy %s with jittered backoff; deploy with %s.\n",
+				color.BlueString("→"), project.DefaultRestartPolicy, color.CyanString("phelix build "+cfg.Name))
+			return nil
 		}
-		if err := project.Save(dir, cfg); err != nil {
-			return err
-		}
-		fmt.Printf("%s Created %s (name: %s, type: worker, replicas: %d)\n",
-			color.GreenString("✓"), color.CyanString(project.FileName), cfg.Name, cfg.Deploy.Replicas)
-		fmt.Printf("  %s supervision: restart policy %s with jittered backoff; deploy with %s.\n",
-			color.BlueString("→"), project.DefaultRestartPolicy, color.CyanString("phelix build "+cfg.Name))
-		return nil
-	}
 
-	if cfg.Port == 0 {
-		cfg.Port = defaultInitPort
-	}
+		if cfg.Port == 0 {
+			cfg.Port = defaultInitPort
+		}
 		if IsInteractive() && !cmd.Flags().Changed("port") && !initYes {
 			chosen, err := PromptInt("Application port", cfg.Port)
 			if err != nil {
