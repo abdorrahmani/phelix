@@ -33,6 +33,12 @@ type HealthConfig struct {
 	// Without it the file merges: declared names are added/updated, and the
 	// endpoints configured some other way (`phelix health add`) survive.
 	Replace bool `yaml:"replace,omitempty"`
+	// Mode selects the worker health mode: "process" (watch the process
+	// identity) or "exec" (run a command). Only valid with type: worker;
+	// endpoint probes are port-based and meaningless for a port-less worker.
+	Mode string `yaml:"mode,omitempty"`
+	// Exec configures the exec probe when Mode is "exec".
+	Exec *ExecHealthConfig `yaml:"exec,omitempty"`
 }
 
 // DeployConfig selects the deployment strategy used by `phelix rebuild`.
@@ -62,6 +68,9 @@ type DeployConfig struct {
 	// Autoscaling configures the rolling-deploy replica autoscaling decision
 	// engine. Optional; apps without the block never autoscale.
 	Autoscaling *AutoscalingConfig `yaml:"autoscaling,omitempty"`
+	// Rolling holds the worker rolling-replacement parameters (surge,
+	// unavailable, drain timeout). Only valid with type: worker.
+	Rolling *RollingDeployConfig `yaml:"rolling,omitempty"`
 }
 
 // DockerRuntimeConfig selects HOW the app image is built under
@@ -542,6 +551,16 @@ func (c *Config) validate() error {
 		return phelixerr.Newf(phelixerr.CodeConfiguration,
 			"configuration error: invalid watching %q\nHint: expected one of: enable, disable", c.Watching)
 	}
+	if err := c.validateType(); err != nil {
+		return err
+	}
+	if c.IsWorker() {
+		if err := c.validateWorker(); err != nil {
+			return err
+		}
+	} else if err := c.validateServiceRejectsWorkerKeys(); err != nil {
+		return err
+	}
 
 	if c.Deploy != nil {
 		s := strings.TrimSpace(c.Deploy.Strategy)
@@ -591,7 +610,7 @@ func (c *Config) validate() error {
 					"configuration error: deploy.docker.build: compose requires deploy.docker.service\nHint: name the compose service that builds this app's image (e.g. service: app)")
 			}
 		}
-		if c.Deploy.Replicas > 0 && s != StrategyRolling {
+		if c.Deploy.Replicas > 0 && s != StrategyRolling && !c.IsWorker() {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.replicas requires deploy.strategy: rolling")
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
@@ -63,6 +64,7 @@ func RebuildConfigFingerprint(appName, sourceDir string) (string, error) {
 	}
 
 	type fingerprint struct {
+		Type      string `json:"type,omitempty"`
 		Strategy  string `json:"strategy,omitempty"`
 		Replicas  int    `json:"replicas,omitempty"`
 		Runtime   string `json:"runtime,omitempty"`
@@ -75,6 +77,24 @@ func RebuildConfigFingerprint(appName, sourceDir string) (string, error) {
 		DeployedMode   string `json:"deployed_mode,omitempty"`
 		DeployedPort   int    `json:"deployed_port,omitempty"`
 		DeployedActive int    `json:"deployed_active_version,omitempty"`
+		// Worker supervision settings. Resolved forms are hashed so a change
+		// to any runtime-affecting knob invalidates existing plans.
+		RestartPolicy      string  `json:"restart_policy,omitempty"`
+		MaxRestartAttempts int     `json:"max_restart_attempts,omitempty"`
+		BackoffInitial     string  `json:"backoff_initial,omitempty"`
+		BackoffMax         string  `json:"backoff_max,omitempty"`
+		BackoffMultiplier  float64 `json:"backoff_multiplier,omitempty"`
+		ShutdownSignal     string  `json:"shutdown_signal,omitempty"`
+		GracePeriod        string  `json:"grace_period,omitempty"`
+		StartupTimeout     string  `json:"startup_timeout,omitempty"`
+		HealthMode         string  `json:"health_mode,omitempty"`
+		HealthCommand      string  `json:"health_command,omitempty"`
+		HealthInterval     string  `json:"health_interval,omitempty"`
+		HealthTimeout      string  `json:"health_timeout,omitempty"`
+		HealthRetries      int     `json:"health_retries,omitempty"`
+		MaxSurge           int     `json:"max_surge,omitempty"`
+		MaxUnavailable     int     `json:"max_unavailable,omitempty"`
+		DrainTimeout       string  `json:"drain_timeout,omitempty"`
 	}
 	var fp fingerprint
 	if cfg != nil {
@@ -86,6 +106,30 @@ func RebuildConfigFingerprint(appName, sourceDir string) (string, error) {
 		}
 		fp.Resources.CPU = cfg.Resources.CPU
 		fp.Resources.Memory = cfg.Resources.Memory
+		if cfg.IsWorker() {
+			fp.Type = cfg.WorkloadType()
+			ps := cfg.Process.Resolve()
+			fp.RestartPolicy = ps.RestartPolicy
+			fp.MaxRestartAttempts = ps.MaxRestartAttempts
+			fp.BackoffInitial = ps.BackoffInitial.String()
+			fp.BackoffMax = ps.BackoffMax.String()
+			fp.BackoffMultiplier = ps.BackoffMultiplier
+			fp.ShutdownSignal = ps.ShutdownSignal
+			fp.GracePeriod = ps.GracePeriod.String()
+			fp.StartupTimeout = ps.StartupTimeout.String()
+			hs := cfg.Health.ResolveWorker()
+			fp.HealthMode = hs.Mode
+			fp.HealthCommand = strings.Join(hs.Command, " ")
+			fp.HealthInterval = hs.Interval.String()
+			fp.HealthTimeout = hs.Timeout.String()
+			fp.HealthRetries = hs.Retries
+			if cfg.Deploy != nil && cfg.Deploy.Rolling != nil {
+				rs := cfg.Deploy.Rolling.Resolve()
+				fp.MaxSurge = rs.MaxSurge
+				fp.MaxUnavailable = rs.MaxUnavailable
+				fp.DrainTimeout = rs.DrainTimeout.String()
+			}
+		}
 	}
 	if state != nil {
 		fp.DeployedMode = string(state.Mode)
