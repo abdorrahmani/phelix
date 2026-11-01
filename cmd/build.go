@@ -97,6 +97,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		name := args[0]
+		isWorker := projCfg != nil && projCfg.IsWorker()
 
 		if ferr := matrixFlagConflict(cmd.Flags().Changed("matrix"), matrixFlag, goVersions, rustVersions, platforms); ferr != nil {
 			return ferr
@@ -108,7 +109,7 @@ var BuildCmd = &cobra.Command{
 				return ferr
 			}
 		}
-		if !cmd.Flags().Changed("port") && !isMatrix {
+		if !cmd.Flags().Changed("port") && !isMatrix && !isWorker {
 			if projCfg != nil && projCfg.Port != 0 {
 				buildPort = projCfg.Port
 			}
@@ -131,7 +132,7 @@ var BuildCmd = &cobra.Command{
 			}
 		}()
 
-		if !isMatrix {
+		if !isMatrix && !isWorker {
 			if err := phelixport.Validate(buildPort); err != nil {
 				return err
 			}
@@ -191,6 +192,10 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if projCfg.DeployRuntime() == project.RuntimeDocker {
+			if isWorker {
+				return phelixerr.New(phelixerr.CodeConfiguration,
+					"deploy.runtime: docker is not supported for type: worker\nHint: workers run as supervised host processes")
+			}
 			if buildListener != nil {
 				_ = buildListener.Close()
 				buildListener = nil
@@ -235,9 +240,11 @@ var BuildCmd = &cobra.Command{
 			}
 		}
 
-		if serr := syncProjectHealth(projCfg, id, name, buildPort); serr != nil {
-			fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
-				color.YellowString("⚠"), project.FileName, serr)
+		if !isWorker {
+			if serr := syncProjectHealth(projCfg, id, name, buildPort); serr != nil {
+				fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
+					color.YellowString("⚠"), project.FileName, serr)
+			}
 		}
 
 		releaseBuild, lockErr := deploy.AcquireDeployLock(name, "build")
@@ -290,6 +297,35 @@ var BuildCmd = &cobra.Command{
 		if buildListener != nil {
 			_ = buildListener.Close()
 			buildListener = nil
+		}
+
+		if isWorker {
+			buildVer := 0
+			if rec != nil {
+				buildVer = rec.Version
+			}
+			replicas := workerReplicaCount(projCfg)
+			fmt.Printf("  %s Starting %d worker replica(s)...\n", color.BlueString("→"), replicas)
+			if err := startWorkerInitial(id, name, projCfg, buildVer); err != nil {
+				tracker.Failed(err)
+				markBuildFailed(id)
+				return err
+			}
+			tracker.PromoteCurrentVersion()
+			tracker.Completed(fmt.Sprintf("running %d worker replicas", replicas))
+			fmt.Printf("%s Worker %s (ID: %s) built and started (%d replicas, version v%d)\n",
+				color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(id), replicas, buildVer)
+
+			phelixgrpc.ReportEvent(id, name, "build", true, "", 0, "worker", "")
+			phelixgrpc.SendVersionListForApp(id, name, currentDir)
+
+			op.setResult(&ops.Result{Version: buildVer, Strategy: "worker"})
+			return op.writeResultEnv(machine.Success(op.operationID(), buildResult{
+				App:     name,
+				AppID:   id,
+				Version: buildVer,
+				Path:    binPath,
+			}))
 		}
 
 		if err := startApplication(id, name); err != nil {

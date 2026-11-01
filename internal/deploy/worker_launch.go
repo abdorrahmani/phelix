@@ -115,6 +115,12 @@ func workerLogPath(home, binaryPath, replica string) string {
 	return filepath.Join(home, ".phelix", "logs", name)
 }
 
+// WorkerLogFilePath returns the on-disk log path of one worker replica, for
+// CLI surfaces that tail replica output directly.
+func WorkerLogFilePath(home, binaryPath, replica string) string {
+	return workerLogPath(home, binaryPath, replica)
+}
+
 // workerLogTag renders a replica slot ("0") as its log-friendly tag
 // ("replica-0"), matching the identity the supervisor and status use.
 func workerLogTag(replica string) string {

@@ -309,30 +309,8 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 	buildMgr := spec.BuildMgr
 	buildMgr.SetTimeout(spec.Timeout)
 	gitCommit := deploy.DetectGitCommit(buildSource)
-	var lastReport *buildreport.Report
-	freshSource := &deploy.FreshBuildSource{
-		AppName:   name,
-		AppID:     appInfo.ID,
-		ExtraArgs: spec.Args,
-		GitCommit: gitCommit,
-		Tag:       spec.Tag,
-		Retention: deploy.DefaultRetention{Max: 5},
-		Logger:    logger,
-		ReportFn:  func() *buildreport.Report { return lastReport },
-		BuildFn: func(ctx context.Context, appID string, extraArgs []string) (string, error) {
-			report, berr := rebuildApp(out, appID, extraArgs, buildMgr, buildSource)
-			lastReport = report
-			if berr != nil {
-				return "", berr
-			}
-			if am, ok := app.Manager.(*app.AppManager); ok {
-				if info, exists := am.Apps[appID]; exists {
-					return filepath.Join(info.Directory, fmt.Sprintf("app_%s", appID)), nil
-				}
-			}
-			return "", phelixerr.Newf(phelixerr.CodeNotFound, "could not locate built binary for %s", appID)
-		},
-	}
+	freshSource, lastReportFn := freshBuildSourceFor(spec, out, logger)
+	lastReport := lastReportFn
 
 	runtimeCfg, _ := loadProjectConfigFrom(buildSource)
 	deployRuntime := runtimeCfg.DeployRuntime()
@@ -429,11 +407,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 		fmt.Fprintf(out, "%s %s rollout complete for %s (%d steps)\n",
 			color.GreenString("✓"), spec.Rollout.Strategy, color.CyanString("'%s'", name), len(spec.Rollout.Steps))
 		// Build Report + regression analysis (observability only).
-		emitBuildReportTo(out, name, lastReport, gitCommit,
+		emitBuildReportTo(out, name, lastReport(), gitCommit,
 			&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
-			deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport, "")
+			deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport(), "")
 		ver := deploy.TargetVersionOf(deploySource)
 		op.setResult(&ops.Result{Version: ver, Port: publicPort, Strategy: spec.Rollout.Strategy})
 		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
@@ -473,11 +451,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 		fmt.Fprintf(out, "%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
 		// Build Report + regression analysis (observability only; the deploy
 		// outcome above is already committed).
-		emitBuildReportTo(out, name, lastReport, gitCommit,
+		emitBuildReportTo(out, name, lastReport(), gitCommit,
 			&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 		phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
-			deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport, "")
+			deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport(), "")
 		bgVer := deploy.TargetVersionOf(deploySource)
 		op.setResult(&ops.Result{Version: bgVer, Port: publicPort, Strategy: "blue-green"})
 		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
@@ -516,11 +494,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 	fmt.Fprintf(out, "%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
 		color.GreenString("✓"), color.CyanString("'%s'", name), spec.Replicas)
 	// Build Report + regression analysis (observability only).
-	emitBuildReportTo(out, name, lastReport, gitCommit,
+	emitBuildReportTo(out, name, lastReport(), gitCommit,
 		&deploy.RecordResult{Version: deploy.TargetVersionOf(deploySource)}, nil)
 	phelixgrpc.SendVersionListForApp(appInfo.ID, name, appInfo.Directory)
 	phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
-		deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport, "")
+		deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport(), "")
 	rollVer := deploy.TargetVersionOf(deploySource)
 	op.setResult(&ops.Result{Version: rollVer, Port: publicPort, Strategy: "rolling"})
 	return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
