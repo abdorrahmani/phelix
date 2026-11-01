@@ -273,6 +273,13 @@ type ShutdownReport struct {
 }
 
 func GracefulStop(ctx context.Context, proc Process, grace time.Duration, inFlight int64) (ShutdownReport, error) {
+	return GracefulStopSignal(syscall.SIGTERM, ctx, proc, grace, inFlight)
+}
+
+// GracefulStopSignal is GracefulStop with an explicit first signal, so a
+// worker configured with shutdown.signal: SIGINT gets the signal it asked
+// for. The escalation to SIGKILL after the grace period is unchanged.
+func GracefulStopSignal(sig os.Signal, ctx context.Context, proc Process, grace time.Duration, inFlight int64) (ShutdownReport, error) {
 	start := time.Now()
 	report := ShutdownReport{InFlight: inFlight}
 
@@ -282,7 +289,7 @@ func GracefulStop(ctx context.Context, proc Process, grace time.Duration, inFlig
 	}
 
 	// Ask politely.
-	if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := proc.Signal(sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		// Not fatal: fall through to Kill below.
 		_ = err
 	}
