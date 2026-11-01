@@ -34,6 +34,18 @@ type Mode string
 const (
 	ModeBlueGreen Mode = "blue-green"
 	ModeRolling   Mode = "rolling"
+	ModeWorker    Mode = "worker"
+)
+
+// Worker rollout journal statuses, recorded in DeployState.WorkerRollout.
+// Status "running" doubles as the interrupted-rollout crash marker: a rollout
+// that never wrote a terminal status was interrupted and must be recovered
+// (finished or reverted) before the fleet state is trusted again.
+const (
+	WorkerRolloutRunning          = "running"
+	WorkerRolloutDone             = "done"
+	WorkerRolloutReverting        = "reverting"
+	WorkerRolloutRecoveryRequired = "recovery_required"
 )
 
 // Canary rollout statuses, recorded in DeployState.Canary.Status.
@@ -73,6 +85,25 @@ type Instance struct {
 	// binary this instance runs. Recorded so StartDeployment can relaunch the
 	// instance with the same environment later.
 	EnvPath string `json:"env_path,omitempty"`
+	// StartTicks is the kernel start time (/proc/<pid>/stat field 22, clock
+	// ticks since boot) captured at spawn, making the PID reusable-safe: a
+	// recycled PID has a different start time. Zero for records that predate
+	// worker supervision; identity checks then fall back to exe-only.
+	StartTicks uint64 `json:"start_ticks,omitempty"`
+	// Worker supervision fields (type: worker). RestartCount counts
+	// consecutive failure-driven restarts, reset by the stable window or a
+	// manual restart.
+	RestartCount  int       `json:"restart_count,omitempty"`
+	LastRestartAt time.Time `json:"last_restart_at,omitempty"`
+	// LastExitCode is the exit status of the previous run: 0 for a clean
+	// exit, 1-255 for failures, -1 when unknown (an adopted process died
+	// without a waitable handle). Absent (0 with no LastExitReason) means the
+	// replica never recorded an exit.
+	LastExitCode   int       `json:"last_exit_code,omitempty"`
+	LastExitReason string    `json:"last_exit_reason,omitempty"`
+	LastExitAt     time.Time `json:"last_exit_at,omitempty"`
+	// ReadyAt records when the replica last passed its startup gate.
+	ReadyAt time.Time `json:"ready_at,omitempty"`
 }
 
 // RollbackRecord is a compact summary of the last successful rollback for an
@@ -184,7 +215,34 @@ type DeployState struct {
 	// Canary records the canary/progressive rollout state when the app is in
 	// (or recently finished) one. Nil for plain blue-green deploys.
 	Canary *CanaryState `json:"canary,omitempty"`
+	// WorkerRollout records the in-flight worker version rollout (type:
+	// worker). Status "running" is the interrupted-rollout marker the monitor
+	// reconciles after a daemon restart.
+	WorkerRollout *WorkerRollout `json:"worker_rollout,omitempty"`
 	// UpdatedAt is when the state was last written.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// WorkerRollout is the journal of a worker version rollout (type: worker).
+// It records which replica ran which version before replacement so a failed
+// rollout can revert exactly the replicas it touched. ReplacedFrom is keyed
+// by replica slot ("0", "1", ...); a slot absent from the map was never
+// replaced. UpdatedAt is bumped after every per-replica transition.
+type WorkerRollout struct {
+	// Version is the rollout's target version.
+	Version int `json:"version"`
+	// Strategy is "classic" or "rolling".
+	Strategy string `json:"strategy"`
+	// Status is one of the WorkerRollout* constants.
+	Status string `json:"status"`
+	// Reason records why a non-running rollout ended (revert details,
+	// recovery_required cause).
+	Reason string `json:"reason,omitempty"`
+	// ReplacedFrom maps each already-replaced replica slot to the version it
+	// ran before the replacement.
+	ReplacedFrom map[string]int `json:"replaced_from,omitempty"`
+	// StartedAt / UpdatedAt bracket the rollout.
+	StartedAt time.Time `json:"started_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
