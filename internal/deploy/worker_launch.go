@@ -106,8 +106,13 @@ func openWorkerInstanceLog(binaryPath string, replica string) (*os.File, error) 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	}
+	return os.OpenFile(workerLogPath(home, binaryPath, replica), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+}
+
+// workerLogPath is the on-disk location of one worker replica's output.
+func workerLogPath(home, binaryPath, replica string) string {
 	name := fmt.Sprintf("deploy_%s_%s.log", filepath.Base(binaryPath), workerLogTag(replica))
-	return os.OpenFile(filepath.Join(dir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	return filepath.Join(home, ".phelix", "logs", name)
 }
 
 // workerLogTag renders a replica slot ("0") as its log-friendly tag

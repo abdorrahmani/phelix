@@ -1,6 +1,6 @@
 //go:build unix
 
-package supervisor
+package deploy
 
 import (
 	"os/exec"

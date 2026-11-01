@@ -44,7 +44,7 @@ type handleEntry struct {
 
 // probeRun is one in-flight exec probe. A replica never has more than one.
 type probeRun struct {
-	done chan ProbeOutcome
+	done chan deploy.ProbeOutcome
 }
 
 // Supervisor reconciles worker replicas toward the persisted desired state.
@@ -370,25 +370,25 @@ func (s *Supervisor) maybeStartProbe(key replicaKey, dir string, state *deploy.D
 	if err != nil {
 		env = nil
 	}
-	pr := &probeRun{done: make(chan ProbeOutcome, 1)}
+	pr := &probeRun{done: make(chan deploy.ProbeOutcome, 1)}
 	s.probes[key] = pr
-	go func() { pr.done <- RunProbe(hs.Command, dir, env, hs.Timeout) }()
+	go func() { pr.done <- deploy.RunProbe(hs.Command, dir, env, hs.Timeout) }()
 }
 
 // probeOutcome collects a finished probe, if any.
-func (s *Supervisor) probeOutcome(key replicaKey) (ProbeOutcome, bool) {
+func (s *Supervisor) probeOutcome(key replicaKey) (deploy.ProbeOutcome, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pr := s.probes[key]
 	if pr == nil {
-		return ProbeOutcome{}, false
+		return deploy.ProbeOutcome{}, false
 	}
 	select {
 	case o := <-pr.done:
 		delete(s.probes, key)
 		return o, true
 	default:
-		return ProbeOutcome{}, false
+		return deploy.ProbeOutcome{}, false
 	}
 }
 

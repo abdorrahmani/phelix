@@ -27,6 +27,10 @@ func WorkerInstanceAlive(inst *Instance) bool {
 	return processex.Matches(processex.ProcessIdentity{PID: inst.PID, StartTime: inst.StartTicks, ExePath: inst.BinaryPath})
 }
 
+// workerLauncherFactory is the spawn seam for worker replicas; tests override
+// it to launch helper processes with their own environment.
+var workerLauncherFactory = WorkerLauncherForApp
+
 // LaunchWorkerReplica spawns the slot's replica and persists the fresh record.
 // The replica inherits the slot's binary, version and env snapshot. It starts
 // in status "starting"; whoever launched it (supervisor, deploy engine or CLI)
@@ -45,7 +49,7 @@ func LaunchWorkerReplica(appName string, state *DeployState, slot string) (Proce
 	if err != nil {
 		return nil, err
 	}
-	proc, id, err := WorkerLauncherForApp(appName)(inst.BinaryPath, env, slot)
+	proc, id, err := workerLauncherFactory(appName)(inst.BinaryPath, env, slot)
 	if err != nil {
 		return nil, err
 	}
