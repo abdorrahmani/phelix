@@ -42,6 +42,6 @@ deploy:
     max_unavailable: 0
     drain_timeout: 60s
 
-resources:
-  cpu: 200m
-  memory: 128Mi
+#resources:
+#  cpu: 200m
+#  memory: 128Mi
