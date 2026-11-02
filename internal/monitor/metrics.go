@@ -104,6 +104,7 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 			WorkloadType: workloadTypeOf(appInfo),
 		}
 		if summary := workerRuntimeState(appInfo.Name); summary != nil {
+			detail.WorkloadType = project.TypeWorker
 			detail.Status = summary.Status
 			detail.PID = summary.PID
 			detail.Port = 0

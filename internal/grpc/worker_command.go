@@ -73,7 +73,7 @@ func getWorkerHandler() WorkerHandlerFunc {
 }
 
 var workerResults = newRollbackLedger(filepath.Join(server.DataDir(), workerLedgerFile), rollbackLedgerCapacity, "worker",
-	"the replica count may or may not have been applied — reconcile with the app's deployment snapshot")
+	"the worker mutation may or may not have been applied; reconcile with the app's deployment snapshot")
 
 // InitializeWorkerLedger loads the durable remote-worker idempotency ledger.
 // Monitor startup must call it before accepting worker commands.
