@@ -1137,6 +1137,10 @@ type ApplicationInfo struct {
 	Uptime      string                 `protobuf:"bytes,9,opt,name=uptime,proto3" json:"uptime,omitempty"`
 	CreatedAt   int64                  `protobuf:"varint,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt   int64                  `protobuf:"varint,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// Workload type declared by the project: "service" or "worker". Always
+	// populated by current agents; older agents send nothing, which means
+	// "service" (the pre-worker model).
+	WorkloadType string `protobuf:"bytes,12,opt,name=workload_type,json=workloadType,proto3" json:"workload_type,omitempty"`
 	// Application configuration blocks (process/networking/logging/storage).
 	// Populated whenever the CLI knows the values; absent/missing groups mean
 	// the CLI has no configuration to report. AppConfig is sent on every
@@ -1254,6 +1258,13 @@ func (x *ApplicationInfo) GetUpdatedAt() int64 {
 		return x.UpdatedAt
 	}
 	return 0
+}
+
+func (x *ApplicationInfo) GetWorkloadType() string {
+	if x != nil {
+		return x.WorkloadType
+	}
+	return ""
 }
 
 func (x *ApplicationInfo) GetProcess() *AppProcess {
@@ -3079,7 +3090,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x06errors\x18\x04 \x01(\x03R\x06errors\x12,\n" +
 	"\x12error_rate_percent\x18\x05 \x01(\x01R\x10errorRatePercent\x12$\n" +
 	"\x0ep95_latency_ms\x18\x06 \x01(\x01R\fp95LatencyMs\x12#\n" +
-	"\rshare_percent\x18\a \x01(\x01R\fsharePercent\"\xe6\x03\n" +
+	"\rshare_percent\x18\a \x01(\x01R\fsharePercent\"\x8b\x04\n" +
 	"\x0fApplicationInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x12\n" +
@@ -3094,7 +3105,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"created_at\x18\n" +
 	" \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\x03R\tupdatedAt\x12,\n" +
+	"updated_at\x18\v \x01(\x03R\tupdatedAt\x12#\n" +
+	"\rworkload_type\x18\f \x01(\tR\fworkloadType\x12,\n" +
 	"\aprocess\x18\x14 \x01(\v2\x12.phelix.AppProcessR\aprocess\x125\n" +
 	"\n" +
 	"networking\x18\x15 \x01(\v2\x15.phelix.AppNetworkingR\n" +

@@ -228,23 +228,25 @@ func TestToProtoAppInfo(t *testing.T) {
 	created := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
 	updated := time.Now().Truncate(time.Millisecond)
 	a := monitor.AppDetails{
-		ID:          "app-1",
-		ServerID:    "srv-1",
-		Name:        "myapp",
-		Status:      "running",
-		Language:    "go",
-		Port:        8080,
-		BuildStatus: "success",
-		PID:         1234,
-		Uptime:      "2h",
-		CreatedAt:   created,
-		UpdatedAt:   updated,
+		ID:           "app-1",
+		ServerID:     "srv-1",
+		Name:         "myapp",
+		Status:       "running",
+		Language:     "go",
+		Port:         8080,
+		BuildStatus:  "success",
+		PID:          1234,
+		Uptime:       "2h",
+		CreatedAt:    created,
+		UpdatedAt:    updated,
+		WorkloadType: "worker",
 	}
 	got := toProtoAppInfo(a)
 	if got.GetId() != a.ID || got.GetServerId() != a.ServerID || got.GetName() != a.Name ||
 		got.GetStatus() != a.Status || got.GetLanguage() != string(a.Language) ||
 		got.GetPort() != int32(a.Port) || got.GetBuildStatus() != a.BuildStatus ||
-		got.GetPid() != int32(a.PID) || got.GetUptime() != a.Uptime {
+		got.GetPid() != int32(a.PID) || got.GetUptime() != a.Uptime ||
+		got.GetWorkloadType() != a.WorkloadType {
 		t.Fatalf("field mismatch: %+v vs %+v", got, a)
 	}
 	if got.GetCreatedAt() != created.UnixMilli() || got.GetUpdatedAt() != updated.UnixMilli() {

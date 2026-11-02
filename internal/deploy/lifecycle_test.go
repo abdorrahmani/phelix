@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/processex"
 )
 
 // selfBinary returns the path of the running test binary — a real executable
@@ -145,6 +146,50 @@ func TestDecideLifecycle_RollingFirstAliveReplica(t *testing.T) {
 	d := DecideLifecycle(state)
 	if d.Status != "running" || d.PID != os.Getpid() {
 		t.Fatalf("rolling: want running with first alive replica, got %+v", d)
+	}
+}
+
+func TestDecideLifecycle_WorkerPartiallyAliveIsDegraded(t *testing.T) {
+	resetHome(t)
+	exe := selfBinary(t)
+	id, err := processex.Identity(os.Getpid())
+	if err != nil {
+		t.Fatalf("process identity: %v", err)
+	}
+	state := &DeployState{
+		AppName: "workerA",
+		Mode:    ModeWorker,
+		Replicas: map[string]*Instance{
+			"0": {Slot: "0", Status: "running", PID: os.Getpid(), StartTicks: id.StartTime, BinaryPath: exe},
+			"1": {Slot: "1", Status: "stopped", PID: 0},
+			"2": {Slot: "2", Status: "crashloop", PID: 0},
+		},
+	}
+	d := DecideLifecycle(state)
+	if d.Status != "degraded" {
+		t.Fatalf("one alive replica of three must decide degraded, got %q", d.Status)
+	}
+	if d.Alive != 1 || d.Desired != 3 {
+		t.Fatalf("Alive/Desired = %d/%d, want 1/3", d.Alive, d.Desired)
+	}
+	if d.PID != os.Getpid() {
+		t.Fatalf("PID = %d, want %d", d.PID, os.Getpid())
+	}
+}
+
+func TestDecideLifecycle_WorkerAllDeadIsStopped(t *testing.T) {
+	resetHome(t)
+	state := &DeployState{
+		AppName: "workerA",
+		Mode:    ModeWorker,
+		Replicas: map[string]*Instance{
+			"0": {Slot: "0", Status: "stopped", PID: 0},
+			"1": {Slot: "1", Status: "crashloop", PID: 0},
+		},
+	}
+	d := DecideLifecycle(state)
+	if d.Status != "stopped" || d.PID != 0 {
+		t.Fatalf("all dead worker replicas must decide stopped, got %+v", d)
 	}
 }
 

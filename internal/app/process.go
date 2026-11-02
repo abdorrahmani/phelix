@@ -322,8 +322,15 @@ func (m *AppManager) waitForProcessExit(pid int, timeout time.Duration) bool {
 	}
 }
 
-// getProcessMetrics retrieves RAM and CPU usage for the given process PID
+// getProcessMetrics retrieves RAM and CPU usage for the given process PID.
 func (m *AppManager) getProcessMetrics(pid int) (uint64, float64, error) {
+	return ProcessUsage(pid)
+}
+
+// ProcessUsage retrieves RAM bytes and CPU percent for one live process. It is
+// exported for monitoring consumers that track a process the manager does not
+// own, such as a worker replica.
+func ProcessUsage(pid int) (uint64, float64, error) {
 	p, err := process.NewProcess(int32(pid))
 	if err != nil {
 		return 0, 0, err

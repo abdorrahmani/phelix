@@ -185,17 +185,18 @@ func toProtoAppTraffic(t monitor.AppTraffic) *pb.AppTrafficStat {
 // configuration to report.
 func toProtoAppInfo(a monitor.AppDetails) *pb.ApplicationInfo {
 	info := &pb.ApplicationInfo{
-		Id:          a.ID,
-		ServerId:    a.ServerID,
-		Name:        a.Name,
-		Status:      a.Status,
-		Language:    string(a.Language),
-		Port:        int32(a.Port),
-		BuildStatus: a.BuildStatus,
-		Pid:         int32(a.PID),
-		Uptime:      a.Uptime,
-		CreatedAt:   a.CreatedAt.UnixMilli(),
-		UpdatedAt:   a.UpdatedAt.UnixMilli(),
+		Id:           a.ID,
+		ServerId:     a.ServerID,
+		Name:         a.Name,
+		Status:       a.Status,
+		Language:     string(a.Language),
+		Port:         int32(a.Port),
+		BuildStatus:  a.BuildStatus,
+		Pid:          int32(a.PID),
+		Uptime:       a.Uptime,
+		CreatedAt:    a.CreatedAt.UnixMilli(),
+		UpdatedAt:    a.UpdatedAt.UnixMilli(),
+		WorkloadType: a.WorkloadType,
 	}
 
 	info.Process = toProtoAppProcess(a.Process)

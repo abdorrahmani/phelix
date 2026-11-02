@@ -2,11 +2,13 @@ package monitor
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
@@ -37,6 +39,24 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 			continue
 		}
 
+		if summary := workerRuntimeState(appInfo.Name); summary != nil {
+			if summary.PID <= 0 {
+				continue
+			}
+			ram, cpu, perr := app.ProcessUsage(summary.PID)
+			if perr != nil {
+				logs.Error("monitor", "error getting worker process usage for %s: %v", appInfo.Name, perr)
+				continue
+			}
+			metrics = append(metrics, AppMetrics{
+				AppID:       appInfo.ID,
+				ServerID:    serverID,
+				CPUUsage:    cpu,
+				MemoryUsage: ram,
+			})
+			continue
+		}
+
 		metrics = append(metrics, AppMetrics{
 			AppID:       appInfo.ID,
 			ServerID:    serverID,
@@ -58,25 +78,60 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 		if !appInfo.Watching {
 			continue
 		}
-		apps = append(apps, AppDetails{
-			ID:          appInfo.ID,
-			ServerID:    serverID,
-			Name:        appInfo.Name,
-			Status:      appInfo.Status,
-			BuildStatus: appInfo.BuildStatus,
-			Language:    builder.Language(appInfo.Language),
-			PID:         appInfo.PID,
-			Port:        appInfo.Port,
-			Uptime:      appInfo.Uptime,
-			CreatedAt:   appInfo.CreatedAt,
-			UpdatedAt:   appInfo.UpdatedAt,
-			Process:     appInfo.Process,
-			Networking:  appInfo.Networking,
-			Logging:     appInfo.Logging,
-			Storage:     appInfo.Storage,
-		})
+		detail := AppDetails{
+			ID:           appInfo.ID,
+			ServerID:     serverID,
+			Name:         appInfo.Name,
+			Status:       appInfo.Status,
+			BuildStatus:  appInfo.BuildStatus,
+			Language:     builder.Language(appInfo.Language),
+			PID:          appInfo.PID,
+			Port:         appInfo.Port,
+			Uptime:       appInfo.Uptime,
+			CreatedAt:    appInfo.CreatedAt,
+			UpdatedAt:    appInfo.UpdatedAt,
+			Process:      appInfo.Process,
+			Networking:   appInfo.Networking,
+			Logging:      appInfo.Logging,
+			Storage:      appInfo.Storage,
+			WorkloadType: workloadTypeOf(appInfo),
+		}
+		if summary := workerRuntimeState(appInfo.Name); summary != nil {
+			detail.Status = summary.Status
+			detail.PID = summary.PID
+			detail.Port = 0
+			if summary.PID > 0 && !summary.StartedAt.IsZero() {
+				detail.Uptime = app.FormatDuration(time.Since(summary.StartedAt))
+			} else {
+				detail.Uptime = "N/A"
+			}
+		}
+		apps = append(apps, detail)
 	}
 	return apps
+}
+
+// workloadTypeOf resolves an app's declared workload type. A missing or
+// unreadable project config keeps the service default, which is the same
+// meaning an absent type key has.
+func workloadTypeOf(info app.AppListItem) string {
+	cfg, err := project.Load(info.Directory)
+	if err != nil || cfg == nil {
+		return project.TypeService
+	}
+	return cfg.WorkloadType()
+}
+
+// workerRuntimeState returns live worker replica status for a worker app, nil
+// for every other app. Reading deploy state is what makes the dashboard follow
+// supervisor restarts without waiting for a CLI command to re-sync AppInfo.
+func workerRuntimeState(name string) *deploy.WorkerSummary {
+	state, err := deploy.Load(name)
+	if err != nil || state == nil || state.Mode != deploy.ModeWorker {
+		return nil
+	}
+	summary := deploy.SummarizeWorker(state)
+	return &summary
 }
 
 func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {

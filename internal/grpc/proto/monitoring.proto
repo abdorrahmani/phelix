@@ -191,6 +191,11 @@ message ApplicationInfo {
   int64 created_at = 10;
   int64 updated_at = 11;
 
+  // Workload type declared by the project: "service" or "worker". Always
+  // populated by current agents; older agents send nothing, which means
+  // "service" (the pre-worker model).
+  string workload_type = 12;
+
   // Application configuration blocks (process/networking/logging/storage).
   // Populated whenever the CLI knows the values; absent/missing groups mean
   // the CLI has no configuration to report. AppConfig is sent on every
