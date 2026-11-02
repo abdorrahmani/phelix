@@ -371,6 +371,22 @@ func sortedIntSlots(m map[string]*Instance) []string {
 	return keys
 }
 
+// WorkerAlivePIDs returns every live replica PID in slot order, so callers
+// that report per-app resource usage can aggregate the whole replica set.
+func WorkerAlivePIDs(state *DeployState) []int {
+	if state == nil {
+		return nil
+	}
+	var pids []int
+	for _, key := range sortedIntSlots(state.Replicas) {
+		inst := state.Replicas[key]
+		if inst != nil && WorkerInstanceAlive(inst) {
+			pids = append(pids, inst.PID)
+		}
+	}
+	return pids
+}
+
 // WorkerAppNames lists the apps whose persisted deploy state is ModeWorker,
 // scanned from the app data directory. Read-only and manager-free, so the
 // supervisor can call it from any goroutine.

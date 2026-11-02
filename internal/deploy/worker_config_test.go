@@ -1,8 +1,10 @@
 package deploy
 
 import (
+	"os"
 	"testing"
 
+	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/project"
 )
 
@@ -67,5 +69,27 @@ func TestWorkerConfigState_ResolvesPolicyAndHealth(t *testing.T) {
 func TestWorkerConfigState_NonWorkerIsNil(t *testing.T) {
 	if got := workerConfigState(&project.Config{Type: project.TypeService}); got != nil {
 		t.Fatalf("non-worker must carry no worker block, got %+v", got)
+	}
+}
+
+func TestWorkerAlivePIDs_SkipsDeadReplicasInOrder(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	id, err := processex.Identity(os.Getpid())
+	if err != nil {
+		t.Fatalf("process identity: %v", err)
+	}
+	state := &DeployState{
+		Replicas: map[string]*Instance{
+			"0": {Slot: "0", PID: os.Getpid(), StartTicks: id.StartTime, BinaryPath: exe},
+			"1": {Slot: "1", PID: 0},
+			"2": {Slot: "2", PID: 999999, BinaryPath: exe},
+		},
+	}
+	pids := WorkerAlivePIDs(state)
+	if len(pids) != 1 || pids[0] != os.Getpid() {
+		t.Fatalf("alive PIDs = %v, want [%d]", pids, os.Getpid())
 	}
 }

@@ -32,20 +32,22 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 		if !appInfo.Watching {
 			continue
 		}
-		status, err := app.Manager.StatusApplication(appInfo.ID)
-		if err != nil {
-			logs.Error("monitor", "error getting status for app %s: %v", appInfo.Name, err)
-			continue
-		}
 
-		if summary := workerRuntimeState(appInfo.Name); summary != nil {
-			if summary.PID <= 0 {
+		if state := workerState(appInfo.Name); state != nil {
+			pids := deploy.WorkerAlivePIDs(state)
+			if len(pids) == 0 {
 				continue
 			}
-			ram, cpu, perr := app.ProcessUsage(summary.PID)
-			if perr != nil {
-				logs.Error("monitor", "error getting worker process usage for %s: %v", appInfo.Name, perr)
-				continue
+			var ram uint64
+			var cpu float64
+			for _, pid := range pids {
+				r, c, perr := app.ProcessUsage(pid)
+				if perr != nil {
+					logs.Error("monitor", "error getting worker process usage for %s: %v", appInfo.Name, perr)
+					continue
+				}
+				ram += r
+				cpu += c
 			}
 			metrics = append(metrics, AppMetrics{
 				AppID:       appInfo.ID,
@@ -53,6 +55,12 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 				CPUUsage:    cpu,
 				MemoryUsage: ram,
 			})
+			continue
+		}
+
+		status, err := app.Manager.StatusApplication(appInfo.ID)
+		if err != nil {
+			logs.Error("monitor", "error getting status for app %s: %v", appInfo.Name, err)
 			continue
 		}
 
@@ -121,12 +129,21 @@ func workloadTypeOf(info app.AppListItem) string {
 	return cfg.WorkloadType()
 }
 
+// workerState loads a worker app's deploy state, nil for every other app.
+func workerState(name string) *deploy.DeployState {
+	state, err := deploy.Load(name)
+	if err != nil || state == nil || state.Mode != deploy.ModeWorker {
+		return nil
+	}
+	return state
+}
+
 // workerRuntimeState returns live worker replica status for a worker app, nil
 // for every other app. Reading deploy state is what makes the dashboard follow
 // supervisor restarts without waiting for a CLI command to re-sync AppInfo.
 func workerRuntimeState(name string) *deploy.WorkerSummary {
-	state, err := deploy.Load(name)
-	if err != nil || state == nil || state.Mode != deploy.ModeWorker {
+	state := workerState(name)
+	if state == nil {
 		return nil
 	}
 	summary := deploy.SummarizeWorker(state)
