@@ -90,6 +90,54 @@ func recordVersion(t *testing.T, app, id, bin string) int {
 	return rec.Version
 }
 
+func TestWorkerRestartReplicaReplacesOnlyThatSlot(t *testing.T) {
+	workerEngineHelper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	app, id := "restartworker", "43"
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawnHelper(t)
+	ver := recordVersion(t, app, id, bin)
+	eng := &Worker{
+		AppName:  app,
+		AppID:    id,
+		Source:   &versionSource{app: app, ver: ver},
+		Strategy: workerStrategyClassic,
+		Replicas: 2,
+		Dir:      home,
+		Signal:   mustSignal(t, "SIGTERM"),
+		Grace:    2 * time.Second,
+	}
+	if err := eng.Deploy(context.Background()); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	state := appState(t, app)
+	oldPID := state.Replicas["0"].PID
+	untouched := state.Replicas["1"].PID
+	if oldPID == 0 || untouched == 0 {
+		t.Fatalf("replicas not running: %+v", state.Replicas)
+	}
+
+	if err := WorkerRestartReplica(context.Background(), app, "0", mustSignal(t, "SIGTERM"), 2*time.Second); err != nil {
+		t.Fatalf("restart replica: %v", err)
+	}
+
+	state = appState(t, app)
+	restarted := state.Replicas["0"]
+	if restarted.PID == 0 || restarted.PID == oldPID {
+		t.Fatalf("replica 0 PID = %d, want a fresh process (old %d)", restarted.PID, oldPID)
+	}
+	if !WorkerInstanceAlive(restarted) || restarted.Status != "running" || restarted.RestartCount != 0 {
+		t.Fatalf("replica 0 after restart = %+v", restarted)
+	}
+	if state.Replicas["1"].PID != untouched {
+		t.Fatalf("replica 1 PID changed from %d to %d", untouched, state.Replicas["1"].PID)
+	}
+}
+
 func TestWorkerDeployRollingReplacement(t *testing.T) {
 	workerEngineHelper()
 	home := t.TempDir()

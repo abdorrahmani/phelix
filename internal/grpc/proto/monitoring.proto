@@ -418,6 +418,13 @@ message MonitorCommandRequest {
   // Rejected (INVALID_ARGUMENT) when set on any other command type. See
   // docs/architecture/backend-contracts/rollback-remote-control-backend-contract.md.
   int32 limit = 13;
+
+  // replica identifies one worker replica slot for commands that operate on a
+  // single replica (worker_restart_replica). It is the slot number as a string
+  // ("0", "1", ...), the same value DeploymentReplica.index and
+  // MonitorLogEntry.replica use. Empty on commands that target the whole app,
+  // and rejected when set on one.
+  string replica = 14;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -475,6 +482,9 @@ message MonitorCommandResult {
   // empty/absent otherwise — older backends ignore them).
   int32 from_replicas = 16;
   int32 to_replicas = 17;
+  // replica is the worker replica slot a worker_restart_replica result
+  // operated on. Empty on every other command.
+  string replica = 18;
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the

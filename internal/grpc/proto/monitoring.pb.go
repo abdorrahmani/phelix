@@ -2064,7 +2064,13 @@ type MonitorCommandRequest struct {
 	// correlated by request_id, exactly like a local --list / history sync.
 	// Rejected (INVALID_ARGUMENT) when set on any other command type. See
 	// docs/architecture/backend-contracts/rollback-remote-control-backend-contract.md.
-	Limit         int32 `protobuf:"varint,13,opt,name=limit,proto3" json:"limit,omitempty"`
+	Limit int32 `protobuf:"varint,13,opt,name=limit,proto3" json:"limit,omitempty"`
+	// replica identifies one worker replica slot for commands that operate on a
+	// single replica (worker_restart_replica). It is the slot number as a string
+	// ("0", "1", ...), the same value DeploymentReplica.index and
+	// MonitorLogEntry.replica use. Empty on commands that target the whole app,
+	// and rejected when set on one.
+	Replica       string `protobuf:"bytes,14,opt,name=replica,proto3" json:"replica,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2190,6 +2196,13 @@ func (x *MonitorCommandRequest) GetLimit() int32 {
 	return 0
 }
 
+func (x *MonitorCommandRequest) GetReplica() string {
+	if x != nil {
+		return x.Replica
+	}
+	return ""
+}
+
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
 // sent back to the backend after a command finishes executing.
 type MonitorCommandResult struct {
@@ -2242,8 +2255,11 @@ type MonitorCommandResult struct {
 	WebhookDeliveries []*WebhookDelivery `protobuf:"bytes,15,rep,name=webhook_deliveries,json=webhookDeliveries,proto3" json:"webhook_deliveries,omitempty"`
 	// Remote worker lifecycle fields (additive; set on worker_scale results,
 	// empty/absent otherwise — older backends ignore them).
-	FromReplicas  int32 `protobuf:"varint,16,opt,name=from_replicas,json=fromReplicas,proto3" json:"from_replicas,omitempty"`
-	ToReplicas    int32 `protobuf:"varint,17,opt,name=to_replicas,json=toReplicas,proto3" json:"to_replicas,omitempty"`
+	FromReplicas int32 `protobuf:"varint,16,opt,name=from_replicas,json=fromReplicas,proto3" json:"from_replicas,omitempty"`
+	ToReplicas   int32 `protobuf:"varint,17,opt,name=to_replicas,json=toReplicas,proto3" json:"to_replicas,omitempty"`
+	// replica is the worker replica slot a worker_restart_replica result
+	// operated on. Empty on every other command.
+	Replica       string `protobuf:"bytes,18,opt,name=replica,proto3" json:"replica,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2395,6 +2411,13 @@ func (x *MonitorCommandResult) GetToReplicas() int32 {
 		return x.ToReplicas
 	}
 	return 0
+}
+
+func (x *MonitorCommandResult) GetReplica() string {
+	if x != nil {
+		return x.Replica
+	}
+	return ""
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the
@@ -3200,7 +3223,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
 	"\x0fMonitorLogBatch\x121\n" +
 	"\aentries\x18\x01 \x03(\v2\x17.phelix.MonitorLogEntryR\aentries\x12\x18\n" +
-	"\adropped\x18\x02 \x01(\x03R\adropped\"\xb2\x03\n" +
+	"\adropped\x18\x02 \x01(\x03R\adropped\"\xcc\x03\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -3216,7 +3239,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x06matrix\x18\n" +
 	" \x01(\v2\x15.phelix.MatrixOptionsR\x06matrix\x120\n" +
 	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\x12\x14\n" +
-	"\x05limit\x18\r \x01(\x05R\x05limit\"\xf6\x05\n" +
+	"\x05limit\x18\r \x01(\x05R\x05limit\x12\x18\n" +
+	"\areplica\x18\x0e \x01(\tR\areplica\"\x90\x06\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -3240,7 +3264,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x12webhook_deliveries\x18\x0f \x03(\v2\x17.phelix.WebhookDeliveryR\x11webhookDeliveries\x12#\n" +
 	"\rfrom_replicas\x18\x10 \x01(\x05R\ffromReplicas\x12\x1f\n" +
 	"\vto_replicas\x18\x11 \x01(\x05R\n" +
-	"toReplicas\"\xd4\x06\n" +
+	"toReplicas\x12\x18\n" +
+	"\areplica\x18\x12 \x01(\tR\areplica\"\xd4\x06\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
