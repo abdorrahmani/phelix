@@ -68,6 +68,9 @@ func syncAppInfoWithWorker(info *app.AppInfo, state *deploy.DeployState) error {
 		info.Status = summary.Status
 		info.PID = firstAliveWorkerPID(state)
 		info.AutoStart = true
+		if inst := firstAliveWorkerInstance(state); inst != nil {
+			info.Start = inst.StartedAt
+		}
 	default:
 		info.Status = "stopped"
 		info.PID = 0
@@ -79,8 +82,8 @@ func syncAppInfoWithWorker(info *app.AppInfo, state *deploy.DeployState) error {
 	return am.SaveState()
 }
 
-// firstAliveWorkerPID returns the lowest-slot alive replica's PID, or 0.
-func firstAliveWorkerPID(state *deploy.DeployState) int {
+// firstAliveWorkerInstance returns the lowest-slot alive replica record.
+func firstAliveWorkerInstance(state *deploy.DeployState) *deploy.Instance {
 	keys := make([]string, 0, len(state.Replicas))
 	for k := range state.Replicas {
 		keys = append(keys, k)
@@ -92,8 +95,16 @@ func firstAliveWorkerPID(state *deploy.DeployState) int {
 	})
 	for _, k := range keys {
 		if inst := state.Replicas[k]; inst != nil && deploy.WorkerInstanceAlive(inst) {
-			return inst.PID
+			return inst
 		}
+	}
+	return nil
+}
+
+// firstAliveWorkerPID returns the lowest-slot alive replica's PID, or 0.
+func firstAliveWorkerPID(state *deploy.DeployState) int {
+	if inst := firstAliveWorkerInstance(state); inst != nil {
+		return inst.PID
 	}
 	return 0
 }

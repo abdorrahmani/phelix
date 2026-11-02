@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
@@ -301,12 +302,12 @@ func WorkerReplicaSlots(appName string) ([]string, error) {
 
 // WorkerSummary is the aggregated status of a worker app.
 type WorkerSummary struct {
-	Desired  int
-	Running  int
-	Failed   int // failed or crashloop replicas
-	Stopped  int
+	Desired   int
+	Running   int
+	Failed    int // failed or crashloop replicas
+	Stopped   int
 	Crashloop bool
-	Status   string // running | degraded | stopped
+	Status    string // running | degraded | stopped
 }
 
 // SummarizeWorker inspects a worker app's replica records without probing.
@@ -355,4 +356,30 @@ func sortedIntSlots(m map[string]*Instance) []string {
 		return ai < aj
 	})
 	return keys
+}
+
+// WorkerAppNames lists the apps whose persisted deploy state is ModeWorker,
+// scanned from the app data directory. Read-only and manager-free, so the
+// supervisor can call it from any goroutine.
+func WorkerAppNames() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".phelix", "apps"))
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		state, err := Load(entry.Name())
+		if err != nil || state == nil || state.Mode != ModeWorker {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	return names
 }

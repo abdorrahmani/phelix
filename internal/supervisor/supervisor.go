@@ -96,17 +96,15 @@ func (s *Supervisor) Run(ctx context.Context) {
 }
 
 func (s *Supervisor) tick() {
+	// Read-only discovery: the monitor daemon's other goroutines mutate the
+	// shared AppManager, so the supervisor never calls LoadState. Worker
+	// apps come from the deploy-state directory scan, project directories
+	// from a read-only apps.json parse.
 	type workerApp struct{ name, dir string }
 	var apps []workerApp
-	if err := app.Manager.LoadState(); err != nil {
-		return
-	}
-	for _, info := range app.Manager.ListApplications() {
-		state, err := deploy.Load(info.Name)
-		if err != nil || state == nil || state.Mode != deploy.ModeWorker {
-			continue
-		}
-		apps = append(apps, workerApp{info.Name, info.Directory})
+	dirs := app.AppDirectories()
+	for _, name := range deploy.WorkerAppNames() {
+		apps = append(apps, workerApp{name, dirs[name]})
 	}
 	var wg sync.WaitGroup
 	for _, a := range apps {
@@ -226,7 +224,9 @@ func (s *Supervisor) reconcileReplica(name, dir string, state *deploy.DeployStat
 			inst.LastExitReason = "startup timeout: " + inst.LastExitReason
 			s.dropHandle(key)
 			s.clearProbes(key)
-			s.applyPolicy(key, inst, ps)
+			// The graceful stop usually exits 0, which the restart policy
+			// would read as a completion; the timeout itself is the failure.
+			s.scheduleRestart(inst, ps, s.clock())
 			return true
 		}
 		if outcome, ok := s.probeOutcome(key); ok && outcome.OK {
@@ -268,7 +268,10 @@ func (s *Supervisor) reconcileReplica(name, dir string, state *deploy.DeployStat
 					inst.LastExitReason = "unhealthy: exec probe failed: " + outcome.Detail
 					s.dropHandle(key)
 					s.clearProbes(key)
-					s.applyPolicy(key, inst, ps)
+					// The graceful stop usually exits 0, which the restart
+					// policy would read as a completion; the health failure
+					// itself is the decision input.
+					s.scheduleRestart(inst, ps, s.clock())
 					return true
 				}
 			}

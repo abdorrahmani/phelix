@@ -305,6 +305,9 @@ var BuildCmd = &cobra.Command{
 				buildVer = rec.Version
 			}
 			replicas := workerReplicaCount(projCfg)
+
+			releaseBuild()
+
 			fmt.Printf("  %s Starting %d worker replica(s)...\n", color.BlueString("→"), replicas)
 			if err := startWorkerInitial(id, name, projCfg, buildVer); err != nil {
 				tracker.Failed(err)

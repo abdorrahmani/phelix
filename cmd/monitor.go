@@ -248,9 +248,10 @@ func restoreDeployedApps() {
 }
 
 // restoreWorkerApps heals worker apps at daemon start: interrupted rollouts
-// are reverted first, orphaned processes reported, and apps with auto-start
-// intent get their desired replica set relaunched. Steady-state supervision
-// (crash restarts, health probes) belongs to the supervisor loop, not here.
+// are reverted and orphaned processes reported. Replicas that died while the
+// daemon was down are deliberately left for the supervisor loop, which
+// applies the restart policy with the persisted counters intact; a blanket
+// WorkerStart here would silently reset crash-loop state.
 func restoreWorkerApps(am *app.AppManager) {
 	for _, info := range am.Apps {
 		wstate, werr := workerAppState(info.Name)
@@ -267,23 +268,7 @@ func restoreWorkerApps(am *app.AppManager) {
 		if pids := deploy.DetectWorkerOrphans(wstate); len(pids) > 0 {
 			logs.Warning("monitor", "worker %s: %d orphaned replica process(es) running outside the deploy state: %v", info.Name, len(pids), pids)
 		}
-		if !info.AutoStart || info.Status == "running" {
-			continue
-		}
-		if _, serr := deploy.WorkerStart(context.Background(), info.Name, mustWorkerSignal(info), 0); serr != nil {
-			logs.Warning("monitor", "failed to restore worker replicas for %s: %v", info.Name, serr)
-		}
 	}
-}
-
-// mustWorkerSignal resolves the app's configured shutdown signal, falling
-// back to SIGTERM when the project config is unreadable.
-func mustWorkerSignal(info *app.AppInfo) os.Signal {
-	sig, _, err := workerStopSettings(info)
-	if err != nil || sig == nil {
-		sig = syscall.SIGTERM
-	}
-	return sig
 }
 
 // reconcileOrphanContainers reclaims phelix.managed containers that no app's

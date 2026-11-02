@@ -117,8 +117,8 @@ type statusInstanceView struct {
 	Port    int    `json:"port,omitempty"`
 	Version int    `json:"version,omitempty"`
 	// Worker supervision fields (type: worker); absent for service replicas.
-	Restarts      int    `json:"restarts,omitempty"`
-	LastExitCode  int    `json:"last_exit_code,omitempty"`
+	Restarts       int    `json:"restarts,omitempty"`
+	LastExitCode   int    `json:"last_exit_code,omitempty"`
 	LastExitReason string `json:"last_exit_reason,omitempty"`
 }
 
