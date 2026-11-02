@@ -56,8 +56,10 @@ func InstanceAlive(inst *Instance) bool {
 }
 
 // ServingInstance returns the instance that should be serving traffic right
-// now: the active slot for blue-green, or the first live replica for rolling.
-// It returns nil when nothing is (or should be) serving.
+// now: the active slot for blue-green, the first live replica for rolling, or
+// the first live replica for a worker (nothing routes traffic to a worker,
+// but the notion of "the deployment has a live process" is the same). It
+// returns nil when nothing is (or should be) serving.
 func (s *DeployState) ServingInstance() *Instance {
 	if s == nil {
 		return nil
@@ -65,7 +67,7 @@ func (s *DeployState) ServingInstance() *Instance {
 	switch s.Mode {
 	case ModeBlueGreen:
 		return s.ActiveInstance()
-	case ModeRolling:
+	case ModeRolling, ModeWorker:
 		keys := sortedReplicaKeys(s.Replicas)
 		for _, k := range keys {
 			if inst := s.Replicas[k]; inst != nil && InstanceAlive(inst) {

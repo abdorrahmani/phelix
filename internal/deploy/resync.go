@@ -66,11 +66,17 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 		switch {
 		case inst == nil:
 			return HealthUnknown
-		case inst.Status == "failed":
+		case inst.Status == "failed", inst.Status == "unhealthy", inst.Status == "crashloop":
 			return HealthUnhealthy
-		case inst.Status == "starting", inst.Status == "replacing":
+		case inst.Status == "starting", inst.Status == "replacing",
+			inst.Status == "restarting", inst.Status == "stopping", inst.Status == "draining":
 			return HealthPending
 		case InstanceAlive(inst) && state.Health != nil && !state.Health.HealthyAt.IsZero():
+			return HealthHealthy
+		case state.Mode == ModeWorker && inst.Status == "running" && WorkerInstanceAlive(inst):
+			// A worker replica reports healthy once it is running: readiness
+			// was gated by the supervisor or the deploy engine (identity plus,
+			// in exec mode, the probe), and no tiered probe exists to re-verify.
 			return HealthHealthy
 		}
 		return HealthUnknown
@@ -139,7 +145,7 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 			}
 		}
 	}
-	if state.Mode == ModeRolling {
+	if state.Mode == ModeRolling || state.Mode == ModeWorker {
 		s.ReplicasDesired = len(state.Replicas)
 	}
 

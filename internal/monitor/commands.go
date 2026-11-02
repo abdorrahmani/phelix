@@ -196,6 +196,14 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 		return NotStarted(phelixerr.Wrapf(phelixerr.CodeConfiguration, derr,
 			"cannot read deployment state for app %q", target.Name))
 	}
+	// A worker app is deploy-managed too, but its lifecycle commands must run
+	// through the CLI's worker paths (no port, no app-manager classic start),
+	// so it falls through to execFallback below like the zero-downtime modes.
+	if state == nil {
+		if ws, werr := deploy.Load(target.Name); werr == nil && ws != nil && ws.Mode == deploy.ModeWorker {
+			state = ws
+		}
+	}
 
 	if state != nil {
 		logs.Info("monitor", "app '%s' is deploy-managed (mode %s); running '%s' through the CLI",
