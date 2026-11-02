@@ -119,8 +119,9 @@ type LifecycleDecision struct {
 }
 
 // instancesServing returns the instance records that the state claims are
-// serving traffic right now: the active slot for blue-green, or every recorded
-// replica for rolling. Their liveness decides the lifecycle status.
+// serving right now: the active slot for blue-green, or every recorded
+// replica for rolling and worker deployments. Their liveness decides the
+// lifecycle status.
 func instancesServing(s *DeployState) []*Instance {
 	if s == nil {
 		return nil
@@ -139,6 +140,17 @@ func instancesServing(s *DeployState) []*Instance {
 		var out []*Instance
 		for _, k := range sortedReplicaKeys(s.Replicas) {
 			if inst := s.Replicas[k]; inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
+				out = append(out, inst)
+			}
+		}
+		return out
+	case ModeWorker:
+		// Every recorded replica is desired: a worker replica set is fixed by
+		// deploy and scale, so a dead replica must degrade the app instead of
+		// shrinking the desired count and making a partial outage look healthy.
+		var out []*Instance
+		for _, k := range sortedReplicaKeys(s.Replicas) {
+			if inst := s.Replicas[k]; inst != nil {
 				out = append(out, inst)
 			}
 		}

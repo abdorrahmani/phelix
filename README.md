@@ -193,7 +193,6 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Monitoring](docs/architecture/monitoring.md)
 - [Identity](docs/architecture/identity.md)
 - [Error Architecture](docs/error-architecture.md)
-- [Backend Contracts](docs/architecture/backend-contracts/)
 
 ## Architecture
 

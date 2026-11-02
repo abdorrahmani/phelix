@@ -97,6 +97,8 @@ type AppDetails struct {
 	Uptime      string           `json:"uptime"`
 	CreatedAt   time.Time        `json:"createdAt"`
 	UpdatedAt   time.Time        `json:"updatedAt"`
+	// WorkloadType is the declared phelix.yaml type: "service" or "worker".
+	WorkloadType string `json:"workload_type"`
 
 	Process    app.AppProcessConfig    `json:"process,omitempty"`
 	Networking app.AppNetworkingConfig `json:"networking,omitempty"`

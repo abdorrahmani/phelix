@@ -140,6 +140,14 @@ type ReplicaState struct {
 	// CLI does not know (native, or a pre-docker record) — never "native".
 	Image       string
 	ContainerID string
+	// Worker supervision bookkeeping (type: worker). Zero values mean the
+	// replica never recorded the event.
+	RestartCount   int
+	LastRestartAt  time.Time
+	LastExitCode   int
+	LastExitReason string
+	LastExitAt     time.Time
+	ReadyAt        time.Time
 }
 
 // ProxyState is what the deployment knows about the proxy daemon's routing for
@@ -258,7 +266,10 @@ type Snapshot struct {
 	// classic/blue-green/rolling. A rollout runs on blue-green topology, so the
 	// slots above stay truthful and Rollout carries the step/traffic/verification
 	// detail they cannot express.
-	Rollout   *RolloutInfo
+	Rollout *RolloutInfo
+	// Worker carries the resolved supervision config of a worker app; nil for
+	// every other workload and when the CLI cannot resolve the project.
+	Worker    *WorkerConfigState
 	StartedAt time.Time
 	UpdatedAt time.Time
 }
@@ -1030,17 +1041,23 @@ func (t *Tracker) snapshotLocked() *Snapshot {
 		status := instanceStatus(inst)
 		health := t.instanceHealthLocked(key, inst)
 		s.Replicas = append(s.Replicas, ReplicaState{
-			ID:           replicaID(idx),
-			Index:        idx,
-			Version:      versionLabel(inst.Version),
-			Status:       status,
-			Health:       health,
-			InternalPort: inst.Port,
-			PID:          inst.PID,
-			StartedAt:    inst.StartedAt,
-			HealthyAt:    t.healthy[key],
-			Image:        dockerImageOf(inst),
-			ContainerID:  inst.ContainerID,
+			ID:             replicaID(idx),
+			Index:          idx,
+			Version:        versionLabel(inst.Version),
+			Status:         status,
+			Health:         health,
+			InternalPort:   inst.Port,
+			PID:            inst.PID,
+			StartedAt:      inst.StartedAt,
+			HealthyAt:      t.healthy[key],
+			Image:          dockerImageOf(inst),
+			ContainerID:    inst.ContainerID,
+			RestartCount:   inst.RestartCount,
+			LastRestartAt:  inst.LastRestartAt,
+			LastExitCode:   inst.LastExitCode,
+			LastExitReason: inst.LastExitReason,
+			LastExitAt:     inst.LastExitAt,
+			ReadyAt:        inst.ReadyAt,
 		})
 		// Observed counters only. A replica counts as current when a process is
 		// recorded for it, ready when that process is in rotation, and healthy
@@ -1054,6 +1071,9 @@ func (t *Tracker) snapshotLocked() *Snapshot {
 				s.ReplicasHealthy++
 			}
 		}
+	}
+	if t.state.Mode == ModeWorker {
+		s.Worker = workerConfigFor(t.appName)
 	}
 	return s
 }

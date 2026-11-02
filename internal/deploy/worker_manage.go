@@ -308,6 +308,10 @@ type WorkerSummary struct {
 	Stopped   int
 	Crashloop bool
 	Status    string // running | degraded | stopped
+	// PID and StartedAt describe the lowest-slot alive replica (zero when
+	// none), so readers can report live metrics and uptime.
+	PID       int
+	StartedAt time.Time
 }
 
 // SummarizeWorker inspects a worker app's replica records without probing.
@@ -341,6 +345,15 @@ func SummarizeWorker(state *DeployState) WorkerSummary {
 	default:
 		s.Status = "degraded"
 	}
+	for _, key := range sortedIntSlots(state.Replicas) {
+		inst := state.Replicas[key]
+		if inst == nil || !WorkerInstanceAlive(inst) {
+			continue
+		}
+		s.PID = inst.PID
+		s.StartedAt = inst.StartedAt
+		break
+	}
 	return s
 }
 
@@ -356,6 +369,22 @@ func sortedIntSlots(m map[string]*Instance) []string {
 		return ai < aj
 	})
 	return keys
+}
+
+// WorkerAlivePIDs returns every live replica PID in slot order, so callers
+// that report per-app resource usage can aggregate the whole replica set.
+func WorkerAlivePIDs(state *DeployState) []int {
+	if state == nil {
+		return nil
+	}
+	var pids []int
+	for _, key := range sortedIntSlots(state.Replicas) {
+		inst := state.Replicas[key]
+		if inst != nil && WorkerInstanceAlive(inst) {
+			pids = append(pids, inst.PID)
+		}
+	}
+	return pids
 }
 
 // WorkerAppNames lists the apps whose persisted deploy state is ModeWorker,

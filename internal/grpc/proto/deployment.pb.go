@@ -236,9 +236,17 @@ type DeploymentReplica struct {
 	Image string `protobuf:"bytes,10,opt,name=image,proto3" json:"image,omitempty"`
 	// container_id is the docker container id backing this replica. Absent/empty
 	// always means the CLI does not know, never native.
-	ContainerId   string `protobuf:"bytes,11,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ContainerId string `protobuf:"bytes,11,opt,name=container_id,json=containerId,proto3" json:"container_id,omitempty"`
+	// Worker supervision bookkeeping (type: worker). Zero values mean the
+	// replica never recorded that event, not that nothing happened.
+	RestartCount   int32  `protobuf:"varint,12,opt,name=restart_count,json=restartCount,proto3" json:"restart_count,omitempty"`
+	LastRestartAt  int64  `protobuf:"varint,13,opt,name=last_restart_at,json=lastRestartAt,proto3" json:"last_restart_at,omitempty"`
+	LastExitCode   int32  `protobuf:"varint,14,opt,name=last_exit_code,json=lastExitCode,proto3" json:"last_exit_code,omitempty"`
+	LastExitReason string `protobuf:"bytes,15,opt,name=last_exit_reason,json=lastExitReason,proto3" json:"last_exit_reason,omitempty"`
+	LastExitAt     int64  `protobuf:"varint,16,opt,name=last_exit_at,json=lastExitAt,proto3" json:"last_exit_at,omitempty"`
+	ReadyAt        int64  `protobuf:"varint,17,opt,name=ready_at,json=readyAt,proto3" json:"ready_at,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DeploymentReplica) Reset() {
@@ -346,6 +354,48 @@ func (x *DeploymentReplica) GetContainerId() string {
 		return x.ContainerId
 	}
 	return ""
+}
+
+func (x *DeploymentReplica) GetRestartCount() int32 {
+	if x != nil {
+		return x.RestartCount
+	}
+	return 0
+}
+
+func (x *DeploymentReplica) GetLastRestartAt() int64 {
+	if x != nil {
+		return x.LastRestartAt
+	}
+	return 0
+}
+
+func (x *DeploymentReplica) GetLastExitCode() int32 {
+	if x != nil {
+		return x.LastExitCode
+	}
+	return 0
+}
+
+func (x *DeploymentReplica) GetLastExitReason() string {
+	if x != nil {
+		return x.LastExitReason
+	}
+	return ""
+}
+
+func (x *DeploymentReplica) GetLastExitAt() int64 {
+	if x != nil {
+		return x.LastExitAt
+	}
+	return 0
+}
+
+func (x *DeploymentReplica) GetReadyAt() int64 {
+	if x != nil {
+		return x.ReadyAt
+	}
+	return 0
 }
 
 // DeploymentProxy is the routing state of the Phelix proxy daemon for this
@@ -656,7 +706,10 @@ type DeploymentSnapshot struct {
 	// topology, so `slots`/`active_slot` above stay truthful and `strategy` is
 	// "canary"/"progressive"; `rollout` adds the step/traffic/verification detail
 	// the slots cannot express. Absent always means "not a rollout", never step 0.
-	Rollout       *RolloutState `protobuf:"bytes,24,opt,name=rollout,proto3" json:"rollout,omitempty"`
+	Rollout *RolloutState `protobuf:"bytes,24,opt,name=rollout,proto3" json:"rollout,omitempty"`
+	// worker is the resolved supervision config of a worker app; absent for
+	// every other workload.
+	Worker        *DeploymentWorkerConfig `protobuf:"bytes,25,opt,name=worker,proto3" json:"worker,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -859,6 +912,180 @@ func (x *DeploymentSnapshot) GetRollout() *RolloutState {
 	return nil
 }
 
+func (x *DeploymentSnapshot) GetWorker() *DeploymentWorkerConfig {
+	if x != nil {
+		return x.Worker
+	}
+	return nil
+}
+
+// DeploymentWorkerConfig is the supervision policy a worker replica set runs
+// under, resolved from phelix.yaml. It describes configuration, not observed
+// state; per-replica state lives on DeploymentReplica.
+type DeploymentWorkerConfig struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	RestartPolicy         string                 `protobuf:"bytes,1,opt,name=restart_policy,json=restartPolicy,proto3" json:"restart_policy,omitempty"` // always | on-failure | never
+	MaxRestartAttempts    int32                  `protobuf:"varint,2,opt,name=max_restart_attempts,json=maxRestartAttempts,proto3" json:"max_restart_attempts,omitempty"`
+	BackoffInitial        string                 `protobuf:"bytes,3,opt,name=backoff_initial,json=backoffInitial,proto3" json:"backoff_initial,omitempty"` // Go duration string
+	BackoffMax            string                 `protobuf:"bytes,4,opt,name=backoff_max,json=backoffMax,proto3" json:"backoff_max,omitempty"`             // Go duration string
+	BackoffMultiplier     float64                `protobuf:"fixed64,5,opt,name=backoff_multiplier,json=backoffMultiplier,proto3" json:"backoff_multiplier,omitempty"`
+	ShutdownSignal        string                 `protobuf:"bytes,6,opt,name=shutdown_signal,json=shutdownSignal,proto3" json:"shutdown_signal,omitempty"` // SIGTERM | SIGINT
+	GracePeriod           string                 `protobuf:"bytes,7,opt,name=grace_period,json=gracePeriod,proto3" json:"grace_period,omitempty"`          // Go duration string
+	StartupTimeout        string                 `protobuf:"bytes,8,opt,name=startup_timeout,json=startupTimeout,proto3" json:"startup_timeout,omitempty"` // Go duration string
+	HealthMode            string                 `protobuf:"bytes,9,opt,name=health_mode,json=healthMode,proto3" json:"health_mode,omitempty"`             // process | exec
+	HealthCommand         []string               `protobuf:"bytes,10,rep,name=health_command,json=healthCommand,proto3" json:"health_command,omitempty"`
+	HealthInterval        string                 `protobuf:"bytes,11,opt,name=health_interval,json=healthInterval,proto3" json:"health_interval,omitempty"` // Go duration string
+	HealthTimeout         string                 `protobuf:"bytes,12,opt,name=health_timeout,json=healthTimeout,proto3" json:"health_timeout,omitempty"`    // Go duration string
+	HealthRetries         int32                  `protobuf:"varint,13,opt,name=health_retries,json=healthRetries,proto3" json:"health_retries,omitempty"`
+	RollingMaxSurge       int32                  `protobuf:"varint,14,opt,name=rolling_max_surge,json=rollingMaxSurge,proto3" json:"rolling_max_surge,omitempty"`
+	RollingMaxUnavailable int32                  `protobuf:"varint,15,opt,name=rolling_max_unavailable,json=rollingMaxUnavailable,proto3" json:"rolling_max_unavailable,omitempty"`
+	RollingDrainTimeout   string                 `protobuf:"bytes,16,opt,name=rolling_drain_timeout,json=rollingDrainTimeout,proto3" json:"rolling_drain_timeout,omitempty"` // Go duration string; empty means grace period
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *DeploymentWorkerConfig) Reset() {
+	*x = DeploymentWorkerConfig{}
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeploymentWorkerConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeploymentWorkerConfig) ProtoMessage() {}
+
+func (x *DeploymentWorkerConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeploymentWorkerConfig.ProtoReflect.Descriptor instead.
+func (*DeploymentWorkerConfig) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *DeploymentWorkerConfig) GetRestartPolicy() string {
+	if x != nil {
+		return x.RestartPolicy
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetMaxRestartAttempts() int32 {
+	if x != nil {
+		return x.MaxRestartAttempts
+	}
+	return 0
+}
+
+func (x *DeploymentWorkerConfig) GetBackoffInitial() string {
+	if x != nil {
+		return x.BackoffInitial
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetBackoffMax() string {
+	if x != nil {
+		return x.BackoffMax
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetBackoffMultiplier() float64 {
+	if x != nil {
+		return x.BackoffMultiplier
+	}
+	return 0
+}
+
+func (x *DeploymentWorkerConfig) GetShutdownSignal() string {
+	if x != nil {
+		return x.ShutdownSignal
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetGracePeriod() string {
+	if x != nil {
+		return x.GracePeriod
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetStartupTimeout() string {
+	if x != nil {
+		return x.StartupTimeout
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetHealthMode() string {
+	if x != nil {
+		return x.HealthMode
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetHealthCommand() []string {
+	if x != nil {
+		return x.HealthCommand
+	}
+	return nil
+}
+
+func (x *DeploymentWorkerConfig) GetHealthInterval() string {
+	if x != nil {
+		return x.HealthInterval
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetHealthTimeout() string {
+	if x != nil {
+		return x.HealthTimeout
+	}
+	return ""
+}
+
+func (x *DeploymentWorkerConfig) GetHealthRetries() int32 {
+	if x != nil {
+		return x.HealthRetries
+	}
+	return 0
+}
+
+func (x *DeploymentWorkerConfig) GetRollingMaxSurge() int32 {
+	if x != nil {
+		return x.RollingMaxSurge
+	}
+	return 0
+}
+
+func (x *DeploymentWorkerConfig) GetRollingMaxUnavailable() int32 {
+	if x != nil {
+		return x.RollingMaxUnavailable
+	}
+	return 0
+}
+
+func (x *DeploymentWorkerConfig) GetRollingDrainTimeout() string {
+	if x != nil {
+		return x.RollingDrainTimeout
+	}
+	return ""
+}
+
 // DeploymentEvent is one lifecycle transition of a deployment. All events of
 // one deployment share deployment_id; ordering is the order of emission
 // (timestamp is monotonic within a deployment).
@@ -924,7 +1151,7 @@ type DeploymentEvent struct {
 
 func (x *DeploymentEvent) Reset() {
 	*x = DeploymentEvent{}
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[7]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -936,7 +1163,7 @@ func (x *DeploymentEvent) String() string {
 func (*DeploymentEvent) ProtoMessage() {}
 
 func (x *DeploymentEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[7]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -949,7 +1176,7 @@ func (x *DeploymentEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeploymentEvent.ProtoReflect.Descriptor instead.
 func (*DeploymentEvent) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{7}
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DeploymentEvent) GetServerId() string {
@@ -1139,7 +1366,7 @@ type RolloutState struct {
 
 func (x *RolloutState) Reset() {
 	*x = RolloutState{}
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[8]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1151,7 +1378,7 @@ func (x *RolloutState) String() string {
 func (*RolloutState) ProtoMessage() {}
 
 func (x *RolloutState) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[8]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1164,7 +1391,7 @@ func (x *RolloutState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RolloutState.ProtoReflect.Descriptor instead.
 func (*RolloutState) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{8}
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *RolloutState) GetStrategy() string {
@@ -1277,7 +1504,7 @@ type RolloutVerification struct {
 
 func (x *RolloutVerification) Reset() {
 	*x = RolloutVerification{}
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[9]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1289,7 +1516,7 @@ func (x *RolloutVerification) String() string {
 func (*RolloutVerification) ProtoMessage() {}
 
 func (x *RolloutVerification) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[9]
+	mi := &file_internal_grpc_proto_deployment_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1302,7 +1529,7 @@ func (x *RolloutVerification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RolloutVerification.ProtoReflect.Descriptor instead.
 func (*RolloutVerification) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{9}
+	return file_internal_grpc_proto_deployment_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RolloutVerification) GetCanaryErrorRate() float64 {
@@ -1412,7 +1639,7 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"healthy_at\x18\t \x01(\x03R\thealthyAt\x12\x14\n" +
 	"\x05image\x18\n" +
 	" \x01(\tR\x05image\x12!\n" +
-	"\fcontainer_id\x18\v \x01(\tR\vcontainerId\"\xb1\x02\n" +
+	"\fcontainer_id\x18\v \x01(\tR\vcontainerId\"\x8b\x04\n" +
 	"\x11DeploymentReplica\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x05R\x05index\x12\x18\n" +
@@ -1427,7 +1654,14 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"healthy_at\x18\t \x01(\x03R\thealthyAt\x12\x14\n" +
 	"\x05image\x18\n" +
 	" \x01(\tR\x05image\x12!\n" +
-	"\fcontainer_id\x18\v \x01(\tR\vcontainerId\"\xa3\x02\n" +
+	"\fcontainer_id\x18\v \x01(\tR\vcontainerId\x12#\n" +
+	"\rrestart_count\x18\f \x01(\x05R\frestartCount\x12&\n" +
+	"\x0flast_restart_at\x18\r \x01(\x03R\rlastRestartAt\x12$\n" +
+	"\x0elast_exit_code\x18\x0e \x01(\x05R\flastExitCode\x12(\n" +
+	"\x10last_exit_reason\x18\x0f \x01(\tR\x0elastExitReason\x12 \n" +
+	"\flast_exit_at\x18\x10 \x01(\x03R\n" +
+	"lastExitAt\x12\x19\n" +
+	"\bready_at\x18\x11 \x01(\x03R\areadyAt\"\xa3\x02\n" +
 	"\x0fDeploymentProxy\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vpublic_port\x18\x02 \x01(\x05R\n" +
@@ -1451,7 +1685,7 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"\x04tier\x18\x06 \x01(\x05R\x04tier\x12\x1d\n" +
 	"\n" +
 	"tier_label\x18\a \x01(\tR\ttierLabel\x12&\n" +
-	"\x0flast_healthy_at\x18\b \x01(\x03R\rlastHealthyAt\"\x8d\a\n" +
+	"\x0flast_healthy_at\x18\b \x01(\x03R\rlastHealthyAt\"\xc5\a\n" +
 	"\x12DeploymentSnapshot\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x15\n" +
 	"\x06app_id\x18\x02 \x01(\tR\x05appId\x12\x19\n" +
@@ -1481,7 +1715,28 @@ const file_internal_grpc_proto_deployment_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x16 \x01(\tR\trequestId\x12\x18\n" +
 	"\aruntime\x18\x17 \x01(\tR\aruntime\x12.\n" +
-	"\arollout\x18\x18 \x01(\v2\x14.phelix.RolloutStateR\arollout\"\xcc\x05\n" +
+	"\arollout\x18\x18 \x01(\v2\x14.phelix.RolloutStateR\arollout\x126\n" +
+	"\x06worker\x18\x19 \x01(\v2\x1e.phelix.DeploymentWorkerConfigR\x06worker\"\xb6\x05\n" +
+	"\x16DeploymentWorkerConfig\x12%\n" +
+	"\x0erestart_policy\x18\x01 \x01(\tR\rrestartPolicy\x120\n" +
+	"\x14max_restart_attempts\x18\x02 \x01(\x05R\x12maxRestartAttempts\x12'\n" +
+	"\x0fbackoff_initial\x18\x03 \x01(\tR\x0ebackoffInitial\x12\x1f\n" +
+	"\vbackoff_max\x18\x04 \x01(\tR\n" +
+	"backoffMax\x12-\n" +
+	"\x12backoff_multiplier\x18\x05 \x01(\x01R\x11backoffMultiplier\x12'\n" +
+	"\x0fshutdown_signal\x18\x06 \x01(\tR\x0eshutdownSignal\x12!\n" +
+	"\fgrace_period\x18\a \x01(\tR\vgracePeriod\x12'\n" +
+	"\x0fstartup_timeout\x18\b \x01(\tR\x0estartupTimeout\x12\x1f\n" +
+	"\vhealth_mode\x18\t \x01(\tR\n" +
+	"healthMode\x12%\n" +
+	"\x0ehealth_command\x18\n" +
+	" \x03(\tR\rhealthCommand\x12'\n" +
+	"\x0fhealth_interval\x18\v \x01(\tR\x0ehealthInterval\x12%\n" +
+	"\x0ehealth_timeout\x18\f \x01(\tR\rhealthTimeout\x12%\n" +
+	"\x0ehealth_retries\x18\r \x01(\x05R\rhealthRetries\x12*\n" +
+	"\x11rolling_max_surge\x18\x0e \x01(\x05R\x0frollingMaxSurge\x126\n" +
+	"\x17rolling_max_unavailable\x18\x0f \x01(\x05R\x15rollingMaxUnavailable\x122\n" +
+	"\x15rolling_drain_timeout\x18\x10 \x01(\tR\x13rollingDrainTimeout\"\xcc\x05\n" +
 	"\x0fDeploymentEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x15\n" +
 	"\x06app_id\x18\x02 \x01(\tR\x05appId\x12\x19\n" +
@@ -1555,18 +1810,19 @@ func file_internal_grpc_proto_deployment_proto_rawDescGZIP() []byte {
 	return file_internal_grpc_proto_deployment_proto_rawDescData
 }
 
-var file_internal_grpc_proto_deployment_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_internal_grpc_proto_deployment_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_internal_grpc_proto_deployment_proto_goTypes = []any{
-	(*DeploymentFailure)(nil),   // 0: phelix.DeploymentFailure
-	(*DeploymentSlot)(nil),      // 1: phelix.DeploymentSlot
-	(*DeploymentReplica)(nil),   // 2: phelix.DeploymentReplica
-	(*DeploymentProxy)(nil),     // 3: phelix.DeploymentProxy
-	(*WeightedUpstream)(nil),    // 4: phelix.WeightedUpstream
-	(*DeploymentHealth)(nil),    // 5: phelix.DeploymentHealth
-	(*DeploymentSnapshot)(nil),  // 6: phelix.DeploymentSnapshot
-	(*DeploymentEvent)(nil),     // 7: phelix.DeploymentEvent
-	(*RolloutState)(nil),        // 8: phelix.RolloutState
-	(*RolloutVerification)(nil), // 9: phelix.RolloutVerification
+	(*DeploymentFailure)(nil),      // 0: phelix.DeploymentFailure
+	(*DeploymentSlot)(nil),         // 1: phelix.DeploymentSlot
+	(*DeploymentReplica)(nil),      // 2: phelix.DeploymentReplica
+	(*DeploymentProxy)(nil),        // 3: phelix.DeploymentProxy
+	(*WeightedUpstream)(nil),       // 4: phelix.WeightedUpstream
+	(*DeploymentHealth)(nil),       // 5: phelix.DeploymentHealth
+	(*DeploymentSnapshot)(nil),     // 6: phelix.DeploymentSnapshot
+	(*DeploymentWorkerConfig)(nil), // 7: phelix.DeploymentWorkerConfig
+	(*DeploymentEvent)(nil),        // 8: phelix.DeploymentEvent
+	(*RolloutState)(nil),           // 9: phelix.RolloutState
+	(*RolloutVerification)(nil),    // 10: phelix.RolloutVerification
 }
 var file_internal_grpc_proto_deployment_proto_depIdxs = []int32{
 	4,  // 0: phelix.DeploymentProxy.weighted_upstreams:type_name -> phelix.WeightedUpstream
@@ -1575,15 +1831,16 @@ var file_internal_grpc_proto_deployment_proto_depIdxs = []int32{
 	3,  // 3: phelix.DeploymentSnapshot.proxy:type_name -> phelix.DeploymentProxy
 	5,  // 4: phelix.DeploymentSnapshot.health:type_name -> phelix.DeploymentHealth
 	0,  // 5: phelix.DeploymentSnapshot.failure:type_name -> phelix.DeploymentFailure
-	8,  // 6: phelix.DeploymentSnapshot.rollout:type_name -> phelix.RolloutState
-	0,  // 7: phelix.DeploymentEvent.failure:type_name -> phelix.DeploymentFailure
-	6,  // 8: phelix.DeploymentEvent.snapshot:type_name -> phelix.DeploymentSnapshot
-	9,  // 9: phelix.RolloutState.verification:type_name -> phelix.RolloutVerification
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	9,  // 6: phelix.DeploymentSnapshot.rollout:type_name -> phelix.RolloutState
+	7,  // 7: phelix.DeploymentSnapshot.worker:type_name -> phelix.DeploymentWorkerConfig
+	0,  // 8: phelix.DeploymentEvent.failure:type_name -> phelix.DeploymentFailure
+	6,  // 9: phelix.DeploymentEvent.snapshot:type_name -> phelix.DeploymentSnapshot
+	10, // 10: phelix.RolloutState.verification:type_name -> phelix.RolloutVerification
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_deployment_proto_init() }
@@ -1597,7 +1854,7 @@ func file_internal_grpc_proto_deployment_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_deployment_proto_rawDesc), len(file_internal_grpc_proto_deployment_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

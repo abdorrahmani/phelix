@@ -115,7 +115,6 @@ commands over the monitoring stream — remote rebuild (including one-off strate
 overrides), rollback, matrix, and webhook management. The one-off strategy
 override the dashboard sends is the same one `--strategy` applies locally; see
 [configuration](../reference/configuration.md) and the
-[remote webhook contract](../architecture/backend-contracts/remote-webhook-backend-contract.md).
 
 ## Related
 

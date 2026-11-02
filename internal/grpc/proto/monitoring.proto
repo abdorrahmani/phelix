@@ -191,6 +191,11 @@ message ApplicationInfo {
   int64 created_at = 10;
   int64 updated_at = 11;
 
+  // Workload type declared by the project: "service" or "worker". Always
+  // populated by current agents; older agents send nothing, which means
+  // "service" (the pre-worker model).
+  string workload_type = 12;
+
   // Application configuration blocks (process/networking/logging/storage).
   // Populated whenever the CLI knows the values; absent/missing groups mean
   // the CLI has no configuration to report. AppConfig is sent on every
@@ -312,6 +317,9 @@ message MonitorLogEntry {
   // the agent redacts credential material out of them and never stores
   // environment variables here.
   map<string, string> fields = 14;
+  // replica identifies the worker replica that produced the line (the slot
+  // number, e.g. "0"). Empty for service apps and self logs.
+  string replica = 15;
 }
 
 // MonitorLogBatch batches log entries that would otherwise be sent one
@@ -410,6 +418,13 @@ message MonitorCommandRequest {
   // Rejected (INVALID_ARGUMENT) when set on any other command type. See
   // docs/architecture/backend-contracts/rollback-remote-control-backend-contract.md.
   int32 limit = 13;
+
+  // replica identifies one worker replica slot for commands that operate on a
+  // single replica (worker_restart_replica). It is the slot number as a string
+  // ("0", "1", ...), the same value DeploymentReplica.index and
+  // MonitorLogEntry.replica use. Empty on commands that target the whole app,
+  // and rejected when set on one.
+  string replica = 14;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -467,6 +482,9 @@ message MonitorCommandResult {
   // empty/absent otherwise — older backends ignore them).
   int32 from_replicas = 16;
   int32 to_replicas = 17;
+  // replica is the worker replica slot a worker_restart_replica result
+  // operated on. Empty on every other command.
+  string replica = 18;
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the

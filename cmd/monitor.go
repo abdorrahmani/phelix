@@ -125,7 +125,7 @@ func runMonitor() error {
 	if err := phelixgrpc.InitializeWorkerLedger(); err != nil {
 		return err
 	}
-	phelixgrpc.SetWorkerHandler(RemoteWorkerScaleCommand)
+	phelixgrpc.SetWorkerHandler(RemoteWorkerCommand)
 
 	supervisorCtx, cancelSupervisor := context.WithCancel(context.Background())
 	defer cancelSupervisor()
@@ -159,7 +159,7 @@ func runMonitor() error {
 	appTargets := func() []logs.AppLogTarget {
 		var targets []logs.AppLogTarget
 		for _, a := range app.Manager.ListApplications() {
-			targets = append(targets, a.LogTarget())
+			targets = append(targets, monitor.AppLogTargets(a)...)
 		}
 		return targets
 	}
@@ -203,6 +203,7 @@ func runMonitor() error {
 	cancelMatrixSessions()
 	phelixgrpc.WaitPendingMatrixCommands(phelixgrpc.MatrixCommandSettleTimeout())
 	phelixgrpc.WaitPendingWebhookCommands(phelixgrpc.WebhookCommandSettleTimeout())
+	phelixgrpc.WaitPendingWorkerCommands(phelixgrpc.WorkerCommandSettleTimeout())
 	phelixgrpc.StopMatrixSender(5 * time.Second)
 
 	close(done)

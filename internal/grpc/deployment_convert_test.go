@@ -261,6 +261,60 @@ func TestToProtoDeploymentSnapshot_NativeLeavesDockerFieldsEmpty(t *testing.T) {
 	}
 }
 
+func TestToProtoDeploymentSnapshot_WorkerCarriesSupervision(t *testing.T) {
+	now := time.Now().Truncate(time.Millisecond)
+	snap := ToProtoDeploymentSnapshot(&deploy.Snapshot{
+		AppName:  "wk",
+		Strategy: "worker",
+		Replicas: []deploy.ReplicaState{{
+			ID: "replica-0", Index: 0, Status: "running",
+			RestartCount: 4, LastRestartAt: now, LastExitCode: 3,
+			LastExitReason: "unhealthy", LastExitAt: now, ReadyAt: now,
+		}},
+		Worker: &deploy.WorkerConfigState{
+			RestartPolicy:      "always",
+			MaxRestartAttempts: 7,
+			BackoffInitial:     "2s",
+			BackoffMax:         "45s",
+			BackoffMultiplier:  3,
+			ShutdownSignal:     "SIGINT",
+			GracePeriod:        "12s",
+			StartupTimeout:     "20s",
+			HealthMode:         "exec",
+			HealthCommand:      []string{"./healthcheck"},
+			HealthInterval:     "3s",
+			HealthTimeout:      "4s",
+			HealthRetries:      2,
+			RollingMaxSurge:    1,
+			RollingMaxUnavail:  0,
+			RollingDrain:       "9s",
+		},
+	})
+	rep := snap.GetReplicas()[0]
+	if rep.GetRestartCount() != 4 || rep.GetLastExitCode() != 3 ||
+		rep.GetLastExitReason() != "unhealthy" || rep.GetLastExitAt() != now.UnixMilli() ||
+		rep.GetReadyAt() != now.UnixMilli() || rep.GetLastRestartAt() != now.UnixMilli() {
+		t.Fatalf("replica supervision = %+v", rep)
+	}
+	w := snap.GetWorker()
+	if w == nil {
+		t.Fatal("expected a worker config block")
+	}
+	if w.GetRestartPolicy() != "always" || w.GetMaxRestartAttempts() != 7 ||
+		w.GetBackoffMultiplier() != 3 || w.GetShutdownSignal() != "SIGINT" ||
+		w.GetHealthMode() != "exec" || len(w.GetHealthCommand()) != 1 ||
+		w.GetRollingDrainTimeout() != "9s" {
+		t.Fatalf("worker config = %+v", w)
+	}
+}
+
+func TestToProtoDeploymentSnapshot_NonWorkerHasNoWorkerBlock(t *testing.T) {
+	snap := ToProtoDeploymentSnapshot(&deploy.Snapshot{AppName: "web"})
+	if snap.GetWorker() != nil {
+		t.Fatalf("service snapshot must carry no worker block, got %+v", snap.GetWorker())
+	}
+}
+
 func TestToProtoDeploymentSnapshot_NilIsNil(t *testing.T) {
 	if got := ToProtoDeploymentSnapshot(nil); got != nil {
 		t.Fatalf("nil snapshot must convert to nil, got %+v", got)

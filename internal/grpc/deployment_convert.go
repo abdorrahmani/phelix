@@ -96,17 +96,23 @@ func ToProtoDeploymentSnapshot(s *deploy.Snapshot) *pb.DeploymentSnapshot {
 	}
 	for _, rp := range s.Replicas {
 		out.Replicas = append(out.Replicas, &pb.DeploymentReplica{
-			Id:           rp.ID,
-			Index:        int32(rp.Index),
-			Version:      rp.Version,
-			Status:       rp.Status,
-			Health:       rp.Health,
-			InternalPort: int32(rp.InternalPort),
-			Pid:          int32(rp.PID),
-			StartedAt:    unixMilli(rp.StartedAt),
-			HealthyAt:    unixMilli(rp.HealthyAt),
-			Image:        rp.Image,
-			ContainerId:  rp.ContainerID,
+			Id:             rp.ID,
+			Index:          int32(rp.Index),
+			Version:        rp.Version,
+			Status:         rp.Status,
+			Health:         rp.Health,
+			InternalPort:   int32(rp.InternalPort),
+			Pid:            int32(rp.PID),
+			StartedAt:      unixMilli(rp.StartedAt),
+			HealthyAt:      unixMilli(rp.HealthyAt),
+			Image:          rp.Image,
+			ContainerId:    rp.ContainerID,
+			RestartCount:   int32(rp.RestartCount),
+			LastRestartAt:  unixMilli(rp.LastRestartAt),
+			LastExitCode:   int32(rp.LastExitCode),
+			LastExitReason: rp.LastExitReason,
+			LastExitAt:     unixMilli(rp.LastExitAt),
+			ReadyAt:        unixMilli(rp.ReadyAt),
 		})
 	}
 	if p := s.Proxy; p != nil {
@@ -139,7 +145,34 @@ func ToProtoDeploymentSnapshot(s *deploy.Snapshot) *pb.DeploymentSnapshot {
 		}
 	}
 	out.Rollout = toProtoRolloutState(s.Rollout)
+	out.Worker = toProtoDeploymentWorker(s.Worker)
 	return out
+}
+
+// toProtoDeploymentWorker maps the worker supervision config. nil in, nil out:
+// a non-worker deployment carries no worker block.
+func toProtoDeploymentWorker(w *deploy.WorkerConfigState) *pb.DeploymentWorkerConfig {
+	if w == nil {
+		return nil
+	}
+	return &pb.DeploymentWorkerConfig{
+		RestartPolicy:         w.RestartPolicy,
+		MaxRestartAttempts:    int32(w.MaxRestartAttempts),
+		BackoffInitial:        w.BackoffInitial,
+		BackoffMax:            w.BackoffMax,
+		BackoffMultiplier:     w.BackoffMultiplier,
+		ShutdownSignal:        w.ShutdownSignal,
+		GracePeriod:           w.GracePeriod,
+		StartupTimeout:        w.StartupTimeout,
+		HealthMode:            w.HealthMode,
+		HealthCommand:         append([]string(nil), w.HealthCommand...),
+		HealthInterval:        w.HealthInterval,
+		HealthTimeout:         w.HealthTimeout,
+		HealthRetries:         int32(w.HealthRetries),
+		RollingMaxSurge:       int32(w.RollingMaxSurge),
+		RollingMaxUnavailable: int32(w.RollingMaxUnavail),
+		RollingDrainTimeout:   w.RollingDrain,
+	}
 }
 
 // toProtoRolloutState maps the canary/progressive rollout state onto the wire.

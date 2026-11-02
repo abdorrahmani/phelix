@@ -1137,6 +1137,10 @@ type ApplicationInfo struct {
 	Uptime      string                 `protobuf:"bytes,9,opt,name=uptime,proto3" json:"uptime,omitempty"`
 	CreatedAt   int64                  `protobuf:"varint,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt   int64                  `protobuf:"varint,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	// Workload type declared by the project: "service" or "worker". Always
+	// populated by current agents; older agents send nothing, which means
+	// "service" (the pre-worker model).
+	WorkloadType string `protobuf:"bytes,12,opt,name=workload_type,json=workloadType,proto3" json:"workload_type,omitempty"`
 	// Application configuration blocks (process/networking/logging/storage).
 	// Populated whenever the CLI knows the values; absent/missing groups mean
 	// the CLI has no configuration to report. AppConfig is sent on every
@@ -1254,6 +1258,13 @@ func (x *ApplicationInfo) GetUpdatedAt() int64 {
 		return x.UpdatedAt
 	}
 	return 0
+}
+
+func (x *ApplicationInfo) GetWorkloadType() string {
+	if x != nil {
+		return x.WorkloadType
+	}
+	return ""
 }
 
 func (x *ApplicationInfo) GetProcess() *AppProcess {
@@ -1772,7 +1783,10 @@ type MonitorLogEntry struct {
 	// fields carries the record's extra structured data. Values are strings;
 	// the agent redacts credential material out of them and never stores
 	// environment variables here.
-	Fields        map[string]string `protobuf:"bytes,14,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Fields map[string]string `protobuf:"bytes,14,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// replica identifies the worker replica that produced the line (the slot
+	// number, e.g. "0"). Empty for service apps and self logs.
+	Replica       string `protobuf:"bytes,15,opt,name=replica,proto3" json:"replica,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1903,6 +1917,13 @@ func (x *MonitorLogEntry) GetFields() map[string]string {
 		return x.Fields
 	}
 	return nil
+}
+
+func (x *MonitorLogEntry) GetReplica() string {
+	if x != nil {
+		return x.Replica
+	}
+	return ""
 }
 
 // MonitorLogBatch batches log entries that would otherwise be sent one
@@ -2043,7 +2064,13 @@ type MonitorCommandRequest struct {
 	// correlated by request_id, exactly like a local --list / history sync.
 	// Rejected (INVALID_ARGUMENT) when set on any other command type. See
 	// docs/architecture/backend-contracts/rollback-remote-control-backend-contract.md.
-	Limit         int32 `protobuf:"varint,13,opt,name=limit,proto3" json:"limit,omitempty"`
+	Limit int32 `protobuf:"varint,13,opt,name=limit,proto3" json:"limit,omitempty"`
+	// replica identifies one worker replica slot for commands that operate on a
+	// single replica (worker_restart_replica). It is the slot number as a string
+	// ("0", "1", ...), the same value DeploymentReplica.index and
+	// MonitorLogEntry.replica use. Empty on commands that target the whole app,
+	// and rejected when set on one.
+	Replica       string `protobuf:"bytes,14,opt,name=replica,proto3" json:"replica,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2169,6 +2196,13 @@ func (x *MonitorCommandRequest) GetLimit() int32 {
 	return 0
 }
 
+func (x *MonitorCommandRequest) GetReplica() string {
+	if x != nil {
+		return x.Replica
+	}
+	return ""
+}
+
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
 // sent back to the backend after a command finishes executing.
 type MonitorCommandResult struct {
@@ -2221,8 +2255,11 @@ type MonitorCommandResult struct {
 	WebhookDeliveries []*WebhookDelivery `protobuf:"bytes,15,rep,name=webhook_deliveries,json=webhookDeliveries,proto3" json:"webhook_deliveries,omitempty"`
 	// Remote worker lifecycle fields (additive; set on worker_scale results,
 	// empty/absent otherwise — older backends ignore them).
-	FromReplicas  int32 `protobuf:"varint,16,opt,name=from_replicas,json=fromReplicas,proto3" json:"from_replicas,omitempty"`
-	ToReplicas    int32 `protobuf:"varint,17,opt,name=to_replicas,json=toReplicas,proto3" json:"to_replicas,omitempty"`
+	FromReplicas int32 `protobuf:"varint,16,opt,name=from_replicas,json=fromReplicas,proto3" json:"from_replicas,omitempty"`
+	ToReplicas   int32 `protobuf:"varint,17,opt,name=to_replicas,json=toReplicas,proto3" json:"to_replicas,omitempty"`
+	// replica is the worker replica slot a worker_restart_replica result
+	// operated on. Empty on every other command.
+	Replica       string `protobuf:"bytes,18,opt,name=replica,proto3" json:"replica,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2374,6 +2411,13 @@ func (x *MonitorCommandResult) GetToReplicas() int32 {
 		return x.ToReplicas
 	}
 	return 0
+}
+
+func (x *MonitorCommandResult) GetReplica() string {
+	if x != nil {
+		return x.Replica
+	}
+	return ""
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the
@@ -3079,7 +3123,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x06errors\x18\x04 \x01(\x03R\x06errors\x12,\n" +
 	"\x12error_rate_percent\x18\x05 \x01(\x01R\x10errorRatePercent\x12$\n" +
 	"\x0ep95_latency_ms\x18\x06 \x01(\x01R\fp95LatencyMs\x12#\n" +
-	"\rshare_percent\x18\a \x01(\x01R\fsharePercent\"\xe6\x03\n" +
+	"\rshare_percent\x18\a \x01(\x01R\fsharePercent\"\x8b\x04\n" +
 	"\x0fApplicationInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x12\n" +
@@ -3094,7 +3138,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"created_at\x18\n" +
 	" \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\x03R\tupdatedAt\x12,\n" +
+	"updated_at\x18\v \x01(\x03R\tupdatedAt\x12#\n" +
+	"\rworkload_type\x18\f \x01(\tR\fworkloadType\x12,\n" +
 	"\aprocess\x18\x14 \x01(\v2\x12.phelix.AppProcessR\aprocess\x125\n" +
 	"\n" +
 	"networking\x18\x15 \x01(\v2\x15.phelix.AppNetworkingR\n" +
@@ -3154,7 +3199,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"AppStorage\x12\x18\n" +
 	"\avolumes\x18\x01 \x03(\tR\avolumes\x12\x19\n" +
 	"\bdata_dir\x18\x02 \x01(\tR\adataDir\x12\x19\n" +
-	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\xe5\x03\n" +
+	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\xff\x03\n" +
 	"\x0fMonitorLogEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x15\n" +
@@ -3171,13 +3216,14 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\tdeploy_id\x18\f \x01(\tR\bdeployId\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\r \x01(\tR\trequestId\x12;\n" +
-	"\x06fields\x18\x0e \x03(\v2#.phelix.MonitorLogEntry.FieldsEntryR\x06fields\x1a9\n" +
+	"\x06fields\x18\x0e \x03(\v2#.phelix.MonitorLogEntry.FieldsEntryR\x06fields\x12\x18\n" +
+	"\areplica\x18\x0f \x01(\tR\areplica\x1a9\n" +
 	"\vFieldsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
 	"\x0fMonitorLogBatch\x121\n" +
 	"\aentries\x18\x01 \x03(\v2\x17.phelix.MonitorLogEntryR\aentries\x12\x18\n" +
-	"\adropped\x18\x02 \x01(\x03R\adropped\"\xb2\x03\n" +
+	"\adropped\x18\x02 \x01(\x03R\adropped\"\xcc\x03\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -3193,7 +3239,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x06matrix\x18\n" +
 	" \x01(\v2\x15.phelix.MatrixOptionsR\x06matrix\x120\n" +
 	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\x12\x14\n" +
-	"\x05limit\x18\r \x01(\x05R\x05limit\"\xf6\x05\n" +
+	"\x05limit\x18\r \x01(\x05R\x05limit\x12\x18\n" +
+	"\areplica\x18\x0e \x01(\tR\areplica\"\x90\x06\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -3217,7 +3264,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x12webhook_deliveries\x18\x0f \x03(\v2\x17.phelix.WebhookDeliveryR\x11webhookDeliveries\x12#\n" +
 	"\rfrom_replicas\x18\x10 \x01(\x05R\ffromReplicas\x12\x1f\n" +
 	"\vto_replicas\x18\x11 \x01(\x05R\n" +
-	"toReplicas\"\xd4\x06\n" +
+	"toReplicas\x12\x18\n" +
+	"\areplica\x18\x12 \x01(\tR\areplica\"\xd4\x06\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +

@@ -1,12 +1,13 @@
 package monitor
 
 import (
-	"strconv"
+	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
@@ -31,6 +32,32 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 		if !appInfo.Watching {
 			continue
 		}
+
+		if state := workerState(appInfo.Name); state != nil {
+			pids := deploy.WorkerAlivePIDs(state)
+			if len(pids) == 0 {
+				continue
+			}
+			var ram uint64
+			var cpu float64
+			for _, pid := range pids {
+				r, c, perr := app.ProcessUsage(pid)
+				if perr != nil {
+					logs.Error("monitor", "error getting worker process usage for %s: %v", appInfo.Name, perr)
+					continue
+				}
+				ram += r
+				cpu += c
+			}
+			metrics = append(metrics, AppMetrics{
+				AppID:       appInfo.ID,
+				ServerID:    serverID,
+				CPUUsage:    cpu,
+				MemoryUsage: ram,
+			})
+			continue
+		}
+
 		status, err := app.Manager.StatusApplication(appInfo.ID)
 		if err != nil {
 			logs.Error("monitor", "error getting status for app %s: %v", appInfo.Name, err)
@@ -58,25 +85,70 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 		if !appInfo.Watching {
 			continue
 		}
-		apps = append(apps, AppDetails{
-			ID:          appInfo.ID,
-			ServerID:    serverID,
-			Name:        appInfo.Name,
-			Status:      appInfo.Status,
-			BuildStatus: appInfo.BuildStatus,
-			Language:    builder.Language(appInfo.Language),
-			PID:         appInfo.PID,
-			Port:        appInfo.Port,
-			Uptime:      appInfo.Uptime,
-			CreatedAt:   appInfo.CreatedAt,
-			UpdatedAt:   appInfo.UpdatedAt,
-			Process:     appInfo.Process,
-			Networking:  appInfo.Networking,
-			Logging:     appInfo.Logging,
-			Storage:     appInfo.Storage,
-		})
+		detail := AppDetails{
+			ID:           appInfo.ID,
+			ServerID:     serverID,
+			Name:         appInfo.Name,
+			Status:       appInfo.Status,
+			BuildStatus:  appInfo.BuildStatus,
+			Language:     builder.Language(appInfo.Language),
+			PID:          appInfo.PID,
+			Port:         appInfo.Port,
+			Uptime:       appInfo.Uptime,
+			CreatedAt:    appInfo.CreatedAt,
+			UpdatedAt:    appInfo.UpdatedAt,
+			Process:      appInfo.Process,
+			Networking:   appInfo.Networking,
+			Logging:      appInfo.Logging,
+			Storage:      appInfo.Storage,
+			WorkloadType: workloadTypeOf(appInfo),
+		}
+		if summary := workerRuntimeState(appInfo.Name); summary != nil {
+			detail.WorkloadType = project.TypeWorker
+			detail.Status = summary.Status
+			detail.PID = summary.PID
+			detail.Port = 0
+			if summary.PID > 0 && !summary.StartedAt.IsZero() {
+				detail.Uptime = app.FormatDuration(time.Since(summary.StartedAt))
+			} else {
+				detail.Uptime = "N/A"
+			}
+		}
+		apps = append(apps, detail)
 	}
 	return apps
+}
+
+// workloadTypeOf resolves an app's declared workload type. A missing or
+// unreadable project config keeps the service default, which is the same
+// meaning an absent type key has.
+func workloadTypeOf(info app.AppListItem) string {
+	cfg, err := project.Load(info.Directory)
+	if err != nil || cfg == nil {
+		return project.TypeService
+	}
+	return cfg.WorkloadType()
+}
+
+// workerState loads a worker app's deploy state, nil for every other app.
+func workerState(name string) *deploy.DeployState {
+	state, err := deploy.Load(name)
+	if err != nil || state == nil || state.Mode != deploy.ModeWorker {
+		return nil
+	}
+	return state
+}
+
+// workerRuntimeState returns live worker replica status for a worker app, nil
+// for every other app. Reading deploy state is what makes the dashboard follow
+// supervisor restarts without waiting for a CLI command to re-sync AppInfo.
+func workerRuntimeState(name string) *deploy.WorkerSummary {
+	state := workerState(name)
+	if state == nil {
+		return nil
+	}
+	summary := deploy.SummarizeWorker(state)
+	return &summary
 }
 
 func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
@@ -86,19 +158,14 @@ func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
 	// Resolve the app manager's registered apps into plain log targets. The
 	// logs package itself stays app-agnostic. Unwatched apps are excluded so
-	// their log tail never reaches the backend. The serving version is
-	// resolved best effort so every line is attributable to the deployment
-	// that produced it.
+	// their log tail never reaches the backend. Worker apps expand into one
+	// target per replica, each carrying its slot identifier.
 	targets := make([]logs.AppLogTarget, 0)
 	for _, a := range app.Manager.ListApplications() {
 		if !a.Watching {
 			continue
 		}
-		t := a.LogTarget()
-		if v, err := deploy.CurrentVersion(a.Name); err == nil && v > 0 {
-			t.Version = "v" + strconv.Itoa(v)
-		}
-		targets = append(targets, t)
+		targets = append(targets, AppLogTargets(a)...)
 	}
 	return logs.CollectAppLogs(targets, server.GetServerID())
 }

@@ -45,6 +45,7 @@ type LogRecord struct {
 	Version   string            `json:"version,omitempty"`
 	DeployID  string            `json:"deploy_id,omitempty"`
 	RequestID string            `json:"request_id,omitempty"`
+	Replica   string            `json:"replica,omitempty"`
 	Stream    LogStream         `json:"stream,omitempty"`
 	Msg       string            `json:"msg"`
 	Fields    map[string]string `json:"fields,omitempty"`

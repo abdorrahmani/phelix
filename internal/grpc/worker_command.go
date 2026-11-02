@@ -11,12 +11,13 @@ import (
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
-// Remote worker lifecycle command dispatch. worker_scale arrives over the
-// MonitorStream (MonitorCommandRequest with type worker_scale and the
-// existing replicas option) and runs the SAME deploy.WorkerScale the local
-// `phelix scale` command uses, under the same per-app replica coordinator
-// lock: there is no second scaling implementation. The result carries the
-// before/after replica counts in additive MonitorCommandResult fields.
+// Remote worker lifecycle command dispatch. worker_scale and
+// worker_restart_replica arrive over the MonitorStream (MonitorCommandRequest
+// with type worker_scale / worker_restart_replica) and run the SAME deploy
+// functions the local `phelix scale` and `phelix restart` commands use, under
+// the same per-app replica coordinator lock: there is no second
+// implementation. Scale results carry before/after replica counts; restart
+// results carry the operated replica slot.
 //
 // worker_scale is a mutation and is idempotent by request_id through a
 // durable ledger, exactly like the webhook family: same request_id + same
@@ -27,8 +28,18 @@ import (
 
 // Worker command types (MonitorCommandRequest.type).
 const (
-	WorkerCommandScale = "worker_scale"
+	WorkerCommandScale          = "worker_scale"
+	WorkerCommandRestartReplica = "worker_restart_replica"
 )
+
+// workerCommandSettleTimeout bounds how long daemon shutdown waits for
+// in-flight worker mutations to finish before the process exits.
+const workerCommandSettleTimeout = 15 * time.Second
+
+// WorkerCommandSettleTimeout exposes the shutdown drain bound for the daemon.
+func WorkerCommandSettleTimeout() time.Duration {
+	return workerCommandSettleTimeout
+}
 
 // workerLedgerFile is the durable idempotency ledger for remote worker
 // mutations, kept separate from the other ledgers.
@@ -62,7 +73,7 @@ func getWorkerHandler() WorkerHandlerFunc {
 }
 
 var workerResults = newRollbackLedger(filepath.Join(server.DataDir(), workerLedgerFile), rollbackLedgerCapacity, "worker",
-	"the replica count may or may not have been applied — reconcile with the app's deployment snapshot")
+	"the worker mutation may or may not have been applied; reconcile with the app's deployment snapshot")
 
 // InitializeWorkerLedger loads the durable remote-worker idempotency ledger.
 // Monitor startup must call it before accepting worker commands.
@@ -90,12 +101,14 @@ func WaitPendingWorkerCommands(timeout time.Duration) {
 
 // isWorkerCommand reports whether a command type is a worker command.
 func isWorkerCommand(t string) bool {
-	return t == WorkerCommandScale
+	return t == WorkerCommandScale || t == WorkerCommandRestartReplica
 }
 
-// validateWorkerScaleCommand checks the transport-level shape of a worker
-// command before anything executes.
-func validateWorkerScaleCommand(req *pb.MonitorCommandRequest) error {
+// validateWorkerCommand checks the transport-level shape of a worker command
+// before anything executes. Each command accepts only its own options: a
+// scale carries replicas and no replica, a restart carries a replica and no
+// replica count.
+func validateWorkerCommand(req *pb.MonitorCommandRequest) error {
 	if req.GetRequestId() == "" {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command requires a request_id", req.GetType())
 	}
@@ -107,8 +120,23 @@ func validateWorkerScaleCommand(req *pb.MonitorCommandRequest) error {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"%s command must not carry strategy, reason, verify_duration_ms, dry_run, target, matrix or webhook options", req.GetType())
 	}
-	if req.GetReplicas() < 1 {
-		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command requires replicas >= 1, got %d", req.GetType(), req.GetReplicas())
+	switch req.GetType() {
+	case WorkerCommandScale:
+		if req.GetReplica() != "" {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command must not carry a replica", req.GetType())
+		}
+		if req.GetReplicas() < 1 {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command requires replicas >= 1, got %d", req.GetType(), req.GetReplicas())
+		}
+	case WorkerCommandRestartReplica:
+		if req.GetReplicas() != 0 {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command must not carry a replica count", req.GetType())
+		}
+		if req.GetReplica() == "" {
+			return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command requires a replica slot", req.GetType())
+		}
+	default:
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "unknown worker command type %q", req.GetType())
 	}
 	return nil
 }
@@ -117,7 +145,7 @@ func validateWorkerScaleCommand(req *pb.MonitorCommandRequest) error {
 // ledger-begun synchronously, then executed on a background goroutine; the
 // terminal result is persisted in the ledger BEFORE the send attempt.
 func (c *Client) handleWorkerCommand(req *pb.MonitorCommandRequest, ledger *rollbackLedger) {
-	if err := validateWorkerScaleCommand(req); err != nil {
+	if err := validateWorkerCommand(req); err != nil {
 		_ = sendCommandResultLogged(finalizeWorkerResult(req, commandErrorResult(req, err)))
 		return
 	}

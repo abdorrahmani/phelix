@@ -62,6 +62,7 @@ type LogEntry struct {
 	Version   string            `json:"version,omitempty"`
 	DeployID  string            `json:"deploy_id,omitempty"`
 	RequestID string            `json:"request_id,omitempty"`
+	Replica   string            `json:"replica,omitempty"`
 	Fields    map[string]string `json:"fields,omitempty"`
 }
 
