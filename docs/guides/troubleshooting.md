@@ -157,10 +157,6 @@ is stated explicitly instead of guessing.
 - **Rate limits:** a throttled login reports when to retry (`Retry-After`); the
   monitor daemon backs off for the announced window. Retrying earlier only
   extends it. See [Authentication](authentication.md).
-- **TLS:** the monitor gRPC channel uses TLS in every mode except `dev` (which
-  uses plaintext for local backends). The available documentation does not define
-  a certificate-repair procedure beyond the
-  [TLS & certificate policy contract](../architecture/backend-contracts/tls-cert-policy.md).
 
 ## Monitoring problems
 

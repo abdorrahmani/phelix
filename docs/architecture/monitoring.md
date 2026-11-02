@@ -26,9 +26,7 @@ backoff.
 - Backend rate limits are honored: `ResourceExhausted` on the stream backs the loop
   off (≥30s, escalating) instead of the normal 2s cadence; auth-throttle windows
   park the metadata sync; `DeadlineExceeded` idle timeouts are treated as an
-  ordinary disconnect. See the
-  [CLI changes required contract](backend-contracts/CLI_CHANGES_REQUIRED.md).
-
+  ordinary disconnect.
 ## Watching gate
 
 Server-level data (identity, host metrics, self logs, agent metadata) is
@@ -86,16 +84,7 @@ above.
 `internal/monitor` collects metrics and executes dashboard-issued commands
 (transport-agnostic), while `internal/grpc` is the transport. Remote commands
 (rebuild with one-off strategy override, rollback, matrix, webhook management)
-arrive over the same stream; see the
-[remote webhook contract](backend-contracts/remote-webhook-backend-contract.md) and
-[agent capabilities contract](backend-contracts/agent-capabilities-backend-contract.md).
-
-## Transport security
-
-`mode: dev` is the only mode using plaintext gRPC (local backends); every other
-mode forces TLS with no insecure fallback. Certificate policy and SPKI-pinning
-implications are in the
-[TLS & certificate policy contract](backend-contracts/tls-cert-policy.md).
+arrive over the same stream;
 
 ## Related
 

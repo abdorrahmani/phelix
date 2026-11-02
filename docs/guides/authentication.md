@@ -75,7 +75,5 @@ retrying earlier only extends it.
 - [Monitoring](monitoring.md) — what the monitor daemon transmits, and per-app
   watching.
 - [Security](security.md) — session storage and transport security.
-- [TLS & certificate policy](../architecture/backend-contracts/tls-cert-policy.md)
-  — the agent gRPC channel's transport security model.
 - Error codes and exit codes for auth failures:
   [error-codes](../reference/error-codes.md), [exit-codes](../reference/exit-codes.md).

@@ -436,6 +436,4 @@ differ.
   `instance_id` / `machine_id` model and why one host is one server.
 - [Zero-downtime deployments](zero-downtime-deployments.md) — the topology the
   docker runtime rides on.
-- [Docker runtime telemetry contract](../architecture/backend-contracts/docker-runtime-telemetry-backend-contract.md)
-  — how runtime state reaches the backend.
 - [Security](security.md) — Docker socket and network-exposure notes.

@@ -88,14 +88,6 @@ another. See [Authorization](authorization.md).
 Note that `phelix auth login` authenticates you to the **dashboard backend**
 and grants no execution rights on the host; the two are independent.
 
-## Transport security
-
-The agent gRPC channel's transport-security model, certificate renewal, and SPKI
-pinning implications are specified in the
-[TLS & certificate policy contract](../architecture/backend-contracts/tls-cert-policy.md).
-`mode: dev` is the only mode that uses plaintext gRPC (for local backends); every
-other mode forces TLS with no insecure fallback — see
-[development setup](../development/development-setup.md).
 
 ## Related
 
