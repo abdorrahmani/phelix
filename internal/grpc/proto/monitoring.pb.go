@@ -1783,7 +1783,10 @@ type MonitorLogEntry struct {
 	// fields carries the record's extra structured data. Values are strings;
 	// the agent redacts credential material out of them and never stores
 	// environment variables here.
-	Fields        map[string]string `protobuf:"bytes,14,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Fields map[string]string `protobuf:"bytes,14,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// replica identifies the worker replica that produced the line (the slot
+	// number, e.g. "0"). Empty for service apps and self logs.
+	Replica       string `protobuf:"bytes,15,opt,name=replica,proto3" json:"replica,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1914,6 +1917,13 @@ func (x *MonitorLogEntry) GetFields() map[string]string {
 		return x.Fields
 	}
 	return nil
+}
+
+func (x *MonitorLogEntry) GetReplica() string {
+	if x != nil {
+		return x.Replica
+	}
+	return ""
 }
 
 // MonitorLogBatch batches log entries that would otherwise be sent one
@@ -3166,7 +3176,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"AppStorage\x12\x18\n" +
 	"\avolumes\x18\x01 \x03(\tR\avolumes\x12\x19\n" +
 	"\bdata_dir\x18\x02 \x01(\tR\adataDir\x12\x19\n" +
-	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\xe5\x03\n" +
+	"\btemp_dir\x18\x03 \x01(\tR\atempDir\"\xff\x03\n" +
 	"\x0fMonitorLogEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x15\n" +
@@ -3183,7 +3193,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\tdeploy_id\x18\f \x01(\tR\bdeployId\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\r \x01(\tR\trequestId\x12;\n" +
-	"\x06fields\x18\x0e \x03(\v2#.phelix.MonitorLogEntry.FieldsEntryR\x06fields\x1a9\n" +
+	"\x06fields\x18\x0e \x03(\v2#.phelix.MonitorLogEntry.FieldsEntryR\x06fields\x12\x18\n" +
+	"\areplica\x18\x0f \x01(\tR\areplica\x1a9\n" +
 	"\vFieldsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +

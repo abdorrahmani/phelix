@@ -41,6 +41,10 @@ var (
 // logs package free of any dependency on the app manager. The caller
 // enriches targets with what the log file itself cannot carry: the app's
 // human-readable name, its serving version, and its logging configuration.
+//
+// Path overrides the ID-derived location for producers that do not write the
+// combined app file, such as one worker replica. Replica names that producer
+// so entries stay attributable to a specific process.
 type AppLogTarget struct {
 	ID        string
 	Name      string
@@ -50,6 +54,16 @@ type AppLogTarget struct {
 	MaxSizeMB int
 	MaxFiles  int
 	Compress  bool
+	Path      string
+	Replica   string
+}
+
+// logPath is the target's on-disk log file, explicit when set.
+func (t AppLogTarget) logPath() string {
+	if t.Path != "" {
+		return t.Path
+	}
+	return AppLogPath(t.ID)
 }
 
 // AppLogPath returns the on-disk path for an application's combined
@@ -75,7 +89,7 @@ func CollectAppLogs(targets []AppLogTarget, serverID string) ([]LogEntry, error)
 	keys := make(map[string]bool)
 
 	for _, t := range targets {
-		logFile := AppLogPath(t.ID)
+		logFile := t.logPath()
 
 		minRank := -1
 		if t.LogLevel != "" {
@@ -124,6 +138,7 @@ func appEntryFromLine(t AppLogTarget, line, serverID string) (LogEntry, LogRecor
 	rec.Source = SourceApp
 	rec.App = t.Name
 	rec.AppID = t.ID
+	rec.Replica = t.Replica
 	if rec.TS == "" {
 		rec.TS = now.UTC().Format(RFC3339Milli)
 	}
@@ -143,6 +158,7 @@ func appEntryFromLine(t AppLogTarget, line, serverID string) (LogEntry, LogRecor
 		Version:   rec.Version,
 		DeployID:  rec.DeployID,
 		RequestID: rec.RequestID,
+		Replica:   rec.Replica,
 		Fields:    rec.Fields,
 	}, rec
 }
@@ -153,7 +169,7 @@ func appEntryFromLine(t AppLogTarget, line, serverID string) (LogEntry, LogRecor
 // imports.
 func RotateAppLogs(targets []AppLogTarget) {
 	for _, t := range targets {
-		logFile := AppLogPath(t.ID)
+		logFile := t.logPath()
 		rotated, err := RotateLogFile(logFile, t.MaxSizeMB, t.MaxFiles, t.Compress)
 		if err != nil {
 			Error("logs", "failed to rotate log file %s: %v", logFile, err)

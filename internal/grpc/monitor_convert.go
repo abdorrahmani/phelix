@@ -315,6 +315,7 @@ func toProtoLogEntry(e logs.LogEntry, source pb.LogSource) *pb.MonitorLogEntry {
 		Version:   e.Version,
 		DeployId:  e.DeployID,
 		RequestId: e.RequestID,
+		Replica:   e.Replica,
 	}
 	if len(e.Fields) > 0 {
 		fields := make(map[string]string, len(e.Fields))

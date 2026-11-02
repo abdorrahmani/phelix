@@ -317,6 +317,9 @@ message MonitorLogEntry {
   // the agent redacts credential material out of them and never stores
   // environment variables here.
   map<string, string> fields = 14;
+  // replica identifies the worker replica that produced the line (the slot
+  // number, e.g. "0"). Empty for service apps and self logs.
+  string replica = 15;
 }
 
 // MonitorLogBatch batches log entries that would otherwise be sent one

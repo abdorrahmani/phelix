@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"strconv"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -141,19 +140,14 @@ func (c *appMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
 	// Resolve the app manager's registered apps into plain log targets. The
 	// logs package itself stays app-agnostic. Unwatched apps are excluded so
-	// their log tail never reaches the backend. The serving version is
-	// resolved best effort so every line is attributable to the deployment
-	// that produced it.
+	// their log tail never reaches the backend. Worker apps expand into one
+	// target per replica, each carrying its slot identifier.
 	targets := make([]logs.AppLogTarget, 0)
 	for _, a := range app.Manager.ListApplications() {
 		if !a.Watching {
 			continue
 		}
-		t := a.LogTarget()
-		if v, err := deploy.CurrentVersion(a.Name); err == nil && v > 0 {
-			t.Version = "v" + strconv.Itoa(v)
-		}
-		targets = append(targets, t)
+		targets = append(targets, AppLogTargets(a)...)
 	}
 	return logs.CollectAppLogs(targets, server.GetServerID())
 }

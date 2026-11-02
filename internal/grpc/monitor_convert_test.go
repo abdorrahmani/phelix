@@ -385,11 +385,12 @@ func TestToProtoLogEntry(t *testing.T) {
 		Date:     date,
 		Level:    logs.LevelError,
 		Stream:   logs.StreamStdout,
+		Replica:  "2",
 	}
 
 	got := toProtoLogEntry(e, pb.LogSource_LOG_SOURCE_APPLICATION)
 	if got.GetId() != e.ID || got.GetServerId() != e.ServerID || got.GetAppId() != e.AppID ||
-		got.GetLog() != e.Log || got.GetLevel() != string(e.Level) {
+		got.GetLog() != e.Log || got.GetLevel() != string(e.Level) || got.GetReplica() != e.Replica {
 		t.Fatalf("field mismatch: %+v vs %+v", got, e)
 	}
 	if got.GetDate() != date.UnixMilli() {

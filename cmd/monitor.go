@@ -159,7 +159,7 @@ func runMonitor() error {
 	appTargets := func() []logs.AppLogTarget {
 		var targets []logs.AppLogTarget
 		for _, a := range app.Manager.ListApplications() {
-			targets = append(targets, a.LogTarget())
+			targets = append(targets, monitor.AppLogTargets(a)...)
 		}
 		return targets
 	}
