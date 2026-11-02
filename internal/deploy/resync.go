@@ -117,17 +117,23 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 		status := instanceStatus(inst)
 		h := healthOf(inst)
 		s.Replicas = append(s.Replicas, ReplicaState{
-			ID:           replicaID(idx),
-			Index:        idx,
-			Version:      versionLabel(inst.Version),
-			Status:       status,
-			Health:       h,
-			InternalPort: inst.Port,
-			PID:          inst.PID,
-			StartedAt:    inst.StartedAt,
-			HealthyAt:    healthyAt(inst),
-			Image:        dockerImageOf(inst),
-			ContainerID:  inst.ContainerID,
+			ID:             replicaID(idx),
+			Index:          idx,
+			Version:        versionLabel(inst.Version),
+			Status:         status,
+			Health:         h,
+			InternalPort:   inst.Port,
+			PID:            inst.PID,
+			StartedAt:      inst.StartedAt,
+			HealthyAt:      healthyAt(inst),
+			Image:          dockerImageOf(inst),
+			ContainerID:    inst.ContainerID,
+			RestartCount:   inst.RestartCount,
+			LastRestartAt:  inst.LastRestartAt,
+			LastExitCode:   inst.LastExitCode,
+			LastExitReason: inst.LastExitReason,
+			LastExitAt:     inst.LastExitAt,
+			ReadyAt:        inst.ReadyAt,
 		})
 		if inst.PID > 0 {
 			s.ReplicasCurrent++
@@ -147,6 +153,9 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 	}
 	if state.Mode == ModeRolling || state.Mode == ModeWorker {
 		s.ReplicasDesired = len(state.Replicas)
+	}
+	if state.Mode == ModeWorker {
+		s.Worker = workerConfigFor(appName)
 	}
 
 	// Lifecycle comes from the live OS lock, not the advisory OpLock mirror in

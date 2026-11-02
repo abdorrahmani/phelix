@@ -76,6 +76,14 @@ message DeploymentReplica {
   // container_id is the docker container id backing this replica. Absent/empty
   // always means the CLI does not know, never native.
   string container_id = 11;
+  // Worker supervision bookkeeping (type: worker). Zero values mean the
+  // replica never recorded that event, not that nothing happened.
+  int32 restart_count = 12;
+  int64 last_restart_at = 13;
+  int32 last_exit_code = 14;
+  string last_exit_reason = 15;
+  int64 last_exit_at = 16;
+  int64 ready_at = 17;
 }
 
 // DeploymentProxy is the routing state of the Phelix proxy daemon for this
@@ -161,6 +169,31 @@ message DeploymentSnapshot {
   // "canary"/"progressive"; `rollout` adds the step/traffic/verification detail
   // the slots cannot express. Absent always means "not a rollout", never step 0.
   RolloutState rollout = 24;
+  // worker is the resolved supervision config of a worker app; absent for
+  // every other workload.
+  DeploymentWorkerConfig worker = 25;
+}
+
+// DeploymentWorkerConfig is the supervision policy a worker replica set runs
+// under, resolved from phelix.yaml. It describes configuration, not observed
+// state; per-replica state lives on DeploymentReplica.
+message DeploymentWorkerConfig {
+  string restart_policy = 1;        // always | on-failure | never
+  int32 max_restart_attempts = 2;
+  string backoff_initial = 3;       // Go duration string
+  string backoff_max = 4;           // Go duration string
+  double backoff_multiplier = 5;
+  string shutdown_signal = 6;       // SIGTERM | SIGINT
+  string grace_period = 7;          // Go duration string
+  string startup_timeout = 8;       // Go duration string
+  string health_mode = 9;           // process | exec
+  repeated string health_command = 10;
+  string health_interval = 11;      // Go duration string
+  string health_timeout = 12;       // Go duration string
+  int32 health_retries = 13;
+  int32 rolling_max_surge = 14;
+  int32 rolling_max_unavailable = 15;
+  string rolling_drain_timeout = 16; // Go duration string; empty means grace period
 }
 
 // DeploymentEvent is one lifecycle transition of a deployment. All events of

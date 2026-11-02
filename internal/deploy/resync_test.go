@@ -477,6 +477,53 @@ func TestSnapshotForApp_NoCanaryStaysBlueGreen(t *testing.T) {
 	}
 }
 
+// A worker snapshot must carry the replica supervision bookkeeping so the
+// dashboard can explain restarts and exits without a live stream.
+func TestSnapshotForApp_WorkerCarriesReplicaSupervision(t *testing.T) {
+	resetHome(t)
+	now := time.Now().Truncate(time.Millisecond)
+	state := &DeployState{
+		AppName: "workerapp", AppID: "9", Mode: ModeWorker, ActiveVersion: 4,
+		Replicas: map[string]*Instance{
+			"0": {
+				Slot: "0", Version: 4, Status: "running", PID: os.Getpid(),
+				BinaryPath: mustSelfExe(t), StartedAt: now.Add(-time.Minute),
+				RestartCount: 3, LastRestartAt: now.Add(-30 * time.Second),
+				LastExitCode: 2, LastExitReason: "crashloop restart",
+				LastExitAt: now.Add(-31 * time.Second), ReadyAt: now.Add(-25 * time.Second),
+			},
+			"1": {
+				Slot: "1", Version: 4, Status: "crashloop", PID: 0,
+				RestartCount: 5, LastExitCode: 1, LastExitReason: "exec probe failed",
+			},
+		},
+	}
+	if err := Store(state); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	snap := SnapshotForApp(context.Background(), "workerapp", "9", nil)
+	if snap == nil {
+		t.Fatal("expected a snapshot")
+	}
+	if snap.Strategy != string(ModeWorker) || snap.ReplicasDesired != 2 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if len(snap.Replicas) != 2 {
+		t.Fatalf("replicas = %+v", snap.Replicas)
+	}
+	first := snap.Replicas[0]
+	if first.RestartCount != 3 || first.LastExitCode != 2 ||
+		first.LastExitReason != "crashloop restart" ||
+		!first.LastExitAt.Equal(now.Add(-31*time.Second)) ||
+		!first.ReadyAt.Equal(now.Add(-25*time.Second)) {
+		t.Fatalf("replica 0 supervision = %+v", first)
+	}
+	if snap.Replicas[1].RestartCount != 5 || snap.Replicas[1].LastExitReason != "exec probe failed" {
+		t.Fatalf("replica 1 supervision = %+v", snap.Replicas[1])
+	}
+}
+
 // mustSelfExe returns this test binary's path, used as an Instance.BinaryPath so
 // InstanceAlive's identity check passes for the current PID.
 func mustSelfExe(t *testing.T) string {
