@@ -182,11 +182,39 @@ func dockerVersion() string {
 
 // --- effective configuration ---------------------------------------------------
 
+// durationString renders a resolved duration for the inspect contract; zero
+// durations are omitted by the omitempty tags, not here.
+func durationString(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return d.String()
+}
+
 type deployCfgView struct {
 	Strategy string `json:"strategy,omitempty"`
 	Replicas int    `json:"replicas,omitempty"`
 	Runtime  string `json:"runtime,omitempty"`
 	Network  string `json:"network,omitempty"`
+	// Rolling carries the worker rolling-replacement parameters (type: worker).
+	Rolling *rollingCfgView `json:"rolling,omitempty"`
+}
+
+type rollingCfgView struct {
+	MaxSurge       int    `json:"max_surge,omitempty"`
+	MaxUnavailable int    `json:"max_unavailable,omitempty"`
+	DrainTimeout   string `json:"drain_timeout,omitempty"`
+}
+
+type processCfgView struct {
+	RestartPolicy     string  `json:"restart_policy,omitempty"`
+	MaxAttempts       int     `json:"max_attempts,omitempty"`
+	BackoffInitial    string  `json:"backoff_initial,omitempty"`
+	BackoffMax        string  `json:"backoff_max,omitempty"`
+	BackoffMultiplier float64 `json:"backoff_multiplier,omitempty"`
+	ShutdownSignal    string  `json:"shutdown_signal,omitempty"`
+	GracePeriod       string  `json:"grace_period,omitempty"`
+	StartupTimeout    string  `json:"startup_timeout,omitempty"`
 }
 
 type resourcesCfgView struct {
@@ -202,8 +230,10 @@ type webhookCfgView struct {
 type inspectConfig struct {
 	Source          string               `json:"source"`
 	Name            string               `json:"name,omitempty"`
+	Type            string               `json:"type,omitempty"`
 	Port            int                  `json:"port,omitempty"`
 	Deploy          *deployCfgView       `json:"deploy,omitempty"`
+	Process         *processCfgView      `json:"process,omitempty"`
 	Resources       *resourcesCfgView    `json:"resources,omitempty"`
 	HealthEndpoints []healthEndpointView `json:"health_endpoints,omitempty"`
 	Watching        string               `json:"watching,omitempty"`
@@ -222,6 +252,7 @@ func buildConfigContext(cfg *project.Config) *inspectConfig {
 	view := &inspectConfig{
 		Source: "phelix.yaml",
 		Name:   cfg.Name,
+		Type:   cfg.WorkloadType(),
 		Port:   cfg.Port,
 	}
 	if cfg.Deploy != nil {
@@ -230,6 +261,27 @@ func buildConfigContext(cfg *project.Config) *inspectConfig {
 			Replicas: cfg.Deploy.Replicas,
 			Runtime:  cfg.DeployRuntime(),
 			Network:  cfg.DeployNetwork(),
+		}
+		if cfg.Deploy.Rolling != nil {
+			rs := cfg.Deploy.Rolling.Resolve()
+			view.Deploy.Rolling = &rollingCfgView{
+				MaxSurge:       rs.MaxSurge,
+				MaxUnavailable: rs.MaxUnavailable,
+				DrainTimeout:   durationString(rs.DrainTimeout),
+			}
+		}
+	}
+	if cfg.Process != nil {
+		ps := cfg.Process.Resolve()
+		view.Process = &processCfgView{
+			RestartPolicy:     ps.RestartPolicy,
+			MaxAttempts:       ps.MaxRestartAttempts,
+			BackoffInitial:    durationString(ps.BackoffInitial),
+			BackoffMax:        durationString(ps.BackoffMax),
+			BackoffMultiplier: ps.BackoffMultiplier,
+			ShutdownSignal:    ps.ShutdownSignal,
+			GracePeriod:       durationString(ps.GracePeriod),
+			StartupTimeout:    durationString(ps.StartupTimeout),
 		}
 	}
 	if !cfg.Resources.IsZero() {

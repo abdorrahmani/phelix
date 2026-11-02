@@ -9,9 +9,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var restartReplica string
+
 var RestartCmd = &cobra.Command{
 	Use:   "restart [ID|AppName]",
-	Short: "Restart the application by its ID or AppName.",
+	Short: "Restart the application by its ID or AppName. Workers accept --replica N.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
@@ -34,6 +36,17 @@ var RestartCmd = &cobra.Command{
 		appInfo, err := GetAppInfo(identifier)
 		if err != nil {
 			return err
+		}
+
+		if wstate, werr := workerAppState(appInfo.Name); werr == nil && wstate != nil {
+			fmt.Printf("• Restarting worker '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
+			if err := runWorkerRestart(appInfo, restartReplica); err != nil {
+				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
+				return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
+					"failed to restart worker replicas for %q (ID: %s)", appInfo.Name, appInfo.ID)
+			}
+			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
+			return nil
 		}
 
 		state, derr := loadDeployState(appInfo.Name)
@@ -81,4 +94,8 @@ var RestartCmd = &cobra.Command{
 		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
 		return nil
 	},
+}
+
+func init() {
+	RestartCmd.Flags().StringVar(&restartReplica, "replica", "", "Restart only this worker replica slot (e.g. 0, 1); worker apps only")
 }

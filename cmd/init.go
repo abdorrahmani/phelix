@@ -16,6 +16,7 @@ import (
 
 var (
 	initName           string
+	initType           string
 	initPort           int
 	initRuntime        string
 	initDockerBuild    string
@@ -80,6 +81,19 @@ var InitCmd = &cobra.Command{
 			Deploy: &project.DeployConfig{Strategy: project.StrategyClassic},
 		}
 
+		if initType == project.TypeWorker {
+			cfg.Type = project.TypeWorker
+			// A worker has no port and no endpoint probes; the supervision
+			// defaults document themselves in the generated file.
+			cfg.Port = 0
+			cfg.Health = &project.HealthConfig{Mode: project.WorkerHealthProcess}
+			cfg.Process = &project.ProcessConfig{}
+			cfg.Deploy = &project.DeployConfig{
+				Strategy: project.StrategyClassic,
+				Replicas: 1,
+			}
+		}
+
 		if cfg.Name == "" {
 			cfg.Name = inferProjectName()
 		}
@@ -92,6 +106,21 @@ var InitCmd = &cobra.Command{
 		}
 		if err := validateName(cfg.Name); err != nil {
 			return err
+		}
+
+		if cfg.Type == project.TypeWorker {
+			if cfg.Port != 0 {
+				return phelixerr.New(phelixerr.CodeInvalidArgument,
+					"--port is not valid with --type worker\nHint: workers do not listen on a port")
+			}
+			if err := project.Save(dir, cfg); err != nil {
+				return err
+			}
+			fmt.Printf("%s Created %s (name: %s, type: worker, replicas: %d)\n",
+				color.GreenString("✓"), color.CyanString(project.FileName), cfg.Name, cfg.Deploy.Replicas)
+			fmt.Printf("  %s supervision: restart policy %s with jittered backoff; deploy with %s.\n",
+				color.BlueString("→"), project.DefaultRestartPolicy, color.CyanString("phelix build "+cfg.Name))
+			return nil
 		}
 
 		if cfg.Port == 0 {
@@ -213,6 +242,7 @@ func resolveInitDockerBuild(cmd *cobra.Command, dir, appName string) (*project.D
 
 func init() {
 	InitCmd.Flags().StringVar(&initName, "name", "", "Application name (defaults to the directory name)")
+	InitCmd.Flags().StringVar(&initType, "type", "", "Workload type: service (default) or worker (a supervised background process with no port)")
 	InitCmd.Flags().IntVar(&initPort, "port", 0, "Application port (interactive prompt when unset in a TTY)")
 	InitCmd.Flags().StringVar(&initRuntime, "runtime", "", "Launch runtime: native (host process) or docker (container). Interactive prompt when unset in a TTY; defaults to native")
 	InitCmd.Flags().StringVar(&initDockerBuild, "docker-build", "", "Docker image-build strategy (docker runtime only): dockerfile (default) or compose")

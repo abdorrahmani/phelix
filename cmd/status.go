@@ -116,6 +116,10 @@ type statusInstanceView struct {
 	PID     int    `json:"pid,omitempty"`
 	Port    int    `json:"port,omitempty"`
 	Version int    `json:"version,omitempty"`
+	// Worker supervision fields (type: worker); absent for service replicas.
+	Restarts       int    `json:"restarts,omitempty"`
+	LastExitCode   int    `json:"last_exit_code,omitempty"`
+	LastExitReason string `json:"last_exit_reason,omitempty"`
 }
 
 type statusRollbackView struct {
@@ -274,6 +278,9 @@ func buildStatusResult(status app.AppStatus) *statusResult {
 			if inst := state.Replicas[key]; inst != nil {
 				dv.Replicas = append(dv.Replicas, statusInstanceView{
 					Slot: key, Status: inst.Status, PID: inst.PID, Port: inst.Port, Version: inst.Version,
+					Restarts:       inst.RestartCount,
+					LastExitCode:   inst.LastExitCode,
+					LastExitReason: inst.LastExitReason,
 				})
 			}
 		}
@@ -465,6 +472,14 @@ func sortedReplicaKeysForDisplay(m map[string]*deploy.Instance) []string {
 	return keys
 }
 
+// rolloutReasonSuffix renders a non-empty rollout reason for status output.
+func rolloutReasonSuffix(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return ": " + reason
+}
+
 // displayDeployAndProxy prints zero-downtime deploy mode and live proxy
 // routing for the app, when available.
 func displayDeployAndProxy(appName string) {
@@ -570,6 +585,39 @@ func displayDeployAndProxy(appName string) {
 				fmt.Printf("  Replica %-3s:   status=%s pid=%d port=%d%s\n",
 					key, inst.Status, inst.PID, inst.Port, ver)
 			}
+		case deploy.ModeWorker:
+			summary := deploy.SummarizeWorker(state)
+			fmt.Printf("  Deploy method: %s\n", color.MagentaString("worker"))
+			if state.ActiveVersion > 0 {
+				fmt.Printf("  Active version: v%d\n", state.ActiveVersion)
+			}
+			fmt.Printf("  Replicas:      %d desired, %d running", summary.Desired, summary.Running)
+			if summary.Failed > 0 {
+				fmt.Printf(", %d failed", summary.Failed)
+			}
+			fmt.Printf(" (%s)\n", summary.Status)
+			if state.WorkerRollout != nil && state.WorkerRollout.Status != deploy.WorkerRolloutDone {
+				fmt.Printf("  %s Rollout in progress: target v%d (%s)%s\n",
+					color.YellowString("⚠"), state.WorkerRollout.Version, state.WorkerRollout.Status, rolloutReasonSuffix(state.WorkerRollout.Reason))
+			}
+			for _, key := range sortedReplicaKeysForDisplay(state.Replicas) {
+				inst := state.Replicas[key]
+				if inst == nil {
+					continue
+				}
+				ver := ""
+				if inst.Version > 0 {
+					ver = fmt.Sprintf(" version=v%d", inst.Version)
+				}
+				exit := "-"
+				if inst.LastExitReason != "" {
+					exit = inst.LastExitReason
+				}
+				fmt.Printf("  Replica %-3s:  status=%-10s pid=%-7d restarts=%d last_exit=%s%s\n",
+					key, inst.Status, inst.PID, inst.RestartCount, exit, ver)
+			}
+			// A worker has no proxy route: skip the proxy section entirely.
+			return
 		default:
 			fmt.Printf("  Deploy method: %s\n", color.MagentaString(string(state.Mode)))
 		}

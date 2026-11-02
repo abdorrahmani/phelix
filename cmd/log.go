@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/machine"
@@ -31,6 +32,7 @@ var (
 	logLevel    string
 	logVersion  string
 	logApp      string
+	logReplica  string
 )
 
 var LogCmd = &cobra.Command{
@@ -90,6 +92,10 @@ var LogCmd = &cobra.Command{
 		appInfo, err := GetAppInfo(args[0])
 		if err != nil {
 			return err
+		}
+
+		if logReplica != "" {
+			return showWorkerReplicaLog(appInfo, logReplica, since)
 		}
 
 		// State saved by older versions may carry an empty log_file; fall back
@@ -455,4 +461,30 @@ func init() {
 		"Query the long-term store for one serving version (e.g. v18); requires the store")
 	LogCmd.Flags().StringVar(&logApp, "app", "",
 		"App name for the store query (alternative to the positional argument)")
+	LogCmd.Flags().StringVar(&logReplica, "replica", "",
+		"Tail one worker replica's output instead of the app log (slot name, e.g. 0; worker apps only)")
+}
+
+// showWorkerReplicaLog tails one worker replica's captured output.
+func showWorkerReplicaLog(appInfo *app.AppInfo, replica string, since *time.Time) error {
+	state, err := deploy.Load(appInfo.Name)
+	if err != nil || state == nil || state.Mode != deploy.ModeWorker {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"--replica is only valid for a type: worker app with a deploy state")
+	}
+	inst, ok := state.Replicas[replica]
+	if !ok || inst == nil {
+		return phelixerr.Newf(phelixerr.CodeNotFound, "worker %s has no replica %s", appInfo.Name, replica)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	path := deploy.WorkerLogFilePath(home, inst.BinaryPath, replica)
+	name := fmt.Sprintf("%s replica-%s", appInfo.Name, replica)
+	return showLogView(logViewSpec{
+		Source: "app",
+		Name:   name,
+		Path:   path,
+	}, since)
 }

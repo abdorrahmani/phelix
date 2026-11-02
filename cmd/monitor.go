@@ -15,6 +15,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/supervisor"
 	"github.com/spf13/cobra"
 )
 
@@ -63,6 +64,9 @@ func runMonitor() error {
 
 	app.DeployedAppSkipper = func(id string) bool {
 		if info, err := GetAppInfo(id); err == nil {
+			if w, werr := workerAppState(info.Name); werr == nil && w != nil {
+				return true
+			}
 			state, derr := loadDeployState(info.Name)
 			if derr != nil {
 				logs.Warning("monitor", "cannot read deployment state for %s, treating as deploy-managed: %v", info.Name, derr)
@@ -77,6 +81,9 @@ func runMonitor() error {
 		info, err := GetAppInfo(id)
 		if err != nil {
 			return err
+		}
+		if w, werr := workerAppState(info.Name); werr == nil && w != nil {
+			return runWorkerRestart(info, "")
 		}
 		if err := runDeployAwareStop(info); err != nil {
 			return err
@@ -115,6 +122,17 @@ func runMonitor() error {
 	if err := phelixgrpc.InitializeWebhookLedger(); err != nil {
 		return err
 	}
+	if err := phelixgrpc.InitializeWorkerLedger(); err != nil {
+		return err
+	}
+	phelixgrpc.SetWorkerHandler(RemoteWorkerScaleCommand)
+
+	supervisorCtx, cancelSupervisor := context.WithCancel(context.Background())
+	defer cancelSupervisor()
+	go func() {
+		logs.Info("monitor", "worker supervisor loop started")
+		supervisor.New().Run(supervisorCtx)
+	}()
 
 	monitor.SetRollbackHandler(func(payload monitor.CommandPayload) error {
 		return RemoteRollback(payload)
@@ -208,6 +226,7 @@ func restoreDeployedApps() {
 	if !ok {
 		return
 	}
+	restoreWorkerApps(am)
 	for _, info := range am.Apps {
 		state, derr := loadDeployState(info.Name)
 		if derr != nil {
@@ -226,6 +245,30 @@ func restoreDeployedApps() {
 		}
 	}
 	reconcileOrphanContainers(am)
+}
+
+// restoreWorkerApps heals worker apps at daemon start: interrupted rollouts
+// are reverted and orphaned processes reported. Replicas that died while the
+// daemon was down are deliberately left for the supervisor loop, which
+// applies the restart policy with the persisted counters intact; a blanket
+// WorkerStart here would silently reset crash-loop state.
+func restoreWorkerApps(am *app.AppManager) {
+	for _, info := range am.Apps {
+		wstate, werr := workerAppState(info.Name)
+		if werr != nil || wstate == nil {
+			continue
+		}
+		if rerr := deploy.RecoverWorkerRollout(context.Background(), info.Name); rerr != nil {
+			logs.Warning("monitor", "worker %s: rollout recovery failed: %v", info.Name, rerr)
+		}
+		wstate, werr = workerAppState(info.Name)
+		if werr != nil || wstate == nil {
+			continue
+		}
+		if pids := deploy.DetectWorkerOrphans(wstate); len(pids) > 0 {
+			logs.Warning("monitor", "worker %s: %d orphaned replica process(es) running outside the deploy state: %v", info.Name, len(pids), pids)
+		}
+	}
 }
 
 // reconcileOrphanContainers reclaims phelix.managed containers that no app's

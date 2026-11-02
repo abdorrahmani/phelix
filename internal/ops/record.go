@@ -41,6 +41,7 @@ const (
 	KindRebuild  = "rebuild"
 	KindRollback = "rollback"
 	KindBuild    = "build"
+	KindScale    = "scale"
 )
 
 // IDPrefix — operation IDs are op_ + 16 hex chars (8 crypto/rand bytes),

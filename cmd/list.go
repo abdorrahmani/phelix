@@ -195,6 +195,9 @@ func formatDeployProxyColumns(appName string, proxyByApp map[string]proxy.AppSta
 		case deploy.ModeRolling:
 			n := len(state.Replicas)
 			deployCol = color.MagentaString("rolling (×%d)", n)
+		case deploy.ModeWorker:
+			n := len(state.Replicas)
+			deployCol = color.MagentaString("worker (×%d)", n)
 		default:
 			if state.Mode != "" {
 				deployCol = color.MagentaString(string(state.Mode))

@@ -463,6 +463,10 @@ message MonitorCommandResult {
   // webhook_deliveries is the webhook_deliveries answer (accepted deliveries
   // from the dedup ledger, newest first, bounded by the request's limit).
   repeated WebhookDelivery webhook_deliveries = 15;
+  // Remote worker lifecycle fields (additive; set on worker_scale results,
+  // empty/absent otherwise — older backends ignore them).
+  int32 from_replicas = 16;
+  int32 to_replicas = 17;
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the

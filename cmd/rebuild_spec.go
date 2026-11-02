@@ -110,12 +110,22 @@ func buildRebuildSpec(cmd *cobra.Command, args []string) (*rebuildSpec, error) {
 		portToUse = projCfg.Port
 	}
 
+	isWorker := projCfg != nil && projCfg.IsWorker()
+	if isWorker {
+		if rebuildCanary > 0 || rebuildBlueGreen || rolloutPlan != nil {
+			return nil, phelixerr.New(phelixerr.CodeInvalidArgument,
+				"--blue-green and --canary are not valid for type: worker\nHint: workers support --strategy classic or rolling")
+		}
+	}
+
 	if err := applyConfigDeployStrategy(cmd, projCfg, name); err != nil {
 		return nil, err
 	}
 
-	if err := phelixport.Validate(portToUse); err != nil {
-		return nil, err
+	if !isWorker {
+		if err := phelixport.Validate(portToUse); err != nil {
+			return nil, err
+		}
 	}
 
 	buildMgr := builder.NewBuildManager()
@@ -200,9 +210,13 @@ func runRebuildExec(spec *rebuildSpec, op *opRun) error {
 		}
 	}
 
-	if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil {
+	if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil && !projCfg.IsWorker() {
 		fmt.Fprintf(out, "  %s Warning: could not apply health endpoints from %s: %v\n",
 			color.YellowString("⚠"), project.FileName, serr)
+	}
+
+	if projCfg.IsWorker() {
+		return runWorkerDeploy(spec, op)
 	}
 
 	if spec.BlueGreen || spec.Replicas > 0 || spec.Rollout != nil {

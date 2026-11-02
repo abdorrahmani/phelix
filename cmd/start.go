@@ -56,6 +56,19 @@ var StartCmd = &cobra.Command{
 					continue
 				}
 
+				if wstate, werr := workerAppState(a.Name); werr == nil && wstate != nil {
+					info, gerr := GetAppInfo(a.ID)
+					if gerr == nil {
+						if serr := runWorkerStart(info); serr != nil {
+							fmt.Printf("    %s Failed to start %s (ID: %s): %v\n", color.RedString("✗"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), serr)
+							failed = append(failed, fmt.Sprintf("%s: %v", a.Name, serr))
+						} else {
+							phelixgrpc.ReportEvent(a.ID, a.Name, "start", true, "", 0, "", "")
+						}
+						continue
+					}
+				}
+
 				state, derr := loadDeployState(a.Name)
 				if derr != nil {
 					fmt.Printf("    %s Failed to start %s (ID: %s): %v\n", color.RedString("✗"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), derr)
@@ -111,6 +124,16 @@ var StartCmd = &cobra.Command{
 
 		if startEnsure && appInfo.Status == "running" {
 			fmt.Printf("%s Application %s (ID: %s) is already running on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), appInfo.Port)
+			return nil
+		}
+
+		if wstate, werr := workerAppState(name); werr == nil && wstate != nil {
+			if err := runWorkerStart(appInfo); err != nil {
+				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "start", false, err.Error(), 0, "", "")
+				return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
+					"failed to start worker replicas for %q (ID: %s)", name, appInfo.ID)
+			}
+			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "start", true, "", 0, "", "")
 			return nil
 		}
 

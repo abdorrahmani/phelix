@@ -67,7 +67,8 @@ webhook:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | no* | Application name used by `build`, `rebuild`, `health`, `rollback`, etc. *Optional: when missing, `build` prompts for it (TTY) or fails with a clear error (scripts). |
-| `port` | no | Public application port. Default `8080` when missing. |
+| `type` | no | Workload type: `service` (the default; every file written before the key existed) or `worker`, a supervised background process with no public port (see [Workers](../guides/workers.md)). |
+| `port` | no | Public application port. Default `8080` when missing. Not valid for `type: worker`. |
 | `watching` | no | Backend monitoring opt-in: `enable` or `disable` (`phelix init` writes `disable`). Applied to the app on every build/rebuild; absent leaves the app's current state (see [Monitoring](../guides/monitoring.md)). |
 | `health.endpoints[].name` | yes (per endpoint) | Endpoint name, e.g. `default`, `readiness`. Must be unique. |
 | `health.endpoints[].path` | yes (per endpoint) | HTTP path on localhost, e.g. `/health`. Must start with `/`. |
@@ -77,13 +78,30 @@ webhook:
 | `health.endpoints[].codes` | no | Expected HTTP status codes for the endpoint check: a range (`200-299`) or a list (`200,204`). Default `200-299`. |
 | `health.endpoints[].timeout` | no | Per-request timeout (e.g. `5s`). Default `10s`. |
 | `health.replace` | no | Default `false`: the block merges with endpoints configured by `phelix health add/set`. `true` drops the endpoints the file does not declare (their names are printed). |
-| `deploy.strategy` | no | `classic` (default), `blue-green`, `rolling`, `canary`, or `progressive`. |
-| `deploy.replicas` | no | Replica count for `rolling` (requires `deploy.strategy: rolling`). |
+| `deploy.strategy` | no | `classic` (default), `blue-green`, `rolling`, `canary`, or `progressive`. Workers support `classic` and `rolling` only. |
+| `deploy.replicas` | no | Replica count for `rolling` (requires `deploy.strategy: rolling`). Workers may declare it under `classic` too. |
 | `deploy.runtime` | no | `native` (default) or `docker` — run instances as containers. `docker` requires a zero-downtime strategy (see [Docker runtime](../guides/docker-runtime.md)). |
 | `deploy.rollout.canary` | no | Traffic share (percent) for `canary` before promotion. Default `10`. |
 | `deploy.rollout.duration` | no | Verification window for `canary` (e.g. `2m`). Default `30s`. |
 | `deploy.rollout.steps[]` | no | Progressive steps: `traffic` (percent) and optional `duration` per step; must strictly increase and end at `100`. |
 | `deploy.rollout.verification` | no | Regression thresholds: `interval`, `max_error_rate`, `max_error_delta`, `max_p95_factor` (see [Canary & progressive rollouts](../guides/canary-and-progressive-rollouts.md)). |
+| `deploy.rolling` | no | Worker rolling-replacement parameters. Only valid with `type: worker`. |
+| `deploy.rolling.max_surge` | no | Replacements started above the desired count. Only `1` is supported (sequential replacement). Default `1`. |
+| `deploy.rolling.max_unavailable` | no | Replicas that may be down during replacement. Only `0` is supported. Default `0`. |
+| `deploy.rolling.drain_timeout` | no | Wait after SIGTERM when retiring a replaced replica (e.g. `60s`). Falls back to `process.shutdown.grace_period`. |
+| `process.restart.policy` | no (worker) | Worker crash policy: `always` (restart on any exit), `on-failure` (default — restart on non-zero exit, signal or OOM) or `never`. Only valid with `type: worker`. |
+| `process.restart.max_attempts` | no (worker) | Consecutive failure-driven restarts before the replica enters `crashloop`. Default `10`. |
+| `process.restart.backoff.initial` | no (worker) | First restart delay (e.g. `2s`). Default `2s`. |
+| `process.restart.backoff.max` | no (worker) | Restart delay cap (e.g. `60s`). Default `60s`. |
+| `process.restart.backoff.multiplier` | no (worker) | Growth factor per consecutive attempt. Default `2`. |
+| `process.shutdown.signal` | no (worker) | Signal sent on stop: `SIGTERM` (default) or `SIGINT`. |
+| `process.shutdown.grace_period` | no (worker) | Wait between the signal and SIGKILL (e.g. `30s`). Default `30s`. |
+| `process.startup_timeout` | no (worker) | Window a fresh replica has to come up: alive plus, in exec mode, a passing probe. Default `30s`. |
+| `health.mode` | no (worker) | Worker health mode: `process` (default, identity liveness) or `exec`. Only valid with `type: worker`; services use `health.endpoints` instead. |
+| `health.exec.command` | yes (with `mode: exec`) | Probe argv, run without a shell from the app directory with the replica's environment. Exit 0 means healthy. |
+| `health.exec.interval` | no (worker) | Probe cadence (e.g. `10s`). Default `10s`. |
+| `health.exec.timeout` | no (worker) | Per-probe timeout (e.g. `5s`); enforced with a process-group kill. Default `5s`. |
+| `health.exec.retries` | no (worker) | Consecutive probe failures that cause ONE health-driven restart. Default `3`. |
 | `deploy.autoscaling` | no | Replica autoscaling block. **Parsed, validated, and resolved, but not yet executed** — see note below. |
 | `webhook.enabled` | no | Turns the Git push webhook trigger on for this app. Default `false`; apps without a `webhook` section never accept deliveries (see [Webhooks](../guides/webhooks.md)). |
 | `webhook.branch` | yes (with `enabled`) | Bare branch name whose pushes trigger a rebuild (e.g. `main`, `release/2.x` — not `refs/heads/main`). |
@@ -168,6 +186,64 @@ state and automatically uses classic or zero-downtime rollback to match how the
 app was actually deployed. `phelix proxy` is required for
 blue-green/rolling/canary.
 
+## Worker workloads (`type: worker`)
+
+A worker is a long-running background process (a queue consumer, an email
+sender) with no public port: Phelix never allocates a port, never injects
+`PORT`, never creates proxy routes, and judges startup by process identity and
+the health policy instead. Services need no `type` key; the worker keys above
+are rejected for services, and service keys (`port`, `health.endpoints`,
+`deploy.rollout`, `deploy.autoscaling`, `deploy.runtime: docker`) are rejected
+for workers.
+
+```yaml
+name: email-worker
+type: worker
+
+process:
+  restart:
+    policy: on-failure        # always | on-failure | never
+    max_attempts: 10          # consecutive failure-driven restarts before crashloop
+    backoff:
+      initial: 2s
+      max: 60s
+      multiplier: 2
+  shutdown:
+    signal: SIGTERM
+    grace_period: 30s
+  startup_timeout: 30s
+
+health:
+  mode: process               # process (default) or exec
+  # exec:
+  #   command: ["/bin/sh", "-c", "test ! -f /tmp/worker-unhealthy"]
+  #   interval: 10s
+  #   timeout: 5s
+  #   retries: 3
+
+deploy:
+  strategy: rolling           # classic (stop-all, start-all) or rolling
+  replicas: 3
+  rolling:
+    max_surge: 1              # v1 replaces one replica at a time
+    max_unavailable: 0
+    drain_timeout: 60s
+
+resources:                    # per replica, cgroups v2 on Linux
+  cpu: 500m
+  memory: 512Mi
+```
+
+Restart delays grow `initial * multiplier^attempt`, capped at `max`, with
+jitter; after `max_attempts` consecutive failures the replica enters
+`crashloop` until a manual restart or redeploy. A clean exit (code 0) is never
+a failure: under `on-failure` the replica is marked `completed`. Rolling
+replacement is one replica at a time; on a failed deploy the replicas that
+were already replaced are reverted automatically. Full semantics, day-2
+commands and the recovery contract are in
+[Workers](../guides/workers.md); a runnable example lives in
+[`examples/worker-go`](../../examples/worker-go/).
+
 ## Per-instance CPU and memory limits (Linux)
 
 ```yaml
@@ -244,13 +320,23 @@ Configuration error: invalid deploy.strategy "foobar"
 Hint: expected one of: classic, blue-green, rolling, canary, progressive
 ```
 
-Validated: YAML syntax, port range, strategy name, `replicas` (≥ 1, rolling only),
-endpoint names (required, unique), paths (must start with `/`), durations (`10s`,
-`1m`, …), modes (`auto`, `http`, `tcp-only`, `none`), and the rollout plan:
-traffic percentages (whole numbers, `25` or `"25%"`), each step within `1-100`,
-strictly increasing shares ending at the `100%` promotion, non-negative durations,
-`canary` within `1-99`, and verification thresholds (positive interval, error
-rates within `0-100`, p95 factor ≥ 1).
+Validated: YAML syntax, port range, strategy name, `replicas` (≥ 1, rolling
+only — workers may also declare it under `classic`), endpoint names (required,
+unique), paths (must start with `/`), durations (`10s`, `1m`, …), modes
+(`auto`, `http`, `tcp-only`, `none`), and the rollout plan: traffic percentages
+(whole numbers, `25` or `"25%"`), each step within `1-100`, strictly increasing
+shares ending at the `100%` promotion, non-negative durations, `canary` within
+`1-99`, and verification thresholds (positive interval, error rates within
+`0-100`, p95 factor ≥ 1).
+
+For workers additionally: the type value itself, the restart policy vocabulary
+(`always`/`on-failure`/`never`), backoff bounds (positive durations,
+multiplier ≥ 1), the shutdown signal (`SIGTERM`/`SIGINT`), the health mode
+(`process`/`exec`), `exec` requiring a non-empty `command`, the rolling bounds
+(`max_surge: 1`, `max_unavailable: 0` in v1), and the cross-type exclusions in
+both directions (a worker with a `port` or endpoint probes; a service with a
+`process` block or `health.mode`) — an invalid combination fails with a
+`CONFIGURATION_ERROR` naming the exact yaml path.
 
 ### Checking the file without running a command
 
@@ -293,4 +379,5 @@ one.
   [Canary/progressive](../guides/canary-and-progressive-rollouts.md),
   [Health checks](../guides/health-checks.md), [Webhooks](../guides/webhooks.md),
   [Resource limits](../guides/resource-limits.md),
-  [Matrix builds](../guides/matrix-builds.md).
+  [Matrix builds](../guides/matrix-builds.md),
+  [Workers](../guides/workers.md).

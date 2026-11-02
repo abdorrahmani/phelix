@@ -19,7 +19,7 @@ config file supplies both, the command runs without asking anything.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port, -p` | `8080` | Port to run the app on (not required for matrix builds — they never start an instance) |
+| `--port, -p` | `8080` | Port to run the app on (not required for matrix builds, which never start an instance, and not required for `type: worker` projects, which never listen) |
 | `--build-arg, -a` | — | Extra args passed to the build tool (repeatable); in matrix mode they are passed to every `go build` / `cross build` |
 | `--tag` | — | Human label stored with the version (e.g. `"hotfix-auth"`) |
 | `--debug` | `false` | Verbose build/tool output |
@@ -77,6 +77,13 @@ remote rebuild (`canary`/`progressive` overrides resolve their plan from the app
 `phelix.yaml`). See
 [Canary & progressive rollouts](../guides/canary-and-progressive-rollouts.md).
 
+For a `type: worker` app the rebuild runs the worker deploy engine instead:
+`classic` drains every replica then starts the new version, `rolling` replaces
+one replica at a time (the old replica keeps running until its replacement
+passed the startup gate, then is drained). No proxy is involved and
+`--blue-green`/`--canary` are rejected. Failures revert the replicas that were
+already replaced; see [Workers](../guides/workers.md).
+
 ### `phelix init`
 
 Detects the project type (Go/Rust) and creates `phelix.yaml` with the application
@@ -90,7 +97,13 @@ phelix init --name api --port 3000 --yes
 
 Never modifies application source code. If a hardcoded listen port is detected,
 prints a warning and points to `phelix doctor`. It also accepts `--runtime docker`
-to write a docker-runtime config (see [Docker runtime](../guides/docker-runtime.md)).
+to write a docker-runtime config (see [Docker runtime](../guides/docker-runtime.md))
+and `--type worker` to write a port-less worker template (supervision defaults,
+no `port`, no endpoint probes — see [Workers](../guides/workers.md)):
+
+```bash
+phelix init --type worker --name email-worker --yes
+```
 
 ### `phelix config lint`
 
@@ -165,7 +178,8 @@ Full behavior, flags, and examples are documented in [Rollback](../guides/rollba
 
 Reverts to a previous versioned build. Automatically chooses the right strategy:
 classic stop→start for plain builds, or zero-downtime for apps deployed with
-blue-green/rolling.
+blue-green/rolling. Not yet supported for `type: worker` apps (fails cleanly
+with `ROLLBACK_FAILED`).
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -188,14 +202,15 @@ Shows the recorded rollback outcomes for one application, newest first.
 
 | Command | Description |
 |---------|-------------|
-| `phelix start [<ID\|AppName>] [--port P] [--ensure]` | Start an app (or all apps if none given). `--ensure` builds if missing and rebuilds if startup fails. |
-| `phelix stop <ID\|AppName>` | Stop a running app. |
-| `phelix restart <ID\|AppName>` | Restart an app. |
-| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing, and live request traffic (request/error counts, p95 latency, per-backend share). |
+| `phelix start [<ID\|AppName>] [--port P] [--ensure]` | Start an app (or all apps if none given). `--ensure` builds if missing and rebuilds if startup fails. For a worker app: launches every dead replica slot (no port used). |
+| `phelix stop <ID\|AppName>` | Stop a running app. For a worker app: graceful stop of every replica (configured signal + grace period). |
+| `phelix restart <ID\|AppName> [--replica N]` | Restart an app. For a worker app: restarts every replica and resets crash counters; `--replica N` restarts one slot only. |
+| `phelix scale <ID\|AppName> --replicas N` | Change a worker's replica count in place, without rebuilding. Worker apps only. |
+| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing, and live request traffic (request/error counts, p95 latency, per-backend share). For a worker app: the replica tree (per-replica status, PID, restarts, last exit, version) instead of proxy routing. |
 | `phelix status --workspace` | One overview of every workspace service: derived lifecycle status, version, health, port, and strategy. |
-| `phelix list` | Table of all apps with version, status, watching, deploy, and proxy columns. |
-| `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. |
-| `phelix remove <ID\|AppName> [--purge]` | Stop and delete an app from management. `--purge` also deletes `~/.phelix/apps/<Name>/` (version history, build artifacts, encrypted env snapshots). Irreversible. |
+| `phelix list` | Table of all apps with version, status, watching, deploy, and proxy columns. The deploy column shows `worker (×N)` for worker apps. |
+| `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. `--replica N` tails one worker replica's output instead. |
+| `phelix remove <ID\|AppName> [--purge]` | Stop and delete an app from management. For a worker app the replicas are stopped first. `--purge` also deletes `~/.phelix/apps/<Name>/` (version history, build artifacts, encrypted env snapshots). Irreversible. |
 | `phelix watch <ID\|AppName> [--disable]` | Enable (default) or disable backend monitoring for one app. See [Monitoring](../guides/monitoring.md). |
 
 ### `phelix log [<ID|AppName>] [flags]`
@@ -225,6 +240,7 @@ for the wire fields and the backend steps.
 | `--since` | empty | Keep lines newer than a duration (`30m`, `2h`, `30d`) or an RFC3339 timestamp. |
 | `--json` | `false` | Print a bounded machine-readable snapshot. Implies `--no-follow`. |
 | `--app` | empty | App name for the lookup, as an alternative to the positional argument. |
+| `--replica` | empty | Tail one worker replica's output instead of the app log (slot name, e.g. `0`; worker apps only). |
 | `--level` | empty | Query the long-term store for `debug`, `info`, `warn`, or `error`. |
 | `--version` | empty | Query the long-term store for one serving version, for example `v18`. |
 
@@ -246,6 +262,36 @@ does not follow.
 In `--json` mode a file snapshot returns `source`, `app`, `path`, `items`,
 `count`, and `truncated`. A store query returns `app`, `level`, `version`,
 `count`, and `items`, where each item is the raw stored record.
+
+## Workers
+
+Worker workloads (`type: worker`) are supervised background processes with no
+public port. Build, rebuild and the lifecycle commands above handle them
+natively; the full model (restart policies, backoff, health modes, the
+recovery contract) is in [Workers](../guides/workers.md) and the runnable
+example is [`examples/worker-go`](../../examples/worker-go/).
+
+### `phelix scale <ID|AppName> --replicas N`
+
+Changes a worker's replica count in place at the current version, without rebuilding.
+Grow launches the new slots from the recorded env snapshot; shrink drains the
+highest-index replicas gracefully (they never count as crashes). Worker apps
+only; services scale via `rebuild --replicas N`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--replicas, -n` | none | Desired replica count (>= 1, required) |
+| `--json` | `false` | Machine envelope with `from_replicas` / `to_replicas` |
+| `--request-key` | none | Idempotency key: retrying with the same key and inputs replays the recorded result |
+
+```bash
+phelix scale email-worker --replicas 5
+phelix scale email-worker --replicas 1 --json
+```
+
+The same operation is available remotely through the dashboard's
+`worker_scale` command (see
+[the worker remote contract](../../docs/worker-remote-contract.md)).
 
 ## Encrypted environment variables
 
@@ -380,4 +426,6 @@ phelix wizard       # guided interactive menu (see Interactive usage)
 
 - [Configuration](configuration.md) — the `phelix.yaml` values these commands
   resolve.
+- [Workers](../guides/workers.md) — the workload model behind `phelix scale`
+  and the worker behavior of the lifecycle commands.
 - [Exit codes](exit-codes.md), [Error codes](error-codes.md).

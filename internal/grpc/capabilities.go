@@ -49,6 +49,10 @@ const (
 	// existing webhook subsystem — durable jobs, delivery ledger, and the
 	// phelix.yaml webhook configuration).
 	CapabilityWebhookManagement = "webhook_management"
+	// CapabilityWorkerLifecycle: the agent implements remote worker lifecycle
+	// management (worker_scale MonitorStream commands mutating the existing
+	// worker replica set through the shared replica coordinator).
+	CapabilityWorkerLifecycle = "worker_lifecycle"
 	// CapabilityLogBatch: the agent batches monitor log entries into
 	// MonitorLogBatch events (log_batch oneof case) alongside the legacy
 	// per-line log_entry events, with bounded queueing and a dropped-lines

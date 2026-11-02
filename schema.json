@@ -90,6 +90,28 @@
           "description": "Replica count. Only valid with strategy: rolling.",
           "type": "integer"
         },
+        "rolling": {
+          "description": "Worker rolling-replacement parameters. Only valid with type: worker.",
+          "properties": {
+            "drain_timeout": {
+              "description": "Wait after SIGTERM when retiring a replaced replica, as a duration. Falls back to process.shutdown.grace_period.",
+              "type": "string"
+            },
+            "max_surge": {
+              "description": "Replacements started above the desired count. Only 1 is supported (sequential replacement).",
+              "maximum": 1,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_unavailable": {
+              "description": "Replicas that may be down during replacement. Only 0 is supported.",
+              "maximum": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "rollout": {
           "description": "Canary and progressive rollout settings.",
           "properties": {
@@ -227,6 +249,40 @@
           },
           "type": "array"
         },
+        "exec": {
+          "description": "Exec probe run per replica when health.mode is exec.",
+          "properties": {
+            "command": {
+              "description": "Probe argv, run without a shell from the app directory. Exit 0 means healthy.",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "interval": {
+              "description": "Probe cadence as a duration. Defaults to 10s.",
+              "type": "string"
+            },
+            "retries": {
+              "description": "Consecutive probe failures that mark a replica unhealthy. Defaults to 3.",
+              "type": "integer"
+            },
+            "timeout": {
+              "description": "Per-probe timeout as a duration. Defaults to 5s.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "mode": {
+          "description": "Worker health mode: process (default, identity liveness) or exec. Only valid with type: worker.",
+          "enum": [
+            "exec",
+            "process"
+          ],
+          "type": "string"
+        },
         "replace": {
           "description": "True drops endpoints configured outside this file instead of merging with them.",
           "type": "boolean"
@@ -321,6 +377,71 @@
       "minimum": 1,
       "type": "integer"
     },
+    "process": {
+      "description": "Worker supervision policy: restarts, backoff, shutdown. Only valid with type: worker.",
+      "properties": {
+        "restart": {
+          "description": "Crash handling for worker replicas.",
+          "properties": {
+            "backoff": {
+              "description": "Restart delay: initial * multiplier^attempt, capped at max, plus jitter.",
+              "properties": {
+                "initial": {
+                  "description": "First restart delay as a duration. Defaults to 2s.",
+                  "type": "string"
+                },
+                "max": {
+                  "description": "Restart delay cap as a duration. Defaults to 60s.",
+                  "type": "string"
+                },
+                "multiplier": {
+                  "description": "Growth factor per consecutive attempt. Defaults to 2.",
+                  "type": "number"
+                }
+              },
+              "type": "object"
+            },
+            "max_attempts": {
+              "description": "Consecutive failure-driven restarts before the replica enters crashloop. Defaults to 10.",
+              "type": "integer"
+            },
+            "policy": {
+              "description": "always restarts on any exit, on-failure (default) restarts only on a non-zero exit or signal, never leaves a dead replica down.",
+              "enum": [
+                "always",
+                "never",
+                "on-failure"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "shutdown": {
+          "description": "Graceful shutdown for worker replicas.",
+          "properties": {
+            "grace_period": {
+              "description": "Wait between the signal and SIGKILL, as a duration. Defaults to 30s.",
+              "type": "string"
+            },
+            "signal": {
+              "description": "Signal sent on stop: SIGTERM (default) or SIGINT.",
+              "enum": [
+                "SIGINT",
+                "SIGTERM"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "startup_timeout": {
+          "description": "Window a fresh replica has to come up (alive plus health) as a duration. Defaults to 30s.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "resources": {
       "description": "Per-instance CPU and memory limits, enforced through cgroups v2 on Linux only.",
       "properties": {
@@ -334,6 +455,14 @@
         }
       },
       "type": "object"
+    },
+    "type": {
+      "description": "Workload type: service (default, a port-listening app) or worker (a supervised background process with no public port).",
+      "enum": [
+        "service",
+        "worker"
+      ],
+      "type": "string"
     },
     "watching": {
       "description": "Backend monitoring opt-in: enable or disable. When absent the app keeps its persisted flag.",

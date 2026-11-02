@@ -107,6 +107,14 @@ func reconcileAppWithDeploy(appName string) {
 		return
 	}
 	if state == nil {
+		if wstate, werr := workerAppState(appName); werr == nil && wstate != nil {
+			for _, info := range am.Apps {
+				if info.Name == appName {
+					_ = syncAppInfoWithWorker(info, wstate)
+					return
+				}
+			}
+		}
 		return
 	}
 	for _, info := range am.Apps {

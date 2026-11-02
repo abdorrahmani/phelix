@@ -40,6 +40,18 @@ var StopCmd = &cobra.Command{
 		if derr != nil {
 			return derr
 		}
+		if state == nil {
+			if wstate, werr := workerAppState(appInfo.Name); werr == nil && wstate != nil {
+				if err := runWorkerStop(appInfo); err != nil {
+					phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", false, err.Error(), 0, "", "")
+					return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
+						"failed to stop worker replicas for %q (ID: %s)", appInfo.Name, appInfo.ID)
+				}
+				fmt.Printf("✓ Worker '%s' (ID: %s) stopped successfully\n", appInfo.Name, appInfo.ID)
+				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", true, "", 0, "", "")
+				return nil
+			}
+		}
 		if state != nil {
 			if err := runDeployAwareStop(appInfo); err != nil {
 				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", false, err.Error(), 0, "", "")

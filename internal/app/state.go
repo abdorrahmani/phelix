@@ -250,3 +250,28 @@ func (m *AppManager) LoadState() error {
 	// Save the updated state
 	return m.SaveState()
 }
+
+// AppDirectories returns a name-to-project-directory snapshot parsed
+// straight from apps.json. Unlike LoadState it never mutates the shared
+// manager, so a concurrent reader such as the worker supervisor tick cannot
+// race the monitor's other goroutines on the Apps map.
+func AppDirectories() map[string]string {
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		return nil
+	}
+	var savedApps map[string]struct {
+		Name      string `json:"name"`
+		Directory string `json:"directory"`
+	}
+	if err := json.Unmarshal(data, &savedApps); err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(savedApps))
+	for _, saved := range savedApps {
+		if saved.Name != "" {
+			out[saved.Name] = saved.Directory
+		}
+	}
+	return out
+}

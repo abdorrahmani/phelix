@@ -40,7 +40,12 @@ var RemoveCmd = &cobra.Command{
 			return err
 		}
 
-		if err := migrateToClassic(appInfo.Name); err != nil {
+		if wstate, werr := workerAppState(appInfo.Name); werr == nil && wstate != nil {
+			if err := runWorkerTeardown(appInfo); err != nil {
+				return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
+					"failed to stop the worker replicas for %q before removal", appInfo.Name)
+			}
+		} else if err := migrateToClassic(appInfo.Name); err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
 				"failed to stop the zero-downtime deployment for %q before removal", appInfo.Name)
 		}

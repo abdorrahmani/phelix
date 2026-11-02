@@ -2219,8 +2219,12 @@ type MonitorCommandResult struct {
 	// webhook_deliveries is the webhook_deliveries answer (accepted deliveries
 	// from the dedup ledger, newest first, bounded by the request's limit).
 	WebhookDeliveries []*WebhookDelivery `protobuf:"bytes,15,rep,name=webhook_deliveries,json=webhookDeliveries,proto3" json:"webhook_deliveries,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Remote worker lifecycle fields (additive; set on worker_scale results,
+	// empty/absent otherwise — older backends ignore them).
+	FromReplicas  int32 `protobuf:"varint,16,opt,name=from_replicas,json=fromReplicas,proto3" json:"from_replicas,omitempty"`
+	ToReplicas    int32 `protobuf:"varint,17,opt,name=to_replicas,json=toReplicas,proto3" json:"to_replicas,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MonitorCommandResult) Reset() {
@@ -2356,6 +2360,20 @@ func (x *MonitorCommandResult) GetWebhookDeliveries() []*WebhookDelivery {
 		return x.WebhookDeliveries
 	}
 	return nil
+}
+
+func (x *MonitorCommandResult) GetFromReplicas() int32 {
+	if x != nil {
+		return x.FromReplicas
+	}
+	return 0
+}
+
+func (x *MonitorCommandResult) GetToReplicas() int32 {
+	if x != nil {
+		return x.ToReplicas
+	}
+	return 0
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the
@@ -3175,7 +3193,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x06matrix\x18\n" +
 	" \x01(\v2\x15.phelix.MatrixOptionsR\x06matrix\x120\n" +
 	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\x12\x14\n" +
-	"\x05limit\x18\r \x01(\x05R\x05limit\"\xb0\x05\n" +
+	"\x05limit\x18\r \x01(\x05R\x05limit\"\xf6\x05\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -3196,7 +3214,10 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\rmatrix_docker\x18\f \x01(\v2\x1a.phelix.MatrixDockerResultR\fmatrixDocker\x125\n" +
 	"\fwebhook_jobs\x18\r \x03(\v2\x12.phelix.WebhookJobR\vwebhookJobs\x12A\n" +
 	"\x0ewebhook_config\x18\x0e \x01(\v2\x1a.phelix.WebhookConfigStateR\rwebhookConfig\x12F\n" +
-	"\x12webhook_deliveries\x18\x0f \x03(\v2\x17.phelix.WebhookDeliveryR\x11webhookDeliveries\"\xd4\x06\n" +
+	"\x12webhook_deliveries\x18\x0f \x03(\v2\x17.phelix.WebhookDeliveryR\x11webhookDeliveries\x12#\n" +
+	"\rfrom_replicas\x18\x10 \x01(\x05R\ffromReplicas\x12\x1f\n" +
+	"\vto_replicas\x18\x11 \x01(\x05R\n" +
+	"toReplicas\"\xd4\x06\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
