@@ -32,6 +32,9 @@ binary + encrypted env are snapshotted together.
 and metrics against the stable baseline, auto-rollback on regression.
 - **Rollback**: interactive picker or `--to`, dry-run preview, verification
 window, automatic rollback on failed deploy, audited history.
+- **Workers**: supervised background workloads (`type: worker`) with no port:
+restart policies with jittered backoff, exec health checks, replica scaling
+and rolling replacement. See [Workers](docs/guides/workers.md).
 - **Health checks**: tiered deploy health gating (2xx / any-HTTP / TCP / PID).
 - **Docker**: generate optimized multi-stage images (`dockerize`), or run app
 **instances as containers** under the proxy.
@@ -156,6 +159,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Agent Execution Sessions](docs/guides/agent-sessions.md)
 - [Interactive Usage](docs/guides/interactive-usage.md)
 - [Zero-Downtime Deployments](docs/guides/zero-downtime-deployments.md)
+- [Workers](docs/guides/workers.md)
 - [Canary & Progressive Rollouts](docs/guides/canary-and-progressive-rollouts.md)
 - [Rollback](docs/guides/rollback.md)
 - [Workspaces](docs/guides/workspaces.md)

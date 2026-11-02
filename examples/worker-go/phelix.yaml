@@ -1,0 +1,47 @@
+# Phelix worker example: a supervised background process with no port.
+#
+# Build and run it end to end:
+#   phelix build email-worker
+#   phelix status email-worker
+#
+# The binary exposes demo knobs (see main.go): CRASH_AFTER_SEC simulates a
+# crash loop, EXIT_CLEAN_AFTER_SEC a clean exit, and `email-worker
+# healthcheck` is the exec probe (fails while /tmp/worker-go-unhealthy
+# exists).
+name: email-worker
+type: worker
+
+process:
+  restart:
+    policy: on-failure
+    max_attempts: 10
+    backoff:
+      initial: 2s
+      max: 60s
+      multiplier: 2
+  shutdown:
+    signal: SIGTERM
+    grace_period: 30s
+  startup_timeout: 30s
+
+health:
+  mode: process
+  # exec mode instead (probe runs without a shell, from the app directory):
+  # mode: exec
+  # exec:
+  #   command: ["/bin/sh", "-c", "test ! -f /tmp/worker-go-unhealthy"]
+  #   interval: 10s
+  #   timeout: 5s
+  #   retries: 3
+
+deploy:
+  strategy: rolling
+  replicas: 3
+  rolling:
+    max_surge: 1
+    max_unavailable: 0
+    drain_timeout: 60s
+
+resources:
+  cpu: 200m
+  memory: 128Mi
