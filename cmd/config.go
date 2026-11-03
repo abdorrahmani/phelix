@@ -24,8 +24,8 @@ var configLintJSON bool
 var ConfigCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Check phelix.yaml without running a command",
-	Long: "Validates the project configuration of the current directory with the same loader every " +
-		"command uses. `phelix config schema` prints the JSON Schema of phelix.yaml for editor " +
+	Long: "Validates the project configuration of the current directory with strict key checking. " +
+		"`phelix config schema` prints the JSON Schema of phelix.yaml for editor " +
 		"completion and hover documentation.",
 }
 
@@ -44,7 +44,7 @@ var configLintCmd = &cobra.Command{
 		}
 		path := filepath.Join(dir, project.FileName)
 
-		cfg, lintErr := project.Load(dir)
+		cfg, lintErr := project.LoadStrict(dir)
 		if lintErr != nil {
 			return lintErr
 		}

@@ -81,6 +81,27 @@ func TestConfigLintInvalid_SurfacesConfigurationError(t *testing.T) {
 	}
 }
 
+func TestConfigLintRejectsMisspelledKeyWithLocation(t *testing.T) {
+	withProjectFile(t, "name: demo\ndeploy:\n  repilcas: 3\n")
+
+	err := configLintCmd.RunE(configLintCmd, nil)
+	if !phelixerr.IsCode(err, phelixerr.CodeConfiguration) {
+		t.Fatalf("typo code = %v, want CONFIGURATION_ERROR", phelixerr.CodeOf(err))
+	}
+	if !strings.Contains(err.Error(), "deploy.repilcas") || !strings.Contains(err.Error(), project.FileName+":3:") {
+		t.Fatalf("lint must report the key path and line, got %q", err.Error())
+	}
+}
+
+func TestConfigLintRejectsMisplacedWorkerField(t *testing.T) {
+	withProjectFile(t, "name: demo\ndeploy:\n  restart:\n    policy: always\n")
+
+	err := configLintCmd.RunE(configLintCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "deploy.restart") {
+		t.Fatalf("lint must reject a worker field in the deploy block, got %v", err)
+	}
+}
+
 func TestConfigLintMissing_ReportsNotFound(t *testing.T) {
 	prevWd, err := os.Getwd()
 	if err != nil {

@@ -50,8 +50,11 @@ is stated explicitly instead of guessing.
   [The PORT Contract](../getting-started/the-port-contract.md) and the
   [simple-go](../../examples/simple-go/) / [simple-rust](../../examples/simple-rust/)
   examples.
-- **Relevant command:** `phelix doctor` flags a hardcoded port (a Rust app may
-  report the PORT check as an inconclusive ⚠ warning rather than a failure).
+- **Relevant command:** `phelix doctor` flags a hardcoded port in Go and Rust,
+  with language-specific repair advice. A hardcoded listener is a failure even
+  when another file reads `PORT`; only a listener in the same file that reads
+  `PORT` is reported as an uncertain warning. For `type: worker` the listener
+  check is skipped because workers have no port.
 - **Port already in use** (`PORT_UNAVAILABLE`, exit **30**): the error names the
   listening process/PID when the OS can tell, and suggests `--port`. Phelix
   **never** stops the process for you.

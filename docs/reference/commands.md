@@ -107,9 +107,8 @@ phelix init --type worker --name email-worker --yes
 
 ### `phelix config lint`
 
-Validates `phelix.yaml` in the current directory and nothing else: it calls the
-same loader the build and deploy commands use, so the verdict matches what they
-would report, without building, starting or touching anything.
+Validates `phelix.yaml` in the current directory and nothing else, with strict
+key checking, without building, starting or touching anything.
 
 ```text
 $ phelix config lint
@@ -118,7 +117,10 @@ $ phelix config lint
 
 Exit codes follow the standard contract: `0` valid, `40`
 (`CONFIGURATION_ERROR`) invalid, `12` (`NOT_FOUND`) when the directory has no
-`phelix.yaml`. Unknown keys are ignored, exactly as the loader ignores them.
+`phelix.yaml`. Unknown keys fail with the dotted key path and source line.
+Execution commands still warn and load unknown keys during the documented
+transition (see
+[Configuration § Strict key checking transition](configuration.md#strict-key-checking-transition)).
 `--json` emits the machine envelope with `{path, valid}`.
 
 ### `phelix config schema`
@@ -157,8 +159,11 @@ Summary:
 ```
 
 Exits non-zero when a critical check fails. Inconclusive detection (no listener
-found, no `PORT` usage) is reported as ⚠ warning, not a false failure. Diagnostic
-only — never rewrites source code.
+found, no `PORT` usage) is reported as a warning, not a false failure. A
+hardcoded listener fails even when an unrelated file reads `PORT`; when the same
+file reads `PORT`, the listener stays an uncertain warning. Rust projects
+receive Rust-specific repair advice, and `type: worker` projects skip the
+listener check entirely. Diagnostic only, never rewrites source code.
 
 ### `phelix build-report <AppName> [flags]`
 

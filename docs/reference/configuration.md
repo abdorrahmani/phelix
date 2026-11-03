@@ -312,7 +312,7 @@ deploy:
 
 ## Validation
 
-The configuration is validated before it can affect a build or deploy — an invalid
+The configuration is validated before it can affect a build or deploy. An invalid
 file fails the command with a `CONFIGURATION_ERROR` instead of being ignored:
 
 ```text
@@ -320,14 +320,15 @@ Configuration error: invalid deploy.strategy "foobar"
 Hint: expected one of: classic, blue-green, rolling, canary, progressive
 ```
 
-Validated: YAML syntax, port range, strategy name, `replicas` (≥ 1, rolling
-only — workers may also declare it under `classic`), endpoint names (required,
-unique), paths (must start with `/`), durations (`10s`, `1m`, …), modes
-(`auto`, `http`, `tcp-only`, `none`), and the rollout plan: traffic percentages
-(whole numbers, `25` or `"25%"`), each step within `1-100`, strictly increasing
-shares ending at the `100%` promotion, non-negative durations, `canary` within
-`1-99`, and verification thresholds (positive interval, error rates within
-`0-100`, p95 factor ≥ 1).
+Validated: YAML syntax, the document count (one document per file), duplicate
+mapping keys, port range, strategy name, `replicas` (≥ 1, rolling only, and
+workers may also declare it under `classic`), endpoint names (required, unique), paths
+(must start with `/`), durations (`10s`, `1m`, …), modes (`auto`, `http`,
+`tcp-only`, `none`), and the rollout plan: traffic percentages (whole numbers,
+`25` or `"25%"`), each step within `1-100`, strictly increasing shares ending at
+the `100%` promotion, non-negative durations, `canary` within `1-99`, and
+verification thresholds (positive interval, error rates within `0-100`, p95
+factor ≥ 1).
 
 For workers additionally: the type value itself, the restart policy vocabulary
 (`always`/`on-failure`/`never`), backoff bounds (positive durations,
@@ -335,7 +336,7 @@ multiplier ≥ 1), the shutdown signal (`SIGTERM`/`SIGINT`), the health mode
 (`process`/`exec`), `exec` requiring a non-empty `command`, the rolling bounds
 (`max_surge: 1`, `max_unavailable: 0` in v1), and the cross-type exclusions in
 both directions (a worker with a `port` or endpoint probes; a service with a
-`process` block or `health.mode`) — an invalid combination fails with a
+`process` block or `health.mode`). An invalid combination fails with a
 `CONFIGURATION_ERROR` naming the exact yaml path.
 
 ### Checking the file without running a command
@@ -345,10 +346,31 @@ phelix config lint          # validate phelix.yaml in the current directory
 phelix config lint --json   # the machine envelope, for scripts and agents
 ```
 
-`lint` calls the same loader every command uses, so it reports exactly what
-`build`, `rebuild` or `deploy` would report: exit `0` when the file is valid,
-`40` (`CONFIGURATION_ERROR`) when it is not, `12` (`NOT_FOUND`) when there is no
+`lint` decodes the file with strict key checking. Unknown keys fail with the
+dotted key path and source line, for example:
+
+```text
+Configuration error: /home/me/api/phelix.yaml has unknown key(s):
+  /home/me/api/phelix.yaml:12: deploy.repilcas
+Hint: remove or rename the key; see 'phelix config schema' for the accepted keys
+```
+
+Exit codes follow the standard contract: `0` when the file is valid, `40`
+(`CONFIGURATION_ERROR`) when it is not, and `12` (`NOT_FOUND`) when there is no
 file to check.
+
+### Strict key checking transition
+
+Strict checking starts in `phelix config lint`. Execution commands (`build`,
+`rebuild`, `deploy`, `doctor` and the rest) still load a file with unknown keys
+during this transition, but log a warning for each unknown key with the same key
+path and source line. This keeps existing projects working while making typos
+visible.
+
+The next documented breaking release will make the shared execution loader
+strict as well. Until then, `lint` and execution disagree only on unknown keys;
+all other validation, including YAML syntax, duplicate keys, multiple documents
+and contradictory workload settings, is identical.
 
 ## Editor support
 

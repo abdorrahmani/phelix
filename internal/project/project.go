@@ -54,7 +54,20 @@ type Config struct {
 // valid, and commands that need a name prompt for it or fall back to their own
 // defaults. All declared health/deploy fields are fully validated here so an
 // invalid file can never silently affect a build or deploy.
+//
+// Unknown keys are logged as warnings during the compatibility transition.
+// LoadStrict rejects them and is what `phelix config lint` uses.
 func Load(dir string) (*Config, error) {
+	return load(dir, false)
+}
+
+// LoadStrict reads and validates phelix.yaml like Load, but rejects unknown
+// keys with their dotted path and source line.
+func LoadStrict(dir string) (*Config, error) {
+	return load(dir, true)
+}
+
+func load(dir string, strict bool) (*Config, error) {
 	path := filepath.Join(dir, FileName)
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -64,9 +77,12 @@ func Load(dir string) (*Config, error) {
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "%s is malformed", path)
+	cfg, err := decodeConfig(raw, path, strict)
+	if err != nil {
+		return nil, err
+	}
+	if !strict {
+		warnUnknownKeys(path, raw)
 	}
 	if cfg.Port != 0 {
 		if err := port.Validate(cfg.Port); err != nil {
@@ -82,7 +98,7 @@ func Load(dir string) (*Config, error) {
 	if err := cfg.Webhook.validate(); err != nil {
 		return nil, err
 	}
-	return &cfg, nil
+	return cfg, nil
 }
 
 // Exists reports whether phelix.yaml is present in dir.
@@ -105,12 +121,15 @@ func Save(dir string, cfg *Config) error {
 	return nil
 }
 
-// HardcodedPort is one detected hardcoded listen pattern.
+// HardcodedPort is one detected hardcoded listen pattern. ReadsPORT reports
+// whether the same file also reads the PORT environment variable, so callers
+// never treat a listener in one file as safe because another file reads PORT.
 type HardcodedPort struct {
-	File    string
-	Line    int
-	Snippet string
-	Port    int
+	File      string
+	Line      int
+	Snippet   string
+	Port      int
+	ReadsPORT bool
 }
 
 // Patterns match common Go/Rust hardcoded listeners. Each requires a literal
@@ -122,9 +141,12 @@ var hardcodedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`TcpListener::bind\(\s*"(?:127\.0\.0\.1|0\.0\.0\.0)::?(\d+)"`),
 }
 
-// portEnvPattern detects the PORT-env idiom so doctor can report ✓ instead of
-// an inconclusive warning.
-var portEnvPattern = regexp.MustCompile(`Getenv\(\s*"PORT"`)
+// portEnvPatterns detect the PORT-env idiom in Go and Rust so doctor can
+// report ✓ instead of an inconclusive warning.
+var portEnvPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`os\.Getenv\(\s*"PORT"`),
+	regexp.MustCompile(`\benv::var\(\s*"PORT"`),
+}
 
 const scanMaxFileSize = 1 << 20 // skip files > 1 MiB
 
@@ -140,7 +162,7 @@ func ScanHardcodedPort(dir string) (hits []HardcodedPort, readsPORT bool) {
 		if d.IsDir() {
 			switch name {
 			case ".git", "vendor", "node_modules", "target", "builds":
-				return filepath.SkipAll
+				return filepath.SkipDir
 			}
 			return nil
 		}
@@ -156,8 +178,13 @@ func ScanHardcodedPort(dir string) (hits []HardcodedPort, readsPORT bool) {
 		if err != nil {
 			return nil
 		}
-		if !readsPORT && portEnvPattern.Match(raw) {
-			readsPORT = true
+		fileReadsPORT := false
+		for _, re := range portEnvPatterns {
+			if re.Match(raw) {
+				fileReadsPORT = true
+				readsPORT = true
+				break
+			}
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
 			for _, re := range hardcodedPatterns {
@@ -170,10 +197,11 @@ func ScanHardcodedPort(dir string) (hits []HardcodedPort, readsPORT bool) {
 					continue
 				}
 				hits = append(hits, HardcodedPort{
-					File:    relOrBase(dir, path),
-					Line:    i + 1,
-					Snippet: strings.TrimSpace(line),
-					Port:    p,
+					File:      relOrBase(dir, path),
+					Line:      i + 1,
+					Snippet:   strings.TrimSpace(line),
+					Port:      p,
+					ReadsPORT: fileReadsPORT,
 				})
 			}
 		}

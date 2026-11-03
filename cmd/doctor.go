@@ -202,27 +202,36 @@ func runDoctorChecks(dir string) []checkResult {
 		})
 	}
 
+	if cfg != nil && cfg.IsWorker() {
+		results = append(results, checkResult{
+			name: "PORT configuration", pass: true,
+			detail: "not required for type: worker",
+		})
+		return results
+	}
+
 	hits, readsPORT := project.ScanHardcodedPort(dir)
+	unsafe := firstHardcodedHit(hits)
 	switch {
-	case len(hits) > 0 && !readsPORT:
+	case unsafe != nil:
+		h := *unsafe
 		var b strings.Builder
-		h := hits[0]
 		b.WriteString(fmt.Sprintf("\nApplication appears to listen on hardcoded port :%d.\n", h.Port))
 		b.WriteString(fmt.Sprintf("\nFound in %s:%d:\n    %s\n", h.File, h.Line, h.Snippet))
 		b.WriteString("\nPhelix expects the application to read the PORT environment variable.\n")
 		b.WriteString("\nExpected behavior:\n\n")
-		b.WriteString(fmt.Sprintf("    port := os.Getenv(\"PORT\")\n    if port == \"\" {\n        port = \"%d\"\n    }\n\n    http.ListenAndServe(\":\"+port, ...)\n", h.Port))
+		b.WriteString(portRepairExample(h.File, h.Port))
 		b.WriteString(fmt.Sprintf("\nCurrent detected behavior:\n\n    %s\n", h.Snippet))
 		b.WriteString("\nHint:\n  Make the application respect the PORT environment variable.\n")
 		results = append(results, checkResult{
 			name: "PORT configuration", detail: fmt.Sprintf("hardcoded :%d", h.Port),
 			message: b.String(),
 		})
-	case len(hits) > 0 && readsPORT:
+	case len(hits) > 0:
 		h := hits[0]
 		results = append(results, checkResult{
 			name: "PORT configuration", warn: true,
-			detail: fmt.Sprintf("possible hardcoded :%d in %s:%d (reads PORT elsewhere)", h.Port, h.File, h.Line),
+			detail: fmt.Sprintf("possible hardcoded :%d in %s:%d (same file reads PORT)", h.Port, h.File, h.Line),
 		})
 	case readsPORT:
 		results = append(results, checkResult{
@@ -232,12 +241,33 @@ func runDoctorChecks(dir string) []checkResult {
 		results = append(results, checkResult{
 			name: "PORT configuration", warn: true,
 			detail: "could not be verified automatically",
-			message: "\nNo hardcoded listener and no os.Getenv(\"PORT\") usage were found.\n" +
+			message: "\nNo hardcoded listener and no PORT environment variable usage were found.\n" +
 				"If the application is a server, make sure it listens on $PORT.\n",
 		})
 	}
 
 	return results
+}
+
+// firstHardcodedHit returns the first listener whose own file does not read
+// PORT. A PORT read somewhere else in the project must not excuse it.
+func firstHardcodedHit(hits []project.HardcodedPort) *project.HardcodedPort {
+	for i := range hits {
+		if !hits[i].ReadsPORT {
+			return &hits[i]
+		}
+	}
+	return nil
+}
+
+// portRepairExample renders the minimal PORT idiom for the listener's
+// language, so Rust projects do not receive Go-only advice.
+func portRepairExample(file string, port int) string {
+	if strings.HasSuffix(file, ".rs") {
+		return fmt.Sprintf("    let port = std::env::var(\"PORT\").unwrap_or_else(|_| \"%d\".to_string());\n\n"+
+			"    let listener = TcpListener::bind(format!(\"127.0.0.1:{}\", port))?;\n", port)
+	}
+	return fmt.Sprintf("    port := os.Getenv(\"PORT\")\n    if port == \"\" {\n        port = \"%d\"\n    }\n\n    http.ListenAndServe(\":\"+port, ...)\n", port)
 }
 
 // langToolchainName renders the toolchain check label.

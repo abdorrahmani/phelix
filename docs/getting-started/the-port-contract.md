@@ -54,6 +54,7 @@ Both starter examples read `PORT` exactly as the contract requires:
 - [`examples/simple-go`](../../examples/simple-go/) — `os.Getenv("PORT")`.
 - [`examples/simple-rust`](../../examples/simple-rust/) — `env::var("PORT")`.
 
-(Note: `phelix doctor`'s static PORT check recognizes the Go idiom and passes it,
-but reports the Rust idiom as an inconclusive ⚠ warning rather than a pass — the
-Rust example does honor the contract regardless.)
+(Note: `phelix doctor` recognizes both the Go `os.Getenv("PORT")` idiom and
+the Rust `std::env::var("PORT")` idiom, including the imported `env::var` form,
+and passes them. A hardcoded listener in a file that does not read `PORT` is
+reported as a failure even if another file in the project reads `PORT`.)
