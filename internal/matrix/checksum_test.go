@@ -13,6 +13,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/cargo"
 )
 
 // --- SHA256File ----------------------------------------------------------------
@@ -196,13 +197,14 @@ func TestRustBuilderResultCarriesChecksum(t *testing.T) {
 	}
 	r := &RustMatrixBuilder{
 		ProjectRoot: root, AppName: "demo",
+		Resolve:  func(context.Context, string, []string) (cargo.Selection, error) { return testRustSelection() },
 		LookPath: func(string) (string, error) { return "/fake/cross", nil },
 		CommandContext: func(_ context.Context, _ string, args ...string) *exec.Cmd {
 			triple := "x86_64-unknown-linux-gnu"
 			bin := filepath.Join(root, "target", "rust1.77.2-linux-amd64", triple, "release", "demo")
 			_ = os.MkdirAll(filepath.Dir(bin), 0o755)
 			_ = os.WriteFile(bin, []byte("rust binary bytes"), 0o755)
-			return exec.Command("true")
+			return fakeArtifactCommand(t, "pkg-demo", "demo", bin)
 		},
 	}
 	c := Combination{Lang: builder.Rust, Version: "1.77.2", OS: "linux", Arch: "amd64", Platform: "linux/amd64"}
