@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,7 +64,13 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Cargo sends status lines and rendered diagnostics to stderr; stdout is
+	// the JSON artifact stream and must never be shown raw.
+	if config.Output != nil {
+		cmd.Stderr = io.MultiWriter(&stderr, config.Output)
+	} else {
+		cmd.Stderr = &stderr
+	}
 
 	err = cmd.Run()
 	if err != nil {

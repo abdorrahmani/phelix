@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,6 +183,35 @@ func TestRustBuild_CompilerFailurePreservesRootCause(t *testing.T) {
 	}
 	if exitErr.ExitCode() != 101 {
 		t.Fatalf("exit code = %d, want 101", exitErr.ExitCode())
+	}
+}
+
+// TestRustBuild_StreamsStderrToOutput: cargo's human-readable status lines
+// reach the configured Output while the build still parses the JSON artifact
+// stream from stdout and keeps the stderr tail for failure reporting.
+func TestRustBuild_StreamsStderrToOutput(t *testing.T) {
+	root := writeCargoProject(t, "[package]\nname = \"lab\"\nversion = \"0.1.0\"\n")
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	want := filepath.Join(root, "target", "debug", "lab")
+	writeExecutable(t, want, "elf")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "lab", want, false)}, 0,
+		"   Compiling lab v0.1.0\n    Finished dev profile\n")
+
+	cfg := rustBuildConfig(t, root)
+	var out bytes.Buffer
+	cfg.Output = &out
+
+	if err := NewRustBuilder().Build(cfg); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for _, line := range []string{"Compiling lab v0.1.0", "Finished dev profile"} {
+		if !strings.Contains(out.String(), line) {
+			t.Fatalf("live output missing %q: %q", line, out.String())
+		}
+	}
+	if cfg.Observe.ArtifactPath != want {
+		t.Fatalf("artifact path = %q, want %q", cfg.Observe.ArtifactPath, want)
 	}
 }
 

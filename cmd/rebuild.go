@@ -740,6 +740,7 @@ func rebuildApp(out io.Writer, id string, extraArgs []string, buildMgr *builder.
 		return nil, phelixerr.Wrap(phelixerr.CodeBuildFailed, "rebuild preparation failed", err)
 	}
 
+	buildCtx.Config.Output = out
 	fmt.Fprintf(out, "  %s Rebuilding with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
 
 	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {

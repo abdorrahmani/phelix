@@ -480,6 +480,7 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		return nil, err
 	}
 
+	buildCtx.Config.Output = progress.Output()
 	progress.Update(fmt.Sprintf("compiling %s", buildMgr.FormatLanguage(lang)), 0, 0)
 
 	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {

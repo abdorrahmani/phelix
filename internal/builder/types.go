@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"io"
 	"strings"
 	"time"
 
@@ -68,6 +69,11 @@ type BuildConfig struct {
 	// detection. PrepareBuild supplies it so one walk serves the whole build;
 	// a nil Scan (direct BuildConfig users, tests) falls back to fresh scan.
 	Scan *ProjectScan
+
+	// Output, when non-nil, receives the compiler's human-readable output
+	// live while the build runs. Builders still capture that output for
+	// diagnostics and cache classification; Output is display only.
+	Output io.Writer
 }
 
 // BuildObservation collects non-fatal telemetry emitted by one build run.
