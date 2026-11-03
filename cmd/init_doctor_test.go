@@ -96,6 +96,71 @@ func TestDoctorDetectsHardcodedPort(t *testing.T) {
 	}
 }
 
+func TestDoctorGivesRustAdvice(t *testing.T) {
+	dir := writeProject(t, map[string]string{
+		"Cargo.toml": "[package]\nname = \"api\"\nversion = \"0.1.0\"\n",
+		"main.rs":    "fn main() {\n    let listener = TcpListener::bind(\"127.0.0.1:8080\").unwrap();\n}\n",
+	})
+
+	results := runDoctorChecks(dir)
+	var portCheck checkResult
+	for _, r := range results {
+		if r.name == "PORT configuration" {
+			portCheck = r
+		}
+	}
+	if portCheck.pass || portCheck.warn {
+		t.Errorf("hardcoded Rust port must fail, got %+v", portCheck)
+	}
+	if !strings.Contains(portCheck.message, "std::env::var(\"PORT\")") {
+		t.Errorf("Rust advice missing std::env::var, got %q", portCheck.message)
+	}
+	if strings.Contains(portCheck.message, "os.Getenv") {
+		t.Errorf("Rust advice must not use the Go idiom, got %q", portCheck.message)
+	}
+}
+
+func TestDoctorDoesNotIgnoreListenerBecauseAnotherFileReadsPORT(t *testing.T) {
+	dir := writeProject(t, map[string]string{
+		"go.mod":  "module example.com/api\n\ngo 1.21\n",
+		"main.go": goHardcodedMain,
+		"env.go":  "package main\n\nimport \"os\"\n\nvar _ = os.Getenv(\"PORT\")\n",
+	})
+
+	results := runDoctorChecks(dir)
+	for _, r := range results {
+		if r.name == "PORT configuration" {
+			if r.pass || r.warn {
+				t.Errorf("unrelated PORT read must not excuse a hardcoded listener: %+v", r)
+			}
+			return
+		}
+	}
+	t.Fatal("PORT configuration check missing")
+}
+
+func TestDoctorSkipsListenerCheckForWorker(t *testing.T) {
+	dir := writeProject(t, map[string]string{
+		"go.mod":      "module example.com/worker\n\ngo 1.21\n",
+		"main.go":     "package main\n\nfunc main() {}\n",
+		"phelix.yaml": "name: email-worker\ntype: worker\n",
+	})
+
+	results := runDoctorChecks(dir)
+	for _, r := range results {
+		if r.name == "PORT configuration" {
+			if !r.pass || r.warn {
+				t.Errorf("port-less worker must pass the listener check, got %+v", r)
+			}
+			if !strings.Contains(r.detail, "worker") {
+				t.Errorf("worker detail should explain why the check is skipped, got %q", r.detail)
+			}
+			return
+		}
+	}
+	t.Fatal("PORT configuration check missing")
+}
+
 func TestDoctorMissingProject(t *testing.T) {
 	dir := t.TempDir()
 	results := runDoctorChecks(dir)

@@ -105,12 +105,15 @@ func Save(dir string, cfg *Config) error {
 	return nil
 }
 
-// HardcodedPort is one detected hardcoded listen pattern.
+// HardcodedPort is one detected hardcoded listen pattern. ReadsPORT reports
+// whether the same file also reads the PORT environment variable, so callers
+// never treat a listener in one file as safe because another file reads PORT.
 type HardcodedPort struct {
-	File    string
-	Line    int
-	Snippet string
-	Port    int
+	File      string
+	Line      int
+	Snippet   string
+	Port      int
+	ReadsPORT bool
 }
 
 // Patterns match common Go/Rust hardcoded listeners. Each requires a literal
@@ -122,9 +125,12 @@ var hardcodedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`TcpListener::bind\(\s*"(?:127\.0\.0\.1|0\.0\.0\.0)::?(\d+)"`),
 }
 
-// portEnvPattern detects the PORT-env idiom so doctor can report ✓ instead of
-// an inconclusive warning.
-var portEnvPattern = regexp.MustCompile(`Getenv\(\s*"PORT"`)
+// portEnvPatterns detect the PORT-env idiom in Go and Rust so doctor can
+// report ✓ instead of an inconclusive warning.
+var portEnvPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`os\.Getenv\(\s*"PORT"`),
+	regexp.MustCompile(`\benv::var\(\s*"PORT"`),
+}
 
 const scanMaxFileSize = 1 << 20 // skip files > 1 MiB
 
@@ -140,7 +146,7 @@ func ScanHardcodedPort(dir string) (hits []HardcodedPort, readsPORT bool) {
 		if d.IsDir() {
 			switch name {
 			case ".git", "vendor", "node_modules", "target", "builds":
-				return filepath.SkipAll
+				return filepath.SkipDir
 			}
 			return nil
 		}
@@ -156,8 +162,13 @@ func ScanHardcodedPort(dir string) (hits []HardcodedPort, readsPORT bool) {
 		if err != nil {
 			return nil
 		}
-		if !readsPORT && portEnvPattern.Match(raw) {
-			readsPORT = true
+		fileReadsPORT := false
+		for _, re := range portEnvPatterns {
+			if re.Match(raw) {
+				fileReadsPORT = true
+				readsPORT = true
+				break
+			}
 		}
 		for i, line := range strings.Split(string(raw), "\n") {
 			for _, re := range hardcodedPatterns {
@@ -170,10 +181,11 @@ func ScanHardcodedPort(dir string) (hits []HardcodedPort, readsPORT bool) {
 					continue
 				}
 				hits = append(hits, HardcodedPort{
-					File:    relOrBase(dir, path),
-					Line:    i + 1,
-					Snippet: strings.TrimSpace(line),
-					Port:    p,
+					File:      relOrBase(dir, path),
+					Line:      i + 1,
+					Snippet:   strings.TrimSpace(line),
+					Port:      p,
+					ReadsPORT: fileReadsPORT,
 				})
 			}
 		}

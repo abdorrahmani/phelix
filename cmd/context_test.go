@@ -82,6 +82,27 @@ func TestProjectContext_MissingProject(t *testing.T) {
 	}
 }
 
+func TestProjectContext_ScansPastGitDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module demo\n\ngo 1.24\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() { http.ListenAndServe(\":3000\", nil) }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := buildProjectContext(dir)
+	if err != nil {
+		t.Fatalf("buildProjectContext: %v", err)
+	}
+	if view.HardcodedPort == nil || *view.HardcodedPort != 3000 {
+		t.Fatalf(".git must not end the source scan: %+v", view)
+	}
+}
+
 func TestProjectContext_InvalidConfigIsAFact(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module demo\n\ngo 1.24\n"), 0o644); err != nil {
