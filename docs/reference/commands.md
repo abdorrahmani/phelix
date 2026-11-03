@@ -107,9 +107,8 @@ phelix init --type worker --name email-worker --yes
 
 ### `phelix config lint`
 
-Validates `phelix.yaml` in the current directory and nothing else: it calls the
-same loader the build and deploy commands use, so the verdict matches what they
-would report, without building, starting or touching anything.
+Validates `phelix.yaml` in the current directory and nothing else, with strict
+key checking, without building, starting or touching anything.
 
 ```text
 $ phelix config lint
@@ -118,7 +117,10 @@ $ phelix config lint
 
 Exit codes follow the standard contract: `0` valid, `40`
 (`CONFIGURATION_ERROR`) invalid, `12` (`NOT_FOUND`) when the directory has no
-`phelix.yaml`. Unknown keys are ignored, exactly as the loader ignores them.
+`phelix.yaml`. Unknown keys fail with the dotted key path and source line.
+Execution commands still warn and load unknown keys during the documented
+transition (see
+[Configuration § Strict key checking transition](configuration.md#strict-key-checking-transition)).
 `--json` emits the machine envelope with `{path, valid}`.
 
 ### `phelix config schema`
