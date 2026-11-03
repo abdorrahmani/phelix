@@ -1,13 +1,14 @@
 package docker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/abdorrahmani/phelix/internal/cargo"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -16,6 +17,9 @@ import (
 type DockerfileGenerator struct {
 	ProjectRoot string
 	Language    Language
+	// ResolveTarget resolves the exact binary cargo builds. Nil uses cargo
+	// metadata. Tests override it to avoid needing a Rust toolchain.
+	ResolveTarget func(projectRoot string) (cargo.Selection, error)
 }
 
 // NewDockerfileGenerator creates a generator for the given project.
@@ -115,10 +119,9 @@ func (g *DockerfileGenerator) generateGo() string {
 }
 
 func (g *DockerfileGenerator) generateRust() (string, error) {
-	// Parse the manifest once: both the binary to ship and the default
-	// toolchain are derived from it. An unresolvable target or an edition/
-	// rust-version Phelix can't map to a toolchain is a fail-safe error, not a
-	// fragile Dockerfile.
+	// Parse the manifest once for the toolchain. The binary target comes from
+	// cargo metadata so this generator, native builds and matrix builds agree
+	// on exactly which executable is deployed.
 	data, err := os.ReadFile(filepath.Join(g.ProjectRoot, "Cargo.toml"))
 	if err != nil {
 		return "", phelixerr.Wrap(phelixerr.CodeUnsupportedProject, "could not read Cargo.toml", err)
@@ -127,11 +130,15 @@ func (g *DockerfileGenerator) generateRust() (string, error) {
 	if err := toml.Unmarshal(data, &m); err != nil {
 		return "", phelixerr.Wrap(phelixerr.CodeUnsupportedProject, "could not parse Cargo.toml", err)
 	}
-	bin, err := g.rustBinaryName(m)
+	rustVersion, err := rustDefaultVersion(m)
 	if err != nil {
 		return "", err
 	}
-	rustVersion, err := rustDefaultVersion(m)
+	selection, err := g.resolveTarget()
+	if err != nil {
+		return "", err
+	}
+	bin, err := validatedBin(selection.Target.Name)
 	if err != nil {
 		return "", err
 	}
@@ -167,7 +174,7 @@ func (g *DockerfileGenerator) generateRust() (string, error) {
 	b.WriteString("# Build under cache mounts; copy the binary out (mounts aren't layers)\n")
 	b.WriteString("RUN --mount=type=cache,target=/usr/local/cargo/registry,id=phelix-cargo-registry \\\n")
 	b.WriteString("    --mount=type=cache,target=/app/target,id=phelix-rust-target-${TARGETPLATFORM},sharing=locked \\\n")
-	b.WriteString("    cargo build --release && \\\n")
+	b.WriteString("    cargo build --release --bin " + bin + " && \\\n")
 	b.WriteString("    cp target/release/" + bin + " /app/server\n\n")
 
 	// --- Stage 2: Runtime ---
@@ -186,19 +193,16 @@ func (g *DockerfileGenerator) generateRust() (string, error) {
 	return b.String(), nil
 }
 
-// cargoManifest is the subset of Cargo.toml that determines which binary a
-// `cargo build --release` produces and which toolchain it needs.
+// cargoManifest is the subset of Cargo.toml that determines which toolchain a
+// `cargo build --release` needs. Binary target selection comes from cargo
+// metadata, not from this manifest parse.
 type cargoManifest struct {
 	Package *struct {
 		Name        string `toml:"name"`
-		DefaultRun  string `toml:"default-run"`
+		DefaultRun  string `toml:"default_run"`
 		Edition     string `toml:"edition"`
 		RustVersion string `toml:"rust-version"`
 	} `toml:"package"`
-	Workspace *struct{} `toml:"workspace"`
-	Bin       []struct {
-		Name string `toml:"name"`
-	} `toml:"bin"`
 }
 
 // validCrateName guards the binary name that is interpolated into the generated
@@ -206,81 +210,19 @@ type cargoManifest struct {
 // edited Cargo.toml is rejected rather than spliced into a shell command.
 var validCrateName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
-// rustBinaryName resolves, deterministically, the name of the release binary
-// this project builds — the crate cargo drops at target/release/<name>.
-//
-// Resolution:
-//   - a [package] default-run always wins (explicit user intent);
-//   - otherwise the binary set is the union of explicit [[bin]] names, the
-//     package name when src/main.rs exists, and every src/bin/*.rs stem;
-//   - exactly one member of that set is the answer;
-//   - zero members (a library-only crate) or more than one (ambiguous, no
-//     default-run) is a fail-safe error with guidance.
-//
-// A virtual workspace (a [workspace] with no [package]) builds every member and
-// has no single binary, so it is refused outright.
-//
-// ponytail: does not honor [[bin]] path= overrides or autobins=false; those
-// rare shapes fall back to the "add your own Dockerfile" error via the count
-// check. Upgrade to `cargo metadata` if they show up.
-func (g *DockerfileGenerator) rustBinaryName(m cargoManifest) (string, error) {
-	if m.Package == nil {
-		if m.Workspace != nil {
-			return "", phelixerr.New(phelixerr.CodeUnsupportedProject,
-				"Cargo.toml is a virtual workspace (no [package]); it has no single binary to run — "+
-					"add a Dockerfile that builds the member you want to deploy, or run dockerize from that member's directory")
-		}
-		return "", phelixerr.New(phelixerr.CodeUnsupportedProject,
-			"Cargo.toml has no [package] section; cannot determine the binary to build")
+// resolveTarget asks cargo metadata for the exact binary target. Tests can
+// replace ResolveTarget to avoid a Rust toolchain.
+func (g *DockerfileGenerator) resolveTarget() (cargo.Selection, error) {
+	if g.ResolveTarget != nil {
+		return g.ResolveTarget(g.ProjectRoot)
 	}
-
-	if dr := strings.TrimSpace(m.Package.DefaultRun); dr != "" {
-		return validatedBin(dr)
-	}
-
-	// Build the candidate binary set.
-	set := map[string]struct{}{}
-	for _, bn := range m.Bin {
-		if n := strings.TrimSpace(bn.Name); n != "" {
-			set[n] = struct{}{}
-		}
-	}
-	if _, err := os.Stat(filepath.Join(g.ProjectRoot, "src", "main.rs")); err == nil {
-		if n := strings.TrimSpace(m.Package.Name); n != "" {
-			set[n] = struct{}{}
-		}
-	}
-	if entries, err := os.ReadDir(filepath.Join(g.ProjectRoot, "src", "bin")); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".rs") {
-				set[strings.TrimSuffix(e.Name(), ".rs")] = struct{}{}
-			}
-		}
-	}
-
-	names := make([]string, 0, len(set))
-	for n := range set {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
-	switch len(names) {
-	case 1:
-		return validatedBin(names[0])
-	case 0:
-		return "", phelixerr.Newf(phelixerr.CodeUnsupportedProject,
-			"no binary target found for package %q (library-only crate?); add a [[bin]] or a Dockerfile", m.Package.Name)
-	default:
-		return "", phelixerr.Newf(phelixerr.CodeUnsupportedProject,
-			"package %q builds multiple binaries (%s); set `default-run` in Cargo.toml to pick one, or add your own Dockerfile",
-			m.Package.Name, strings.Join(names, ", "))
-	}
+	return cargo.SelectFor(context.Background(), g.ProjectRoot, nil)
 }
 
 func validatedBin(name string) (string, error) {
 	if !validCrateName.MatchString(name) {
 		return "", phelixerr.Newf(phelixerr.CodeUnsupportedProject,
-			"binary name %q from Cargo.toml is not a valid crate name", name)
+			"binary name %q from cargo metadata is not a valid crate name", name)
 	}
 	return name, nil
 }
