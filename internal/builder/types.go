@@ -83,6 +83,9 @@ type BuildObservation struct {
 	// CompilerVersion holds the normalized toolchain version (major.minor,
 	// e.g. "1.27"), probed by the build manager after execution.
 	CompilerVersion string
+	// ArtifactPath is the exact executable cargo reported for the selected
+	// package and binary target. Empty when the build did not report one.
+	ArtifactPath string
 }
 
 // BuildResult contains the result of a build operation

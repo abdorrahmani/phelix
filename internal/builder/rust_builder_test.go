@@ -1,7 +1,9 @@
 package builder
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/buildreport"
+	"github.com/abdorrahmani/phelix/internal/cargo"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -25,6 +28,89 @@ func fakeCargoDir(t *testing.T, script string) string {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return dir
+}
+
+// fakeCargoWith installs a cargo shim that answers metadata and build calls
+// from fixed JSON fixtures.
+func fakeCargoWith(t *testing.T, metadata string, artifacts []string, exitCode int, stderr string) {
+	t.Helper()
+	dir := t.TempDir()
+	metaPath := filepath.Join(dir, "metadata.json")
+	if err := os.WriteFile(metaPath, []byte(metadata), 0o644); err != nil {
+		t.Fatalf("write metadata fixture: %v", err)
+	}
+	var stdout strings.Builder
+	for _, artifact := range artifacts {
+		stdout.WriteString(artifact)
+		stdout.WriteString("\n")
+	}
+	stdoutPath := filepath.Join(dir, "stdout.json")
+	if err := os.WriteFile(stdoutPath, []byte(stdout.String()), 0o644); err != nil {
+		t.Fatalf("write artifact fixture: %v", err)
+	}
+	stderrPath := filepath.Join(dir, "stderr.txt")
+	if err := os.WriteFile(stderrPath, []byte(stderr), 0o644); err != nil {
+		t.Fatalf("write stderr fixture: %v", err)
+	}
+
+	script := fmt.Sprintf(`if [ "$1" = "metadata" ]; then
+  cat %q
+  exit 0
+fi
+cat %q >&2
+cat %q
+exit %d`, metaPath, stderrPath, stdoutPath, exitCode)
+	fakeCargoDir(t, script)
+}
+
+func testMetadata(t *testing.T, workspaceRoot, targetDir string, packages ...cargo.Package) string {
+	t.Helper()
+	members := make([]string, 0, len(packages))
+	for _, pkg := range packages {
+		members = append(members, pkg.ID)
+	}
+	meta := cargo.Metadata{
+		Packages:                packages,
+		WorkspaceMembers:        members,
+		WorkspaceDefaultMembers: members,
+		TargetDirectory:         targetDir,
+		WorkspaceRoot:           workspaceRoot,
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	return string(data)
+}
+
+func testPackage(id, name, manifest, defaultRun string, bins ...string) cargo.Package {
+	targets := make([]cargo.Target, 0, len(bins))
+	for _, bin := range bins {
+		targets = append(targets, cargo.Target{Kind: []string{"bin"}, Name: bin})
+	}
+	return cargo.Package{
+		ID:           id,
+		Name:         name,
+		ManifestPath: manifest,
+		DefaultRun:   defaultRun,
+		Targets:      targets,
+	}
+}
+
+func testArtifact(t *testing.T, packageID, bin, executable string, fresh bool) string {
+	t.Helper()
+	artifact := cargo.Artifact{
+		Reason:     "compiler-artifact",
+		PackageID:  packageID,
+		Target:     cargo.Target{Kind: []string{"bin"}, Name: bin},
+		Executable: &executable,
+		Fresh:      fresh,
+	}
+	data, err := json.Marshal(artifact)
+	if err != nil {
+		t.Fatalf("marshal artifact: %v", err)
+	}
+	return string(data)
 }
 
 func rustBuildConfig(t *testing.T, root string) BuildConfig {
@@ -47,17 +133,26 @@ func writeCargoProject(t *testing.T, cargoToml string) string {
 	return root
 }
 
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 // TestRustBuild_CompilerFailurePreservesRootCause (regression): a failing
 // cargo build must surface the exit status and the useful stderr tail, and
-// the *exec.ExitError must stay reachable via errors.As. The compiler tail is
-// carried on the ToolError (rendered only after redaction), never embedded in
-// the error message.
+// the *exec.ExitError must stay reachable via errors.As.
 func TestRustBuild_CompilerFailurePreservesRootCause(t *testing.T) {
-	fakeCargoDir(t, "echo 'error[E0425]: cannot find value x in this scope' >&2; exit 101")
 	root := writeCargoProject(t, "[package]\nname = \"lab\"\nversion = \"0.1.0\"\n")
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg), nil, 101,
+		"error[E0425]: cannot find value x in this scope")
 
-	cfg := rustBuildConfig(t, root)
-	err := NewRustBuilder().Build(cfg)
+	err := NewRustBuilder().Build(rustBuildConfig(t, root))
 	if err == nil {
 		t.Fatalf("cargo failure must fail the build")
 	}
@@ -100,7 +195,7 @@ func TestRustBuild_ToolchainMissingIsActionable(t *testing.T) {
 	if err == nil {
 		t.Fatalf("missing cargo must fail the build")
 	}
-	if !strings.Contains(err.Error(), "cargo build failed") {
+	if !strings.Contains(err.Error(), "cargo is required") {
 		t.Fatalf("unexpected message: %q", err.Error())
 	}
 	if !errors.Is(err, exec.ErrNotFound) {
@@ -109,114 +204,84 @@ func TestRustBuild_ToolchainMissingIsActionable(t *testing.T) {
 }
 
 // TestRustBuild_MissingBinaryAfterSuccessIsActionable (regression): cargo
-// succeeding with no artifact must NOT become a generic BUILD_FAILED; the
-// error names the expected path, package, and cache status.
+// succeeding without the selected artifact must not become a generic
+// BUILD_FAILED; the error names the package and target.
 func TestRustBuild_MissingBinaryAfterSuccessIsActionable(t *testing.T) {
-	fakeCargoDir(t, `exit 0`)
 	root := writeCargoProject(t, "[package]\nname = \"lab\"\nversion = \"0.1.0\"\n")
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg), nil, 0, "")
 
 	cfg := rustBuildConfig(t, root)
 	cfg.Observe.CacheStatus = buildreport.CacheHit
 
 	err := NewRustBuilder().Build(cfg)
-	if err != nil {
-		t.Fatalf("cargo itself succeeded: %v", err)
-	}
-	_, err = NewRustBuilder().GetBinaryPath(cfg)
 	if err == nil {
 		t.Fatalf("missing artifact after successful cargo must error")
 	}
 	msg := err.Error()
-	for _, want := range []string{"expected an executable in", "lab", "cache", "[[bin]]"} {
+	for _, want := range []string{"no executable", "lab", "target", "cache"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("artifact error missing %q: %q", want, msg)
 		}
 	}
 }
 
-// TestRustBuild_FallbackPrefersExecutableOverNewerArtifacts (regression):
-// target/debug holds .d/.rlib files newer than the binary; the fallback must
-// pick an executable, never a dependency artifact.
-func TestRustBuild_FallbackPrefersExecutableOverNewerArtifacts(t *testing.T) {
-	fakeCargoDir(t, `exit 0`)
+// TestRustBuild_UsesSelectedArtifactBesideStaleExecutable (regression): only
+// the compiler-artifact executable for the selected package and bin is copied;
+// a newer stale executable in the same directory is ignored.
+func TestRustBuild_UsesSelectedArtifactBesideStaleExecutable(t *testing.T) {
 	root := writeCargoProject(t, "[package]\nname = \"lab\"\n")
-	target := filepath.Join(root, "target", "debug")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("mkdir target: %v", err)
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	selected := filepath.Join(root, "target", "debug", "lab")
+	stale := filepath.Join(root, "target", "debug", "old-lab")
+	writeExecutable(t, selected, "selected-bytes")
+	writeExecutable(t, stale, "stale-bytes")
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(stale, future, future); err != nil {
+		t.Fatalf("chtimes stale: %v", err)
 	}
 
-	bin := filepath.Join(target, "some-binary")
-	if err := os.WriteFile(bin, []byte("elf"), 0o755); err != nil {
-		t.Fatalf("write bin: %v", err)
-	}
-	stale := time.Now().Add(-time.Hour)
-	if err := os.Chtimes(bin, stale, stale); err != nil {
-		t.Fatalf("chtimes bin: %v", err)
-	}
-	// Newer files that the old "newest file wins" fallback mistook for binaries.
-	for _, name := range []string{"lab.d", "liblab.rlib", "liblab.a"} {
-		if err := os.WriteFile(filepath.Join(target, name), []byte("x"), 0o644); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "lab", selected, false)}, 0, "")
 
 	cfg := rustBuildConfig(t, root)
-	got, err := NewRustBuilder().GetBinaryPath(cfg)
-	if err != nil {
-		t.Fatalf("GetBinaryPath: %v", err)
+	cfg.OutputPath = filepath.Join(t.TempDir(), "builds", "v1", "binary")
+	if err := os.MkdirAll(filepath.Dir(cfg.OutputPath), 0o755); err != nil {
+		t.Fatalf("mkdir output: %v", err)
 	}
-	if got != bin {
-		t.Fatalf("fallback picked %q, want the executable %q", got, bin)
+	if err := BuildAndCopyRust(cfg); err != nil {
+		t.Fatalf("BuildAndCopyRust: %v", err)
 	}
-}
-
-// TestRustBuild_BinNameResolution: a crate whose [[bin]] name differs from
-// the package name still resolves via the [[bin]] section.
-func TestRustBuild_BinNameResolution(t *testing.T) {
-	fakeCargoDir(t, `exit 0`)
-	root := writeCargoProject(t, "[package]\nname = \"lab\"\n\n[[bin]]\nname = \"server-bin\"\npath = \"src/main.rs\"\n")
-	target := filepath.Join(root, "target", "debug")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	want := filepath.Join(target, "server-bin")
-	if err := os.WriteFile(want, []byte("elf"), 0o755); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	got, err := NewRustBuilder().GetBinaryPath(rustBuildConfig(t, root))
-	if err != nil {
-		t.Fatalf("GetBinaryPath: %v", err)
-	}
-	if got != want {
-		t.Fatalf("got %q, want [[bin]]-resolved %q", got, want)
+	data, err := os.ReadFile(cfg.OutputPath)
+	if err != nil || string(data) != "selected-bytes" {
+		t.Fatalf("copied artifact = %q, err=%v; want the selected executable", data, err)
 	}
 }
 
 // TestRustBuild_WorkspaceMemberUsesWorkspaceTarget: a crate inside a Cargo
-// workspace builds into the workspace root's target dir, so resolving the
-// binary from the crate directory alone reports a missing artifact.
+// workspace builds into the workspace root's target dir, and the artifact
+// message is authoritative regardless of the crate directory.
 func TestRustBuild_WorkspaceMemberUsesWorkspaceTarget(t *testing.T) {
-	fakeCargoDir(t, `exit 0`)
 	root := writeCargoProject(t, "[workspace]\nmembers = [\"member\"]\n")
 	member := filepath.Join(root, "member")
 	if err := os.MkdirAll(member, 0o755); err != nil {
 		t.Fatalf("mkdir member: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(member, "Cargo.toml"),
-		[]byte("[package]\nname = \"lab\"\nversion = \"0.1.0\"\n"), 0o644); err != nil {
+	manifest := filepath.Join(member, "Cargo.toml")
+	if err := os.WriteFile(manifest, []byte("[package]\nname = \"lab\"\nversion = \"0.1.0\"\n"), 0o644); err != nil {
 		t.Fatalf("write member Cargo.toml: %v", err)
 	}
-	target := filepath.Join(root, "target", "debug")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("mkdir target: %v", err)
-	}
-	want := filepath.Join(target, "lab")
-	if err := os.WriteFile(want, []byte("elf"), 0o755); err != nil {
-		t.Fatalf("write binary: %v", err)
-	}
+	pkg := testPackage("pkg-lab", "lab", manifest, "", "lab")
+	want := filepath.Join(root, "target", "debug", "lab")
+	writeExecutable(t, want, "elf")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "lab", want, false)}, 0, "")
 
-	got, err := NewRustBuilder().GetBinaryPath(rustBuildConfig(t, member))
+	cfg := rustBuildConfig(t, member)
+	if err := NewRustBuilder().Build(cfg); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	got, err := NewRustBuilder().GetBinaryPath(cfg)
 	if err != nil {
 		t.Fatalf("GetBinaryPath: %v", err)
 	}
@@ -225,46 +290,136 @@ func TestRustBuild_WorkspaceMemberUsesWorkspaceTarget(t *testing.T) {
 	}
 }
 
-// TestRustBuildAndCopy_SuccessCopiesArtifact: the happy path — artifact found
-// and copied to the versioned output path.
-func TestRustBuildAndCopy_SuccessCopiesArtifact(t *testing.T) {
-	fakeCargoDir(t, `exit 0`)
-	root := writeCargoProject(t, "[package]\nname = \"lab\"\n")
-	target := filepath.Join(root, "target", "debug")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(target, "lab"), []byte("elf-bytes"), 0o755); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+// TestRustBuild_RenamedBinUsesArtifactTarget: a crate whose [[bin]] name
+// differs from the package name resolves the exact target cargo built.
+func TestRustBuild_RenamedBinUsesArtifactTarget(t *testing.T) {
+	root := writeCargoProject(t, "[package]\nname = \"lab\"\n\n[[bin]]\nname = \"server-bin\"\npath = \"src/main.rs\"\n")
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "server-bin")
+	want := filepath.Join(root, "target", "debug", "server-bin")
+	writeExecutable(t, want, "elf")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "server-bin", want, false)}, 0, "")
 
-	out := filepath.Join(t.TempDir(), "builds", "v1", "binary")
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		t.Fatalf("mkdir output dir: %v", err)
-	}
 	cfg := rustBuildConfig(t, root)
-	cfg.OutputPath = out
+	if err := NewRustBuilder().Build(cfg); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	got, err := NewRustBuilder().GetBinaryPath(cfg)
+	if err != nil {
+		t.Fatalf("GetBinaryPath: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want [[bin]]-resolved %q", got, want)
+	}
+}
+
+// TestRustBuild_CustomProfileUsesArtifact: --profile production selects the
+// profile directory cargo reports, not a hard-coded debug/release path.
+func TestRustBuild_CustomProfileUsesArtifact(t *testing.T) {
+	root := writeCargoProject(t, "[package]\nname = \"lab\"\n")
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	want := filepath.Join(root, "target", "production", "lab")
+	writeExecutable(t, want, "elf")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "lab", want, false)}, 0, "")
+
+	cfg := rustBuildConfig(t, root)
+	cfg.ExtraArgs = []string{"--profile", "production"}
+	if err := NewRustBuilder().Build(cfg); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	got, err := NewRustBuilder().GetBinaryPath(cfg)
+	if err != nil {
+		t.Fatalf("GetBinaryPath: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want profile artifact %q", got, want)
+	}
+}
+
+// TestRustBuild_CustomTargetDirUsesArtifact: --target-dir moves the output;
+// the artifact path wins over the metadata target directory.
+func TestRustBuild_CustomTargetDirUsesArtifact(t *testing.T) {
+	root := writeCargoProject(t, "[package]\nname = \"lab\"\n")
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	custom := filepath.Join(t.TempDir(), "custom-target")
+	want := filepath.Join(custom, "debug", "lab")
+	writeExecutable(t, want, "elf")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "lab", want, false)}, 0, "")
+
+	cfg := rustBuildConfig(t, root)
+	cfg.ExtraArgs = []string{"--target-dir", custom}
+	if err := NewRustBuilder().Build(cfg); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	got, err := NewRustBuilder().GetBinaryPath(cfg)
+	if err != nil {
+		t.Fatalf("GetBinaryPath: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want custom target-dir artifact %q", got, want)
+	}
+}
+
+// TestRustBuild_TargetTripleUsesArtifact: --target inserts the triple
+// directory; the artifact path is used verbatim.
+func TestRustBuild_TargetTripleUsesArtifact(t *testing.T) {
+	root := writeCargoProject(t, "[package]\nname = \"lab\"\n")
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	triple := "aarch64-unknown-linux-gnu"
+	want := filepath.Join(root, "target", triple, "debug", "lab")
+	writeExecutable(t, want, "elf")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "lab", want, false)}, 0, "")
+
+	cfg := rustBuildConfig(t, root)
+	cfg.ExtraArgs = []string{"--target", triple}
+	if err := NewRustBuilder().Build(cfg); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	got, err := NewRustBuilder().GetBinaryPath(cfg)
+	if err != nil {
+		t.Fatalf("GetBinaryPath: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want triple artifact %q", got, want)
+	}
+}
+
+// TestRustBuild_CacheFreshArtifact: cargo emits a compiler-artifact with
+// fresh=true when nothing was recompiled; the executable is still resolved.
+func TestRustBuild_CacheFreshArtifact(t *testing.T) {
+	root := writeCargoProject(t, "[package]\nname = \"lab\"\n")
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	want := filepath.Join(root, "target", "debug", "lab")
+	writeExecutable(t, want, "cached-elf")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "lab", want, true)}, 0, "")
+
+	cfg := rustBuildConfig(t, root)
+	cfg.OutputPath = filepath.Join(t.TempDir(), "builds", "v1", "binary")
+	if err := os.MkdirAll(filepath.Dir(cfg.OutputPath), 0o755); err != nil {
+		t.Fatalf("mkdir output: %v", err)
+	}
 	if err := BuildAndCopyRust(cfg); err != nil {
 		t.Fatalf("BuildAndCopyRust: %v", err)
 	}
-	data, err := os.ReadFile(out)
-	if err != nil || string(data) != "elf-bytes" {
-		t.Fatalf("copied artifact wrong: %q err=%v", data, err)
+	data, err := os.ReadFile(cfg.OutputPath)
+	if err != nil || string(data) != "cached-elf" {
+		t.Fatalf("copied cache-fresh artifact wrong: %q err=%v", data, err)
 	}
 }
 
 // TestRustBuildAndCopy_CopyFailureWrapped: an unwritable output location
 // fails with a wrapped, cause-preserving error instead of vanishing.
 func TestRustBuildAndCopy_CopyFailureWrapped(t *testing.T) {
-	fakeCargoDir(t, `exit 0`)
 	root := writeCargoProject(t, "[package]\nname = \"lab\"\n")
-	target := filepath.Join(root, "target", "debug")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(target, "lab"), []byte("elf"), 0o755); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	pkg := testPackage("pkg-lab", "lab", filepath.Join(root, "Cargo.toml"), "", "lab")
+	want := filepath.Join(root, "target", "debug", "lab")
+	writeExecutable(t, want, "elf")
+	fakeCargoWith(t, testMetadata(t, root, filepath.Join(root, "target"), pkg),
+		[]string{testArtifact(t, pkg.ID, "lab", want, false)}, 0, "")
 
 	cfg := rustBuildConfig(t, root)
 	cfg.OutputPath = filepath.Join(t.TempDir(), "no-such-dir", "binary")
@@ -282,13 +437,11 @@ func TestRustBuildAndCopy_CopyFailureWrapped(t *testing.T) {
 
 // TestCopyBuiltBinary_ReplacesRunningExecutable (ETXTBSY regression): the
 // output path <source-dir>/app_<id> may be the executable a running instance
-// was started from. The copy must replace it via temp+rename (no "text file
-// busy"), keep the old process alive on its inode, and leave no temp files.
+// was started from. The copy must replace it via temp+rename.
 func TestCopyBuiltBinary_ReplacesRunningExecutable(t *testing.T) {
 	dir := t.TempDir()
 	output := filepath.Join(dir, "app_running-id")
 
-	// A tiny executable stands in for the running binary.
 	if err := os.WriteFile(output, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
 		t.Fatalf("write running binary: %v", err)
 	}
