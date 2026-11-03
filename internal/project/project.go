@@ -54,7 +54,20 @@ type Config struct {
 // valid, and commands that need a name prompt for it or fall back to their own
 // defaults. All declared health/deploy fields are fully validated here so an
 // invalid file can never silently affect a build or deploy.
+//
+// Unknown keys are logged as warnings during the compatibility transition.
+// LoadStrict rejects them and is what `phelix config lint` uses.
 func Load(dir string) (*Config, error) {
+	return load(dir, false)
+}
+
+// LoadStrict reads and validates phelix.yaml like Load, but rejects unknown
+// keys with their dotted path and source line.
+func LoadStrict(dir string) (*Config, error) {
+	return load(dir, true)
+}
+
+func load(dir string, strict bool) (*Config, error) {
 	path := filepath.Join(dir, FileName)
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -64,9 +77,12 @@ func Load(dir string) (*Config, error) {
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "%s is malformed", path)
+	cfg, err := decodeConfig(raw, path, strict)
+	if err != nil {
+		return nil, err
+	}
+	if !strict {
+		warnUnknownKeys(path, raw)
 	}
 	if cfg.Port != 0 {
 		if err := port.Validate(cfg.Port); err != nil {
@@ -82,7 +98,7 @@ func Load(dir string) (*Config, error) {
 	if err := cfg.Webhook.validate(); err != nil {
 		return nil, err
 	}
-	return &cfg, nil
+	return cfg, nil
 }
 
 // Exists reports whether phelix.yaml is present in dir.
