@@ -1,10 +1,13 @@
 package docker
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/abdorrahmani/phelix/internal/cargo"
 )
 
 func TestDockerfileGenerator_HasExistingDockerfile(t *testing.T) {
@@ -94,6 +97,20 @@ func writeRustProject(t *testing.T, cargoToml string, files map[string]string) *
 	return NewDockerfileGenerator(dir, LanguageRust)
 }
 
+func setRustTarget(gen *DockerfileGenerator, bin string) *DockerfileGenerator {
+	gen.ResolveTarget = func(string) (cargo.Selection, error) {
+		return cargo.Selection{Target: cargo.Target{Kind: []string{"bin"}, Name: bin}}, nil
+	}
+	return gen
+}
+
+func rejectRustTarget(gen *DockerfileGenerator) *DockerfileGenerator {
+	gen.ResolveTarget = func(string) (cargo.Selection, error) {
+		return cargo.Selection{}, errors.New("no single binary target")
+	}
+	return gen
+}
+
 const plainCargo = "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
 
 // TestRustDockerfile_CacheMountBuild verifies the new caching contract: a
@@ -101,7 +118,7 @@ const plainCargo = "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\nedition = 
 // stage, no COPY --from=deps /app/target), errors are not swallowed, and the
 // resolved binary is copied out of the (non-layer) target cache in the same RUN.
 func TestRustDockerfile_CacheMountBuild(t *testing.T) {
-	gen := writeRustProject(t, plainCargo, map[string]string{"src/main.rs": "fn main() {}"})
+	gen := setRustTarget(writeRustProject(t, plainCargo, map[string]string{"src/main.rs": "fn main() {}"}), "myapp")
 	dockerfile, err := gen.Generate()
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +217,11 @@ func TestRustBinaryResolution(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			gen := writeRustProject(t, tc.cargo, tc.files)
+			if tc.wantErr {
+				rejectRustTarget(gen)
+			} else {
+				setRustTarget(gen, tc.wantBin)
+			}
 			out, err := gen.Generate()
 			if tc.wantErr {
 				if err == nil {
@@ -230,7 +252,7 @@ func TestGoDockerfile_ToolchainVersionArg(t *testing.T) {
 
 func TestRustDockerfile_ToolchainVersionArg(t *testing.T) {
 	// plainCargo declares edition 2021 (min 1.56), so the floor default wins.
-	gen := writeRustProject(t, plainCargo, map[string]string{"src/main.rs": "fn main() {}"})
+	gen := setRustTarget(writeRustProject(t, plainCargo, map[string]string{"src/main.rs": "fn main() {}"}), "myapp")
 	dockerfile, err := gen.Generate()
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +332,7 @@ func TestRustToolchainDefault(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gen := writeRustProject(t, tc.cargo, map[string]string{"src/main.rs": "fn main() {}"})
+			gen := setRustTarget(writeRustProject(t, tc.cargo, map[string]string{"src/main.rs": "fn main() {}"}), "a")
 			out, err := gen.Generate()
 			if tc.wantErr {
 				if err == nil {
@@ -389,7 +411,7 @@ func TestGoDockerfile_StaticBinary(t *testing.T) {
 }
 
 func TestRustDockerfile_MinimalRuntime(t *testing.T) {
-	gen := writeRustProject(t, plainCargo, map[string]string{"src/main.rs": "fn main() {}"})
+	gen := setRustTarget(writeRustProject(t, plainCargo, map[string]string{"src/main.rs": "fn main() {}"}), "myapp")
 	dockerfile, err := gen.Generate()
 	if err != nil {
 		t.Fatal(err)
@@ -420,7 +442,7 @@ func TestDockerfile_OptionalManifestWildcards(t *testing.T) {
 	}
 	// The Rust path no longer copies manifests separately — it `COPY . .`s the
 	// whole project, so a missing Cargo.lock is a non-issue (nothing to match).
-	rustGen := writeRustProject(t, plainCargo, map[string]string{"src/main.rs": "fn main() {}"})
+	rustGen := setRustTarget(writeRustProject(t, plainCargo, map[string]string{"src/main.rs": "fn main() {}"}), "myapp")
 	rust, err := rustGen.Generate()
 	if err != nil {
 		t.Fatal(err)

@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/cargo"
 )
 
 // --- ParsePlan tests -------------------------------------------------------
@@ -623,16 +625,30 @@ func TestFindMainPackageDeterministic(t *testing.T) {
 	}
 }
 
-func TestRustManifestBinarySelection(t *testing.T) {
-	root := t.TempDir()
-	manifest := "[package]\nname='pkg'\ndefault-run='server'\n\n[[bin]]\nname='worker'\npath='src/worker.rs'\n\n[[bin]]\nname='server'\npath='src/server.rs'\n"
-	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte(manifest), 0o644); err != nil {
-		t.Fatal(err)
+func testRustSelection() (cargo.Selection, error) {
+	return cargo.Selection{
+		Package: cargo.Package{ID: "pkg-demo", Name: "demo"},
+		Target:  cargo.Target{Kind: []string{"bin"}, Name: "demo"},
+	}, nil
+}
+
+func fakeArtifactCommand(t *testing.T, packageID, binName, executable string) *exec.Cmd {
+	t.Helper()
+	artifact := cargo.Artifact{
+		Reason:     "compiler-artifact",
+		PackageID:  packageID,
+		Target:     cargo.Target{Kind: []string{"bin"}, Name: binName},
+		Executable: &executable,
 	}
-	got, err := (&RustMatrixBuilder{ProjectRoot: root}).getPkgName()
-	if err != nil || got != "server" {
-		t.Fatalf("getPkgName = %q, %v", got, err)
+	data, err := json.Marshal(artifact)
+	if err != nil {
+		t.Fatalf("marshal artifact: %v", err)
 	}
+	path := filepath.Join(t.TempDir(), "artifact.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	return exec.Command("cat", path)
 }
 
 func TestDockerCommandDeterministicAndDoesNotMutateInputs(t *testing.T) {
@@ -732,6 +748,7 @@ func TestRustCommandUsesVersionAndExtraArgs(t *testing.T) {
 	var got []string
 	r := &RustMatrixBuilder{
 		ProjectRoot: root, AppName: "demo", ExtraArgs: []string{"--locked"},
+		Resolve:  func(context.Context, string, []string) (cargo.Selection, error) { return testRustSelection() },
 		LookPath: func(string) (string, error) { return "/fake/cross", nil },
 		CommandContext: func(_ context.Context, name string, args ...string) *exec.Cmd {
 			got = append([]string{name}, args...)
@@ -739,7 +756,7 @@ func TestRustCommandUsesVersionAndExtraArgs(t *testing.T) {
 			bin := filepath.Join(root, "target", "rust1.77.2-linux-amd64", triple, "release", "demo")
 			_ = os.MkdirAll(filepath.Dir(bin), 0o755)
 			_ = os.WriteFile(bin, []byte("bin"), 0o755)
-			return exec.Command("true")
+			return fakeArtifactCommand(t, "pkg-demo", "demo", bin)
 		},
 	}
 	c := Combination{Lang: builder.Rust, Version: "1.77.2", OS: "linux", Arch: "amd64", Platform: "linux/amd64"}
@@ -750,6 +767,9 @@ func TestRustCommandUsesVersionAndExtraArgs(t *testing.T) {
 	joined := strings.Join(got, " ")
 	if !strings.Contains(joined, "cross +1.77.2 build") || !strings.Contains(joined, "--locked") {
 		t.Fatalf("unexpected cross command: %s", joined)
+	}
+	if !strings.Contains(joined, "--message-format=json-render-diagnostics") {
+		t.Fatalf("cross build must request cargo JSON messages: %s", joined)
 	}
 }
 

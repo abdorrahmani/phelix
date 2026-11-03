@@ -308,6 +308,25 @@ func (p *ProgressBar) Finish(status string) {
 	p.stopped.Do(func() { close(p.done) })
 }
 
+// Output returns a writer for live child-process output. Each write starts on
+// a fresh line and the bar redraws below it, so compiler lines stay readable
+// instead of being overwritten by the spinner.
+func (p *ProgressBar) Output() io.Writer {
+	return progressBarOutput{p: p}
+}
+
+type progressBarOutput struct{ p *ProgressBar }
+
+func (w progressBarOutput) Write(data []byte) (int, error) {
+	w.p.mu.Lock()
+	defer w.p.mu.Unlock()
+	if _, err := w.p.out.Write(append([]byte("\r\033[K"), data...)); err != nil {
+		return 0, err
+	}
+	w.p.render()
+	return len(data), nil
+}
+
 func (p *ProgressBar) render() {
 	state := &progressBarState{
 		label:   p.label,

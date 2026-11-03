@@ -8,10 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/cargo"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -46,6 +46,8 @@ type RustMatrixBuilder struct {
 	LookPath func(string) (string, error)
 	// CommandContext creates executed commands. Overridable for tests.
 	CommandContext func(ctx context.Context, name string, args ...string) *exec.Cmd
+	// Resolve selects the package and binary target. Nil uses cargo metadata.
+	Resolve func(ctx context.Context, projectRoot string, extraArgs []string) (cargo.Selection, error)
 }
 
 func (r *RustMatrixBuilder) lookPath(name string) (string, error) {
@@ -60,6 +62,13 @@ func (r *RustMatrixBuilder) command(ctx context.Context, name string, args ...st
 		return r.CommandContext(ctx, name, args...)
 	}
 	return exec.CommandContext(ctx, name, args...)
+}
+
+func (r *RustMatrixBuilder) selectTarget(ctx context.Context) (cargo.Selection, error) {
+	if r.Resolve != nil {
+		return r.Resolve(ctx, r.ProjectRoot, r.ExtraArgs)
+	}
+	return cargo.SelectFor(ctx, r.ProjectRoot, r.ExtraArgs)
 }
 
 // CheckCrossInstalled verifies that the `cross` tool is available.
@@ -125,13 +134,14 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		return result
 	}
 
-	// Determine the binary name from Cargo.toml.
-	binName, err := r.getPkgName()
+	// Determine the exact package and binary target from cargo metadata.
+	selection, err := r.selectTarget(ctx)
 	if err != nil {
 		result.Status = "failed"
 		result.Error = err
 		return result
 	}
+	binName := selection.Target.Name
 
 	// Per-combination target directory to avoid cache collisions.
 	targetDir := filepath.Join(r.ProjectRoot, "target", c.ID())
@@ -150,33 +160,57 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 
 	args := []string{"+" + c.Version, "build", "--target", triple, "--release", "--target-dir", targetDir}
 	args = append(args, r.ExtraArgs...)
+	args = cargo.MessageFormatArgs(args)
 	cmd := r.command(ctx, "cross", args...)
 	cmd.Dir = r.ProjectRoot
 
-	output := &bytes.Buffer{}
-	commandOutput := &progressOutputWriter{ctx: ctx, key: c.ID(), debug: r.Debug, log: output}
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	commandOutput := &progressOutputWriter{ctx: ctx, key: c.ID(), debug: r.Debug, log: stderr}
 	ReportBuildProgress(ctx, c.ID(), "preparing", 0, 0)
-	cmd.Stdout = commandOutput
+	cmd.Stdout = stdout
 	cmd.Stderr = commandOutput
 	if err := cmd.Run(); err != nil {
 		result.Status = "failed"
 		// Keep the *exec.ExitError reachable; compiler output goes to the debug log.
 		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "cross build failed for %s (target %s)", r.AppName, triple)
 		logLine("error: %v", err)
-		if s := output.String(); s != "" {
+		if s := stderr.String(); s != "" {
 			logLine("stderr: %s", s)
 		}
 		return result
 	}
-	// Locate the built binary.
-	binPath := filepath.Join(targetDir, triple, "release", binName)
+
+	// Locate the exact executable cross reported. Cross may report a path
+	// inside its container, so fall back to the same path mapped onto the
+	// host target directory.
+	artifacts, err := cargo.ParseArtifacts(stdout)
+	if err != nil {
+		result.Status = "failed"
+		result.Error = phelixerr.Wrapf(phelixerr.CodeBuildFailed, err,
+			"could not read cargo build messages for %s", r.AppName)
+		return result
+	}
+	binPath, err := cargo.SelectArtifact(artifacts, selection)
+	if err != nil {
+		result.Status = "failed"
+		result.Error = err
+		return result
+	}
+	if !filepath.IsAbs(binPath) {
+		binPath = filepath.Join(r.ProjectRoot, binPath)
+	}
 	if _, err := os.Stat(binPath); err != nil {
-		// Try with .exe suffix (Windows target).
-		binPath += ".exe"
+		binPath = cargo.ExecutablePath(targetDir, triple, "release", filepath.Base(binPath))
 		if _, err := os.Stat(binPath); err != nil {
-			result.Status = "failed"
-			result.Error = phelixerr.Newf(phelixerr.CodeNotFound, "built binary not found at expected path for %s (target %s)", r.AppName, triple)
-			return result
+			binPath += ".exe"
+			if _, err := os.Stat(binPath); err != nil {
+				result.Status = "failed"
+				result.Error = phelixerr.Newf(phelixerr.CodeNotFound,
+					"cargo reported executable %q for %s (target %s) but it is not present on the host",
+					binPath, r.AppName, triple)
+				return result
+			}
 		}
 	}
 
@@ -191,7 +225,7 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result.Duration = time.Since(start)
 	result.Status = "success"
 	result.Artifact = outBin
-	result.CacheStatus = string(builder.RustCacheStatusFromOutput(output.String()))
+	result.CacheStatus = string(builder.RustCacheStatusFromOutput(stderr.String()))
 	// Checksum the final artifact bytes (integrity failure fails the combo).
 	finalizeArtifactChecksum(result)
 	return result
@@ -204,60 +238,6 @@ func archWithVariant(c Combination) string {
 		return c.Arch
 	}
 	return c.Arch + "/" + c.Variant
-}
-
-// getPkgName determines the binary `cargo build` produces, from Cargo.toml.
-// Precedence: default-run (if set), the single [[bin]] target's name, then
-// the [package] name. A naive "first name= line" parse would return the
-// package name even when the binary is named differently (or pick up an
-// unrelated name= key in another section).
-func (r *RustMatrixBuilder) getPkgName() (string, error) {
-	cargoPath := filepath.Join(r.ProjectRoot, "Cargo.toml")
-	data, err := os.ReadFile(cargoPath)
-	if err != nil {
-		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "read Cargo.toml")
-	}
-
-	section := ""
-	var pkgName, defaultRun string
-	var binNames []string
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") {
-			section = strings.TrimSpace(line)
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.Trim(strings.TrimSpace(value), "\"'")
-		if key != "name" && key != "default-run" {
-			continue
-		}
-		switch {
-		case section == "[package]" && key == "name":
-			pkgName = value
-		case section == "[package]" && key == "default-run":
-			defaultRun = value
-		case section == "[[bin]]" && key == "name":
-			binNames = append(binNames, value)
-		}
-	}
-
-	switch {
-	case defaultRun != "":
-		return defaultRun, nil
-	case len(binNames) == 1:
-		return binNames[0], nil
-	case pkgName != "":
-		return pkgName, nil
-	}
-	return "", phelixerr.New(phelixerr.CodeUnsupportedProject, "could not find package name in Cargo.toml")
 }
 
 // platformToRustTriple converts an os/arch pair (arch optionally carrying an

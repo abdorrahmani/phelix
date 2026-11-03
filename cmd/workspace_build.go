@@ -32,6 +32,16 @@ var (
 // service builds so output stays readable.
 var wsPrintMu sync.Mutex
 
+// wsCargoOutput serializes live compiler output from parallel service builds
+// so lines from different services do not interleave.
+type wsCargoOutput struct{}
+
+func (wsCargoOutput) Write(data []byte) (int, error) {
+	wsPrintMu.Lock()
+	defer wsPrintMu.Unlock()
+	return fmt.Print(string(data))
+}
+
 // wsAppStateMu serializes every read and write of the process-global app
 // registry made by parallel service builds. The registry is a plain map that
 // LoadState replaces wholesale, so two goroutines touching it at once race
@@ -274,6 +284,7 @@ func buildWorkspaceService(svc *workspace.Service, extraArgs []string, buildMgr 
 		wsPrintMu.Unlock()
 		return 0, phelixerr.Wrap(phelixerr.CodeBuildFailed, "build preparation failed", err)
 	}
+	buildCtx.Config.Output = wsCargoOutput{}
 	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
 		workspaceMarkBuildFailed(id)
 		wsPrintMu.Lock()

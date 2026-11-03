@@ -1,20 +1,21 @@
 package builder
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"strings"
-	"time"
 
 	"github.com/abdorrahmani/phelix/internal/buildreport"
+	"github.com/abdorrahmani/phelix/internal/cargo"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
-) // RustBuilder builds Rust projects
+)
 
+// RustBuilder builds Rust projects
 type RustBuilder struct{}
 
 // NewRustBuilder creates a new Rust builder
@@ -44,23 +45,34 @@ func (rb *RustBuilder) Validate(scan *ProjectScan) error {
 	return nil
 }
 
-// Build performs a Rust build
+// Build performs a Rust build and records the exact executable cargo reported
+// for the selected package and binary target.
 func (rb *RustBuilder) Build(config BuildConfig) error {
-	// Build command arguments
-	args := []string{"build"}
-
-	// Add extra arguments from user (e.g., --release, --features, etc.)
-	if len(config.ExtraArgs) > 0 {
-		args = append(args, config.ExtraArgs...)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout(config.Timeout))
 	defer cancel()
+
+	selection, err := cargo.SelectFor(ctx, config.ProjectRoot, config.ExtraArgs)
+	if err != nil {
+		return err
+	}
+
+	args := append([]string{"build"}, config.ExtraArgs...)
+	args = cargo.MessageFormatArgs(args)
 
 	cmd := exec.CommandContext(ctx, "cargo", args...)
 	cmd.Dir = config.ProjectRoot
 
-	output, err := cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	// Cargo sends status lines and rendered diagnostics to stderr; stdout is
+	// the JSON artifact stream and must never be shown raw.
+	if config.Output != nil {
+		cmd.Stderr = io.MultiWriter(&stderr, config.Output)
+	} else {
+		cmd.Stderr = &stderr
+	}
+
+	err = cmd.Run()
 	if err != nil {
 		if ctx.Err() != nil {
 			return phelixerr.Wrapf(phelixerr.CodeBuildTimeout, err,
@@ -70,13 +82,29 @@ func (rb *RustBuilder) Build(config BuildConfig) error {
 
 		return phelixerr.Wrapf(
 			phelixerr.CodeBuildFailed,
-			&ToolError{Tool: "cargo", Output: tailOutput(output), Err: err},
+			&ToolError{Tool: "cargo", Output: tailOutput(stderr.Bytes()), Err: err},
 			"%s",
 			cargoFailureMessage(err, config),
 		)
 	}
 
-	observeCache(config, RustCacheStatusFromOutput(string(output)), buildreport.CacheSourceCargo)
+	observeCache(config, RustCacheStatusFromOutput(stderr.String()), buildreport.CacheSourceCargo)
+
+	artifacts, err := cargo.ParseArtifacts(&stdout)
+	if err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeBuildFailed, err,
+			"could not read cargo build messages for %s", config.Name)
+	}
+	executable, err := cargo.SelectArtifact(artifacts, selection)
+	if err != nil {
+		return rb.missingArtifactError(config, selection, err)
+	}
+	if !filepath.IsAbs(executable) {
+		executable = filepath.Join(config.ProjectRoot, executable)
+	}
+	if config.Observe != nil {
+		config.Observe.ArtifactPath = executable
+	}
 
 	return nil
 }
@@ -98,89 +126,54 @@ func cargoFailureMessage(err error, config BuildConfig) string {
 	return fmt.Sprintf("cargo build failed for %s: %v", config.Name, err)
 }
 
-// GetBinaryPath returns the path to the built binary.
-func (rb *RustBuilder) GetBinaryPath(config BuildConfig) (string, error) {
-	// Determine if it's a release build
-	isRelease := slices.Contains(config.ExtraArgs, "--release")
-
-	buildType := "debug"
-	if isRelease {
-		buildType = "release"
-	}
-	targetDir := filepath.Join(rb.cargoTargetDir(config.ProjectRoot), buildType)
-
-	pkgName := rb.getPackageNameFromCargo(config.ProjectRoot)
-	var candidates []string
-	if pkgName != "" {
-		candidates = append(candidates, pkgName)
-	}
-	candidates = append(candidates, binNamesFromCargo(config.ProjectRoot)...)
-
-	for _, name := range candidates {
-		builtPath := filepath.Join(targetDir, name)
-		if _, err := os.Stat(builtPath); err == nil {
-			return builtPath, nil
-		}
-		// Try Windows executable
-		if _, err := os.Stat(builtPath + ".exe"); err == nil {
-			return builtPath + ".exe", nil
-		}
-	}
-
-	path, err := rb.findMostRecentBinary(targetDir)
-	if err != nil {
-		return "", rb.missingArtifactError(config, targetDir, pkgName, buildType, err)
-	}
-	return path, nil
-}
-
 // missingArtifactError builds the actionable error for "cargo succeeded but
-// the artifact is not where we expect it". It names the expected path, the
-// detected package, and whether the cache was involved, so a wrong binary
-// name / workspace layout / stale target dir is diagnosable from the message.
-func (rb *RustBuilder) missingArtifactError(config BuildConfig, targetDir, pkgName, buildType string, cause error) error {
+// the selected package and binary produced no executable".
+func (rb *RustBuilder) missingArtifactError(config BuildConfig, selection cargo.Selection, cause error) error {
 	cache := "unknown"
 	if config.Observe != nil {
 		cache = string(config.Observe.CacheStatus.Normalized())
 	}
-	name := pkgName
-	if name == "" {
-		name = "(unknown — no name in Cargo.toml)"
-	}
-	msg := fmt.Sprintf(
-		"cargo reported success but no binary was produced: expected an executable in %s (package %q, build type %s, cache %s)",
-		targetDir, name, buildType, cache,
-	)
-	if cause != nil {
-		return phelixerr.Wrapf(phelixerr.CodeNotFound, cause, "%s — check the crate's [[bin]] name or clear target/ if the cache is stale", msg)
-	}
-	return phelixerr.Newf(phelixerr.CodeNotFound, "%s — check the crate's [[bin]] name or clear target/ if the cache is stale", msg)
+	return phelixerr.Wrapf(phelixerr.CodeNotFound, cause,
+		"cargo reported success but no executable was produced for package %q target %q (cache %s); "+
+			"check --bin/--package or clear target/ if the cache is stale",
+		selection.Package.Name, selection.Target.Name, cache)
 }
 
-// binNamesFromCargo extracts the `name = "..."` entries of every `[[bin]]`
-// section in Cargo.toml, so crates whose binary differs from the package name
-// still resolve.
-func binNamesFromCargo(projectRoot string) []string {
-	cargoPath := filepath.Join(projectRoot, "Cargo.toml")
-	data, err := os.ReadFile(cargoPath)
-	if err != nil {
-		return nil
+// GetBinaryPath returns the executable cargo reported for the last build. When
+// no build observation is available it resolves the same package and binary
+// through cargo metadata and checks the exact expected path; it never scans for
+// the newest file.
+func (rb *RustBuilder) GetBinaryPath(config BuildConfig) (string, error) {
+	if config.Observe != nil && config.Observe.ArtifactPath != "" {
+		if _, err := os.Stat(config.Observe.ArtifactPath); err != nil {
+			return "", phelixerr.Wrapf(phelixerr.CodeNotFound, err,
+				"cargo reported executable %s but it is not present", config.Observe.ArtifactPath)
+		}
+		return config.Observe.ArtifactPath, nil
 	}
 
-	var names []string
-	inBin := false
-	for line := range strings.SplitSeq(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") {
-			inBin = trimmed == "[[bin]]"
-			continue
-		}
-		if inBin && strings.HasPrefix(trimmed, "name") && strings.Contains(trimmed, "=") {
-			parts := strings.SplitN(trimmed, "=", 2)
-			names = append(names, strings.Trim(strings.TrimSpace(parts[1]), "\"'"))
-		}
+	meta, err := cargo.LoadMetadata(context.Background(), config.ProjectRoot)
+	if err != nil {
+		return "", err
 	}
-	return names
+	selection, err := cargo.Select(meta, config.ProjectRoot, config.ExtraArgs)
+	if err != nil {
+		return "", err
+	}
+	path := cargo.ExecutablePath(
+		cargo.TargetDir(meta, config.ProjectRoot, config.ExtraArgs),
+		cargo.TargetTriple(config.ExtraArgs),
+		cargo.ProfileDir(config.ExtraArgs),
+		selection.Target.Name,
+	)
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	if _, err := os.Stat(path + ".exe"); err == nil {
+		return path + ".exe", nil
+	}
+	return "", rb.missingArtifactError(config, selection,
+		phelixerr.Newf(phelixerr.CodeNotFound, "expected executable at %s", path))
 }
 
 // GetBuildFlags returns Rust/Cargo build flags
@@ -213,108 +206,9 @@ func (rb *RustBuilder) GetBuildFlags() []string {
 		"--incremental",
 		"--no-incremental",
 		"--build-plan",
+		"--profile",
+		"--target-dir",
 	}
-}
-
-// getPackageNameFromCargo reads the package name from Cargo.toml
-func (rb *RustBuilder) getPackageNameFromCargo(projectRoot string) string {
-	cargoPath := filepath.Join(projectRoot, "Cargo.toml")
-	data, err := os.ReadFile(cargoPath)
-	if err != nil {
-		return ""
-	}
-
-	for line := range strings.SplitSeq(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "name") && strings.Contains(line, "=") {
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 {
-				pkgName := strings.Trim(strings.TrimSpace(parts[1]), "\"'")
-				return pkgName
-			}
-		}
-	}
-	return ""
-}
-
-// cargoTargetDir resolves where cargo writes build output for projectRoot.
-// A member of a Cargo workspace builds into the workspace root's target
-// directory, not the crate's own, so the crate directory alone is wrong.
-// CARGO_TARGET_DIR wins when set, matching cargo's own precedence.
-func (rb *RustBuilder) cargoTargetDir(projectRoot string) string {
-	if dir := os.Getenv("CARGO_TARGET_DIR"); dir != "" {
-		if filepath.IsAbs(dir) {
-			return dir
-		}
-		return filepath.Join(projectRoot, dir)
-	}
-	dir := projectRoot
-	for {
-		if hasWorkspaceSection(filepath.Join(dir, "Cargo.toml")) {
-			return filepath.Join(dir, "target")
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return filepath.Join(projectRoot, "target")
-}
-
-// hasWorkspaceSection reports whether a Cargo.toml declares [workspace], which
-// makes it the target directory owner for every member below it.
-func hasWorkspaceSection(cargoPath string) bool {
-	raw, err := os.ReadFile(cargoPath)
-	if err != nil {
-		return false
-	}
-	for line := range strings.SplitSeq(string(raw), "\n") {
-		if strings.TrimSpace(line) == "[workspace]" {
-			return true
-		}
-	}
-	return false
-}
-
-// findMostRecentBinary finds the most recently modified executable file in
-// the target directory. Library/dependency artifacts (`.d`, `.rlib`, `.a`,
-// `.so`) are ignored — they share the directory with the binary and are newer
-// than it whenever cargo relinks a dependency.
-func (rb *RustBuilder) findMostRecentBinary(targetDir string) (string, error) {
-	entries, err := os.ReadDir(targetDir)
-	if err != nil {
-		return "", err
-	}
-
-	var newest string
-	var newestTime time.Time
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-
-		// Executable-bit check: a "binary" cargo emits is always +x.
-		if info.Mode().Perm()&0o111 == 0 {
-			continue
-		}
-
-		if newest == "" || info.ModTime().After(newestTime) {
-			newest = entry.Name()
-			newestTime = info.ModTime()
-		}
-	}
-
-	if newest == "" {
-		return "", phelixerr.Newf(phelixerr.CodeNotFound, "no executable found in %s", targetDir)
-	}
-
-	return filepath.Join(targetDir, newest), nil
 }
 
 // CopyBuiltBinary copies the built rust binary to the specified output path.
@@ -343,25 +237,22 @@ func CopyBuiltBinary(sourcePath string, outputPath string) error {
 	return nil
 }
 
-// BuildAndCopyRust is a convenience function that builds and copies the binary
+// BuildAndCopyRust builds and copies the selected cargo executable.
 func BuildAndCopyRust(config BuildConfig) error {
+	if config.Observe == nil {
+		config.Observe = &BuildObservation{CacheStatus: buildreport.CacheUnknown}
+	}
+
 	rb := NewRustBuilder()
 
-	// Build
 	if err := rb.Build(config); err != nil {
 		return err
 	}
 
-	// Get binary path (detailed, actionable error when the artifact is missing)
 	binaryPath, err := rb.GetBinaryPath(config)
 	if err != nil {
 		return err
 	}
 
-	// Copy to output path
-	if err := CopyBuiltBinary(binaryPath, config.OutputPath); err != nil {
-		return err
-	}
-
-	return nil
+	return CopyBuiltBinary(binaryPath, config.OutputPath)
 }
