@@ -81,7 +81,7 @@ func yamlNodeEmpty(node *yaml.Node) bool {
 		}
 		return yamlNodeEmpty(node.Content[0])
 	}
-	return node.Kind == 0 || (node.Kind == yaml.ScalarNode && (node.Tag == "!!null" || node.Value == ""))
+	return node.Kind == 0 || (node.Kind == yaml.ScalarNode && node.Tag == "!!null")
 }
 
 // unknownConfigKeys walks the first YAML document and reports every mapping
