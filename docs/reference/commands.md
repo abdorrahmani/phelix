@@ -157,8 +157,11 @@ Summary:
 ```
 
 Exits non-zero when a critical check fails. Inconclusive detection (no listener
-found, no `PORT` usage) is reported as ⚠ warning, not a false failure. Diagnostic
-only — never rewrites source code.
+found, no `PORT` usage) is reported as a warning, not a false failure. A
+hardcoded listener fails even when an unrelated file reads `PORT`; when the same
+file reads `PORT`, the listener stays an uncertain warning. Rust projects
+receive Rust-specific repair advice, and `type: worker` projects skip the
+listener check entirely. Diagnostic only, never rewrites source code.
 
 ### `phelix build-report <AppName> [flags]`
 
