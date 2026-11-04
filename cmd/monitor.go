@@ -82,13 +82,7 @@ func runMonitor() error {
 		if err != nil {
 			return err
 		}
-		if w, werr := workerAppState(info.Name); werr == nil && w != nil {
-			return runWorkerRestart(info, "")
-		}
-		if err := runDeployAwareStop(info); err != nil {
-			return err
-		}
-		return runDeployAwareStart(info)
+		return restartAppInfo(info)
 	}
 	startupSecretsRuntime()
 	restoreDeployedApps()
@@ -298,10 +292,15 @@ func reconcileOrphanContainers(am *app.AppManager) {
 	known := map[string]bool{}
 	anyDocker := false
 	for _, info := range am.Apps {
+		release, err := deploy.AcquireDeployLock(info.Name, "orphan-reconcile")
+		if err != nil {
+			return
+		}
+		defer release()
 		state, derr := loadDeployState(info.Name)
 		if derr != nil {
 			logs.Warning("monitor", "cannot read deployment state for %s, skipping orphan check: %v", info.Name, derr)
-			continue
+			return
 		}
 		if state == nil {
 			continue

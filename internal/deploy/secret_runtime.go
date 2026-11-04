@@ -50,17 +50,21 @@ func RuntimeSecrets(inst *Instance, fallback []secrets.Binding) (*secrets.Pinned
 
 // RefreshSecretCoverage refreshes one app without letting another app's failure stop it.
 func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
+	if !app.ValidAppID(info.ID) {
+		return nil
+	}
 	defer func() {
 		if errRet != nil {
 			secrets.MarkDegraded(info.ID, "cannot register stored or running credentials")
 		}
 	}()
-	bindings, err := secrets.CommittedBindings(info.ID)
+	store, err := secrets.Open(info.ID)
 	if err != nil {
 		return err
 	}
+	bindings := store.Bindings
 	state, err := Load(info.Name)
-	if len(bindings) == 0 && len(info.SecretEnvs) == 0 && !hasInstanceSecrets(state) {
+	if store.Pending == nil && len(bindings) == 0 && len(info.SecretEnvs) == 0 && !hasInstanceSecrets(state) {
 		secrets.ReleaseCoverage(info.ID)
 		secrets.MarkHealthy(info.ID)
 		return nil
@@ -73,6 +77,9 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 		return err
 	}
 	defer release()
+	if _, err := ReconcileSecretTxn(info.Name, info.ID); err != nil {
+		return err
+	}
 	bindings, err = secrets.CommittedBindings(info.ID)
 	if err != nil {
 		return err

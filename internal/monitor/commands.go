@@ -9,6 +9,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
 // ErrRemoteCommandNotStarted marks an error raised in a remote command's
@@ -65,10 +66,11 @@ func NewCommandExecutor() CommandExecutor {
 
 // resolvedApp is the identity of a managed app resolved by name or ID.
 type resolvedApp struct {
-	ID        string
-	Name      string
-	Port      int
-	Directory string
+	SecretEnvs []string
+	ID         string
+	Name       string
+	Port       int
+	Directory  string
 }
 
 // resolveApp finds a managed app by name or ID, mirroring how CLI commands
@@ -77,7 +79,7 @@ func resolveApp(identifier string) (*resolvedApp, error) {
 	apps := app.Manager.ListApplications()
 	for _, a := range apps {
 		if a.Name == identifier || a.ID == identifier {
-			return &resolvedApp{ID: a.ID, Name: a.Name, Port: a.Port, Directory: a.Directory}, nil
+			return &resolvedApp{ID: a.ID, Name: a.Name, Port: a.Port, Directory: a.Directory, SecretEnvs: a.SecretEnvs}, nil
 		}
 	}
 	return nil, phelixerr.Newf(phelixerr.CodeNotFound, "app not found: %s", identifier)
@@ -209,6 +211,13 @@ func (e *appCommandExecutor) Execute(cmd Command) error {
 		logs.Info("monitor", "app '%s' is deploy-managed (mode %s); running '%s' through the CLI",
 			target.Name, state.Mode, cmd.Payload.Type)
 	} else {
+		bindings, err := secrets.CommittedBindings(target.ID)
+		if err != nil {
+			return NotStarted(err)
+		}
+		if len(bindings) > 0 || len(target.SecretEnvs) > 0 {
+			return e.execFallback(cmd, target, overrideArgs)
+		}
 		switch cmd.Payload.Type {
 		case "start":
 			// Reuse the app's persisted port so `start` never overrides it with a

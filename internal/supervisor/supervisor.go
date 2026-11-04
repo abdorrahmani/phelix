@@ -136,6 +136,14 @@ func (s *Supervisor) reconcileApp(name, dir string) {
 		s.dropApp(name)
 		return
 	}
+	if _, err := deploy.ReconcileSecretTxn(name, state.AppID); err != nil {
+		log.Printf("supervisor: %s: secret recovery failed: %v", name, err)
+		return
+	}
+	state, err = deploy.Load(name)
+	if err != nil {
+		return
+	}
 	cfg, err := project.Load(dir)
 	if err != nil {
 		log.Printf("supervisor: %s: config unreadable, skipping pass: %v", name, err)

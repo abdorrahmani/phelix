@@ -79,3 +79,45 @@ func TestRuntimeWithoutSecretsNeedsNoProcessInspection(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCoverageTickRetriesPendingRecovery(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "tick-recovered-value")
+	txn, err := BeginSecretTxn(txnTestAppID, "tick-recovery", "dep-1", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	path, err := statePath(txn.AppName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info := app.AppListItem{ID: txnTestAppID, Name: txn.AppName}
+	if err := RefreshSecretCoverage(info); err == nil {
+		t.Fatal("unreadable pending journal was ignored")
+	}
+	if state, _ := secrets.SecurityOf(info.ID); state != secrets.SecurityDegraded {
+		t.Fatal("pending journal failure was not flagged")
+	}
+	state := &DeployState{AppName: txn.AppName, AppID: info.ID, Mode: ModeRolling}
+	txn.Stamp(state)
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := RefreshSecretCoverage(info); err != nil {
+		t.Fatal(err)
+	}
+	st, err := secrets.Open(info.ID)
+	if err != nil || st.Pending != nil || len(st.Bindings) != 1 {
+		t.Fatal("later tick did not recover accepted bindings", err)
+	}
+	if state, _ := secrets.SecurityOf(info.ID); state != secrets.SecurityHealthy {
+		t.Fatal("successful retry remained degraded")
+	}
+}
