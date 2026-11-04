@@ -25,7 +25,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/appid"
 	"github.com/abdorrahmani/phelix/internal/env"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/project"
@@ -174,7 +174,7 @@ func dataDir() string {
 // storePath returns the store file for an application after validating the
 // identifier, so a hostile app name can never escape the secrets directory.
 func storePath(appID string) (string, error) {
-	if !app.ValidAppID(appID) {
+	if !appid.Valid(appID) {
 		return "", phelixerr.Newf(phelixerr.CodeInvalidArgument, "secrets: invalid application id %q", appID)
 	}
 	return filepath.Join(dataDir(), "secrets", appID+".json"), nil
@@ -184,7 +184,7 @@ func storePath(appID string) (string, error) {
 // once and never replaced or deleted, so every process always locks the same
 // file, no matter how many times the store itself is renamed.
 func lockPath(appID string) (string, error) {
-	if !app.ValidAppID(appID) {
+	if !appid.Valid(appID) {
 		return "", phelixerr.Newf(phelixerr.CodeInvalidArgument, "secrets: invalid application id %q", appID)
 	}
 	return filepath.Join(dataDir(), "secrets", appID+".lock"), nil

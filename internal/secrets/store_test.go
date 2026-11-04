@@ -328,7 +328,12 @@ func TestValidAppIDShape(t *testing.T) {
 	if !app.ValidAppID(testAppID) {
 		t.Fatal("a generated UUID-shaped id must validate")
 	}
-	if app.ValidAppID("../../../etc") {
-		t.Fatal("path-like strings must not validate")
+	if !app.ValidAppID("42") {
+		t.Fatal("the short identifiers workers use must validate")
+	}
+	for _, bad := range []string{"../../../etc", "..", ".", "a/b", "a\\b", "", "a:b"} {
+		if app.ValidAppID(bad) {
+			t.Fatalf("path-hostile id %q must not validate", bad)
+		}
 	}
 }
