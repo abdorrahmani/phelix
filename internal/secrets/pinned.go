@@ -2,8 +2,9 @@ package secrets
 
 import (
 	"context"
-	"github.com/shirou/gopsutil/process"
 	"strings"
+
+	"github.com/shirou/gopsutil/process"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
@@ -27,6 +28,9 @@ type PinnedSet struct {
 // registered. The resolved values are masked for this process and retained
 // with the application's coverage for the lifetime of the deployment.
 func PinBindings(ctx context.Context, appID string, bindings []Binding) (*PinnedSet, error) {
+	if err := CheckRuntimeSecurity(appID); err != nil {
+		return nil, err
+	}
 	if err := CheckCollisions(appID, bindings); err != nil {
 		return nil, err
 	}

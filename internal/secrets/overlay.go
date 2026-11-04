@@ -17,6 +17,11 @@ var appCoverage = struct {
 
 // AcquireCoverage replaces app coverage only after registering every incoming value.
 func AcquireCoverage(appID string, values []string) {
+	replaceCoverage(appID, values)
+}
+
+// replaceCoverage updates one owner without releasing another owner's values.
+func replaceCoverage(owner string, values []string) {
 	appCoverage.mu.Lock()
 	defer appCoverage.mu.Unlock()
 	unique := make(map[string]bool, len(values))
@@ -30,19 +35,20 @@ func AcquireCoverage(appID string, values []string) {
 		phelixerr.RegisterSecretValue(value)
 		next = append(next, value)
 	}
-	for _, value := range appCoverage.apps[appID] {
+	for _, value := range appCoverage.apps[owner] {
 		phelixerr.UnregisterSecretValue(value)
 	}
 	if len(next) == 0 {
-		delete(appCoverage.apps, appID)
+		delete(appCoverage.apps, owner)
 	} else {
-		appCoverage.apps[appID] = next
+		appCoverage.apps[owner] = next
 	}
 }
 
 // ReleaseCoverage releases app coverage after its instances and log drains are gone.
 func ReleaseCoverage(appID string) {
 	AcquireCoverage(appID, nil)
+	replaceCoverage(appID+":launch", nil)
 }
 
 // RegisterResolvedValue masks a single value in the current process. The CLI
@@ -92,11 +98,14 @@ func ClassicEnvOverlay(ctx context.Context, appID string) ([]string, error) {
 // lifetime. Success marks the application healthy; failure marks it
 // degraded, which halts its log transmission until it resolves again.
 func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]string, error) {
+	if err := CheckRuntimeSecurity(appID); err != nil {
+		return nil, err
+	}
 	if err := validateBindings(bindings); err != nil {
 		return nil, err
 	}
 	if len(bindings) == 0 {
-		MarkHealthy(appID)
+		markResolved(appID)
 		return nil, nil
 	}
 	overlay := make([]string, 0, len(bindings))
@@ -110,8 +119,8 @@ func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]
 		overlay = append(overlay, b.Env+"="+resolved.Value)
 		values = append(values, resolved.Value)
 	}
-	AcquireCoverage(appID, values)
-	MarkHealthy(appID)
+	replaceCoverage(appID+":launch", values)
+	markResolved(appID)
 	return overlay, nil
 }
 

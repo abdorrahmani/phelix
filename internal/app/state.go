@@ -77,7 +77,7 @@ func ensureDirectories() error {
 // SaveState saves the current state to disk
 func (m *AppManager) SaveState() error {
 	type SavedApp struct {
-		SecretEnvs  []string         `json:"secret_envs,omitempty"`
+		SecretEnvs  []string         `json:"secret_envs,omitzero"`
 		ID          string           `json:"id"`
 		Name        string           `json:"name"`
 		PID         int              `json:"pid"`
@@ -161,7 +161,7 @@ func (m *AppManager) LoadState() error {
 	fileMutex.Unlock()
 
 	type SavedApp struct {
-		SecretEnvs  []string         `json:"secret_envs,omitempty"`
+		SecretEnvs  []string         `json:"secret_envs,omitzero"`
 		ID          string           `json:"id"`
 		Name        string           `json:"name"`
 		PID         int              `json:"pid"`

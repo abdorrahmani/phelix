@@ -50,12 +50,22 @@ func RuntimeSecrets(inst *Instance, fallback []secrets.Binding) (*secrets.Pinned
 
 // RefreshSecretCoverage refreshes one app without letting another app's failure stop it.
 func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
+	return inspectSecretCoverage(info, true)
+}
+
+// InspectSecretCoverage checks stored and running values without changing deployment state.
+func InspectSecretCoverage(info app.AppListItem) error {
+	return inspectSecretCoverage(info, false)
+}
+
+// inspectSecretCoverage keeps runtime inspection separate from deployment recovery.
+func inspectSecretCoverage(info app.AppListItem, reconcile bool) (errRet error) {
 	if !app.ValidAppID(info.ID) {
 		return nil
 	}
 	defer func() {
 		if errRet != nil {
-			secrets.MarkDegraded(info.ID, "cannot register stored or running credentials")
+			secrets.MarkRuntimeDegraded(info.ID, "cannot register stored or running credentials")
 		}
 	}()
 	store, err := secrets.Open(info.ID)
@@ -72,13 +82,18 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	release, err := AcquireDeployLock(info.Name, "secrets-coverage")
-	if err != nil {
-		return err
-	}
-	defer release()
-	if _, err := ReconcileSecretTxn(info.Name, info.ID); err != nil {
-		return err
+	if reconcile {
+		release, err := AcquireDeployLock(info.Name, "secrets-coverage")
+		if err != nil {
+			if phelixerr.IsCode(err, phelixerr.CodeDeployLocked) {
+				return nil
+			}
+			return err
+		}
+		defer release()
+		if _, err := ReconcileSecretTxn(info.Name, info.ID); err != nil {
+			return err
+		}
 	}
 	bindings, err = secrets.CommittedBindings(info.ID)
 	if err != nil {
@@ -126,9 +141,10 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 		values = append(values, set.Values()...)
 	}
 	if !live {
-		values = nil
+		secrets.ReleaseCoverage(info.ID)
+	} else {
+		secrets.AcquireCoverage(info.ID, values)
 	}
-	secrets.AcquireCoverage(info.ID, values)
 	secrets.MarkHealthy(info.ID)
 	return nil
 }

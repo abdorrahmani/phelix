@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -218,13 +217,7 @@ func runSecretsList(ref *appInfoRef) error {
 	if err != nil {
 		return err
 	}
-	secrets.MarkHealthy(ref.ID())
-	for _, binding := range st.Bindings {
-		if _, err := secrets.Resolve(context.Background(), ref.ID(), binding.Secret); err != nil {
-			secrets.MarkDegraded(ref.ID(), "cannot resolve committed bindings")
-			break
-		}
-	}
+	_ = deploy.InspectSecretCoverage(app.AppListItem{ID: ref.ID(), Name: ref.Name(), PID: ref.AppInfo.PID, Status: ref.AppInfo.Status, SecretEnvs: ref.AppInfo.SecretEnvs})
 	security, reason := secrets.SecurityOf(ref.ID())
 	metas := st.List()
 	sortSecretMetas(metas)
@@ -332,7 +325,6 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 		return err
 	}
 	secrets.RegisterResolvedValue(value)
-	defer secrets.UnregisterResolvedValue(value)
 	release, err := deploy.AcquireDeployLock(ref.Name(), "secrets-set")
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
@@ -555,12 +547,12 @@ func appIsRunning(ref *appInfoRef) (bool, error) {
 	}
 	if err == nil && state.Mode != "classic" {
 		for _, inst := range state.Slots {
-			if inst != nil && (inst.ContainerID != "" || deploy.InstanceAlive(inst)) {
+			if inst != nil && deploy.InstanceAlive(inst) {
 				return true, nil
 			}
 		}
 		for _, inst := range state.Replicas {
-			if inst != nil && (inst.ContainerID != "" || deploy.InstanceAlive(inst)) {
+			if inst != nil && deploy.InstanceAlive(inst) {
 				return true, nil
 			}
 		}

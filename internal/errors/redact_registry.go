@@ -164,7 +164,7 @@ func AcquireSecretValues(values []string) func() {
 func SecretEnvNames(env []string) []string {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
-	var names []string
+	names := make([]string, 0)
 	for _, kv := range env {
 		key, value, ok := strings.Cut(kv, "=")
 		if ok && registry.refs[value] > 0 {

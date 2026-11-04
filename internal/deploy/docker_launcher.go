@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 // dockerInternalPort is the port the managed app is told to bind (via PORT)
@@ -118,7 +120,56 @@ func redactDockerArgs(args []string) string {
 // attached to (so the app resolves compose backing services by DNS name); ""
 // keeps the default bridge (no --network).
 func DockerLauncherForApp(appName, network string) InstanceLauncher {
-	return newDockerLauncher(appName, "", network, execDockerRunner)
+	launch := newDockerLauncher(appName, "", network, execDockerRunner)
+	return func(ctx context.Context, imageRef string, env []string) (Process, int, error) {
+		proc, port, err := launch(ctx, imageRef, env)
+		if err != nil {
+			return nil, 0, err
+		}
+		values := phelixerr.SecretValuesInEnv(env)
+		if len(values) == 0 {
+			return proc, port, nil
+		}
+		if err := captureDockerOutput(proc, imageRef, port, env); err != nil {
+			stopHeldProcess(context.Background(), proc, 3*time.Second)
+			return nil, 0, err
+		}
+		release := phelixerr.AcquireSecretValues(values)
+		go func() {
+			defer release()
+			for {
+				var unknown *unconfirmedExit
+				if err := proc.Wait(); !errors.As(err, &unknown) {
+					return
+				}
+				time.Sleep(time.Second)
+			}
+		}()
+		return proc, port, nil
+	}
+}
+
+// captureDockerOutput sends container output through the same detached drain as native apps.
+func captureDockerOutput(proc Process, imageRef string, port int, env []string) error {
+	file, err := openInstanceLog(imageRef, port)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	cmd := exec.Command("docker", "logs", "--follow", containerIDOf(proc))
+	cmd.Env = append(os.Environ(), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	closeDrain, err := logs.AttachDrain(cmd, file)
+	if err != nil {
+		return err
+	}
+	defer closeDrain()
+	cmd.Env = os.Environ()
+	if err := cmd.Start(); err != nil {
+		return phelixerr.New(phelixerr.CodeProcessFailed, "cannot start secure container log capture")
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // newDockerLauncher is the test-injectable constructor. slot may be "" when the

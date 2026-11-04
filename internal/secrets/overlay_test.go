@@ -134,3 +134,30 @@ func TestCommittedBindingsEmptyStore(t *testing.T) {
 	}
 	_ = filepath.Join
 }
+
+func TestLaunchResolutionPreservesRuntimeCoverage(t *testing.T) {
+	testEnv(t)
+	old := "previous-adopted-runtime-credential"
+	AcquireCoverage(testAppID, []string{old})
+	t.Cleanup(func() { ReleaseCoverage(testAppID); MarkHealthy(testAppID) })
+	if _, err := Set(testAppID, "current", "new-launch-credential"); err != nil {
+		t.Fatal(err)
+	}
+	bindings := []Binding{{Secret: "current", Env: "DB"}}
+	if _, err := OverlayForLaunch(context.Background(), testAppID, bindings); err != nil {
+		t.Fatal(err)
+	}
+	if phelixerr.Redact(old) != "***" {
+		t.Fatal("launch resolution dropped old instance coverage")
+	}
+	MarkRuntimeDegraded(testAppID, "runtime inspection failed")
+	if _, err := OverlayForLaunch(context.Background(), testAppID, bindings); err == nil {
+		t.Fatal("launch bypassed degraded runtime coverage")
+	}
+	if _, err := PinBindings(context.Background(), testAppID, bindings); err == nil {
+		t.Fatal("deployment bypassed degraded runtime coverage")
+	}
+	if state, _ := SecurityOf(testAppID); state != SecurityDegraded {
+		t.Fatal("resolution cleared runtime failure")
+	}
+}

@@ -57,7 +57,7 @@ const (
 
 // Instance describes one running backend instance behind the proxy.
 type Instance struct {
-	SecretEnvs []string `json:"secret_envs,omitempty"`
+	SecretEnvs []string `json:"secret_envs,omitzero"`
 	// Slot is the blue-green slot name ("blue"/"green") or, for rolling, a
 	// replica index string ("0", "1", ...).
 	Slot string `json:"slot"`

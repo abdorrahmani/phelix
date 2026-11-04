@@ -24,9 +24,10 @@ const (
 
 // securityEntry is the current posture of one application and why.
 type securityEntry struct {
-	State  SecurityState
-	Reason string
-	Since  time.Time
+	State   SecurityState
+	Reason  string
+	Since   time.Time
+	Runtime bool
 }
 
 // securityMu guards security states. SecurityOf never mutates.
@@ -45,10 +46,39 @@ func MarkDegraded(appID, reason string) {
 	if entry, ok := securityStates[appID]; ok && entry.State == SecurityDegraded {
 		wasDegraded = true
 	}
-	securityStates[appID] = securityEntry{State: SecurityDegraded, Reason: phelixerr.Redact(reason), Since: time.Now().UTC()}
+	securityStates[appID] = securityEntry{State: SecurityDegraded, Reason: phelixerr.Redact(reason), Since: time.Now().UTC(), Runtime: securityStates[appID].Runtime}
 	securityMu.Unlock()
 	if !wasDegraded {
 		logs.Warning("secrets", "application %s is degraded: its secrets cannot be resolved securely; launches and log transmission for it are halted until this is resolved", appID)
+	}
+}
+
+// MarkRuntimeDegraded keeps a runtime inspection failure active until coverage is verified.
+func MarkRuntimeDegraded(appID, reason string) {
+	MarkDegraded(appID, reason)
+	securityMu.Lock()
+	entry := securityStates[appID]
+	entry.Runtime = true
+	securityStates[appID] = entry
+	securityMu.Unlock()
+}
+
+// CheckRuntimeSecurity blocks launches while running credentials cannot be inspected.
+func CheckRuntimeSecurity(appID string) error {
+	securityMu.RLock()
+	defer securityMu.RUnlock()
+	if securityStates[appID].Runtime {
+		return phelixerr.New(phelixerr.CodeEncryption, "application secret coverage is degraded; retry after runtime inspection recovers")
+	}
+	return nil
+}
+
+// markResolved clears store failures without clearing an unresolved runtime failure.
+func markResolved(appID string) {
+	securityMu.Lock()
+	defer securityMu.Unlock()
+	if !securityStates[appID].Runtime {
+		delete(securityStates, appID)
 	}
 }
 

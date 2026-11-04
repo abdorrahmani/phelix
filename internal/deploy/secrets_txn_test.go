@@ -18,7 +18,11 @@ const txnTestAppID = "2f0e1d2c-3b4a-4958-8677-8899aabbccdd"
 
 func txnTestEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
+	secrets.MarkHealthy(txnTestAppID)
+	t.Cleanup(func() { secrets.MarkHealthy(txnTestAppID); secrets.ReleaseCoverage(txnTestAppID) })
 }
 
 func seedSecret(t *testing.T, name, value string) {

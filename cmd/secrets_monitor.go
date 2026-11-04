@@ -22,7 +22,7 @@ func startupSecretsRuntime() {
 		release, err := deploy.AcquireDeployLock(info.Name, "secrets-recovery")
 		if err != nil {
 			if bindings, bindingErr := secrets.CommittedBindings(info.ID); bindingErr != nil || len(bindings) > 0 || len(info.SecretEnvs) > 0 {
-				secrets.MarkDegraded(info.ID, "secret coverage awaits the active deployment")
+				secrets.MarkRuntimeDegraded(info.ID, "secret coverage awaits the active deployment")
 			}
 			continue
 		}

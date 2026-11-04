@@ -241,6 +241,11 @@ func instanceLogPath(home, binaryPath string, port int) string {
 	return filepath.Join(home, ".phelix", "logs", name)
 }
 
+// InstanceLogFilePath returns the captured output path for one service instance.
+func InstanceLogFilePath(home, binaryPath string, port int) string {
+	return instanceLogPath(home, binaryPath, port)
+}
+
 // instanceLogTail returns the last maxBytes bytes of the instance's captured
 // output, redacted. Deploy health failures include it so a candidate that
 // dies at boot (bind conflict, panic, missing env) reports the actual panic
