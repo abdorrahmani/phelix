@@ -65,6 +65,7 @@ func main() {
 	rootCmd.AddCommand(auth.Cmd)
 	rootCmd.AddCommand(cmd.RemoveCmd)
 	rootCmd.AddCommand(cmd.EnvCmd)
+	rootCmd.AddCommand(cmd.SecretsCmd)
 	rootCmd.AddCommand(cmd.HealthCmd)
 	rootCmd.AddCommand(cmd.ProxyCmd)
 	rootCmd.AddCommand(cmd.DockerizeCmd)

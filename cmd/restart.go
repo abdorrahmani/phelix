@@ -38,64 +38,73 @@ var RestartCmd = &cobra.Command{
 			return err
 		}
 
-		if wstate, werr := workerAppState(appInfo.Name); werr == nil && wstate != nil {
-			fmt.Printf("• Restarting worker '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
-			if err := runWorkerRestart(appInfo, restartReplica); err != nil {
-				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
-				return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
-					"failed to restart worker replicas for %q (ID: %s)", appInfo.Name, appInfo.ID)
-			}
-			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
-			return nil
-		}
-
-		state, derr := loadDeployState(appInfo.Name)
-		if derr != nil {
-			return derr
-		}
-		if state != nil {
-			fmt.Printf("• Restarting deployment for '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
-			if err := runDeployAwareStop(appInfo); err != nil {
-				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
-				return phelixerr.Wrapf(
-					phelixerr.CodeProcessFailed,
-					err,
-					"failed to stop deployment for %q (ID: %s)",
-					appInfo.Name, appInfo.ID,
-				)
-			}
-			if err := runDeployAwareStart(appInfo); err != nil {
-				phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
-				return phelixerr.Wrapf(
-					phelixerr.CodeProcessFailed,
-					err,
-					"failed to restore deployment for %q (ID: %s)",
-					appInfo.Name, appInfo.ID,
-				)
-			}
-			fmt.Printf("✓ Application '%s' (ID: %s) restarted successfully\n", appInfo.Name, appInfo.ID)
-			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
-			return nil
-		}
-
-		fmt.Printf("• Restarting Application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
-		if err := app.Manager.RestartApplication(appInfo.ID); err != nil {
-			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
-			return phelixerr.Wrapf(
-				phelixerr.CodeProcessFailed,
-				err,
-				"failed to restart application %q (ID: %s)",
-				appInfo.Name,
-				appInfo.ID,
-			)
-		}
-
-		fmt.Printf("✓ Application '%s' (ID: %s) restarted successfully\n", appInfo.Name, appInfo.ID)
-		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
-		return nil
+		return restartAppInfo(appInfo)
 	},
 }
 
 func init() {
 	RestartCmd.Flags().StringVar(&restartReplica, "replica", "", "Restart only this worker replica slot (e.g. 0, 1); worker apps only")
+}
+
+// restartAppInfo restarts an application with exactly the semantics of
+// `phelix restart`: worker replicas, deployment-aware stop and start for
+// blue-green and rolling apps, or a plain process restart for classic apps.
+// Every secrets command that needs to bring new values into a running
+// application uses the same helper, so restart behavior never diverges.
+func restartAppInfo(appInfo *app.AppInfo) error {
+	if wstate, werr := workerAppState(appInfo.Name); werr == nil && wstate != nil {
+		fmt.Printf("• Restarting worker '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
+		if err := runWorkerRestart(appInfo, restartReplica); err != nil {
+			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
+			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
+				"failed to restart worker replicas for %q (ID: %s)", appInfo.Name, appInfo.ID)
+		}
+		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
+		return nil
+	}
+
+	state, derr := loadDeployState(appInfo.Name)
+	if derr != nil {
+		return derr
+	}
+	if state != nil {
+		fmt.Printf("• Restarting deployment for '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
+		if err := runDeployAwareStop(appInfo); err != nil {
+			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
+			return phelixerr.Wrapf(
+				phelixerr.CodeProcessFailed,
+				err,
+				"failed to stop deployment for %q (ID: %s)",
+				appInfo.Name, appInfo.ID,
+			)
+		}
+		if err := runDeployAwareStart(appInfo); err != nil {
+			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
+			return phelixerr.Wrapf(
+				phelixerr.CodeProcessFailed,
+				err,
+				"failed to restore deployment for %q (ID: %s)",
+				appInfo.Name, appInfo.ID,
+			)
+		}
+		fmt.Printf("✓ Application '%s' (ID: %s) restarted successfully\n", appInfo.Name, appInfo.ID)
+		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
+		return nil
+	}
+
+	fmt.Printf("• Restarting Application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
+	if err := app.Manager.RestartApplication(appInfo.ID); err != nil {
+		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", false, err.Error(), 0, "", "")
+		return phelixerr.Wrapf(
+			phelixerr.CodeProcessFailed,
+			err,
+			"failed to restart application %q (ID: %s)",
+			appInfo.Name,
+			appInfo.ID,
+		)
+	}
+
+	fmt.Printf("✓ Application '%s' (ID: %s) restarted successfully\n", appInfo.Name, appInfo.ID)
+	phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "restart", true, "", 0, "", "")
+	return nil
 }
