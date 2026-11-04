@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/appid"
 	"github.com/abdorrahmani/phelix/internal/env"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
@@ -325,14 +325,14 @@ func TestRecordApply(t *testing.T) {
 }
 
 func TestValidAppIDShape(t *testing.T) {
-	if !app.ValidAppID(testAppID) {
+	if !appid.Valid(testAppID) {
 		t.Fatal("a generated UUID-shaped id must validate")
 	}
-	if !app.ValidAppID("42") {
+	if !appid.Valid("42") {
 		t.Fatal("the short identifiers workers use must validate")
 	}
 	for _, bad := range []string{"../../../etc", "..", ".", "a/b", "a\\b", "", "a:b"} {
-		if app.ValidAppID(bad) {
+		if appid.Valid(bad) {
 			t.Fatalf("path-hostile id %q must not validate", bad)
 		}
 	}
