@@ -121,7 +121,7 @@ func ExitCodeFor(err error) int {
 		phelixerr.CodeApprovalRequired, phelixerr.CodeApprovalStale, phelixerr.CodeApprovalInvalid:
 		return ExitPermission
 	case phelixerr.CodeNotFound, phelixerr.CodeVersionNotFound,
-		phelixerr.CodeRollbackTargetNotFound:
+		phelixerr.CodeRollbackTargetNotFound, phelixerr.CodeSecretNotFound:
 		return ExitNotFound
 	case phelixerr.CodeBuildFailed, phelixerr.CodeToolchainNotFound,
 		phelixerr.CodeBuildTimeout, phelixerr.CodeUnsupportedProject,
@@ -172,6 +172,8 @@ func hintFor(err error) string {
 		return "Run:\n  phelix auth login"
 	case phelixerr.CodeNotFound, phelixerr.CodeVersionNotFound, phelixerr.CodeRollbackTargetNotFound:
 		return "Run:\n  phelix list"
+	case phelixerr.CodeSecretNotFound:
+		return "Run:\n  phelix secrets set <name>\nOr remove the import from phelix.yaml if the secret is no longer needed"
 	case phelixerr.CodeHealthCheckFailed:
 		return "Run:\n  phelix health status <app>"
 	case phelixerr.CodeDeployLocked:

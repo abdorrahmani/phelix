@@ -115,6 +115,12 @@ const (
 	CodeHealthCheckFailed   Code = "HEALTH_CHECK_FAILED"
 	CodeDeployLocked        Code = "DEPLOY_LOCKED"
 	CodeVersionNotFound     Code = "VERSION_NOT_FOUND"
+	// CodeSecretNotFound: a declared secret binding has no value in the
+	// app's secret store. It fails closed: deploys, applies and launches
+	// stop rather than starting the application without a variable it
+	// declared. The remedy is creating the secret (`phelix secrets set`) or
+	// removing the import from phelix.yaml.
+	CodeSecretNotFound Code = "SECRET_NOT_FOUND"
 	// CodeCanaryRegression: a canary/progressive rollout was aborted because
 	// the new version degraded traffic it served (failed health probes or a
 	// metrics comparison against the stable baseline). Distinct from
