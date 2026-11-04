@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -115,6 +116,17 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
+	if r.Secrets != nil && r.Secrets.ID != "" {
+		previous := *state
+		previous.Slots = cloneInstanceMap(state.Slots)
+		previous.Replicas = cloneInstanceMap(state.Replicas)
+		previous.Retiring = append([]*Instance(nil), state.Retiring...)
+		defer func() {
+			if errRet != nil && state.SecretTxnID == r.Secrets.ID {
+				errRet = errors.Join(errRet, r.restoreSecretFleet(context.WithoutCancel(ctx), state, &previous))
+			}
+		}()
+	}
 	state.secretPreparing = r.Secrets != nil
 	if r.Runtime != "" {
 		state.Runtime = r.Runtime
@@ -218,7 +230,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 			}
 			return wrapDeployStep(err, fmt.Sprintf("rolling deploy failed at replica %s", key))
 		}
-		if !progressed && migrated {
+		if !progressed && migrated && (r.Secrets == nil || r.Secrets.ID == "") {
 			// First replacement healthy and in rotation: the previous
 			// strategy's instances are out of the serving path. Drain them.
 			stopRetiredInstances(ctx, legacy, grace, r.inFlight(r.AppName), log)
@@ -233,7 +245,9 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	// Every replica now runs the new binary. Surplus replicas were excluded
 	// from the backend set by the first membership update; retire them here so
 	// a --replicas shrink never leaves orphaned old processes behind.
-	r.stopSurplusReplicas(ctx, surplus, grace)
+	if r.Secrets == nil || r.Secrets.ID == "" {
+		r.stopSurplusReplicas(ctx, surplus, grace)
+	}
 
 	if state.Health == nil {
 		state.Health = &HealthSummary{}
@@ -249,6 +263,11 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	}
 	if ver > 0 {
 		if err := PromoteVersion(r.AppName, ver, string(ModeRolling)); err != nil {
+			return err
+		}
+	}
+	if r.Secrets != nil && r.Secrets.ID != "" {
+		if err := drainSecretRetirements(state); err != nil {
 			return err
 		}
 	}
@@ -468,7 +487,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	r.Telemetry.SetProxy(r.PublicPort, primary.Label, port, upstreamHosts(primary, backends))
 	r.Telemetry.ReplicaReplaced(index, newPID, port,
 		fmt.Sprintf("proxy primary %s, %d upstream(s)", primary.Label, len(backends)+1))
-	if old != nil && (oldPID > 0 || old.ContainerID != "") {
+	if old != nil && (oldPID > 0 || old.ContainerID != "") && (r.Secrets == nil || r.Secrets.ID == "") {
 		r.Telemetry.ReplicaDraining(index, oldPID)
 		report := stopInstance(ctx, old, grace, r.inFlight(r.AppName))
 		if report.ForceKilled {
@@ -481,6 +500,43 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 
 	log.Successf("replica %s: healthy and in rotation (pid %d, port %d)", key, candidate.PID, candidate.Port)
 	return nil
+}
+
+// cloneInstanceMap keeps serving records unchanged while candidates are prepared.
+func cloneInstanceMap(instances map[string]*Instance) map[string]*Instance {
+	copy := make(map[string]*Instance, len(instances))
+	for key, inst := range instances {
+		copy[key] = cloneInstance(inst)
+	}
+	return copy
+}
+
+// restoreSecretFleet records the previous fleet before retiring accepted candidates.
+func (r *Rolling) restoreSecretFleet(ctx context.Context, current, previous *DeployState) error {
+	for _, inst := range instancesServing(previous) {
+		if !InstanceAlive(inst) {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "previous secret instance is unavailable; accepted deployment retained")
+		}
+	}
+	if len(instancesServing(previous)) == 0 {
+		if r.ProxyClient == nil {
+			return phelixerr.New(phelixerr.CodeProxy, "cannot remove failed deployment route")
+		}
+		if err := r.ProxyClient.Remove(ctx, r.AppName); err != nil {
+			return err
+		}
+	} else if err := RestoreProxyRoute(ctx, previous, r.ProxyClient, r.logger()); err != nil {
+		return err
+	}
+	for _, inst := range current.Replicas {
+		previous.Retiring = append(previous.Retiring, cloneInstance(inst))
+	}
+	previous.secretPreparing = false
+	if err := r.persist(previous); err != nil {
+		return err
+	}
+	*current = *previous
+	return drainSecretRetirements(current)
 }
 
 func (r *Rolling) persist(state *DeployState) error {

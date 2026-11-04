@@ -3,8 +3,10 @@ package deploy
 import (
 	"context"
 	"errors"
+	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
+	"net"
 	"os"
 	"os/exec"
 	"testing"
@@ -345,5 +347,75 @@ func TestWorkerCompensationAcceptsRestoredFleetTogether(t *testing.T) {
 				actual.Close()
 			}
 		})
+	}
+}
+
+func TestRollingSecretFailureRestoresPreviousFleet(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "old", "rolling-old-credential")
+	seedSecret(t, "next", "rolling-next-credential")
+	bindings := []secrets.Binding{{Secret: "old", Env: "DB"}}
+	if err := secrets.ReplaceBindings(txnTestAppID, bindings); err != nil {
+		t.Fatal(err)
+	}
+	state := &DeployState{AppName: "rolling-failure", AppID: txnTestAppID, Mode: ModeRolling, Replicas: map[string]*Instance{}}
+	for _, slot := range []string{"0", "1"} {
+		cmd := exec.Command("sleep", "30")
+		cmd.Env = append(os.Environ(), "DB=rolling-old-credential")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		id, err := processex.Identity(cmd.Process.Pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Replicas[slot] = &Instance{Slot: slot, PID: id.PID, StartTicks: id.StartTime, BinaryPath: id.ExePath, Port: 9000, Status: "running", SecretEnvs: []string{"DB"}}
+	}
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	txn, err := BeginSecretTxn(txnTestAppID, state.AppName, "dep", []secrets.Binding{{Secret: "next", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	calls := 0
+	r := &Rolling{AppName: state.AppName, AppID: txnTestAppID, Secrets: txn, Replicas: 2,
+		Builder: stubBuilder("/usr/bin/sleep"), ProxyClient: &rolloutProxyClient{alive: true, enrolled: true},
+		HealthProvider: func(string) *health.DeployTierConfig { return fastHealth() }, GracePeriod: time.Second,
+		Launcher: func(_ context.Context, _ string, env []string) (Process, int, error) {
+			calls++
+			if calls == 2 {
+				return nil, 0, errors.New("second candidate failed")
+			}
+			cmd := exec.Command("sleep", "30")
+			cmd.Env = append(os.Environ(), env...)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+			return &engineProc{cmd: cmd}, listener.Addr().(*net.TCPAddr).Port, nil
+		}}
+	if err := r.Deploy(context.Background()); err == nil {
+		t.Fatal("failed candidate was accepted")
+	}
+	if outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID); err != nil || outcome != SecretTxnDiscarded {
+		t.Fatal("failed rollout did not discard candidates", outcome, err)
+	}
+	for _, inst := range mustLoad(t, state.AppName).Replicas {
+		set, err := RuntimeSecrets(inst, bindings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if set.Overlay()[0] != "DB=rolling-old-credential" {
+			t.Fatal("failed rolling deployment changed runtime credentials")
+		}
+		set.Close()
 	}
 }
