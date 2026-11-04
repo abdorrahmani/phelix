@@ -81,6 +81,10 @@ type BlueGreen struct {
 	InFlight InFlightProvider
 	// GracePeriod overrides DefaultGracePeriod when > 0.
 	GracePeriod time.Duration
+	// Secrets carries the deployment's secret execution context. Nil means
+	// the deployment resolves committed bindings (or none) at launch as
+	// before.
+	Secrets *SecretTxn
 	// PortHandoff, when set, is invoked right before the first proxy
 	// enrolment if something still owns the public port — almost always a
 	// classic instance from before the app migrated to blue-green. The CLI
@@ -115,6 +119,7 @@ type BlueGreen struct {
 // On the very first deploy there is no active instance: steps 2 and 7 enrol
 // the app with the proxy, and step 8 is skipped.
 func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
+	defer bg.Secrets.endOnReturn(bg.AppName)()
 	log := bg.logger()
 	grace := bg.GracePeriod
 	if grace <= 0 {
@@ -209,7 +214,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact failed"))
 	}
 	log.Successf("artifact ready: %s", binaryPath)
-	envOverlay, err := EnvOverlayFromSnapshot(envPath, bg.AppID)
+	envOverlay, err := launchOverlay(envPath, bg.AppID, bg.Secrets)
 	if err != nil {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "load env snapshot"))
 	}
