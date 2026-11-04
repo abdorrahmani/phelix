@@ -63,6 +63,15 @@ func GetMasterKey() ([]byte, error) {
 	return key, nil
 }
 
+// ReadMasterKey reads an existing key without creating a replacement.
+func ReadMasterKey() ([]byte, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot locate master key")
+	}
+	return readMasterKey(filepath.Join(home, ".phelix", "master.key"))
+}
+
 // readMasterKey refuses damaged keys instead of replacing credentials already in use.
 func readMasterKey(path string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)

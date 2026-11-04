@@ -342,7 +342,7 @@ func appendSecretsChecks(results []checkResult, cfg *project.Config) []checkResu
 		return results
 	}
 	results = append(results, checkResult{name: "Secrets permissions", pass: true, detail: "directory 0700, store and lock 0600"})
-	if _, err := env.GetMasterKey(); err != nil {
+	if _, err := env.ReadMasterKey(); err != nil {
 		results = append(results, checkResult{name: "Secrets master key", detail: "unreadable", message: err.Error()})
 	} else {
 		results = append(results, checkResult{name: "Secrets master key", pass: true, detail: "readable"})

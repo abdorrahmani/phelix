@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -380,5 +381,80 @@ func TestValidAppIDShape(t *testing.T) {
 		if appid.Valid(bad) {
 			t.Fatalf("path-hostile id %q must not validate", bad)
 		}
+	}
+}
+
+func TestMissingKeyDoesNotReplaceStoredCredentials(t *testing.T) {
+	root := testEnv(t)
+	if _, err := Set(testAppID, "db", "preserved-key-value"); err != nil {
+		t.Fatal(err)
+	}
+	path, err := storePath(testAppID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(root, ".phelix", "master.key")
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(context.Background(), testAppID, "db"); !phelixerr.IsCode(err, phelixerr.CodeEncryption) {
+		t.Fatal("missing key must fail resolution", err)
+	}
+	if _, err := Set(testAppID, "db", "replacement-value"); !phelixerr.IsCode(err, phelixerr.CodeEncryption) {
+		t.Fatal("missing key must fail rotation", err)
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Fatal("missing key was regenerated")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Fatal("failed rotation changed stored credentials", err)
+	}
+}
+
+func TestReadRejectsInconsistentSecretMetadata(t *testing.T) {
+	for _, damage := range []string{"name", "active", "duplicate", "fingerprint", "pending"} {
+		t.Run(damage, func(t *testing.T) {
+			testEnv(t)
+			if _, err := Set(testAppID, "db", "metadata-value"); err != nil {
+				t.Fatal(err)
+			}
+			st, err := Open(testAppID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := st.Secrets["db"]
+			switch damage {
+			case "name":
+				record.Name = "other"
+			case "active":
+				record.ActiveVersion = 2
+			case "duplicate":
+				record.Versions = append(record.Versions, record.Versions[0])
+			case "fingerprint":
+				record.Versions[0].Fingerprint = "broken"
+			case "pending":
+				st.Pending = &PendingTxn{TxnID: NewTxnID(), Bindings: []Binding{{Secret: "db", Env: "DB"}}}
+			}
+			st.Secrets["db"] = record
+			data, err := json.Marshal(st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, err := storePath(testAppID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(testAppID); err == nil {
+				t.Fatal("damaged metadata accepted")
+			}
+		})
 	}
 }
