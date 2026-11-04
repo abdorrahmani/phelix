@@ -14,6 +14,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/machine"
+	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/fatih/color"
@@ -675,7 +676,16 @@ func acceptClassicSecrets(info *app.AppInfo, port, version int, txn *deploy.Secr
 		return nil
 	}
 	state := &deploy.DeployState{AppName: info.Name, AppID: info.ID, Mode: "classic", PublicPort: port, ActiveVersion: version}
-	state.Slots = map[string]*deploy.Instance{"classic": {PID: classicPID(info.ID), Status: "running"}}
+	pid := classicPID(info.ID)
+	identity, err := processex.Identity(pid)
+	if err != nil {
+		return phelixerr.New(phelixerr.CodeProcessFailed, "cannot identify accepted classic instance")
+	}
+	names := make([]string, 0, len(txn.Set.Bindings))
+	for _, binding := range txn.Set.Bindings {
+		names = append(names, binding.Env)
+	}
+	state.Slots = map[string]*deploy.Instance{"classic": {PID: pid, StartTicks: identity.StartTime, BinaryPath: identity.ExePath, SecretEnvs: names, Status: "running"}}
 
 	txn.Stamp(state)
 	return deploy.Store(state)

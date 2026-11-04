@@ -2,10 +2,11 @@ package deploy
 
 import (
 	"fmt"
-	"github.com/abdorrahmani/phelix/internal/logs"
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/abdorrahmani/phelix/internal/logs"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -87,7 +88,7 @@ func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config,
 	}
 
 	errCh := make(chan struct{})
-	proc := &osProcess{cmd: cmd, pid: pid, doneCh: errCh}
+	proc := &osProcess{cmd: cmd, pid: pid, startTicks: identity.StartTime, doneCh: errCh}
 	go func() {
 		defer releaseSecrets()
 		waitErr := cmd.Wait()

@@ -384,6 +384,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		SecretEnvs:  phelixerr.SecretEnvNames(envOverlay),
 		Slot:        canarySlot,
 		PID:         proc.PID(),
+		StartTicks:  startTicksOf(proc),
 		Port:        port,
 		BinaryPath:  binaryPath,
 		EnvPath:     envPath,

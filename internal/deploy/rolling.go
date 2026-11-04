@@ -425,6 +425,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	// membership and stop the candidate; only drain after a durable commit.
 	candidate := &Instance{
 		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
+		StartTicks: startTicksOf(proc),
 		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath, EnvPath: envPath,
 		ContainerID: containerIDOf(proc),
 		StartedAt:   time.Now(), Version: targetVer, Status: "running",
@@ -548,7 +549,7 @@ func applyReplicaSet(existing map[string]*Instance, n int) []*Instance {
 	for k, inst := range existing {
 		idx, err := strconv.Atoi(k)
 		if err != nil || idx >= n {
-			if inst != nil && inst.PID > 0 {
+			if inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
 				surplus = append(surplus, inst)
 			}
 			delete(existing, k)

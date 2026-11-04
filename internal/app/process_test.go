@@ -137,3 +137,21 @@ func TestIsProcessRunningTreatsZombieAsStopped(t *testing.T) {
 
 	t.Fatal("child process did not become a zombie")
 }
+
+func TestLoadStateRetainsOwnershipAndFileOnCorruption(t *testing.T) {
+	isolateStateFile(t)
+	for _, data := range []string{"broken", "null"} {
+		info := &AppInfo{ID: "owned", Name: "owned", PID: os.Getpid(), Status: "running"}
+		m := &AppManager{Apps: map[string]*AppInfo{"owned": info}}
+		if err := os.WriteFile(stateFile, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.LoadState(); err == nil {
+			t.Fatal("invalid state accepted")
+		}
+		current, err := os.ReadFile(stateFile)
+		if err != nil || string(current) != data || m.Apps["owned"] != info {
+			t.Fatal("corruption erased state or ownership", err)
+		}
+	}
+}

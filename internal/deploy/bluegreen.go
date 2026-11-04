@@ -230,6 +230,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		SecretEnvs:  phelixerr.SecretEnvNames(envOverlay),
 		Slot:        inactive,
 		PID:         proc.PID(),
+		StartTicks:  startTicksOf(proc),
 		Port:        port,
 		BinaryPath:  binaryPath,
 		ContainerID: containerIDOf(proc),

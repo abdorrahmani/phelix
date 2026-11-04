@@ -431,6 +431,7 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		}
 		inst.SecretEnvs = phelixerr.SecretEnvNames(envOverlay)
 		inst.PID = proc.PID()
+		inst.StartTicks = startTicksOf(proc)
 
 		inst.ContainerID = containerIDOf(proc)
 		inst.Port = newPort

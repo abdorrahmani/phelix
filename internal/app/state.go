@@ -181,17 +181,10 @@ func (m *AppManager) LoadState() error {
 
 	var savedApps map[string]SavedApp
 	if err := json.Unmarshal(data, &savedApps); err != nil {
-		// Handle corrupted JSON: back up corrupted file and reinitialize
-		corruptName := stateFile + ".corrupt." + fmt.Sprintf("%d", time.Now().Unix())
-		_ = os.WriteFile(corruptName, data, 0644)
-
-		// Recreate a fresh state file
-		fileMutex.Lock()
-		_ = os.WriteFile(stateFile, []byte("{}"), 0644)
-		fileMutex.Unlock()
-
-		// Continue with empty state instead of failing
-		savedApps = make(map[string]SavedApp)
+		return phelixerr.New(phelixerr.CodeFilesystem, "application state is unreadable; existing state retained")
+	}
+	if savedApps == nil {
+		return phelixerr.New(phelixerr.CodeFilesystem, "application state is invalid; existing state retained")
 	}
 
 	// Clear existing apps and load from saved state
@@ -262,8 +255,7 @@ func (m *AppManager) LoadState() error {
 		m.Apps[id] = appInfo
 	}
 
-	// Save the updated state
-	return m.SaveState()
+	return nil
 }
 
 // AppDirectories returns a name-to-project-directory snapshot parsed

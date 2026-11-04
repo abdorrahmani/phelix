@@ -178,7 +178,10 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 	if runtime == "" {
 		runtime = state.Runtime
 	}
-	if err := reclaimSecretLaunches(appName, st.Pending.TxnID, runtime, nil); err != nil {
+	if err := reclaimSecretLaunches(appName, st.Pending.TxnID, runtime, state); err != nil {
+		return SecretTxnRetained, err
+	}
+	if err := drainSecretRetirements(state); err != nil {
 		return SecretTxnRetained, err
 	}
 	if derr := secrets.DiscardTxn(appID); derr != nil {
@@ -231,25 +234,28 @@ func recoverAcceptedSecretCanary(state *DeployState, client ProxyClient) error {
 	if candidate == nil {
 		return phelixerr.New(phelixerr.CodeConfiguration, "accepted secret rollout has no candidate record")
 	}
-	state.ActiveSlot, state.ActiveVersion = canary.Slot, candidate.Version
-	if err := Store(state); err != nil {
-		return err
+	if !InstanceAlive(candidate) {
+		return phelixerr.New(phelixerr.CodeProcessFailed, "accepted secret rollout candidate is unavailable; pending secrets retained")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if InstanceAlive(candidate) {
-		if err := RestoreProxyRoute(ctx, state, client, &nopLogger{}); err != nil {
-			return err
+	promoted := *state
+	promoted.ActiveSlot, promoted.ActiveVersion = canary.Slot, candidate.Version
+	if err := RestoreProxyRoute(ctx, &promoted, client, &nopLogger{}); err != nil {
+		return err
+	}
+	if err := Store(&promoted); err != nil {
+		return err
+	}
+	*state = promoted
+	for slot, inst := range state.Slots {
+		if slot == canary.Slot || inst == nil {
+			continue
 		}
-		for slot, inst := range state.Slots {
-			if slot == canary.Slot || inst == nil {
-				continue
-			}
-			if report := stopInstance(ctx, inst, 3*time.Second, 0); !report.Exited {
-				return phelixerr.New(phelixerr.CodeProcessFailed, "accepted secret rollout could not stop its retired instance")
-			}
-			inst.PID, inst.Status = 0, "stopped"
+		if report := stopInstance(ctx, inst, 3*time.Second, 0); !report.Exited {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "accepted secret rollout could not stop its retired instance")
 		}
+		inst.PID, inst.ContainerID, inst.Status = 0, "", "stopped"
 	}
 	canary.Status, canary.TrafficPercent = CanaryPromoted, 100
 	canary.Reason = "accepted secret rollout recovered from deployment journal"

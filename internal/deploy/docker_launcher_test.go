@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"syscall"
@@ -275,5 +276,26 @@ func TestGracefulStop_DrivesDockerProcess(t *testing.T) {
 	}
 	if !report.Exited {
 		t.Fatal("report should mark the instance exited")
+	}
+}
+
+func TestDockerWaitFailureDoesNotConfirmExit(t *testing.T) {
+	for _, reply := range []string{"offline", "invalid", "137"} {
+		t.Run(reply, func(t *testing.T) {
+			proc := &dockerProcess{id: "test", run: func(_ context.Context, args ...string) (string, error) {
+				if args[0] == "wait" {
+					if reply == "offline" {
+						return "", fmt.Errorf("daemon unavailable")
+					}
+					return reply, nil
+				}
+				return "", nil
+			}}
+			report, err := GracefulStop(context.Background(), proc, time.Second, 0)
+			confirmed := reply == "137"
+			if report.Exited != confirmed || (err == nil) != confirmed {
+				t.Fatalf("exit confirmation=%v error=%v", report.Exited, err)
+			}
+		})
 	}
 }

@@ -109,3 +109,12 @@ func TestRolling_ShrinkDrainsSurplusInstance(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyReplicaSetRetainsDockerSurplusWithoutHostPID(t *testing.T) {
+	inst := &Instance{Slot: "1", ContainerID: "container", Status: "running"}
+	replicas := map[string]*Instance{"0": {Slot: "0"}, "1": inst}
+	surplus := applyReplicaSet(replicas, 1)
+	if len(surplus) != 1 || surplus[0] != inst || len(replicas) != 1 {
+		t.Fatal("shrink lost container identity")
+	}
+}

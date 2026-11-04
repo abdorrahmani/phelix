@@ -58,6 +58,9 @@ func init() {
 // Every secrets command that needs to bring new values into a running
 // application uses the same helper, so restart behavior never diverges.
 func restartAppInfo(appInfo *app.AppInfo) error {
+	if !app.ValidAppID(appInfo.ID) {
+		return restartAppInfoLegacy(appInfo)
+	}
 	store, err := secrets.Open(appInfo.ID)
 	if err != nil {
 		return err

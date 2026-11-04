@@ -446,11 +446,11 @@ func (p *dockerProcess) Wait() error {
 		if isDockerNotRunning(err) {
 			return nil
 		}
-		return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "deploy: docker wait %s", p.id)
+		return &unconfirmedExit{phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "deploy: docker wait %s", p.id)}
 	}
 	code, convErr := strconv.Atoi(strings.TrimSpace(out))
-	if convErr != nil {
-		return nil
+	if convErr != nil || code < 0 {
+		return &unconfirmedExit{phelixerr.New(phelixerr.CodeProcessFailed, "deploy: cannot confirm container exit")}
 	}
 	if code != 0 {
 		return phelixerr.Newf(phelixerr.CodeProcessFailed, "deploy: container %s exited with code %d", p.id, code)

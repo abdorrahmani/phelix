@@ -2,6 +2,9 @@ package deploy
 
 import (
 	"context"
+	"errors"
+	"github.com/abdorrahmani/phelix/internal/processex"
+	"github.com/abdorrahmani/phelix/internal/resources"
 	"os"
 	"os/exec"
 	"testing"
@@ -220,5 +223,127 @@ func TestSecretMigrationLeavesServingJournalUntilAcceptance(t *testing.T) {
 	}
 	if outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID); err != nil || outcome != SecretTxnDiscarded {
 		t.Fatal("unaccepted migration did not discard", outcome, err)
+	}
+}
+
+func TestAcceptedCanaryRecoveryRetainsJournalOnUnavailableTarget(t *testing.T) {
+	for _, dead := range []bool{false, true} {
+		t.Run(map[bool]string{false: "proxy", true: "candidate"}[dead], func(t *testing.T) {
+			txnTestEnv(t)
+			stable := startChildInstance(t, SlotBlue, 1)
+			candidate := startChildInstance(t, SlotGreen, 2)
+			if dead {
+				stopInstance(context.Background(), &candidate.Instance, time.Second, 0)
+			}
+			state := &DeployState{AppName: "retained-canary", AppID: txnTestAppID, Mode: ModeBlueGreen,
+				ActiveSlot: SlotBlue, Slots: map[string]*Instance{SlotBlue: &stable.Instance, SlotGreen: &candidate.Instance},
+				Canary: &CanaryState{Slot: SlotGreen, Status: CanaryRunning}}
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			client := &rolloutProxyClient{alive: true, enrolled: true, failSwitch: !dead}
+			if err := recoverAcceptedSecretCanary(state, client); err == nil {
+				t.Fatal("unavailable target was promoted")
+			}
+			if got := mustLoad(t, state.AppName); got.ActiveSlot != SlotBlue || got.Canary.Status != CanaryRunning || !InstanceAlive(&stable.Instance) {
+				t.Fatal("failed recovery changed serving journal or stopped stable instance")
+			}
+		})
+	}
+}
+
+func TestWorkerCompensationAcceptsRestoredFleetTogether(t *testing.T) {
+	for _, fail := range []bool{true, false} {
+		t.Run(map[bool]string{true: "interrupted", false: "completed"}[fail], func(t *testing.T) {
+			txnTestEnv(t)
+			seedSecret(t, "old", "previous-compensation-value")
+			seedSecret(t, "next", "candidate-compensation-value")
+			oldBindings := []secrets.Binding{{Secret: "old", Env: "DB"}}
+			if err := secrets.ReplaceBindings(txnTestAppID, oldBindings); err != nil {
+				t.Fatal(err)
+			}
+			txn, err := BeginSecretTxn(txnTestAppID, "compensation", "dep", []secrets.Binding{{Secret: "next", Env: "DB"}}, RuntimeNative)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer txn.Set.Close()
+			oldSet, err := secrets.PinBindings(context.Background(), txnTestAppID, oldBindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer oldSet.Close()
+			bin, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := &DeployState{AppName: txn.AppName, AppID: txnTestAppID, Mode: ModeWorker, Replicas: map[string]*Instance{}}
+			worker := &Worker{AppName: txn.AppName, AppID: txnTestAppID, Secrets: txn, Grace: time.Second,
+				previousSecrets: map[string]*secrets.PinnedSet{}, previousInstances: map[string]*Instance{}}
+			var processes []Process
+			t.Cleanup(func() {
+				for _, proc := range processes {
+					_ = proc.Kill()
+					_ = proc.Wait()
+				}
+			})
+			for _, key := range []string{"0", "1"} {
+				proc, id, err := launchWorkerInstance(bin, append(txn.Set.Overlay(), "PHLIX_WORKER_HELPER=1"), resources.Config{}, key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				processes = append(processes, proc)
+				state.Replicas[key] = &Instance{Slot: key, PID: id.PID, StartTicks: id.StartTime, BinaryPath: bin, Version: 2, Status: "running", SecretEnvs: []string{"DB"}}
+				worker.previousInstances[key] = &Instance{Slot: key, BinaryPath: bin, Version: 1, SecretEnvs: []string{"DB"}}
+				worker.previousSecrets[key] = oldSet
+			}
+			txn.Stamp(state)
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			previousFactory := workerLauncherFactory
+			t.Cleanup(func() { workerLauncherFactory = previousFactory })
+			workerLauncherFactory = func(string) WorkerLauncher {
+				return func(binary string, env []string, slot string) (Process, processex.ProcessIdentity, error) {
+					if mustLoad(t, state.AppName).SecretTxnID != txn.ID {
+						t.Fatal("compensation cleared acceptance before restoring whole fleet")
+					}
+					if fail && slot == "1" {
+						return nil, processex.ProcessIdentity{}, errors.New("injected compensation failure")
+					}
+					proc, id, err := launchWorkerInstance(binary, append(env, "PHLIX_WORKER_HELPER=1"), resources.Config{}, slot)
+					if err == nil {
+						processes = append(processes, proc)
+					}
+					return proc, id, err
+				}
+			}
+			err = worker.revertSecretRollout(context.Background(), state, &WorkerRollout{Status: WorkerRolloutReverting})
+			if (err != nil) != fail {
+				t.Fatal("unexpected compensation outcome", err)
+			}
+			outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "DB=previous-compensation-value"
+			if fail {
+				want = "DB=candidate-compensation-value"
+				if outcome != SecretTxnCommitted {
+					t.Fatal("interrupted compensation lost accepted candidates")
+				}
+			} else if outcome != SecretTxnDiscarded {
+				t.Fatal("completed compensation committed failed deployment")
+			}
+			for _, inst := range mustLoad(t, state.AppName).Replicas {
+				actual, err := RuntimeSecrets(inst, oldBindings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if actual.Overlay()[0] != want {
+					t.Fatal("recovered fleet has wrong credentials")
+				}
+				actual.Close()
+			}
+		})
 	}
 }
