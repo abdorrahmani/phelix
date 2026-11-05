@@ -14,6 +14,9 @@ import (
 
 // RuntimeSecrets captures credentials before an instance is replaced.
 func RuntimeSecrets(inst *Instance, fallback []secrets.Binding) (*secrets.PinnedSet, error) {
+	if inst == nil {
+		return secrets.FromRuntime(nil, nil)
+	}
 	names := inst.SecretEnvs
 	if names == nil {
 		for _, b := range fallback {
@@ -46,6 +49,23 @@ func RuntimeSecrets(inst *Instance, fallback []secrets.Binding) (*secrets.Pinned
 		return secrets.FromRuntime(nil, nil)
 	}
 	return secrets.FromRuntime(container.Config.Env, names)
+}
+
+// RuntimeEnvOverlay gives probes the credentials of the instance they are checking.
+func RuntimeEnvOverlay(inst *Instance, appID string) ([]string, func(), error) {
+	base, err := snapshotOverlay(inst.EnvPath, appID)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	bindings, err := secrets.CommittedBindings(appID)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	set, err := RuntimeSecrets(inst, bindings)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return mergeByKey(base, set.Overlay()), set.Close, nil
 }
 
 // RefreshSecretCoverage refreshes one app without letting another app's failure stop it.

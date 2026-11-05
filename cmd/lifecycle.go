@@ -144,6 +144,9 @@ func runDeployAwareStop(appInfo *app.AppInfo) error {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lerr)
 	}
 	defer release()
+	if _, err := deploy.ReconcileSecretTxn(appInfo.Name, appInfo.ID); err != nil {
+		return err
+	}
 
 	state, err := loadDeployState(appInfo.Name)
 	if err != nil {

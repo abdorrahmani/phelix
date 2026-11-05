@@ -321,7 +321,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		state.Slots[SlotGreen] = &Instance{Slot: SlotGreen, Status: "stopped"}
 		state.ActiveSlot = SlotBlue
 		stable, stableSlot = adopted, SlotBlue
-		legacy = withoutPID(legacy, adopted.PID)
+		legacy = withoutInstance(legacy, adopted)
 		ro.storeState(state)
 	}
 
@@ -811,7 +811,7 @@ func (ro *Rollout) undoMigration(state *DeployState, pre modeSnapshot) {
 // verifiable, or nil when the fleet has none.
 func firstLiveReplica(state *DeployState) *Instance {
 	for _, k := range sortedReplicaKeys(state.Replicas) {
-		if inst := state.Replicas[k]; inst != nil && inst.PID > 0 && InstanceAlive(inst) {
+		if inst := state.Replicas[k]; inst != nil && InstanceAlive(inst) {
 			return inst
 		}
 	}
@@ -820,10 +820,10 @@ func firstLiveReplica(state *DeployState) *Instance {
 
 // withoutPID filters keepPID out of the retired-instance list (used to keep an
 // adopted replica alive when a rolling fleet is consolidated).
-func withoutPID(in []*Instance, keepPID int) []*Instance {
+func withoutInstance(in []*Instance, keep *Instance) []*Instance {
 	out := make([]*Instance, 0, len(in))
 	for _, inst := range in {
-		if inst == nil || inst.PID == keepPID {
+		if inst == nil || (keep.ContainerID != "" && inst.ContainerID == keep.ContainerID) || (keep.ContainerID == "" && inst.ContainerID == "" && inst.PID == keep.PID) {
 			continue
 		}
 		out = append(out, inst)

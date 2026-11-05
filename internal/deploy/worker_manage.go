@@ -26,7 +26,7 @@ func WorkerStart(ctx context.Context, appName string, sig os.Signal, grace time.
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return 0, err
 	}
@@ -98,7 +98,7 @@ func WorkerStop(ctx context.Context, appName string, sig os.Signal, grace time.D
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return 0, err
 	}
@@ -134,7 +134,7 @@ func WorkerRestartReplica(ctx context.Context, appName, slot string, sig os.Sign
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return err
 	}
@@ -171,7 +171,7 @@ func WorkerRestartAll(ctx context.Context, appName string, sig os.Signal, grace 
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return 0, err
 	}
@@ -211,7 +211,7 @@ func WorkerScale(ctx context.Context, appName string, desired int, sig os.Signal
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -266,6 +266,20 @@ func WorkerScale(ctx context.Context, appName string, desired int, sig os.Signal
 		return from, desired, err
 	}
 	return from, desired, nil
+}
+
+// loadWorkerForMutation settles an interrupted deployment before changing replicas.
+func loadWorkerForMutation(appName string) (*DeployState, error) {
+	state, err := Load(appName)
+	if err != nil {
+		return nil, err
+	}
+	if outcome, err := ReconcileSecretTxn(appName, state.AppID); err != nil {
+		return nil, err
+	} else if outcome != SecretTxnNone {
+		return Load(appName)
+	}
+	return state, nil
 }
 
 // workerArtifact is the artifact triple a slot is launched from.

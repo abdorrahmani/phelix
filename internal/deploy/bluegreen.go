@@ -477,7 +477,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	legacy = nil
 
 	if oldActive != "" {
-		if old := state.Slots[oldActive]; old != nil && old.PID > 0 {
+		if old := state.Slots[oldActive]; old != nil && (old.PID > 0 || old.ContainerID != "") {
 			log.Stepf("gracefully stopping old slot %s (pid %d, grace %s)", oldActive, old.PID, grace)
 			bg.Telemetry.InstanceDraining(oldActive, old.PID)
 			// We no longer hold the process handle for the previous instance (it
@@ -485,6 +485,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			// identity. Native: PID + executable path (guards PID recycling).
 			// Docker: container id + phelix.managed label. stopInstance picks.
 			report := stopInstance(ctx, old, grace, bg.inFlight(bg.AppName))
+			if !report.Exited {
+				return phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm retired instance has stopped")
+			}
 			stoppedPID := old.PID
 			if report.ForceKilled {
 				log.Warnf("old slot %s did not exit within grace; SIGKILL applied (in-flight: %d)", oldActive, report.InFlight)
@@ -493,6 +496,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			}
 			old.Status = "stopped"
 			old.PID = 0
+			old.ContainerID = ""
 			bg.Telemetry.InstanceStopped(oldActive, stoppedPID, drainOutcome(report))
 		}
 	}

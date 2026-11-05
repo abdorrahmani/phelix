@@ -377,13 +377,17 @@ func (s *Supervisor) maybeStartProbe(key replicaKey, dir string, state *deploy.D
 		return
 	}
 	s.nextProbe[key] = now.Add(hs.Interval)
-	env, err := deploy.EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
-	if err != nil {
-		env = nil
-	}
+	env, release, err := deploy.RuntimeEnvOverlay(inst, state.AppID)
 	pr := &probeRun{done: make(chan deploy.ProbeOutcome, 1)}
 	s.probes[key] = pr
-	go func() { pr.done <- deploy.RunProbe(hs.Command, dir, env, hs.Timeout) }()
+	if err != nil {
+		pr.done <- deploy.ProbeOutcome{Detail: "cannot read instance credentials for probe"}
+		return
+	}
+	go func() {
+		defer release()
+		pr.done <- deploy.RunProbe(hs.Command, dir, env, hs.Timeout)
+	}()
 }
 
 // probeOutcome collects a finished probe, if any.

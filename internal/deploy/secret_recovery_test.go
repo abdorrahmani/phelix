@@ -419,3 +419,28 @@ func TestRollingSecretFailureRestoresPreviousFleet(t *testing.T) {
 		set.Close()
 	}
 }
+
+func TestWorkerLifecycleSettlesPendingBeforeChanges(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "lifecycle-recovery-value")
+	state := &DeployState{AppName: "worker-lifecycle", AppID: txnTestAppID, Mode: ModeWorker}
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	txn, err := BeginSecretTxn(txnTestAppID, state.AppName, "dep", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	txn.Stamp(state)
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WorkerStart(context.Background(), state.AppName, nil, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	store, err := secrets.Open(txnTestAppID)
+	if err != nil || store.Pending != nil || len(store.Bindings) != 1 {
+		t.Fatal("worker start did not settle accepted transaction", err)
+	}
+}

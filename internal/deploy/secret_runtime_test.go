@@ -121,3 +121,26 @@ func TestCoverageTickRetriesPendingRecovery(t *testing.T) {
 		t.Fatal("successful retry remained degraded")
 	}
 }
+
+func TestProbeUsesRunningCredentialsAfterStoreRotation(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "desired-probe-value")
+	bindings := []secrets.Binding{{Secret: "db", Env: "DB"}}
+	if err := secrets.ReplaceBindings(txnTestAppID, bindings); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	cmd.Env = append(os.Environ(), "DB=running-probe-value")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	env, release, err := RuntimeEnvOverlay(&Instance{PID: cmd.Process.Pid, SecretEnvs: []string{"DB"}}, txnTestAppID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if len(env) != 1 || env[0] != "DB=running-probe-value" {
+		t.Fatal("probe received desired value instead of running value")
+	}
+}
