@@ -475,3 +475,29 @@ func TestNewAppCannotReplaceMissingMasterKey(t *testing.T) {
 		t.Fatal("missing key was recreated")
 	}
 }
+
+func TestPartialRestartKeepsLastFullApplication(t *testing.T) {
+	testEnv(t)
+	if _, err := Set(testAppID, "db", "before-partial-restart"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceBindings(testAppID, []Binding{{Secret: "db", Env: "DB"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordApply(testAppID, &ApplyStatus{Restart: ApplyRestartSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Set(testAppID, "db", "after-partial-restart"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordApply(testAppID, &ApplyStatus{Restart: ApplyRestartPartial}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(testAppID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.LastApply.Restart != ApplyRestartPartial || store.LastApply.Applied[0].Version != 1 || store.LastApply.Desired[0].Version != 2 {
+		t.Fatal("one replica restart claimed full application")
+	}
+}

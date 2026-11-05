@@ -30,7 +30,7 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 		}
 		instances = map[string]*Instance{slot: instances[slot]}
 	}
-	txn := &SecretTxn{AppName: state.AppName, ID: secrets.NewTxnID(), Set: desired}
+	txn := &SecretTxn{Partial: slot != "", AppName: state.AppName, ID: secrets.NewTxnID(), Set: desired}
 	if err := secrets.BeginTxn(state.AppID, &secrets.PendingTxn{TxnID: txn.ID, Bindings: desired.Bindings, Resolved: desired.Resolved, Runtime: state.Runtime}); err != nil {
 		return err
 	}
@@ -134,6 +134,7 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 	for _, inst := range old {
 		state.Retiring = append(state.Retiring, inst)
 	}
+	cleanup = false
 	if err := Store(state); err != nil {
 		if client != nil {
 			primary, backends := healthyTargets(old)
@@ -144,7 +145,12 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 		}
 		put(old)
 		state.SecretTxnID = stamp
-		return errors.Join(err, Store(state))
+		for _, inst := range next {
+			state.Retiring = append(state.Retiring, inst)
+		}
+		restoreErr := Store(state)
+		cleanup = restoreErr == nil
+		return errors.Join(err, restoreErr)
 	}
 	cleanup = false
 	var stopErrors []error

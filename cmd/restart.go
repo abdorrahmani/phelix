@@ -91,6 +91,9 @@ func restartAppInfo(appInfo *app.AppInfo) error {
 	defer release()
 	err = restartAppInfoLocked(appInfo)
 	status := secrets.ApplyRestartSucceeded
+	if restartReplica != "" {
+		status = secrets.ApplyRestartPartial
+	}
 	if err != nil {
 		status = secrets.ApplyRestartFailed
 	}

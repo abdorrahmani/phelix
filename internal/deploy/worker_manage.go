@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
 // Worker lifecycle commands shared by the CLI: start, stop, restart, scale and
@@ -150,6 +152,16 @@ func WorkerRestartReplica(ctx context.Context, appName, slot string, sig os.Sign
 	if !ok || inst == nil {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "worker %s has no replica %s", appName, slot)
 	}
+	if len(inst.SecretEnvs) > 0 || hasInstanceSecrets(state) {
+		return restartWorkerSecrets(ctx, state, slot, sig, grace)
+	}
+	bindings, err := secrets.CommittedBindings(state.AppID)
+	if err != nil {
+		return err
+	}
+	if len(bindings) > 0 {
+		return restartWorkerSecrets(ctx, state, slot, sig, grace)
+	}
 	if WorkerInstanceAlive(inst) {
 		if _, _, err := GracefulStopWorker(inst, sig, grace, nil); err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "worker: stop replica %s", slot)
@@ -182,6 +194,16 @@ func WorkerRestartAll(ctx context.Context, appName string, sig os.Signal, grace 
 	}
 	if state.Mode != ModeWorker {
 		return 0, phelixerr.Newf(phelixerr.CodeConfiguration, "%s is not a worker app (mode %s)", appName, state.Mode)
+	}
+	bindings, err := secrets.CommittedBindings(state.AppID)
+	if err != nil {
+		return 0, err
+	}
+	if len(bindings) > 0 || hasInstanceSecrets(state) {
+		if err := restartWorkerSecrets(ctx, state, "", sig, grace); err != nil {
+			return 0, err
+		}
+		return len(state.Replicas), nil
 	}
 	count := 0
 	for _, key := range replicaIndices(state.Replicas) {
@@ -430,4 +452,26 @@ func WorkerAppNames() []string {
 		names = append(names, entry.Name())
 	}
 	return names
+}
+
+// restartWorkerSecrets shares credential-safe restart behavior across worker commands.
+func restartWorkerSecrets(ctx context.Context, state *DeployState, slot string, sig os.Signal, grace time.Duration) error {
+	bindings, err := secrets.CommittedBindings(state.AppID)
+	if err != nil {
+		return err
+	}
+	desired, err := secrets.PinBindings(ctx, state.AppID, bindings)
+	if err != nil {
+		return err
+	}
+	defer desired.Close()
+	err = RestartSecretInstances(ctx, state, desired, &Worker{Signal: sig, Grace: grace}, slot)
+	outcome := secrets.ApplyRestartSucceeded
+	if slot != "" {
+		outcome = secrets.ApplyRestartPartial
+	}
+	if err != nil {
+		outcome = secrets.ApplyRestartFailed
+	}
+	return errors.Join(err, secrets.RecordApply(state.AppID, &secrets.ApplyStatus{Restart: outcome}))
 }

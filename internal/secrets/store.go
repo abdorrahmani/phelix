@@ -109,10 +109,12 @@ type ApplyStatus struct {
 
 // Apply outcomes recorded in ApplyStatus.Restart.
 const (
-	ApplyRestartSucceeded = "succeeded"
-	ApplyRestartFailed    = "failed"
-	ApplyRestartSkipped   = "skipped_not_running"
-	ApplyRestartNotNeeded = "not_requested"
+	ApplyRestartSucceeded   = "succeeded"
+	ApplyRestartFailed      = "failed"
+	ApplyRestartPartial     = "partial"
+	ApplyDeploymentAccepted = "accepted"
+	ApplyRestartSkipped     = "skipped_not_running"
+	ApplyRestartNotNeeded   = "not_requested"
 )
 
 // Store is the on-disk state of one application's secrets. Read methods on
@@ -616,6 +618,7 @@ func CommitTxn(appID string) error {
 			return nil
 		}
 		st.Bindings = st.Pending.Bindings
+		st.recordApply(ApplyDeploymentAccepted)
 		st.Pending = nil
 		return nil
 	})
@@ -637,7 +640,7 @@ func RecordApply(appID string, status *ApplyStatus) error {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "secrets: apply status must not be nil")
 	}
 	switch status.Restart {
-	case ApplyRestartSucceeded, ApplyRestartFailed, ApplyRestartSkipped, ApplyRestartNotNeeded:
+	case ApplyRestartSucceeded, ApplyRestartFailed, ApplyRestartSkipped, ApplyRestartNotNeeded, ApplyRestartPartial:
 	default:
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "secrets: invalid apply outcome")
 	}

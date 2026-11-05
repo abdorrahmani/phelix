@@ -19,6 +19,7 @@ import (
 // so that after any crash the store can derive its outcome from the journal
 // instead of deciding on its own.
 type SecretTxn struct {
+	Partial      bool
 	AppName      string
 	ID           string
 	DeploymentID string
@@ -92,7 +93,14 @@ func FinishSecretTxn(appID string, txn *SecretTxn, deployErr error) error {
 		return nil
 	}
 	defer txn.Set.Close()
-	_, err := ReconcileSecretTxn(txn.AppName, appID)
+	outcome, err := ReconcileSecretTxn(txn.AppName, appID)
+	if err == nil && outcome == SecretTxnCommitted && deployErr == nil {
+		status := secrets.ApplyRestartSucceeded
+		if txn.Partial {
+			status = secrets.ApplyRestartPartial
+		}
+		return secrets.RecordApply(appID, &secrets.ApplyStatus{Restart: status})
+	}
 	return err
 }
 
