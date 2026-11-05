@@ -270,22 +270,9 @@ func instanceLogTail(binaryPath string, port int, maxBytes int64) string {
 	return strings.TrimSpace(tail)
 }
 
-// pidAlive reports whether the given PID is currently running, using the same
-// gopsutil library the rest of Phelix uses for process introspection.
+// pidAlive checks live process state without wall-clock estimates.
 func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	p, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return false
-	}
-	running, err := p.IsRunning()
-	if err != nil || !running {
-		return false
-	}
-	status, err := p.Status()
-	return err != nil || status != "Z"
+	return processex.Alive(pid)
 }
 
 // GracefulStop sends SIGTERM to the process and waits up to grace for it to

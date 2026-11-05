@@ -1,10 +1,10 @@
 package deploy
 
 import (
-	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
-	"os"
 	"os/exec"
 	"time"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // ProbeOutcome is one exec health probe result.
@@ -22,7 +22,7 @@ func RunProbe(command []string, dir string, env []string, timeout time.Duration)
 	}
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = workerEnv(env)
 	out := &boundedBuffer{max: 4096}
 	cmd.Stdout = out
 	cmd.Stderr = out

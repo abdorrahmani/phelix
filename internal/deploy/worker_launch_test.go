@@ -22,6 +22,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestLaunchWorkerInstance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PORT", "12345")
 	bin, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)

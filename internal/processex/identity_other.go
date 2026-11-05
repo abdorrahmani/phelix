@@ -30,3 +30,20 @@ func Matches(id ProcessIdentity) bool {
 	ok, err := process.PidExists(int32(id.PID))
 	return err == nil && ok
 }
+
+// Alive checks process state on platforms without proc files.
+func Alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return false
+	}
+	alive, err := p.IsRunning()
+	if err != nil || !alive {
+		return false
+	}
+	status, err := p.Status()
+	return err != nil || status != "Z"
+}

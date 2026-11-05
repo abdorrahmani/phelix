@@ -42,7 +42,7 @@ func spawnHelper(t *testing.T) {
 	workerLauncherFactory = func(appName string) WorkerLauncher {
 		return func(binaryPath string, env []string, replica string) (Process, processex.ProcessIdentity, error) {
 			cmd := exec.Command(binaryPath)
-			cmd.Env = append(os.Environ(), "PHLIX_WORKER_HELPER=1", "PHLIX_WORKER_HELPER_MODE=run")
+			cmd.Env = workerEnv(append(env, "PHLIX_WORKER_HELPER=1", "PHLIX_WORKER_HELPER_MODE=run"))
 			if err := cmd.Start(); err != nil {
 				return nil, processex.ProcessIdentity{}, err
 			}

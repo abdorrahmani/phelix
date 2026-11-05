@@ -409,25 +409,9 @@ func ProcessUsage(pid int) (uint64, float64, error) {
 	return ramUsage, cpuUsage, nil
 }
 
-// isProcessRunning checks whether a PID represents a live process. A zombie
-// still has a PID and is reported as running by gopsutil, but has already
-// exited and cannot keep an application port open.
+// isProcessRunning checks live process state without wall-clock estimates.
 func (m *AppManager) isProcessRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-
-	p, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return false
-	}
-	running, err := p.IsRunning()
-	if err != nil || !running {
-		return false
-	}
-
-	status, err := p.Status()
-	return err != nil || status != "Z"
+	return processex.Alive(pid)
 }
 
 // ensureLogDirectory ensures the log directory exists

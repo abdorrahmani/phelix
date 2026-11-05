@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 func TestParseStatStarttime(t *testing.T) {
@@ -84,5 +85,30 @@ func TestSameExe(t *testing.T) {
 	}
 	if _, err := os.Stat("/proc/self/exe"); err != nil {
 		t.Skip("not a /proc platform build")
+	}
+}
+
+func TestAliveAcrossClockBoundariesAndExit(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !Alive(cmd.Process.Pid) {
+			t.Fatal("live process reported dead")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(time.Second)
+	for Alive(cmd.Process.Pid) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if Alive(cmd.Process.Pid) {
+		t.Fatal("exited process reported alive before reaping")
 	}
 }

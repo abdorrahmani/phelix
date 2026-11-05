@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/logs"
 
@@ -55,7 +57,7 @@ func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config,
 	}
 
 	cmd := exec.Command(binaryPath)
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = workerEnv(env)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
@@ -137,4 +139,11 @@ func WorkerLogFilePath(home, binaryPath, replica string) string {
 // ("replica-0"), matching the identity the supervisor and status use.
 func workerLogTag(replica string) string {
 	return "replica-" + replica
+}
+
+// workerEnv keeps worker processes and their probes free of service ports.
+func workerEnv(overlay []string) []string {
+	return slices.DeleteFunc(mergeByKey(os.Environ(), overlay), func(entry string) bool {
+		return strings.HasPrefix(entry, "PORT=")
+	})
 }
