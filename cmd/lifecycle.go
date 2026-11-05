@@ -10,6 +10,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/proxy"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/fatih/color"
 )
 
@@ -184,6 +185,7 @@ func runDeployAwareStop(appInfo *app.AppInfo) error {
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to persist app state", err)
 		}
 	}
+	secrets.ReleaseCoverage(appInfo.ID)
 	return nil
 }
 

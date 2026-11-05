@@ -8,6 +8,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
@@ -163,6 +164,9 @@ func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
 	targets := make([]logs.AppLogTarget, 0)
 	for _, a := range app.Manager.ListApplications() {
 		if !a.Watching {
+			continue
+		}
+		if state, _ := secrets.SecurityOf(a.ID); state == secrets.SecurityDegraded {
 			continue
 		}
 		targets = append(targets, AppLogTargets(a)...)

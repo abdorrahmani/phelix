@@ -110,9 +110,11 @@ func ClassicEnvOverlay(ctx context.Context, appID string) ([]string, error) {
 // overlay and nothing is registered or returned, so an application never
 // starts with only part of the credentials it declared. Resolved values are
 // masked for this process and retained for the application's coverage
-// lifetime.
+// lifetime. Success marks the application healthy; failure marks it
+// degraded, which halts its log transmission until it resolves again.
 func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]string, error) {
 	if len(bindings) == 0 {
+		MarkHealthy(appID)
 		return nil, nil
 	}
 	overlay := make([]string, 0, len(bindings))
@@ -120,12 +122,14 @@ func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]
 	for _, b := range bindings {
 		resolved, err := Resolve(ctx, appID, b.Secret)
 		if err != nil {
+			MarkDegraded(appID, "cannot resolve secret for "+b.Env+": "+err.Error())
 			return nil, phelixerr.Wrapf(phelixerr.CodeOf(err), err, "secrets: cannot resolve %s (bound to %s)", b.Secret, b.Env)
 		}
 		overlay = append(overlay, b.Env+"="+resolved.Value)
 		values = append(values, resolved.Value)
 	}
 	AcquireCoverage(appID, values)
+	MarkHealthy(appID)
 	return overlay, nil
 }
 

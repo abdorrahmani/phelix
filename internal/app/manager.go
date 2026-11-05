@@ -11,6 +11,7 @@ import (
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
 // AppManager manages the lifecycle of applications
@@ -112,7 +113,15 @@ func (m *AppManager) StopApplication(id string) error {
 	app.PID = 0
 	app.Cmd = nil
 	app.AutoStart = false
+	releaseAppSecretCoverage(id)
 	return m.SaveState()
+}
+
+// releaseAppSecretCoverage drops this process's masked copies of the
+// application's secret values; nothing that could emit them is running
+// after a full stop.
+func releaseAppSecretCoverage(appID string) {
+	secrets.ReleaseCoverage(appID)
 }
 
 // RestartApplication restarts an application by its ID

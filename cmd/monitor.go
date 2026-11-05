@@ -97,6 +97,8 @@ func runMonitor() error {
 		logs.Warning("monitor", "app restore had errors: %v", err)
 	}
 
+	startupSecretsRuntime()
+
 	if err := server.Initialize(); err != nil {
 		return err
 	}
