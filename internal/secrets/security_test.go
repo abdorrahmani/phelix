@@ -8,6 +8,7 @@ import (
 func TestSecurityStateIsPerApp(t *testing.T) {
 	testEnv(t)
 	badApp := "3f0e1d2c-3b4a-4958-8677-8899aabbccdd"
+	goodApp := "4f0e1d2c-3b4a-4958-8677-8899aabbccdd"
 
 	if state, _ := SecurityOf(badApp); state != SecurityHealthy {
 		t.Fatalf("an unevaluated app must be healthy, got %v", state)
@@ -26,17 +27,17 @@ func TestSecurityStateIsPerApp(t *testing.T) {
 		t.Fatalf("the broken app must be degraded with a reason, got %v %q", state, reason)
 	}
 
-	if state, _ := SecurityOf(testAppID); state != SecurityHealthy {
+	if state, _ := SecurityOf(goodApp); state != SecurityHealthy {
 		t.Fatalf("one app's failure must not degrade others, got %v", state)
 	}
 
-	if _, err := Set(testAppID, "ok", "fine"); err != nil {
+	if _, err := Set(goodApp, "ok", "fine"); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	if _, err := OverlayForLaunch(context.Background(), testAppID, []Binding{{Secret: "ok", Env: "OK"}}); err != nil {
+	if _, err := OverlayForLaunch(context.Background(), goodApp, []Binding{{Secret: "ok", Env: "OK"}}); err != nil {
 		t.Fatalf("healthy app overlay: %v", err)
 	}
-	if state, _ := SecurityOf(testAppID); state != SecurityHealthy {
+	if state, _ := SecurityOf(goodApp); state != SecurityHealthy {
 		t.Fatalf("the healthy app must stay healthy, got %v", state)
 	}
 
@@ -49,6 +50,6 @@ func TestSecurityStateIsPerApp(t *testing.T) {
 	if state, _ := SecurityOf(badApp); state != SecurityHealthy {
 		t.Fatalf("a successful resolution must clear the degraded state, got %v", state)
 	}
-	ReleaseCoverage(testAppID)
+	ReleaseCoverage(goodApp)
 	ReleaseCoverage(badApp)
 }
