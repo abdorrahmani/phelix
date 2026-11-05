@@ -258,7 +258,7 @@ func restoreDeployedApps() {
 			continue
 		}
 		// Only restore apps that were serving before (auto-start intent).
-		if !info.AutoStart || info.Status == "running" {
+		if !info.AutoStart || deploy.DecideLifecycle(state).Status == "running" {
 			continue
 		}
 		if err := runDeployAwareStart(info); err != nil {

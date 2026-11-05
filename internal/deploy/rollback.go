@@ -166,6 +166,10 @@ func executeRollbackLocked(ctx context.Context, opts RollbackOptions) error {
 		}
 		defer set.Close()
 		rollbackSecrets = &SecretTxn{Set: set}
+		if opts.Recovery != nil {
+			rollbackSecrets.ID = state.SecretTxnID
+			set.LaunchTxnID = state.SecretTxnID
+		}
 	}
 
 	var fromVer int

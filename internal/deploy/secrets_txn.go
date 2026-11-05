@@ -136,6 +136,10 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		return SecretTxnRetained, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: read secret store of %s", appName)
 	}
 	if st.Pending == nil {
+		state, err := Load(appName)
+		if err == nil && (state.SecretTxnID != "" || len(state.Retiring) > 0) {
+			return SecretTxnNone, finishAcceptedSecretRecovery(state)
+		}
 		return SecretTxnNone, nil
 	}
 	state, err := Load(appName)
@@ -155,32 +159,13 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		return SecretTxnRetained, phelixerr.New(phelixerr.CodeConfiguration, "deployment journal identity or strategy is invalid; pending secrets retained")
 	}
 	if state.SecretTxnID == st.Pending.TxnID {
-		if state.Canary != nil && state.Canary.Status == CanaryRunning {
-			socket, err := proxy.DefaultSocketPath()
-			if err != nil {
-				return SecretTxnRetained, err
-			}
-			if err := recoverAcceptedSecretCanary(state, proxy.NewClient(socket)); err != nil {
-				return SecretTxnRetained, err
-			}
-		}
-		if err := reclaimSecretLaunches(appName, st.Pending.TxnID, state.Runtime, state); err != nil {
+		if err := secrets.CommitTxn(appID); err != nil {
 			return SecretTxnRetained, err
 		}
-		if err := drainSecretRetirements(state); err != nil {
-			return SecretTxnRetained, err
+		if err := reclaimSecretLaunches(appName, state.SecretTxnID, state.Runtime, state); err != nil {
+			return SecretTxnCommitted, err
 		}
-		if state.WorkerRollout != nil && state.WorkerRollout.Status != WorkerRolloutDone {
-			state.WorkerRollout.Status = WorkerRolloutDone
-			state.WorkerRollout.Reason = "accepted secret deployment recovered; later restarts use committed bindings"
-			if err := Store(state); err != nil {
-				return SecretTxnRetained, err
-			}
-		}
-		if cerr := secrets.CommitTxn(appID); cerr != nil {
-			return SecretTxnRetained, cerr
-		}
-		return SecretTxnCommitted, nil
+		return SecretTxnCommitted, finishAcceptedSecretRecovery(state)
 	}
 	runtime := st.Pending.Runtime
 	if runtime == "" {
@@ -198,9 +183,31 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 	return SecretTxnDiscarded, nil
 }
 
+// finishAcceptedSecretRecovery retries runtime cleanup after bindings are committed.
+func finishAcceptedSecretRecovery(state *DeployState) error {
+	if state.Canary != nil && state.Canary.Status == CanaryRunning {
+		socket, err := proxy.DefaultSocketPath()
+		if err != nil {
+			return err
+		}
+		if err := recoverAcceptedSecretCanary(state, proxy.NewClient(socket)); err != nil {
+			return err
+		}
+	}
+	if err := drainSecretRetirements(state); err != nil {
+		return err
+	}
+	if state.WorkerRollout != nil && state.WorkerRollout.Status != WorkerRolloutDone {
+		state.WorkerRollout.Status = WorkerRolloutDone
+		state.WorkerRollout.Reason = "accepted secret deployment recovered; later restarts use committed bindings"
+		return Store(state)
+	}
+	return nil
+}
+
 // drainSecretRetirements finishes stops recorded with the replacement acceptance.
 func drainSecretRetirements(state *DeployState) error {
-	if len(state.Retiring) == 0 {
+	if len(state.Retiring) == 0 || state.Mode == ModeBlueGreen && !InstanceAlive(state.ActiveInstance()) {
 		return nil
 	}
 	serving := state.Replicas
@@ -243,7 +250,16 @@ func recoverAcceptedSecretCanary(state *DeployState, client ProxyClient) error {
 		return phelixerr.New(phelixerr.CodeConfiguration, "accepted secret rollout has no candidate record")
 	}
 	if !InstanceAlive(candidate) {
-		return phelixerr.New(phelixerr.CodeProcessFailed, "accepted secret rollout candidate is unavailable; pending secrets retained")
+		for slot, inst := range state.Slots {
+			if slot != canary.Slot && inst != nil {
+				state.Retiring = append(state.Retiring, cloneInstance(inst))
+			}
+		}
+		state.ActiveSlot, state.ActiveVersion = canary.Slot, candidate.Version
+		canary.Status = CanaryPromoted
+		canary.Reason = "accepted secret rollout recovered; candidate needs restart"
+		canary.UpdatedAt = time.Now()
+		return Store(state)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

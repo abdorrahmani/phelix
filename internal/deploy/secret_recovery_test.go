@@ -244,8 +244,15 @@ func TestAcceptedCanaryRecoveryRetainsJournalOnUnavailableTarget(t *testing.T) {
 				t.Fatal(err)
 			}
 			client := &rolloutProxyClient{alive: true, enrolled: true, failSwitch: !dead}
-			if err := recoverAcceptedSecretCanary(state, client); err == nil {
-				t.Fatal("unavailable target was promoted")
+			err := recoverAcceptedSecretCanary(state, client)
+			if dead {
+				if err != nil || state.ActiveSlot != SlotGreen || state.Canary.Status != CanaryPromoted || len(state.Retiring) != 1 || !InstanceAlive(&stable.Instance) {
+					t.Fatal("accepted dead candidate lost recovery intent or retired stable process", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("unavailable proxy was ignored")
 			}
 			if got := mustLoad(t, state.AppName); got.ActiveSlot != SlotBlue || got.Canary.Status != CanaryRunning || !InstanceAlive(&stable.Instance) {
 				t.Fatal("failed recovery changed serving journal or stopped stable instance")
@@ -489,5 +496,32 @@ func TestSecretCompensationPersistsBeforeCandidateTermination(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAcceptedBindingsCommitBeforeRuntimeCleanup(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "cleanup-independent-credential")
+	txn, err := BeginSecretTxn(txnTestAppID, "cleanup-authority", "dep", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	state := &DeployState{AppName: txn.AppName, AppID: txnTestAppID, Mode: ModeBlueGreen,
+		ActiveSlot: SlotBlue, Canary: &CanaryState{Slot: SlotGreen, Status: CanaryRunning}}
+	txn.Stamp(state)
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID)
+	if outcome != SecretTxnCommitted || err == nil {
+		t.Fatal("runtime failure changed acceptance decision", outcome, err)
+	}
+	store, err := secrets.Open(txnTestAppID)
+	if err != nil || store.Pending != nil || len(store.Bindings) != 1 {
+		t.Fatal("accepted bindings retained behind runtime cleanup", err)
+	}
+	if _, err := ReconcileSecretTxn(state.AppName, txnTestAppID); err == nil {
+		t.Fatal("unfinished cleanup was not retried")
 	}
 }

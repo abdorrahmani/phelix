@@ -242,6 +242,9 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 	if err := deploy.RestoreProxyRoute(ctx, state, client, &colorLogger{}); err != nil {
 		return err
 	}
+	if _, err := deploy.ReconcileSecretTxn(appInfo.Name, appInfo.ID); err != nil {
+		return err
+	}
 
 	if err := syncAppInfoWithDeploy(appInfo, state); err != nil {
 		return err
