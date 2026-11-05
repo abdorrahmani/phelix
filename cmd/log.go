@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/machine"
+	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/spf13/cobra"
 )
 
@@ -102,8 +104,20 @@ var LogCmd = &cobra.Command{
 			return err
 		}
 
+		targets := monitor.AppLogTargets(app.AppListItem{ID: appInfo.ID, Name: appInfo.Name, PID: appInfo.PID, Status: appInfo.Status})
+		if len(targets) > 0 && targets[0].Replica != "" {
+			if logReplica != "" {
+				for _, target := range targets {
+					if target.Replica == logReplica {
+						return showLogView(logViewSpec{Source: "app", Name: appInfo.Name + " replica-" + target.Replica, Path: target.Path}, since)
+					}
+				}
+				return phelixerr.New(phelixerr.CodeNotFound, "requested log replica does not exist")
+			}
+			return showDeploymentLogs(appInfo.Name, targets, since)
+		}
 		if logReplica != "" {
-			return showWorkerReplicaLog(appInfo, logReplica, since)
+			return phelixerr.New(phelixerr.CodeInvalidArgument, "--replica requires a deployed service or worker")
 		}
 
 		// State saved by older versions may carry an empty log_file; fall back
@@ -411,47 +425,53 @@ func readLogHistory(r io.Reader, n int, since *time.Time) ([]string, int, error)
 	return lines, total, nil
 }
 
+// streamNewLogs follows complete lines until interruption.
 func streamNewLogs(f *os.File) error {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-	defer signal.Stop(sigChan)
-
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to seek to end of log file", err)
 	}
+	return followLogLines(ctx, f, os.Stdout)
+}
 
-	reader := bufio.NewReader(f)
-	done := make(chan struct{})
-
-	go func() {
-		for {
-			select {
-			case <-done:
-				return
-			default:
-				line, err := reader.ReadString('\n')
-				if len(line) > 0 {
-					// Print whatever was read, including a final partial line
-					// that has not been terminated yet.
-					fmt.Print(phelixerr.Redact(strings.TrimRight(line, "\n")) + "\n")
-				}
-				if err != nil && err != io.EOF {
-					fmt.Printf("⚠ Error reading log: %v\n", err)
-					return
-				}
-				if err == io.EOF {
-					// No new data — poll again after a short interval instead
-					// of busy-looping on EOF.
-					time.Sleep(250 * time.Millisecond)
-				}
-			}
+// followLogLines holds incomplete lines so separate writes cannot expose a split value.
+func followLogLines(ctx context.Context, r io.Reader, out io.Writer) error {
+	reader := bufio.NewReader(r)
+	var pending []byte
+	discard := false
+	for {
+		part, err := reader.ReadSlice('\n')
+		if len(pending)+len(part) > 1<<20 {
+			pending = nil
+			discard = true
 		}
-	}()
-
-	<-sigChan
-	close(done)
-	fmt.Println("\nGoodbye!")
-	return nil
+		if !discard {
+			pending = append(pending, part...)
+		}
+		if err == nil {
+			line := "[line omitted: exceeds log size limit]"
+			if !discard {
+				line = phelixerr.Redact(strings.TrimSuffix(string(pending), "\n"))
+			}
+			if _, err := fmt.Fprintln(out, line); err != nil {
+				return err
+			}
+			pending, discard = pending[:0], false
+		}
+		if err != nil && err != io.EOF && err != bufio.ErrBufferFull {
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read log", err)
+		}
+		if err == io.EOF {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(250 * time.Millisecond):
+			}
+		} else if ctx.Err() != nil {
+			return nil
+		}
+	}
 }
 
 func init() {
@@ -470,29 +490,60 @@ func init() {
 	LogCmd.Flags().StringVar(&logApp, "app", "",
 		"App name for the store query (alternative to the positional argument)")
 	LogCmd.Flags().StringVar(&logReplica, "replica", "",
-		"Tail one worker replica's output instead of the app log (slot name, e.g. 0; worker apps only)")
+		"Tail one service slot or worker replica (for example blue or 0)")
 }
 
-// showWorkerReplicaLog tails one worker replica's captured output.
-func showWorkerReplicaLog(appInfo *app.AppInfo, replica string, since *time.Time) error {
-	state, err := deploy.Load(appInfo.Name)
-	if err != nil || state == nil || state.Mode != deploy.ModeWorker {
-		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-			"--replica is only valid for a type: worker app with a deploy state")
+// showDeploymentLogs displays all current deployment streams and follows them together.
+func showDeploymentLogs(name string, targets []logs.AppLogTarget, since *time.Time) error {
+	items := make([]string, 0)
+	truncated := false
+	for _, target := range targets {
+		history, err := readLogHistoryFiles(target.Path, logLines, since)
+		if err != nil {
+			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read deployment logs", err)
+		}
+		truncated = truncated || history.total > len(history.lines)
+		for _, line := range history.lines {
+			items = append(items, "["+target.Replica+"] "+phelixerr.Redact(line))
+		}
 	}
-	inst, ok := state.Replicas[replica]
-	if !ok || inst == nil {
-		return phelixerr.Newf(phelixerr.CodeNotFound, "worker %s has no replica %s", appInfo.Name, replica)
+	if machine.Active() {
+		return writeEnvelopeResult(machine.Success("", logResult{Source: "app", App: name, Items: items, Count: len(items), Truncated: truncated}))
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
+	for _, line := range items {
+		fmt.Println(line)
 	}
-	path := deploy.WorkerLogFilePath(home, inst.BinaryPath, replica)
-	name := fmt.Sprintf("%s replica-%s", appInfo.Name, replica)
-	return showLogView(logViewSpec{
-		Source: "app",
-		Name:   name,
-		Path:   path,
-	}, since)
+	if logNoFollow {
+		return nil
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	var files []*os.File
+	defer func() {
+		for _, f := range files {
+			_ = f.Close()
+		}
+	}()
+	for _, target := range targets {
+		f, err := os.Open(target.Path)
+		if err != nil {
+			return err
+		}
+		files = append(files, f)
+		if _, err := f.Seek(0, io.SeekEnd); err != nil {
+			return err
+		}
+	}
+	results := make(chan error, len(files))
+	for _, f := range files {
+		go func() { results <- followLogLines(ctx, f, os.Stdout) }()
+	}
+	var first error
+	for range files {
+		if err := <-results; err != nil && first == nil {
+			first = err
+			cancel()
+		}
+	}
+	return first
 }
