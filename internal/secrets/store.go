@@ -341,7 +341,7 @@ func Open(appID string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(path); os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Dir(path)); os.IsNotExist(err) {
 		return &Store{SchemaVersion: storeSchemaVersion, AppID: appID, Secrets: map[string]SecretRecord{}}, nil
 	}
 	var st *Store

@@ -501,3 +501,46 @@ func TestPartialRestartKeepsLastFullApplication(t *testing.T) {
 		t.Fatal("one replica restart claimed full application")
 	}
 }
+
+func TestMissingStoreReadWaitsForWriter(t *testing.T) {
+	testEnv(t)
+	locked, release, read := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	writer := make(chan error, 1)
+	go func() {
+		writer <- withStoreLock(testAppID, true, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	go func() { _, err := Open(testAppID); read <- err }()
+	select {
+	case <-read:
+		close(release)
+		<-writer
+		t.Fatal("missing store bypassed its writer lock")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if err := <-writer; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-read; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMissingStoreStillChecksDirectoryPermissions(t *testing.T) {
+	testEnv(t)
+	path, err := storePath(testAppID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(testAppID); err == nil {
+		t.Fatal("missing store bypassed unsafe directory permissions")
+	}
+}

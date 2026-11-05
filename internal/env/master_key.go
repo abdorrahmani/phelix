@@ -31,24 +31,16 @@ func GetMasterKey() ([]byte, error) {
 			dataDir = "/var/lib/phelix"
 		}
 	}
-	for _, pattern := range []string{
-		filepath.Join(dataDir, "secrets", "*.json"),
-		filepath.Join(home, ".phelix", "envs", "*.env.enc"),
-		filepath.Join(home, ".phelix", "apps", "*", "env", "*.enc"),
+	for _, location := range []struct {
+		path string
+		apps bool
+	}{
+		{filepath.Join(dataDir, "secrets"), false},
+		{filepath.Join(home, ".phelix", "envs"), false},
+		{filepath.Join(home, ".phelix", "apps"), true},
 	} {
-		files, err := filepath.Glob(pattern)
-		if err != nil {
-			return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot inspect existing encrypted stores")
-		}
-		for _, file := range files {
-			data, err := os.ReadFile(file)
-			var stored struct {
-				Secrets map[string]json.RawMessage
-				Entries map[string]json.RawMessage
-			}
-			if err != nil || json.Unmarshal(data, &stored) != nil || len(stored.Secrets) > 0 || len(stored.Entries) > 0 {
-				return nil, phelixerr.New(phelixerr.CodeEncryption, "master key is missing; restore the original key before changing encrypted data")
-			}
+		if err := inspectEncryptedStores(location.path, location.apps); err != nil {
+			return nil, err
 		}
 	}
 	key, err = GenerateMasterKey()
@@ -123,4 +115,37 @@ func readMasterKey(path string) ([]byte, error) {
 		return nil, phelixerr.New(phelixerr.CodeEncryption, "master key is invalid; restore the original key")
 	}
 	return key, nil
+}
+
+// inspectEncryptedStores refuses replacement keys when existing data cannot be checked.
+func inspectEncryptedStores(dir string, apps bool) error {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return phelixerr.New(phelixerr.CodeEncryption, "cannot inspect existing encrypted stores")
+	}
+	for _, entry := range entries {
+		if apps {
+			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				if err := inspectEncryptedStores(filepath.Join(dir, entry.Name(), "env"), false); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".json") && !strings.HasSuffix(entry.Name(), ".enc") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		var stored struct {
+			Secrets map[string]json.RawMessage
+			Entries map[string]json.RawMessage
+		}
+		if err != nil || json.Unmarshal(data, &stored) != nil || len(stored.Secrets) > 0 || len(stored.Entries) > 0 {
+			return phelixerr.New(phelixerr.CodeEncryption, "master key is missing; restore the original key before changing encrypted data")
+		}
+	}
+	return nil
 }

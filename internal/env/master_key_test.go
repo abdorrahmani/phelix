@@ -50,3 +50,17 @@ func TestMasterKeyCorruptionIsNotOverwritten(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingKeyDoesNotIgnoreUninspectableStores(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	if err := os.WriteFile(filepath.Join(os.Getenv("PHELIX_DATA_DIR"), "secrets"), []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GetMasterKey(); err == nil {
+		t.Fatal("uninspectable store allowed a replacement key")
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".phelix", "master.key")); !os.IsNotExist(err) {
+		t.Fatal("replacement key was written")
+	}
+}
