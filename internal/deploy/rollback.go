@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"os"
 	"os/exec"
 	"strings"
@@ -126,6 +127,11 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	}
 	defer release()
 
+	return executeRollbackLocked(ctx, opts)
+}
+
+// executeRollbackLocked keeps recovery and its failed deployment under one lock.
+func executeRollbackLocked(ctx context.Context, opts RollbackOptions) error {
 	state, err := Load(opts.AppName)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -140,6 +146,20 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 	if state == nil || (state.Mode != ModeBlueGreen && state.Mode != ModeRolling) {
 		return phelixerr.Newf(phelixerr.CodeRollbackFailed,
 			"deploy: rollback unsupported for mode %q", state.Mode)
+	}
+
+	var rollbackSecrets *SecretTxn
+	bindings, err := secrets.CommittedBindings(opts.AppID)
+	if err != nil {
+		return err
+	}
+	if len(bindings) > 0 || state.SecretTxnID != "" {
+		set, err := secrets.PinBindings(ctx, opts.AppID, bindings)
+		if err != nil {
+			return err
+		}
+		defer set.Close()
+		rollbackSecrets = &SecretTxn{Set: set, ID: state.SecretTxnID}
 	}
 
 	var fromVer int
@@ -233,6 +253,7 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 			Notifier:       opts.Notifier,
 			InFlight:       opts.InFlight,
 			Telemetry:      opts.Telemetry,
+			Secrets:        rollbackSecrets,
 		}
 		if opts.PublicPort == 0 {
 			bg.PublicPort = state.PublicPort
@@ -259,6 +280,7 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 			Notifier:       opts.Notifier,
 			InFlight:       opts.InFlight,
 			Telemetry:      opts.Telemetry,
+			Secrets:        rollbackSecrets,
 		}
 		deployErr = r.Deploy(ctx)
 	default:
@@ -286,6 +308,7 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 			"reload authoritative deploy state after rollback", err)
 		return deployErr
 	}
+	state.SecretTxnID = ""
 	state.LastRollback = &RollbackRecord{
 		FromVersion: fromVer,
 		ToVersion:   toVer,

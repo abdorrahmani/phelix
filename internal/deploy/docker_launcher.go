@@ -139,6 +139,9 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 			"--label", DockerLabelManaged + "=true",
 			"--label", DockerLabelApp + "=" + appName,
 		}
+		if txnID := secretLaunchTxn(env); txnID != "" {
+			args = append(args, "--label", "phelix.secret-txn="+txnID)
+		}
 		if slot != "" {
 			args = append(args, "--label", DockerLabelSlot+"="+slot)
 		}

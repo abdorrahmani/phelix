@@ -220,6 +220,14 @@ func openStoreLocked(path, appID string) (*Store, error) {
 	if err := validateBindings(st.Bindings); err != nil {
 		return nil, err
 	}
+	if st.Pending != nil {
+		if !ValidTxnID(st.Pending.TxnID) {
+			return nil, phelixerr.New(phelixerr.CodeFilesystem, "secrets: invalid pending transaction")
+		}
+		if err := validateBindings(st.Pending.Bindings); err != nil {
+			return nil, err
+		}
+	}
 	if st.SchemaVersion != storeSchemaVersion {
 		return nil, phelixerr.Newf(phelixerr.CodeFilesystem, "secrets: store %s has unsupported schema version %d", path, st.SchemaVersion)
 	}
@@ -412,6 +420,9 @@ func Set(appID, name, value string) (SetResult, error) {
 	fp := fingerprint(key, value)
 	now := time.Now().UTC()
 	err = mutate(appID, func(st *Store) error {
+		if st.Pending != nil {
+			return phelixerr.New(phelixerr.CodeDeployLocked, "secrets: reconcile the pending deployment before changing values")
+		}
 		rec, ok := st.Secrets[name]
 		if !ok {
 			rec = SecretRecord{Name: name, CreatedAt: now}
@@ -505,7 +516,7 @@ func ReplaceBindings(appID string, bindings []Binding) error {
 // new transaction replaces any leftover: the deployment engine's recovery
 // has already resolved (or will resolve) anything a previous one left behind.
 func BeginTxn(appID string, txn *PendingTxn) error {
-	if txn == nil || txn.TxnID == "" {
+	if txn == nil || !ValidTxnID(txn.TxnID) {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "secrets: a transaction needs an id")
 	}
 	if err := validateBindings(txn.Bindings); err != nil {

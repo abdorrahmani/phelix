@@ -127,6 +127,9 @@ func workerGateMode(mode string) string {
 // supervision settings, health gate, rolling drain and the resolved strategy.
 // Both the rebuild path and the initial build path use it.
 func buildWorkerEngine(appInfo *app.AppInfo, name string, cfg *project.Config, src deploy.BuildSource, replicas int, strategy string, tracker *deploy.Tracker, logger deploy.Logger) (*deploy.Worker, error) {
+	if cfg == nil {
+		return nil, phelixerr.New(phelixerr.CodeConfiguration, "worker restart requires phelix.yaml")
+	}
 	ps := cfg.Process.Resolve()
 	sig, err := deploy.SignalFromName(ps.ShutdownSignal)
 	if err != nil {

@@ -58,13 +58,21 @@ func launchWorkerReplica(appName string, state *DeployState, slot string, txn *S
 		return nil, err
 	}
 	inst.SecretEnvs = phelixerr.SecretEnvNames(env)
-	MarkWorkerLaunched(state, slot, id)
+	if err := markWorkerLaunched(state, slot, id, txn == nil); err != nil {
+		_, _, _ = GracefulStopWorker(inst, nil, time.Second, proc)
+		return nil, err
+	}
 	return proc, nil
 }
 
 // MarkWorkerLaunched stamps a replica record as freshly launched and persists
 // it: new identity, status starting, exit bookkeeping cleared.
-func MarkWorkerLaunched(state *DeployState, slot string, id processex.ProcessIdentity) {
+func MarkWorkerLaunched(state *DeployState, slot string, id processex.ProcessIdentity) error {
+	return markWorkerLaunched(state, slot, id, true)
+}
+
+// markWorkerLaunched leaves candidate records in memory until their health gate passes.
+func markWorkerLaunched(state *DeployState, slot string, id processex.ProcessIdentity, persist bool) error {
 	inst := state.Replicas[slot]
 	if inst == nil {
 		inst = &Instance{Slot: slot}
@@ -79,7 +87,10 @@ func MarkWorkerLaunched(state *DeployState, slot string, id processex.ProcessIde
 	inst.LastExitReason = ""
 	inst.LastExitAt = time.Time{}
 	inst.Status = "starting"
-	_ = Store(state)
+	if persist {
+		return Store(state)
+	}
+	return nil
 }
 
 // GracefulStopWorker stops one identity-verified worker process without

@@ -650,6 +650,8 @@ func acceptClassicSecrets(info *app.AppInfo, port, version int, txn *deploy.Secr
 		return nil
 	}
 	state := &deploy.DeployState{AppName: info.Name, AppID: info.ID, Mode: "classic", PublicPort: port, ActiveVersion: version}
+	state.Slots = map[string]*deploy.Instance{"classic": {PID: classicPID(info.ID), Status: "running"}}
+
 	txn.Stamp(state)
 	return deploy.Store(state)
 }

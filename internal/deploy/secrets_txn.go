@@ -44,6 +44,7 @@ func BeginSecretTxn(appID, appName, deploymentID string, imports []secrets.Bindi
 		return nil, err
 	}
 	txn.Set = set
+	set.LaunchTxnID = txn.ID
 	pending := &secrets.PendingTxn{
 		TxnID:        txn.ID,
 		DeploymentID: deploymentID,
@@ -123,6 +124,9 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 	state, err := Load(appName)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if err := reclaimSecretLaunches(appName, st.Pending.TxnID, nil); err != nil {
+				return SecretTxnRetained, err
+			}
 			if derr := secrets.DiscardTxn(appID); derr != nil {
 				return SecretTxnRetained, derr
 			}
@@ -131,10 +135,23 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		return SecretTxnRetained, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: read deployment journal of %s", appName)
 	}
 	if state.SecretTxnID == st.Pending.TxnID {
+		if err := reclaimSecretLaunches(appName, st.Pending.TxnID, state); err != nil {
+			return SecretTxnRetained, err
+		}
+		if state.WorkerRollout != nil && state.WorkerRollout.Status != WorkerRolloutDone {
+			state.WorkerRollout.Status = WorkerRolloutDone
+			state.WorkerRollout.Reason = "accepted secret deployment recovered; later restarts use committed bindings"
+			if err := Store(state); err != nil {
+				return SecretTxnRetained, err
+			}
+		}
 		if cerr := secrets.CommitTxn(appID); cerr != nil {
 			return SecretTxnRetained, cerr
 		}
 		return SecretTxnCommitted, nil
+	}
+	if err := reclaimSecretLaunches(appName, st.Pending.TxnID, nil); err != nil {
+		return SecretTxnRetained, err
 	}
 	if derr := secrets.DiscardTxn(appID); derr != nil {
 		return SecretTxnRetained, derr

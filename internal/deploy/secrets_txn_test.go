@@ -224,21 +224,21 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 	})
 }
 
-func TestPinnedOverlayOutlivesStoreRotation(t *testing.T) {
+func TestPendingDeploymentRejectsStoreRotation(t *testing.T) {
 	txnTestEnv(t)
 	seedSecret(t, "db", "pin-time-value")
 	txn, err := BeginSecretTxn(txnTestAppID, "pin-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}})
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if _, err := secrets.Set(txnTestAppID, "db", "newer-value-during-deploy"); err != nil {
-		t.Fatalf("rotate during deploy: %v", err)
+	if _, err := secrets.Set(txnTestAppID, "db", "newer-value-during-deploy"); !phelixerr.IsCode(err, phelixerr.CodeDeployLocked) {
+		t.Fatalf("rotation during deployment must fail: %v", err)
 	}
 	overlay, err := txn.OverlayFor("")
 	if err != nil {
 		t.Fatalf("overlay: %v", err)
 	}
-	if len(overlay) != 1 || overlay[0] != "DATABASE_URL=pin-time-value" {
+	if len(overlay) != 2 || overlay[0] != "DATABASE_URL=pin-time-value" {
 		t.Fatalf("every instance of a deployment must receive the pinned value, got %v", overlay)
 	}
 }

@@ -105,6 +105,16 @@ func AutoRollbackTarget(appName string, newVer int) (int, error) {
 // otherwise deadlock). The recovered state is written by ExecuteRollback's
 // normal commit path — no parallel state is introduced.
 func RunAutoRollback(ctx context.Context, opts AutoRollbackOptions) AutoRollbackResult {
+	release, err := AcquireDeployLock(opts.AppName, "auto-rollback")
+	if err != nil {
+		return AutoRollbackResult{Err: err}
+	}
+	defer release()
+	return RunAutoRollbackLocked(ctx, opts)
+}
+
+// RunAutoRollbackLocked restores service while the deployment still holds its lock.
+func RunAutoRollbackLocked(ctx context.Context, opts AutoRollbackOptions) AutoRollbackResult {
 	log := opts.Logger
 	if log == nil {
 		log = &nopLogger{}
@@ -129,7 +139,7 @@ func RunAutoRollback(ctx context.Context, opts AutoRollbackOptions) AutoRollback
 	}
 
 	log.Stepf("automatic rollback: restoring v%d", target)
-	err = ExecuteRollback(ctx, RollbackOptions{
+	err = executeRollbackLocked(ctx, RollbackOptions{
 		AppName:        opts.AppName,
 		AppID:          opts.AppID,
 		PublicPort:     opts.PublicPort,

@@ -191,7 +191,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 			}
 			return wrapDeployStep(err, fmt.Sprintf("rolling deploy cancelled before replica %s", key))
 		}
-		if err := r.rollOne(ctx, state, binaryPath, envOverlay, targetVer, key, tier, tierCfg, grace); err != nil {
+		if err := r.rollOne(ctx, state, binaryPath, envPath, envOverlay, targetVer, key, tier, tierCfg, grace); err != nil {
 			failed = true
 			if !progressed {
 				// No replacement ever reached rotation, so nothing about the
@@ -298,7 +298,7 @@ func (r *Rolling) undoMigration(state *DeployState, pre modeSnapshot, log Logger
 // rollOne replaces exactly one replica while it keeps serving. Ordering rules
 // (see Rolling.Deploy): start alongside → health-check replacement → swap
 // membership → drain old instance.
-func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath string, envOverlay []string, targetVer int, key string, tier health.Tier, tierCfg *health.DeployTierConfig, grace time.Duration) error {
+func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, envPath string, envOverlay []string, targetVer int, key string, tier health.Tier, tierCfg *health.DeployTierConfig, grace time.Duration) error {
 	log := r.logger()
 	// Replica identity is the index deploy.json already keys instances by, so
 	// telemetry, the proxy label ("replica-N") and the state file all agree.
@@ -417,7 +417,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	// membership and stop the candidate; only drain after a durable commit.
 	candidate := &Instance{
 		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
-		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath,
+		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath, EnvPath: envPath,
 		ContainerID: containerIDOf(proc),
 		StartedAt:   time.Now(), Version: targetVer, Status: "running",
 	}

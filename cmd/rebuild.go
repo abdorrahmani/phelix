@@ -291,7 +291,7 @@ func init() {
 // state always stay with the app. op carries the operation identity: the
 // deployment telemetry ID is correlated into the record and the terminal
 // envelope is written per strategy.
-func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
+func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 	appInfo, name, publicPort, buildSource := spec.AppInfo, spec.Name, spec.Port, spec.SourceDir
 	out := spec.writer()
 
@@ -380,6 +380,8 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
 	}
 
+	defer release()
+
 	strategy := string(deploy.ModeRolling)
 	if spec.BlueGreen {
 		strategy = string(deploy.ModeBlueGreen)
@@ -393,9 +395,10 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 
 	secretTxn, err := beginProjectSecrets(appInfo, runtimeCfg, tracker.DeploymentID())
 	if err != nil {
-		release()
 		return err
 	}
+
+	defer func() { errRet = errors.Join(errRet, deploy.FinishSecretTxn(appInfo.ID, secretTxn, errRet)) }()
 
 	deployCtx := context.Background()
 	if spec.Rollout != nil {
@@ -424,13 +427,10 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 		}
 		err := ro.Deploy(deployCtx)
 		reconcileAppWithDeploy(name)
-		err = errors.Join(err, deploy.FinishSecretTxn(appInfo.ID, secretTxn, err))
 		if err != nil {
-			release()
 			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 				proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 		}
-		release()
 		fmt.Fprintf(out, "%s %s rollout complete for %s (%d steps)\n",
 			color.GreenString("✓"), spec.Rollout.Strategy, color.CyanString("'%s'", name), len(spec.Rollout.Steps))
 		// Build Report + regression analysis (observability only).
@@ -470,13 +470,10 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 		}
 		err := bg.Deploy(context.Background())
 		reconcileAppWithDeploy(name)
-		err = errors.Join(err, deploy.FinishSecretTxn(appInfo.ID, secretTxn, err))
 		if err != nil {
-			release()
 			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 				proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 		}
-		release()
 		fmt.Fprintf(out, "%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
 		// Build Report + regression analysis (observability only; the deploy
 		// outcome above is already committed).
@@ -515,13 +512,10 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 	}
 	err = r.Deploy(context.Background())
 	reconcileAppWithDeploy(name)
-	err = errors.Join(err, deploy.FinishSecretTxn(appInfo.ID, secretTxn, err))
 	if err != nil {
-		release()
 		return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 			proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 	}
-	release()
 	fmt.Fprintf(out, "%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
 		color.GreenString("✓"), color.CyanString("'%s'", name), spec.Replicas)
 	// Build Report + regression analysis (observability only).
@@ -569,7 +563,7 @@ func autoRollbackAfterFailedDeploy(out io.Writer, appInfo *app.AppInfo, name str
 	if st, serr := deploy.Load(name); serr == nil && st != nil && st.Mode != "" {
 		recoveryTracker = deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, string(st.Mode))
 	}
-	res := deploy.RunAutoRollback(context.Background(), deploy.AutoRollbackOptions{
+	res := deploy.RunAutoRollbackLocked(context.Background(), deploy.AutoRollbackOptions{
 		AppName:        name,
 		AppID:          appInfo.ID,
 		PublicPort:     publicPort,

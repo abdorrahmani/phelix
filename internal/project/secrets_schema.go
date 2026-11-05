@@ -41,7 +41,8 @@ var secretNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 // its own value last, so an import bound to a reserved name would never be
 // readable and only mislead.
 var reservedEnvNames = map[string]bool{
-	"PORT": true,
+	"PORT":                       true,
+	"PHELIX_INTERNAL_SECRET_TXN": true,
 }
 
 // Validate is the exported entry to the secrets section's validation, the

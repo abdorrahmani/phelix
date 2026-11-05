@@ -15,10 +15,11 @@ import (
 // exactly this set, which is what makes the deployment uniform even though
 // values are resolved at launch time everywhere else.
 type PinnedSet struct {
-	Bindings []Binding
-	Resolved []ResolvedVersion
-	values   map[string]string
-	release  func()
+	LaunchTxnID string
+	Bindings    []Binding
+	Resolved    []ResolvedVersion
+	values      map[string]string
+	release     func()
 }
 
 // PinBindings resolves every binding once and freezes the result. Resolution
@@ -68,12 +69,15 @@ func PinBindings(ctx context.Context, appID string, bindings []Binding) (*Pinned
 // never touches the store again: the values are the ones pinned at the start
 // of the deployment.
 func (p *PinnedSet) Overlay() []string {
-	if p == nil || len(p.Bindings) == 0 {
+	if p == nil {
 		return nil
 	}
 	out := make([]string, 0, len(p.Bindings))
 	for _, b := range p.Bindings {
 		out = append(out, b.Env+"="+p.values[b.Secret])
+	}
+	if p.LaunchTxnID != "" {
+		out = append(out, "PHELIX_INTERNAL_SECRET_TXN="+p.LaunchTxnID)
 	}
 	return out
 }

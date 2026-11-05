@@ -55,9 +55,10 @@ type Worker struct {
 	// Secrets carries the deployment's secret execution context. Nil means
 	// the deployment resolves committed bindings (or none) at launch as
 	// before.
-	Secrets       *SecretTxn
-	SecretImports []secrets.Binding
-	Replicas      int
+	Secrets         *SecretTxn
+	SecretImports   []secrets.Binding
+	previousSecrets map[string]*secrets.PinnedSet
+	Replicas        int
 	// Dir is the app project directory: the exec probe's working directory.
 	Dir string
 	// Signal and grace govern replica shutdown; DrainTimeout bounds the wait
@@ -135,12 +136,8 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 	}
 	defer release()
 
-	if w.SecretImports != nil {
-		w.Secrets, err = BeginSecretTxn(w.AppID, w.AppName, w.Telemetry.DeploymentID(), w.SecretImports)
-		if err != nil {
-			return err
-		}
-		defer func() { errRet = errors.Join(errRet, FinishSecretTxn(w.AppID, w.Secrets, errRet)) }()
+	if _, err := ReconcileSecretTxn(w.AppName, w.AppID); err != nil {
+		return err
 	}
 	state, err := LoadOrInit(w.AppName, ModeWorker, 0)
 	if err != nil {
@@ -163,6 +160,36 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 			return wrapDeployStep(rerr, "recover interrupted worker rollout")
 		}
 		state.WorkerRollout = nil
+	}
+
+	if w.SecretImports != nil {
+		w.Secrets, err = BeginSecretTxn(w.AppID, w.AppName, w.Telemetry.DeploymentID(), w.SecretImports)
+		if err != nil {
+			return err
+		}
+		defer func() { errRet = errors.Join(errRet, FinishSecretTxn(w.AppID, w.Secrets, errRet)) }()
+	}
+
+	if w.Secrets != nil {
+		w.previousSecrets = map[string]*secrets.PinnedSet{}
+		defer func() {
+			for _, set := range w.previousSecrets {
+				set.Close()
+			}
+		}()
+		bindings, err := secrets.CommittedBindings(w.AppID)
+		if err != nil {
+			return err
+		}
+		for key, inst := range state.Replicas {
+			if inst != nil && WorkerInstanceAlive(inst) {
+				set, err := RuntimeSecrets(inst, bindings)
+				if err != nil {
+					return err
+				}
+				w.previousSecrets[key] = set
+			}
+		}
 	}
 
 	ReapStaleInstances(state)
@@ -275,6 +302,8 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 	inst.Status = "running"
 	inst.ReadyAt = time.Now()
 	oldStamp := state.SecretTxnID
+	journal.ReplacedFrom[key] = versionOf(old)
+	journal.UpdatedAt = time.Now()
 	w.Secrets.Stamp(state)
 	if err := Store(state); err != nil {
 		_, _, _ = GracefulStopWorker(inst, w.signal(), w.grace(), proc)
@@ -283,12 +312,6 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 		return err
 	}
 	w.Telemetry.ReplicaHealthy(index, inst.PID, 0)
-
-	if old != nil {
-		journal.ReplacedFrom[key] = old.Version
-	}
-	journal.UpdatedAt = time.Now()
-	_ = Store(state)
 
 	if oldAlive {
 		w.Telemetry.ReplicaDraining(index, old.PID)
@@ -312,6 +335,9 @@ func (w *Worker) deployClassic(ctx context.Context, state *DeployState, binaryPa
 			continue
 		}
 		journal.ReplacedFrom[key] = inst.Version
+		if err := Store(state); err != nil {
+			return err
+		}
 		if !WorkerInstanceAlive(inst) {
 			inst.PID = 0
 			inst.Status = "stopped"
@@ -410,18 +436,22 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 			journal.Status = WorkerRolloutDone
 			journal.Reason = "deploy failed before any replica was replaced"
 			journal.UpdatedAt = time.Now()
-			_ = Store(state)
+			if err := Store(state); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 	journal.Status = WorkerRolloutReverting
 	journal.UpdatedAt = time.Now()
-	_ = Store(state)
+	if err := Store(state); err != nil {
+		return err
+	}
 
 	for _, key := range sortedJournalKeys(journal.ReplacedFrom) {
 		fromVer := journal.ReplacedFrom[key]
 		inst := state.Replicas[key]
-		if inst != nil && inst.Version == fromVer && WorkerInstanceAlive(inst) {
+		if inst != nil && inst.Version == fromVer && WorkerInstanceAlive(inst) && w.Secrets == nil {
 			continue
 		}
 		if fromVer <= 0 {
@@ -432,7 +462,9 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 			if inst != nil {
 				inst.PID = 0
 				inst.Status = "stopped"
-				_ = Store(state)
+				if err := Store(state); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -451,25 +483,33 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 		inst.BinaryPath = bin
 		inst.EnvPath = envPath
 		inst.Version = fromVer
-		proc, err := LaunchWorkerReplica(w.AppName, state, key)
+		var previous *SecretTxn
+		if set := w.previousSecrets[key]; set != nil {
+			previous = &SecretTxn{Set: set}
+		}
+		proc, err := launchWorkerReplica(w.AppName, state, key, previous)
 		if err != nil {
 			return w.recoveryRequired(state, journal, fmt.Sprintf("replica %s: relaunch v%d: %v", key, fromVer, err))
 		}
-		env, err := EnvOverlayFromSnapshot(envPath, state.AppID)
+		env, err := launchOverlay(envPath, state.AppID, previous)
 		if err != nil {
-			env = nil
+			return err
 		}
 		if err := w.waitForReady(ctx, state, inst, env); err != nil {
 			_, _, _ = GracefulStopWorker(inst, w.signal(), w.grace(), proc)
 			inst.PID = 0
 			inst.Status = "stopped"
-			_ = Store(state)
+			if err := Store(state); err != nil {
+				return err
+			}
 			return w.recoveryRequired(state, journal, fmt.Sprintf("replica %s: reverted v%d failed its gate: %v", key, fromVer, err))
 		}
 		inst.Status = "running"
 		inst.ReadyAt = time.Now()
 		journal.UpdatedAt = time.Now()
-		_ = Store(state)
+		if err := Store(state); err != nil {
+			return err
+		}
 		log.Stepf("replica %s reverted to v%d", key, fromVer)
 	}
 	journal.Status = WorkerRolloutDone
@@ -477,8 +517,7 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 	journal.Reason = "reverted to the previous versions after a failed deploy"
 	journal.ReplacedFrom = nil
 	journal.UpdatedAt = time.Now()
-	_ = Store(state)
-	return nil
+	return Store(state)
 }
 
 // recoveryRequired persists the honest terminal state for a rollout whose
@@ -487,7 +526,9 @@ func (w *Worker) recoveryRequired(state *DeployState, journal *WorkerRollout, re
 	journal.Status = WorkerRolloutRecoveryRequired
 	journal.Reason = reason
 	journal.UpdatedAt = time.Now()
-	_ = Store(state)
+	if err := Store(state); err != nil {
+		return err
+	}
 	return phelixerr.Newf(phelixerr.CodeDeployFailed,
 		"worker rollout recovery failed: %s (recovery_required persisted)", reason)
 }
@@ -552,7 +593,7 @@ func workerTail(inst *Instance) string {
 		return ""
 	}
 	const maxBytes = 2048
-	tail := string(raw)
+	tail := phelixerr.Redact(string(raw))
 	if len(tail) > maxBytes {
 		tail = tail[len(tail)-maxBytes:]
 	}
@@ -563,18 +604,25 @@ func workerTail(inst *Instance) string {
 // after a daemon restart: v1 recovery always reverts to the journal's
 // recorded previous versions. It is a no-op when no rollout needs recovery.
 func RecoverWorkerRollout(ctx context.Context, appName string) error {
-	state, err := Load(appName)
-	if err != nil || state == nil || state.Mode != ModeWorker {
-		return err
-	}
-	if state.WorkerRollout == nil || state.WorkerRollout.Status == WorkerRolloutDone {
-		return nil
-	}
 	release, err := (ReplicaCoordinator{}).LockApp(ctx, appName)
 	if err != nil {
 		return err
 	}
 	defer release()
+	state, err := Load(appName)
+	if err != nil || state == nil || state.Mode != ModeWorker {
+		return err
+	}
+	if _, err := ReconcileSecretTxn(appName, state.AppID); err != nil {
+		return err
+	}
+	state, err = Load(appName)
+	if err != nil {
+		return err
+	}
+	if state.WorkerRollout == nil || state.WorkerRollout.Status == WorkerRolloutDone {
+		return nil
+	}
 	w := &Worker{AppName: appName, AppID: state.AppID}
 	return w.revertRollout(ctx, state, state.WorkerRollout)
 }
