@@ -415,6 +415,9 @@ func Load(appName string) (*DeployState, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "deploy: decode %s", path)
 	}
+	if s.AppName != appName || (s.Mode != "" && s.Mode != "classic" && s.Mode != ModeBlueGreen && s.Mode != ModeRolling && s.Mode != ModeWorker) {
+		return nil, phelixerr.New(phelixerr.CodeConfiguration, "deployment journal has an invalid app identity or strategy")
+	}
 	return &s, nil
 }
 

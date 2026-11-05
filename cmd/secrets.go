@@ -217,7 +217,7 @@ func runSecretsList(ref *appInfoRef) error {
 	if err != nil {
 		return err
 	}
-	_ = deploy.InspectSecretCoverage(app.AppListItem{ID: ref.ID(), Name: ref.Name(), PID: ref.AppInfo.PID, Status: ref.AppInfo.Status, SecretEnvs: ref.AppInfo.SecretEnvs})
+	_ = deploy.InspectSecretCoverage(app.AppListItem{ID: ref.ID(), Name: ref.Name(), PID: ref.AppInfo.PID, StartTicks: ref.AppInfo.StartTicks, Status: ref.AppInfo.Status, SecretEnvs: ref.AppInfo.SecretEnvs})
 	security, reason := secrets.SecurityOf(ref.ID())
 	metas := st.List()
 	sortSecretMetas(metas)
@@ -677,7 +677,7 @@ func acceptClassicSecrets(info *app.AppInfo, port, version int, txn *deploy.Secr
 	for _, binding := range txn.Set.Bindings {
 		names = append(names, binding.Env)
 	}
-	state.Slots = map[string]*deploy.Instance{"classic": {PID: pid, StartTicks: identity.StartTime, BinaryPath: identity.ExePath, SecretEnvs: names, Status: "running"}}
+	state.Slots = map[string]*deploy.Instance{"classic": {PID: pid, Port: port, Version: version, StartTicks: identity.StartTime, BinaryPath: identity.ExePath, SecretEnvs: names, Status: "running"}}
 
 	txn.Stamp(state)
 	return deploy.Store(state)

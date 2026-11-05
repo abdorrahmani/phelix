@@ -173,6 +173,7 @@ func TestReapStaleInstances_DockerDeadCleared(t *testing.T) {
 // the launcher, and record the FRESH container id on the restored instance.
 func TestStartDeployment_DockerSkipsStatAndRecordsContainerID(t *testing.T) {
 	resetHome(t)
+	withIdentityRunner(t, (&scriptedDocker{running: "false"}).runner())
 	dl := &dockerHTTPLauncher{cid: "newcafe"}
 	defer dl.close()
 

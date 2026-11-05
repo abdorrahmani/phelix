@@ -319,6 +319,8 @@ func classifyRollbackDeployState(appName string) (*deploy.DeployState, error) {
 		return nil, phelixerr.New(phelixerr.CodeConfiguration, "deploy state is empty or missing its mode")
 	}
 	switch state.Mode {
+	case "classic":
+		return nil, nil
 	case deploy.ModeBlueGreen, deploy.ModeRolling:
 		return state, nil
 	default:

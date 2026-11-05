@@ -401,3 +401,30 @@ func TestRollbackVerificationJSONShape(t *testing.T) {
 		t.Errorf("reason field = %v", m["reason"])
 	}
 }
+
+func TestServingTargetsIncludesClassicAndDocker(t *testing.T) {
+	for _, mode := range []Mode{"classic", ModeBlueGreen} {
+		state := &DeployState{Mode: mode, ActiveSlot: "classic", Slots: map[string]*Instance{
+			"classic": {ContainerID: "container", Port: 8000, Status: "running"},
+		}}
+		if len(servingTargets(state)) != 1 {
+			t.Fatal("running container excluded", mode)
+		}
+	}
+}
+
+func TestExplicitVerificationTargetsOverrideClassicJournal(t *testing.T) {
+	resetHome(t)
+	state := &DeployState{AppName: "classic-targets", Mode: "classic"}
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	live := startChildInstance(t, "classic", 1)
+	err := VerifyRollbackStability(context.Background(), VerificationOptions{
+		AppName: state.AppName, Duration: time.Millisecond,
+		Targets: []VerifyTarget{{Label: "classic", HostPort: hostPort(live.Port), PID: live.PID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

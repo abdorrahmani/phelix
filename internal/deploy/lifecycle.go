@@ -111,7 +111,8 @@ type LifecycleDecision struct {
 	Alive   int
 	Desired int
 	// PID is the serving process id (first alive instance; 0 when none).
-	PID int
+	PID        int
+	StartTicks uint64
 	// StartedAt is when the serving instance was launched (zero when unknown).
 	StartedAt time.Time
 	// PublicPort is the proxy-owned public port (0 when unknown).
@@ -174,6 +175,7 @@ func DecideLifecycle(state *DeployState) LifecycleDecision {
 		}
 		if d.PID == 0 {
 			d.PID = inst.PID
+			d.StartTicks = inst.StartTicks
 			d.StartedAt = inst.StartedAt
 		}
 		d.Alive++
@@ -413,6 +415,9 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 	}
 
 	for _, inst := range toStart {
+		if InstanceAlive(inst) {
+			continue
+		}
 		envOverlay, err := EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
 		if err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "deploy: load env snapshot for %s", state.AppName)

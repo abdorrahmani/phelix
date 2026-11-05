@@ -26,7 +26,7 @@ func TestClassifyRollbackDeployStateStrict(t *testing.T) {
 	}{
 		{name: "corrupt", data: "{", code: phelixerr.CodeConfiguration},
 		{name: "empty", data: `{}`, code: phelixerr.CodeConfiguration},
-		{name: "unsupported", data: `{"app_name":"shop","mode":"canary"}`, code: phelixerr.CodeRollbackFailed},
+		{name: "unsupported", data: `{"app_name":"shop","mode":"canary"}`, code: phelixerr.CodeConfiguration},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
