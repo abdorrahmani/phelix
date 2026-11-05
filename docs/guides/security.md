@@ -26,6 +26,15 @@ containing `SECRET`, `KEY`, `TOKEN`, or `PASSWORD` are masked in logs and output
 Each versioned build snapshots the encrypted env so rollback restores matching
 secrets. See [Environment variables](environment-variables.md).
 
+Application credentials that need versioning, rotation and launch-time
+resolution live in the dedicated [secret store](secrets.md): per-app, `0700`
+directory, `0600` files, referenced from `phelix.yaml` by name only, resolved
+at start or restart, and fully decoupled from version snapshots so a rollback
+never resurrects an old credential. Every value a Phelix process resolves is
+masked in that process's logs, dashboard stream, CLI rendering and error
+output for as long as a running instance or a draining log stream could still
+produce it.
+
 Errors never leak secrets — not even under `--debug`; every rendered string
 passes through a redactor, and env errors carry the key *name* only. See
 [error codes](../reference/error-codes.md).
@@ -43,6 +52,9 @@ actually sets (verified in the implementation):
 | `~/.phelix/session.json`, `~/.phelix/agent-session.json` | `0600` | auth tokens |
 | `~/.phelix/envs/` | `0755` | directory holding per-app encrypted env stores |
 | `~/.phelix/envs/<appID>.env.enc` | `0644` | **contents are AES-256-GCM encrypted**; confidentiality does not depend on the file mode |
+| `~/.phelix/secrets/` | `0700` | per-app secret stores (see [Secrets](secrets.md)) |
+| `~/.phelix/secrets/<appID>.json` | `0600` | encrypted, versioned secret values plus binding metadata; values are never plaintext |
+| `~/.phelix/secrets/<appID>.lock` | `0600` | lock file; created once, never replaced, so concurrent commands serialize |
 | Docker runtime `--env-file` (decrypted, per launch) | `0600` | decrypted values never appear on the argv or in `docker inspect` |
 | Server settings (`ServerInfo` persistence) | `0600` | write-only connection fields are also scrubbed before the wire |
 

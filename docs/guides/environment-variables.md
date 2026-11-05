@@ -18,6 +18,18 @@ alongside each versioned build so a rollback restores the matching env.
 Keys containing `SECRET`, `KEY`, `TOKEN`, or `PASSWORD` are automatically masked
 in logs and command output.
 
+## Plain variables and the secret store
+
+`phelix env` is the right tool for configuration that is not a credential.
+Values that need rotation, version history, or a hard never-shown guarantee
+belong in the [secret store](secrets.md): `phelix secrets` manages them, and
+`phelix.yaml` imports them under an environment variable name. The two
+stores are separate on purpose. Plain variables are snapshotted per version
+and restored by a rollback; secrets are resolved at launch from the store
+and never enter a snapshot. If an import targets a name that is also set as
+a plain variable, deploys, applies and starts stop until you unset the
+plain variable or remove the import.
+
 ## Versioned secrets and rollback
 
 Each versioned build snapshots the encrypted env into `env/vN.enc`, paired with
@@ -36,6 +48,7 @@ never appear in `docker inspect` or the host process table. See
 ## Related
 
 - [Security](security.md) — encryption at rest and secret-handling guarantees.
+- [Secrets](secrets.md) — the dedicated credential store and how it differs from plain variables.
 - [Data directory](../reference/data-directory.md) — where `master.key` and the
   per-version env snapshots live.
 - [Command reference](../reference/commands.md#encrypted-environment-variables).

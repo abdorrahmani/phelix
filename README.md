@@ -42,6 +42,11 @@ and rolling replacement. See [Workers](docs/guides/workers.md).
 retries, per-artifact SHA-256, and release manifests.
 - **Build reports**: automatic per-build metrics and regression alerts, offline.
 - **Encrypted env vars**: AES-256-GCM at rest, injected at start, versioned.
+- **Secrets**: a dedicated encrypted credential store per app: versioned with
+  fingerprints, referenced from `phelix.yaml` by name only, resolved at start
+  or restart (never baked into builds), changed without a rebuild, applied by
+  a strategy-aware restart, and never printed. See
+  [Secrets](docs/guides/secrets.md).
 - **Per-instance resource limits**: CPU/memory via cgroups v2 (Linux).
 - **Git webhook deploys**: HMAC-authenticated push webhooks deploy the exact
 pushed commit through the normal rebuild pipeline.
@@ -165,6 +170,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Workspaces](docs/guides/workspaces.md)
 - [Health Checks](docs/guides/health-checks.md)
 - [Environment Variables](docs/guides/environment-variables.md)
+- [Secrets](docs/guides/secrets.md)
 - [Build Reports](docs/guides/build-reports.md)
 - [Matrix Builds](docs/guides/matrix-builds.md)
 - [Docker Image Building](docs/guides/docker-images.md)
