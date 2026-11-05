@@ -227,7 +227,10 @@ func runSecretsList(ref *appInfoRef) error {
 	security, reason := secrets.SecurityOf(ref.ID())
 	metas := st.List()
 	sortSecretMetas(metas)
-	missing := missingImportsFor(ref, st)
+	missing, err := missingImportsFor(ref, st)
+	if err != nil {
+		return err
+	}
 
 	fmt.Printf("Secrets for '%s' (ID: %s):\n", ref.Name(), ref.ID())
 	fmt.Printf("  security: %s %s\n", security, reason)
@@ -248,6 +251,12 @@ func runSecretsList(ref *appInfoRef) error {
 	}
 	if st.LastApply != nil {
 		fmt.Printf("  last apply: %s (restart: %s)\n", st.LastApply.At.Format(time.RFC3339), st.LastApply.Restart)
+		for _, version := range st.LastApply.Desired {
+			fmt.Printf("    desired: %s v%d %s\n", version.Secret, version.Version, version.Fingerprint)
+		}
+		for _, version := range st.LastApply.Applied {
+			fmt.Printf("    last successful restart: %s v%d %s\n", version.Secret, version.Version, version.Fingerprint)
+		}
 	}
 	if secretsJSON {
 		type secretJSON struct {
@@ -265,7 +274,7 @@ func runSecretsList(ref *appInfoRef) error {
 			AppID          string                `json:"app_id"`
 			Secrets        []secretJSON          `json:"secrets"`
 			MissingImports []string              `json:"missing_imports"`
-			LastApply      string                `json:"last_apply,omitempty"`
+			LastApply      *secrets.ApplyStatus  `json:"last_apply,omitempty"`
 		}
 		res := listResult{Security: security, Reason: reason, Pending: st.Pending != nil, App: ref.Name(), AppID: ref.ID(), Secrets: []secretJSON{}, MissingImports: []string{}}
 		for _, m := range metas {
@@ -274,9 +283,7 @@ func runSecretsList(ref *appInfoRef) error {
 		for _, imp := range missing {
 			res.MissingImports = append(res.MissingImports, imp.Secret)
 		}
-		if st.LastApply != nil {
-			res.LastApply = st.LastApply.Restart + " at " + st.LastApply.At.Format(time.RFC3339)
-		}
+		res.LastApply = st.LastApply
 		return writeEnvelopeResult(machine.Success("", res))
 	}
 	return nil
@@ -323,6 +330,8 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 	if err != nil {
 		return err
 	}
+	secrets.RegisterResolvedValue(value)
+	defer secrets.UnregisterResolvedValue(value)
 	release, err := deploy.AcquireDeployLock(ref.Name(), "secrets-set")
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
@@ -336,8 +345,6 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 	if err != nil {
 		return err
 	}
-	secrets.RegisterResolvedValue(value)
-	defer secrets.UnregisterResolvedValue(value)
 
 	fmt.Printf("✓ Stored '%s' version %d (fingerprint %s)\n", name, res.Version, res.Fingerprint)
 	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
@@ -349,7 +356,11 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 	if !bound || secretsNoApply {
 		return writeSetEnvelope(ref, name, res, "not_requested")
 	}
-	if !appIsRunning(ref) {
+	running, err := appIsRunning(ref)
+	if err != nil {
+		return errors.Join(err, recordApply(ref.ID(), secrets.ApplyRestartFailed))
+	}
+	if !running {
 		if err := recordApply(ref.ID(), secrets.ApplyRestartSkipped); err != nil {
 			return err
 		}
@@ -500,7 +511,11 @@ func runSecretsApply(ref *appInfoRef) error {
 		}
 		return writeApplyEnvelope(ref, len(bindings), secrets.ApplyRestartNotNeeded)
 	}
-	if !appIsRunning(ref) {
+	running, err := appIsRunning(ref)
+	if err != nil {
+		return errors.Join(err, recordApply(ref.ID(), secrets.ApplyRestartFailed))
+	}
+	if !running {
 		if err := recordApply(ref.ID(), secrets.ApplyRestartSkipped); err != nil {
 			return err
 		}
@@ -532,22 +547,25 @@ func writeApplyEnvelope(ref *appInfoRef, count int, restart string) error {
 
 // appIsRunning reports whether the application currently has instances to
 // restart.
-func appIsRunning(ref *appInfoRef) bool {
+func appIsRunning(ref *appInfoRef) (bool, error) {
 	state, err := deploy.Load(ref.Name())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
 	if err == nil && state.Mode != "classic" {
 		for _, inst := range state.Slots {
-			if inst != nil && deploy.InstanceAlive(inst) {
-				return true
+			if inst != nil && (inst.ContainerID != "" || deploy.InstanceAlive(inst)) {
+				return true, nil
 			}
 		}
 		for _, inst := range state.Replicas {
-			if inst != nil && deploy.InstanceAlive(inst) {
-				return true
+			if inst != nil && (inst.ContainerID != "" || deploy.InstanceAlive(inst)) {
+				return true, nil
 			}
 		}
-		return false
+		return false, nil
 	}
-	return ref.AppInfo.Status == "running"
+	return ref.AppInfo.Status == "running", nil
 }
 
 // secretIsBound reports whether the active bindings reference the secret.
@@ -566,10 +584,10 @@ func secretIsBound(appID, name string) (bool, error) {
 
 // missingImportsFor returns the phelix.yaml imports with no value in the
 // store. Best effort: an unreadable file simply reports nothing missing.
-func missingImportsFor(ref *appInfoRef, st *secrets.Store) []project.SecretImport {
-	cfg, err := project.Load(ref.Directory())
-	if err != nil || cfg.Secrets == nil {
-		return nil
+func missingImportsFor(ref *appInfoRef, st *secrets.Store) ([]project.SecretImport, error) {
+	cfg, err := loadProjectConfigFrom(ref.Directory())
+	if err != nil || cfg == nil || cfg.Secrets == nil {
+		return nil, err
 	}
 	var missing []project.SecretImport
 	for _, imp := range cfg.Secrets.Imports {
@@ -577,7 +595,7 @@ func missingImportsFor(ref *appInfoRef, st *secrets.Store) []project.SecretImpor
 			missing = append(missing, imp)
 		}
 	}
-	return missing
+	return missing, nil
 }
 
 func sortSecretMetas(metas []secrets.SecretMeta) {

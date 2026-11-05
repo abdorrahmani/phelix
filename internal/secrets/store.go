@@ -99,8 +99,12 @@ type PendingTxn struct {
 // state (what the store holds) and the runtime state (what the running
 // instances received).
 type ApplyStatus struct {
-	At      time.Time `json:"at"`
-	Restart string    `json:"restart"`
+	At              time.Time         `json:"at"`
+	Restart         string            `json:"restart"`
+	Bindings        []Binding         `json:"bindings"`
+	Desired         []ResolvedVersion `json:"desired"`
+	AppliedBindings []Binding         `json:"last_applied_bindings,omitempty"`
+	Applied         []ResolvedVersion `json:"last_applied,omitempty"`
 }
 
 // Apply outcomes recorded in ApplyStatus.Restart.
@@ -446,6 +450,12 @@ func Set(appID, name, value string) (SetResult, error) {
 		rec.ActiveVersion = v
 		rec.UpdatedAt = now
 		st.Secrets[name] = rec
+		for _, binding := range st.Bindings {
+			if binding.Secret == name {
+				st.recordApply(ApplyRestartNotNeeded)
+				break
+			}
+		}
 		res.Version = v
 		res.Fingerprint = fp
 		return nil
@@ -507,6 +517,7 @@ func ReplaceBindings(appID string, bindings []Binding) error {
 			}
 		}
 		st.Bindings = append([]Binding(nil), bindings...)
+		st.recordApply(ApplyRestartNotNeeded)
 		return nil
 	})
 }
@@ -595,11 +606,38 @@ func RecordApply(appID string, status *ApplyStatus) error {
 	if status == nil {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "secrets: apply status must not be nil")
 	}
-	status.At = time.Now().UTC()
+	switch status.Restart {
+	case ApplyRestartSucceeded, ApplyRestartFailed, ApplyRestartSkipped, ApplyRestartNotNeeded:
+	default:
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "secrets: invalid apply outcome")
+	}
 	return mutate(appID, func(st *Store) error {
-		st.LastApply = status
+		st.recordApply(status.Restart)
 		return nil
 	})
+}
+
+// recordApply keeps desired versions separate from the last successful restart.
+func (st *Store) recordApply(restart string) {
+	status := &ApplyStatus{At: time.Now().UTC(), Restart: restart, Bindings: append([]Binding(nil), st.Bindings...)}
+	seen := map[string]bool{}
+	for _, binding := range st.Bindings {
+		if seen[binding.Secret] {
+			continue
+		}
+		seen[binding.Secret] = true
+		meta, err := st.Peek(binding.Secret)
+		if err == nil {
+			status.Desired = append(status.Desired, ResolvedVersion{Secret: binding.Secret, Version: meta.Version, Fingerprint: meta.Fingerprint})
+		}
+	}
+	if st.LastApply != nil {
+		status.Applied, status.AppliedBindings = st.LastApply.Applied, st.LastApply.AppliedBindings
+	}
+	if restart == ApplyRestartSucceeded {
+		status.Applied, status.AppliedBindings = status.Desired, status.Bindings
+	}
+	st.LastApply = status
 }
 
 // Resolve decrypts the active version of a secret. It implements the

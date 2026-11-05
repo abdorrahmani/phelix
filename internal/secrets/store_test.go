@@ -335,6 +335,40 @@ func TestRecordApply(t *testing.T) {
 	}
 }
 
+func TestDeferredRotationPreservesLastSuccessfulVersions(t *testing.T) {
+	testEnv(t)
+	if _, err := Set(testAppID, "db", "first-credential"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceBindings(testAppID, []Binding{{Secret: "db", Env: "DB"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordApply(testAppID, &ApplyStatus{Restart: ApplyRestartSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Set(testAppID, "db", "second-credential"); err != nil {
+		t.Fatal(err)
+	}
+	for _, outcome := range []string{ApplyRestartNotNeeded, ApplyRestartFailed, ApplyRestartSucceeded} {
+		if outcome != ApplyRestartNotNeeded {
+			if err := RecordApply(testAppID, &ApplyStatus{Restart: outcome}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		st, err := Open(testAppID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		applied := 1
+		if outcome == ApplyRestartSucceeded {
+			applied = 2
+		}
+		if st.LastApply.Restart != outcome || len(st.LastApply.Desired) != 1 || st.LastApply.Desired[0].Version != 2 || len(st.LastApply.Applied) != 1 || st.LastApply.Applied[0].Version != applied {
+			t.Fatal("desired and last successful versions became indistinguishable")
+		}
+	}
+}
+
 func TestValidAppIDShape(t *testing.T) {
 	if !appid.Valid(testAppID) {
 		t.Fatal("a generated UUID-shaped id must validate")
