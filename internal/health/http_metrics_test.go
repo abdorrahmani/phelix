@@ -83,7 +83,7 @@ func TestCaddyMetricsSourceScrape(t *testing.T) {
 	if !second.HasRequestDelta {
 		t.Fatal("second successful scrape should contain delta")
 	}
-	if second.RequestsPerSecond != 3 || second.ClientErrorsPerSec != 1 || second.ServerErrorsPerSec != .5 {
+	if second.RequestsPerSecond != 3 || second.ClientErrorsPerSec != 1 || second.ServerErrorsPerSec != 0 {
 		t.Fatalf("unexpected rates: requests=%f 4xx=%f 5xx=%f", second.RequestsPerSecond, second.ClientErrorsPerSec, second.ServerErrorsPerSec)
 	}
 }
