@@ -492,13 +492,17 @@ func runSecretsApply(ref *appInfoRef) error {
 	if cfg.Secrets != nil {
 		bindings = cfg.Secrets.Imports
 	}
+	previous, err := secrets.CommittedBindings(ref.ID())
+	if err != nil {
+		return err
+	}
 	if err := secrets.ReplaceBindings(ref.ID(), bindings); err != nil {
 		return err
 	}
 	fmt.Printf("✓ Active bindings now come from phelix.yaml (%d imports)\n", len(bindings))
 	names := make([]string, 0, len(bindings))
 	seen := map[string]bool{}
-	for _, binding := range bindings {
+	for _, binding := range append(previous, bindings...) {
 		if !seen[binding.Secret] {
 			names = append(names, binding.Secret)
 			seen[binding.Secret] = true

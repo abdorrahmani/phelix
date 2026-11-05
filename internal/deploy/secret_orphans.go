@@ -74,7 +74,10 @@ func reclaimSecretLaunches(appName, txnID, runtime string, accepted *DeployState
 				return phelixerr.New(phelixerr.CodeProcessFailed, "cannot reclaim interrupted secret launch")
 			}
 			deadline := time.Now().Add(5 * time.Second)
-			for pidAlive(int(proc.Pid)) && processex.Matches(identity) {
+			for pidAlive(int(proc.Pid)) {
+				if current, err := processex.Identity(int(proc.Pid)); err == nil && current.StartTime != identity.StartTime {
+					break
+				}
 				if time.Now().After(deadline) {
 					return phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm interrupted secret launch has stopped")
 				}

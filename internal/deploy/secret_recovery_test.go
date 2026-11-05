@@ -525,3 +525,37 @@ func TestAcceptedBindingsCommitBeforeRuntimeCleanup(t *testing.T) {
 		t.Fatal("unfinished cleanup was not retried")
 	}
 }
+
+func TestAcceptedRecoveryRetriesOrphansAfterSecretCommit(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "accepted-retry-credential")
+	txn, err := BeginSecretTxn(txnTestAppID, "orphan-retry", "dep", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	accepted := startChildInstance(t, "0", 1)
+	state := &DeployState{AppName: txn.AppName, AppID: txnTestAppID, Mode: ModeRolling, Replicas: map[string]*Instance{"0": &accepted.Instance}}
+	txn.Stamp(state)
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	orphan := exec.Command("sleep", "30")
+	orphan.Env = append(os.Environ(), txn.Set.Overlay()...)
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = orphan.Process.Kill(); _ = orphan.Wait() }()
+	if err := secrets.CommitTxn(txnTestAppID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReconcileSecretTxn(txn.AppName, txnTestAppID); err != nil {
+		t.Fatal(err)
+	}
+	if pidAlive(orphan.Process.Pid) || !InstanceAlive(&accepted.Instance) {
+		t.Fatalf("retry orphan_alive=%v accepted_alive=%v orphan_pid=%d accepted_pid=%d accepted_exe=%s want_exe=%s", pidAlive(orphan.Process.Pid), InstanceAlive(&accepted.Instance), orphan.Process.Pid, accepted.PID, processExecutable(accepted.PID), accepted.BinaryPath)
+	}
+	if mustLoad(t, txn.AppName).SecretCleanupPending {
+		t.Fatal("completed cleanup remained pending")
+	}
+}

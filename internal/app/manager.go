@@ -85,8 +85,7 @@ func (m *AppManager) StartApplicationWithSecrets(id string, port int, name strin
 		return err
 	}
 	if err := m.SaveState(); err != nil {
-		m.stopNewlyStarted(m.Apps[id])
-		return err
+		return errors.Join(err, m.stopNewlyStarted(m.Apps[id]))
 	}
 	return nil
 }
@@ -201,7 +200,9 @@ func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.Pi
 	}
 	if err != nil {
 		if m.appProcessRunning(app) {
-			m.stopNewlyStarted(app)
+			if stopErr := m.stopNewlyStarted(app); stopErr != nil {
+				return errors.Join(err, stopErr)
+			}
 		}
 		if previous != nil {
 			if restoreErr := m.startApplicationProcessWithSecrets(id, app.Name, app.Port, logFile, previous); restoreErr != nil {

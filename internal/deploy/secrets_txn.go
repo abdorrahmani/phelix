@@ -77,8 +77,10 @@ func (t *SecretTxn) OverlayFor(envPath string) ([]string, error) {
 func (t *SecretTxn) Stamp(state *DeployState, retired ...*Instance) {
 	state.secretPreparing = false
 	state.SecretTxnID = ""
+	state.SecretCleanupPending = false
 	if t != nil {
 		state.SecretTxnID = t.ID
+		state.SecretCleanupPending = t.ID != ""
 		for _, inst := range retired {
 			if inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
 				state.Retiring = append(state.Retiring, cloneInstance(inst))
@@ -137,7 +139,7 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 	}
 	if st.Pending == nil {
 		state, err := Load(appName)
-		if err == nil && (state.SecretTxnID != "" || len(state.Retiring) > 0) {
+		if err == nil && (state.SecretTxnID != "" || state.SecretCleanupPending || len(state.Retiring) > 0) {
 			return SecretTxnNone, finishAcceptedSecretRecovery(state)
 		}
 		return SecretTxnNone, nil
@@ -159,12 +161,17 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		return SecretTxnRetained, phelixerr.New(phelixerr.CodeConfiguration, "deployment journal identity or strategy is invalid; pending secrets retained")
 	}
 	if state.SecretTxnID == st.Pending.TxnID {
+		if !state.SecretCleanupPending {
+			state.SecretCleanupPending = true
+			if err := Store(state); err != nil {
+				return SecretTxnRetained, err
+			}
+		}
+
 		if err := secrets.CommitTxn(appID); err != nil {
 			return SecretTxnRetained, err
 		}
-		if err := reclaimSecretLaunches(appName, state.SecretTxnID, state.Runtime, state); err != nil {
-			return SecretTxnCommitted, err
-		}
+
 		return SecretTxnCommitted, finishAcceptedSecretRecovery(state)
 	}
 	runtime := st.Pending.Runtime
@@ -185,6 +192,19 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 
 // finishAcceptedSecretRecovery retries runtime cleanup after bindings are committed.
 func finishAcceptedSecretRecovery(state *DeployState) error {
+	if state.SecretCleanupPending {
+		if state.SecretTxnID == "" {
+			return phelixerr.New(phelixerr.CodeConfiguration, "secret cleanup is missing its transaction identity")
+		}
+		if err := reclaimSecretLaunches(state.AppName, state.SecretTxnID, state.Runtime, state); err != nil {
+			return err
+		}
+		state.SecretCleanupPending = false
+		if err := Store(state); err != nil {
+			return err
+		}
+	}
+
 	if state.Canary != nil && state.Canary.Status == CanaryRunning {
 		socket, err := proxy.DefaultSocketPath()
 		if err != nil {

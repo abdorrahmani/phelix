@@ -319,6 +319,7 @@ func executeRollbackLocked(ctx context.Context, opts RollbackOptions) error {
 		return deployErr
 	}
 	state.SecretTxnID = ""
+	state.SecretCleanupPending = false
 	state.LastRollback = &RollbackRecord{
 		FromVersion: fromVer,
 		ToVersion:   toVer,

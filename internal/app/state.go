@@ -115,7 +115,7 @@ func (m *AppManager) SaveState() error {
 		}
 	}
 
-	data, err := json.MarshalIndent(savedApps, "", "  ")
+	data, err := json.Marshal(savedApps)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to marshal application state", err)
 	}

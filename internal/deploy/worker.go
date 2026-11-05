@@ -545,6 +545,7 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 	}
 	journal.Status = WorkerRolloutDone
 	state.SecretTxnID = ""
+	state.SecretCleanupPending = false
 	journal.Reason = "reverted to the previous versions after a failed deploy"
 	journal.ReplacedFrom = nil
 	journal.UpdatedAt = time.Now()
@@ -598,6 +599,7 @@ func (w *Worker) revertSecretRollout(ctx context.Context, state *DeployState, jo
 		}
 	}
 	restored.SecretTxnID = ""
+	restored.SecretCleanupPending = false
 	if journal != nil {
 		completed := *journal
 		completed.Status, completed.Reason = WorkerRolloutDone, "restored previous instances after failed deployment"

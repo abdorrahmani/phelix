@@ -224,9 +224,10 @@ type DeployState struct {
 	// every durable write inside a deployment's secret window; the secret
 	// store's recovery reads it as the only evidence that a pending binding
 	// transaction was accepted. Empty outside a deployment.
-	SecretTxnID     string      `json:"secret_txn_id,omitempty"`
-	Retiring        []*Instance `json:"retiring,omitempty"`
-	secretPreparing bool
+	SecretCleanupPending bool        `json:"secret_cleanup_pending,omitempty"`
+	SecretTxnID          string      `json:"secret_txn_id,omitempty"`
+	Retiring             []*Instance `json:"retiring,omitempty"`
+	secretPreparing      bool
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -358,6 +359,9 @@ func Store(s *DeployState) error {
 	}
 	if s.secretPreparing {
 		return nil
+	}
+	if s.SecretTxnID == "" {
+		s.SecretCleanupPending = false
 	}
 
 	path, err := statePath(s.AppName)

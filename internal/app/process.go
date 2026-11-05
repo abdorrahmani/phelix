@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -129,6 +130,7 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	app.releaseSecrets = releaseSecrets
 	app.Cmd = cmd
 	app.PID = cmd.Process.Pid
+	app.StartTicks = 0
 	app.Status = "running"
 	app.Start = time.Now()
 	app.Port = portNum
@@ -140,8 +142,7 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	app.logFileHandle = f
 	identity, err := processex.Identity(app.PID)
 	if err != nil {
-		m.stopNewlyStarted(app)
-		return phelixerr.New(phelixerr.CodeProcessFailed, "cannot identify started application")
+		return errors.Join(phelixerr.New(phelixerr.CodeProcessFailed, "cannot identify started application"), m.stopNewlyStarted(app))
 	}
 	app.StartTicks = identity.StartTime
 
@@ -176,7 +177,9 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 			)
 		}
 
-		m.stopNewlyStarted(app)
+		if err := m.stopNewlyStarted(app); err != nil {
+			return err
+		}
 
 		return phelixerr.Newf(
 			phelixerr.CodePortUnavailable,
@@ -193,26 +196,13 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	return nil
 }
 
-// stopNewlyStarted terminates the process this method just spawned after a
-// failed startup validation. It touches only app.Cmd — the handle created by
-// the surrounding startApplicationProcess call — never an instance from a
-// previous invocation.
-func (m *AppManager) stopNewlyStarted(app *AppInfo) {
-	if app.Cmd == nil || app.Cmd.Process == nil {
-		return
+// stopNewlyStarted retains ownership if a failed launch cannot be stopped.
+func (m *AppManager) stopNewlyStarted(app *AppInfo) error {
+	if err := m.stopApplicationProcess(app); err != nil {
+		return err
 	}
-	_ = app.Cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan struct{})
-	go func() { _ = app.Cmd.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		_ = app.Cmd.Process.Kill()
-		<-done
-	}
-	app.Status = "failed"
-	app.PID = 0
-	m.waitAndCloseLog(app)
+	app.Status, app.PID = "failed", 0
+	return nil
 }
 
 // classifyResourceExit closes the app's resource tracking handle and reports
@@ -258,6 +248,9 @@ func (a *AppInfo) closeResourceInstance() {
 // lifetime.
 func (m *AppManager) waitAndCloseLog(app *AppInfo) {
 	if app.Cmd != nil && app.Cmd.Process != nil {
+		if m.isProcessRunning(app.Cmd.Process.Pid) {
+			return
+		}
 		_ = app.Cmd.Wait()
 	}
 
@@ -272,102 +265,43 @@ func (m *AppManager) waitAndCloseLog(app *AppInfo) {
 	}
 }
 
-// stopApplicationProcess stops the application process gracefully, falling back to force kill if necessary
+// stopApplicationProcess stops a verified process before releasing its resources.
 func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
-	if app.PID <= 0 {
-		return nil
-	}
-
-	if !m.appProcessRunning(app) {
+	if app.PID <= 0 || !m.appProcessRunning(app) {
 		m.waitAndCloseLog(app)
 		return nil
 	}
-
-	if app.Cmd != nil && app.Cmd.Process != nil {
-		// In-process handle available — use it directly.
-		if stdin, _ := app.Cmd.StdinPipe(); stdin != nil {
-			stdin.Close()
-		}
-
-		if err := app.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			fErr := phelixerr.Wrapf(
-				phelixerr.CodeProcessFailed,
-				err,
-				"failed to send SIGTERM to application '%s' (ID: %s)",
-				app.Name, app.ID,
-			)
-			m.waitAndCloseLog(app)
-			return fErr
-		}
-
-		done := make(chan error, 1)
-		go func() {
-			done <- app.Cmd.Wait()
-		}()
-
-		select {
-		case <-time.After(5 * time.Second):
-
-			_ = app.Cmd.Process.Kill()
-			<-done
-		case <-done:
-
-		}
-	} else {
-		proc, err := os.FindProcess(app.PID)
-		if err != nil {
-			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "failed to find process %d", app.PID)
-		}
-
-		if err := proc.Signal(syscall.SIGTERM); err != nil {
-			return phelixerr.Wrapf(
-				phelixerr.CodeProcessFailed,
-				err,
-				"failed to send SIGTERM to application '%s' (ID: %s)",
-				app.Name, app.ID,
-			)
-		}
-
-		terminated := m.waitForProcessExit(app.PID, 5*time.Second)
-		if !terminated {
-
-			_ = proc.Kill()
-			time.Sleep(500 * time.Millisecond)
-		}
-
+	proc, err := os.FindProcess(app.PID)
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "cannot find application process", err)
 	}
-
-	if !m.waitForProcessExit(app.PID, time.Second) {
-		return phelixerr.Newf(
-			phelixerr.CodeProcessFailed,
-			"failed to stop application '%s' (ID: %s): process still running",
-			app.Name, app.ID,
-		)
+	defer proc.Release()
+	if err := proc.Signal(syscall.SIGTERM); err != nil && m.appProcessRunning(app) {
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "cannot stop application process", err)
 	}
-
+	if !m.waitForProcessExit(app, 5*time.Second) {
+		if err := proc.Kill(); err != nil && m.appProcessRunning(app) {
+			return phelixerr.Wrap(phelixerr.CodeProcessFailed, "cannot kill application process", err)
+		}
+		if !m.waitForProcessExit(app, 5*time.Second) {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm application process stopped")
+		}
+	}
 	m.waitAndCloseLog(app)
 	app.Cmd = nil
-
 	return nil
 }
 
-// waitForProcessExit polls isProcessRunning until the process exits or the
-// timeout elapses. Returns true if the process exited within the timeout.
-func (m *AppManager) waitForProcessExit(pid int, timeout time.Duration) bool {
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-deadline:
+// waitForProcessExit checks the same process identity until it exits or time runs out.
+func (m *AppManager) waitForProcessExit(app *AppInfo, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for m.appProcessRunning(app) {
+		if time.Now().After(deadline) {
 			return false
-		case <-ticker.C:
-			if !m.isProcessRunning(pid) {
-				return true
-			}
 		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	return true
 }
 
 // getProcessMetrics retrieves RAM and CPU usage for the given process PID.

@@ -88,7 +88,11 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 		return state.Health.HealthyAt
 	}
 
-	for _, name := range []string{SlotBlue, SlotGreen} {
+	slots := []string{SlotBlue, SlotGreen}
+	if state.Mode == "classic" {
+		slots = []string{"classic"}
+	}
+	for _, name := range slots {
 		inst := state.Slots[name]
 		if inst == nil {
 			continue
@@ -100,7 +104,7 @@ func SnapshotForApp(ctx context.Context, appName, appID string, pc ProxyClient) 
 			Health:       healthOf(inst),
 			InternalPort: inst.Port,
 			PID:          inst.PID,
-			Active:       name == state.ActiveSlot,
+			Active:       name == state.ActiveSlot || state.Mode == "classic",
 			StartedAt:    inst.StartedAt,
 			HealthyAt:    healthyAt(inst),
 			Image:        dockerImageOf(inst),

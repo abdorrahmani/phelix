@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 )
@@ -74,7 +75,7 @@ func (m *AppManager) RestoreAutoStartApps() (int, error) {
 		if err == nil {
 			err = m.SaveState()
 			if err != nil {
-				m.stopNewlyStarted(a)
+				err = errors.Join(err, m.stopNewlyStarted(a))
 			}
 		}
 		release()

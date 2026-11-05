@@ -71,6 +71,8 @@ func (s *DeployState) ServingInstance() *Instance {
 	switch s.Mode {
 	case ModeBlueGreen:
 		return s.ActiveInstance()
+	case "classic":
+		return s.Slots["classic"]
 	case ModeRolling, ModeWorker:
 		keys := sortedReplicaKeys(s.Replicas)
 		for _, k := range keys {
@@ -412,16 +414,16 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		opts.Launcher = LauncherForRuntime(runtime, state.Network, state.AppName)
 	}
 
-	if !IsDockerRuntime(runtime) {
-		if _, err := os.Stat(toStart[0].BinaryPath); err != nil {
-			return phelixerr.Wrapf(phelixerr.CodeNotFound, err, "deploy: recorded binary for %s is gone", state.AppName)
-		}
-	}
-
 	for _, inst := range toStart {
 		if InstanceAlive(inst) {
 			continue
 		}
+		if !IsDockerRuntime(runtime) {
+			if _, err := os.Stat(inst.BinaryPath); err != nil {
+				return phelixerr.Wrapf(phelixerr.CodeNotFound, err, "deploy: recorded binary for %s is gone", state.AppName)
+			}
+		}
+
 		envOverlay, err := EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
 		if err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "deploy: load env snapshot for %s", state.AppName)
@@ -447,6 +449,7 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		inst.Status = "running"
 		inst.StartedAt = time.Now()
 		state.SecretTxnID = ""
+		state.SecretCleanupPending = false
 		log.Successf("instance %s listening on %s", instanceRef(inst), addr)
 
 		if err := Store(state); err != nil {
