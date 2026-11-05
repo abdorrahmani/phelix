@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,9 +19,10 @@ import (
 
 // AppManager manages the lifecycle of applications
 type AppManager struct {
-	Apps   map[string]*AppInfo
-	Lock   sync.Mutex
-	NextID uint // Deprecated: retained for compatibility with existing state tests.
+	Apps       map[string]*AppInfo
+	Lock       sync.Mutex
+	NextID     uint
+	savedState map[string]map[string]json.RawMessage
 }
 
 // Manager is the global instance of AppManager that implements AppManagerInterface
