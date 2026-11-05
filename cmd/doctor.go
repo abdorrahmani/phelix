@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/env"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/machine"
@@ -304,81 +306,67 @@ func toolchainVersion(lang builder.Language) string {
 // environment variable. Never prints a value; only names, fingerprints and
 // presence.
 func appendSecretsChecks(results []checkResult, cfg *project.Config) []checkResult {
-	if cfg == nil || cfg.Secrets == nil || len(cfg.Secrets.Imports) == 0 {
+	if cfg == nil {
 		return results
 	}
-	if _, err := env.GetMasterKey(); err != nil {
-		results = append(results, checkResult{
-			name: "Secrets master key", detail: "unavailable",
-			message: "\nPhelix could not read or create the master key that encrypts secrets.\n" + err.Error() + "\n",
-		})
-		return results
-	}
-	results = append(results, checkResult{name: "Secrets master key", pass: true, detail: "ready"})
-
-	manager, _ := app.Manager.(*app.AppManager)
-	var appInfo *app.AppInfo
-	if manager != nil {
-		_ = manager.LoadState()
+	var info *app.AppInfo
+	if manager, ok := app.Manager.(*app.AppManager); ok {
+		if err := manager.LoadState(); err != nil {
+			return append(results, checkResult{name: "Secrets", detail: "app state unreadable"})
+		}
 		for _, candidate := range manager.Apps {
 			if candidate.Name == cfg.Name {
-				appInfo = candidate
+				info = candidate
 				break
 			}
 		}
 	}
-	if appInfo == nil {
-		results = append(results, checkResult{
-			name:   "Secrets imports",
-			warn:   true,
-			detail: fmt.Sprintf("%d declared; application %q is not registered yet, so the store cannot be checked from here", len(cfg.Secrets.Imports), cfg.Name),
-		})
+	var imports []secrets.Binding
+	if cfg.Secrets != nil {
+		imports = cfg.Secrets.Imports
+	}
+	if info == nil {
+		if len(imports) > 0 {
+			results = append(results, checkResult{name: "Secrets imports", warn: true, detail: "application is not registered yet"})
+		}
 		return results
 	}
-
-	st, err := secrets.Open(appInfo.ID)
+	st, err := secrets.Open(info.ID)
 	if err != nil {
-		results = append(results, checkResult{
-			name: "Secrets imports", detail: "store unreadable",
-			message: "\n" + err.Error() + "\n",
-		})
+		return append(results, checkResult{name: "Secrets store", detail: "unreadable or unsafe permissions", message: err.Error()})
+	}
+	if len(imports) == 0 && len(st.Bindings) == 0 && st.Pending == nil && len(st.Secrets) == 0 {
 		return results
 	}
-	var missing, bound []string
-	for _, imp := range cfg.Secrets.Imports {
-		if _, err := st.Peek(imp.Secret); err != nil {
-			missing = append(missing, imp.Secret+" (as "+imp.Env+")")
-			continue
+	results = append(results, checkResult{name: "Secrets permissions", pass: true, detail: "directory 0700, store and lock 0600"})
+	if _, err := env.GetMasterKey(); err != nil {
+		results = append(results, checkResult{name: "Secrets master key", detail: "unreadable", message: err.Error()})
+	} else {
+		results = append(results, checkResult{name: "Secrets master key", pass: true, detail: "readable"})
+	}
+	for _, binding := range append(append([]secrets.Binding{}, imports...), st.Bindings...) {
+		_, err := secrets.Resolve(context.Background(), info.ID, binding.Secret)
+		check := checkResult{name: "Secret " + binding.Secret, pass: err == nil, detail: "resolvable as " + binding.Env}
+		if err != nil {
+			check.detail = "cannot resolve as " + binding.Env
+			check.message = err.Error()
 		}
-		bound = append(bound, imp.Env)
+		results = append(results, check)
 	}
-	if existing, err := env.Instance.ListEnv(appInfo.ID); err == nil {
-		for _, imp := range cfg.Secrets.Imports {
-			if _, taken := existing[imp.Env]; taken {
-				results = append(results, checkResult{
-					name:   "Secrets imports",
-					warn:   true,
-					detail: imp.Env + " is also set as a plain environment variable",
-					message: "\nThe import for " + imp.Env + " collides with a plain environment variable of the same name.\n" +
-						"Deploy, apply and start stop until you resolve it: unset the variable with\n" +
-						"'phelix env unset " + cfg.Name + " " + imp.Env + "' or remove the import from phelix.yaml.\n",
-				})
-			}
+	if err := secrets.CheckCollisions(info.ID, imports); err != nil {
+		results = append(results, checkResult{name: "Secrets imports", warn: true, detail: "binding conflict", message: err.Error()})
+	}
+	if st.Pending != nil {
+		check := checkResult{name: "Secrets pending transaction", warn: true, detail: "awaiting reconciliation; run phelix secrets apply"}
+		if _, err := deploy.Load(info.Name); err != nil {
+			check.warn = false
+			check.detail = "journal unreadable; pending retained"
+			check.message = err.Error()
 		}
+		results = append(results, check)
 	}
-	if len(missing) > 0 {
-		results = append(results, checkResult{
-			name:   "Secrets imports",
-			detail: "missing in store",
-			message: "\nThese imports have no value in the store yet; deploys and starts fail closed until they exist:\n  " +
-				strings.Join(missing, "\n  ") + "\nCreate them with 'phelix secrets set <name>'.\n",
-		})
-		return results
-	}
-	results = append(results, checkResult{
-		name:   "Secrets imports",
-		pass:   true,
-		detail: fmt.Sprintf("%d resolvable (%s)", len(bound), strings.Join(bound, ", ")),
-	})
+	err = deploy.RefreshSecretCoverage(app.AppListItem{ID: info.ID, Name: info.Name, PID: info.PID, Status: info.Status, SecretEnvs: info.SecretEnvs})
+	state, reason := secrets.SecurityOf(info.ID)
+	results = append(results, checkResult{name: "Secrets security", pass: err == nil, detail: string(state), message: reason})
 	return results
 }

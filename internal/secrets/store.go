@@ -716,7 +716,7 @@ func CheckCollisions(appID string, bindings []Binding) error {
 	}
 	for _, b := range bindings {
 		if _, exists := st.Entries[b.Env]; exists {
-			return phelixerr.Newf(phelixerr.CodeConfiguration, "secrets: %s also exists in the live environment store\nHint: remove it with phelix env remove %s before deploy or apply", b.Env, b.Env)
+			return phelixerr.Newf(phelixerr.CodeConfiguration, "secrets: %s also exists in the live environment store\nHint: remove it with phelix env unset %s %s before deploy or apply", b.Env, appID, b.Env)
 		}
 	}
 	return nil

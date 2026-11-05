@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -37,11 +38,18 @@ const (
 // syscmd.Runner (whose allowlist is fixed to systemctl/sudo).
 type dockerRunner func(ctx context.Context, args ...string) (stdout string, err error)
 
+type dockerEnvKey struct{}
+
+var dockerEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // execDockerRunner runs the real `docker` binary with an argv array (never a
 // shell), capturing stdout. On failure it keeps the *exec.ExitError reachable
 // (so errors.As still finds it) and appends a bounded, redacted stderr tail.
 func execDockerRunner(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...)
+	if env, ok := ctx.Value(dockerEnvKey{}).([]string); ok {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	// `docker logs` demultiplexes the container's streams: an app's panic / bind
@@ -157,16 +165,31 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 			args = append(args, "--network", network)
 		}
 
-		// Secrets are injected via a 0600 --env-file, never -e on the argv,
-		// so decrypted env never appears in `ps` or the process table. PORT is
-		// written LAST so an app whose env store contains PORT is still bound to
-		// the internal port this launcher controls (mirrors the native launcher).
-		envFile, cleanup, err := writeDockerEnvFile(env, dockerInternalPort)
-		if err != nil {
-			return nil, 0, err
+		multiline := false
+		for _, kv := range env {
+			if strings.ContainsAny(kv, "\r\n") {
+				multiline = true
+			}
 		}
-		defer cleanup()
-		args = append(args, "--env-file", envFile, imageRef)
+		if multiline {
+			env = mergeByKey(env, []string{"PORT=" + strconv.Itoa(dockerInternalPort)})
+			for _, kv := range env {
+				name, _, ok := strings.Cut(kv, "=")
+				if !ok || !dockerEnvName.MatchString(name) || strings.IndexByte(kv, 0) >= 0 {
+					return nil, 0, phelixerr.New(phelixerr.CodeConfiguration, "invalid container environment")
+				}
+				args = append(args, "--env", name)
+			}
+			ctx = context.WithValue(ctx, dockerEnvKey{}, env)
+			args = append(args, imageRef)
+		} else {
+			envFile, cleanup, err := writeDockerEnvFile(env, dockerInternalPort)
+			if err != nil {
+				return nil, 0, err
+			}
+			defer cleanup()
+			args = append(args, "--env-file", envFile, imageRef)
+		}
 
 		out, err := run(ctx, args...)
 		if err != nil {
@@ -312,6 +335,7 @@ func (p *dockerProcess) Logs(ctx context.Context, maxBytes int64) string {
 		return ""
 	}
 	out, _ := p.run(ctx, "logs", "--tail", "200", p.id)
+	out = phelixerr.Redact(out)
 	if maxBytes > 0 && int64(len(out)) > maxBytes {
 		out = out[len(out)-int(maxBytes):]
 	}

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
-	"github.com/abdorrahmani/phelix/internal/port"
+	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 )
@@ -67,8 +67,10 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 			}
 			processes[key] = proc
 			candidate.PID, candidate.Port, candidate.ContainerID = proc.PID(), listenPort, containerIDOf(proc)
-			if !port.WaitForListener(hostPort(listenPort), 10*time.Second) {
-				return phelixerr.New(phelixerr.CodeHealthCheckFailed, "replacement did not open its port; previous instances remain running")
+			cfg := DefaultHealthProvider()(state.AppName)
+			tier := selectDeployHealth(ctx, cfg, state.AppName, hostPort(listenPort), &nopLogger{}, nil)
+			if err := health.WaitForHealthy(ctx, tier, cfg, hostPort(listenPort), proc.PID(), deployResolver(proc)); err != nil {
+				return err
 			}
 		}
 		candidate.SecretEnvs = phelixerr.SecretEnvNames(env)

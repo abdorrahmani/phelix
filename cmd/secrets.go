@@ -216,11 +216,14 @@ func runSecretsList(ref *appInfoRef) error {
 	if err != nil {
 		return err
 	}
+	_ = deploy.RefreshSecretCoverage(app.AppListItem{ID: ref.ID(), Name: ref.Name(), PID: ref.AppInfo.PID, Status: ref.AppInfo.Status, SecretEnvs: ref.AppInfo.SecretEnvs})
+	security, reason := secrets.SecurityOf(ref.ID())
 	metas := st.List()
 	sortSecretMetas(metas)
 	missing := missingImportsFor(ref, st)
 
 	fmt.Printf("Secrets for '%s' (ID: %s):\n", ref.Name(), ref.ID())
+	fmt.Printf("  security: %s %s\n", security, reason)
 	if len(metas) == 0 && len(missing) == 0 {
 		fmt.Printf("  none stored; declare imports in phelix.yaml and create them with `phelix secrets set`\n")
 	}
@@ -248,13 +251,16 @@ func runSecretsList(ref *appInfoRef) error {
 			BoundEnvs   []string `json:"bound_envs"`
 		}
 		type listResult struct {
-			App            string       `json:"app"`
-			AppID          string       `json:"app_id"`
-			Secrets        []secretJSON `json:"secrets"`
-			MissingImports []string     `json:"missing_imports"`
-			LastApply      string       `json:"last_apply,omitempty"`
+			Security       secrets.SecurityState `json:"security"`
+			Reason         string                `json:"security_reason,omitempty"`
+			Pending        bool                  `json:"pending"`
+			App            string                `json:"app"`
+			AppID          string                `json:"app_id"`
+			Secrets        []secretJSON          `json:"secrets"`
+			MissingImports []string              `json:"missing_imports"`
+			LastApply      string                `json:"last_apply,omitempty"`
 		}
-		res := listResult{App: ref.Name(), AppID: ref.ID(), Secrets: []secretJSON{}, MissingImports: []string{}}
+		res := listResult{Security: security, Reason: reason, Pending: st.Pending != nil, App: ref.Name(), AppID: ref.ID(), Secrets: []secretJSON{}, MissingImports: []string{}}
 		for _, m := range metas {
 			res.Secrets = append(res.Secrets, secretJSON{Name: m.Name, Version: m.Version, Fingerprint: m.Fingerprint, UpdatedAt: m.UpdatedAt.Format(time.RFC3339), BoundEnvs: m.BoundEnvs})
 		}
@@ -316,6 +322,9 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 	}
 	defer release()
 
+	if _, err := deploy.ReconcileSecretTxn(ref.Name(), ref.ID()); err != nil {
+		return err
+	}
 	res, err := secrets.Set(ref.ID(), name, value)
 	if err != nil {
 		return err
@@ -478,7 +487,13 @@ func runSecretsApply(ref *appInfoRef) error {
 	fmt.Printf("✓ Active bindings now come from phelix.yaml (%d imports)\n", len(bindings))
 	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
 
-	if secretsNoRestart || !appIsRunning(ref) {
+	if secretsNoRestart {
+		if err := recordApply(ref.ID(), secrets.ApplyRestartNotNeeded); err != nil {
+			return err
+		}
+		return writeApplyEnvelope(ref, len(bindings), secrets.ApplyRestartNotNeeded)
+	}
+	if !appIsRunning(ref) {
 		if err := recordApply(ref.ID(), secrets.ApplyRestartSkipped); err != nil {
 			return err
 		}
