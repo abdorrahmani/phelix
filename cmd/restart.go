@@ -148,12 +148,19 @@ func restartAppInfoLocked(appInfo *app.AppInfo) error {
 	if err != nil {
 		return err
 	}
-	restartErr := manager.RestartApplicationWithSecrets(appInfo.ID, txn.Set, func() error {
+	restartErr := manager.RestartApplicationWithSecrets(appInfo.ID, txn.Set, func(current *app.AppInfo, accepted bool) error {
 		version := 0
 		if state != nil {
 			version = state.ActiveVersion
 		}
-		return acceptClassicSecrets(appInfo, appInfo.Port, version, txn)
+		journal := &deploy.DeployState{AppName: appInfo.Name, AppID: appInfo.ID, Mode: "classic", PublicPort: appInfo.Port, ActiveVersion: version}
+		if current != nil {
+			journal.Slots = map[string]*deploy.Instance{"classic": {PID: current.PID, StartTicks: current.StartTicks, Port: current.Port, SecretEnvs: current.SecretEnvs, Status: "running"}}
+		}
+		if accepted {
+			txn.Stamp(journal)
+		}
+		return deploy.Store(journal)
 	})
 	return errors.Join(restartErr, deploy.FinishSecretTxn(appInfo.ID, txn, restartErr))
 }

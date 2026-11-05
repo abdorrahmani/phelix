@@ -140,7 +140,7 @@ func (m *AppManager) RestartApplication(id string) error {
 }
 
 // RestartApplicationWithSecrets records acceptance before returning a successful restart.
-func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.PinnedSet, accept func() error) error {
+func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.PinnedSet, persist func(*AppInfo, bool) error) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
@@ -189,8 +189,13 @@ func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.Pi
 	if err == nil {
 		err = m.SaveState()
 	}
-	if err == nil && accept != nil {
-		err = accept()
+	if err == nil && persist != nil {
+		err = persist(app, true)
+		if err != nil {
+			if restoreErr := persist(nil, false); restoreErr != nil {
+				return errors.Join(err, restoreErr)
+			}
+		}
 	}
 	if err != nil {
 		if m.appProcessRunning(app) {
@@ -199,6 +204,9 @@ func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.Pi
 		if previous != nil {
 			if restoreErr := m.startApplicationProcessWithSecrets(id, app.Name, app.Port, logFile, previous); restoreErr != nil {
 				return errors.Join(err, phelixerr.Wrap(phelixerr.CodeProcessFailed, "restart and restoration both failed", restoreErr), m.SaveState())
+			}
+			if persist != nil {
+				err = errors.Join(err, persist(app, false))
 			}
 		}
 		return errors.Join(err, m.SaveState())

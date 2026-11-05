@@ -90,9 +90,24 @@ func TestClassicAcceptanceFailureRestoresPreviousCredentials(t *testing.T) {
 	}
 	defer pinned.Close()
 	failure := errors.New("acceptance write failed")
-	err = m.RestartApplicationWithSecrets(id, pinned, func() error { return failure })
+	cleared := false
+	err = m.RestartApplicationWithSecrets(id, pinned, func(current *AppInfo, accepted bool) error {
+		if accepted {
+			return failure
+		}
+		if current == nil {
+			if !m.appProcessRunning(m.Apps[id]) {
+				t.Fatal("candidate stopped before journal restoration")
+			}
+			cleared = true
+		}
+		return nil
+	})
 	if !errors.Is(err, failure) {
 		t.Fatal("restart hid journal failure", err)
+	}
+	if !cleared {
+		t.Fatal("failed acceptance was not cleared before restoration")
 	}
 	runtime, err := secrets.RuntimeForPID(m.Apps[id].PID, []string{"DB"})
 	if err != nil {
