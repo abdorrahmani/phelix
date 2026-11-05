@@ -194,3 +194,31 @@ func TestSecretRecoveryDrainsRecordedRetirements(t *testing.T) {
 		})
 	}
 }
+
+func TestSecretMigrationLeavesServingJournalUntilAcceptance(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "migration-credential")
+	stable := startChildInstance(t, SlotBlue, 1)
+	state := &DeployState{AppName: "migration-crash", AppID: txnTestAppID, Mode: ModeBlueGreen, ActiveSlot: SlotBlue, Slots: map[string]*Instance{SlotBlue: &stable.Instance}}
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	txn, err := BeginSecretTxn(txnTestAppID, state.AppName, "dep-1", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	state.secretPreparing = true
+	if _, err := state.MigrateTo(ModeRolling); err != nil {
+		t.Fatal(err)
+	}
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := mustLoad(t, state.AppName); recovered.Mode != ModeBlueGreen || !InstanceAlive(recovered.ActiveInstance()) {
+		t.Fatal("preparation displaced serving journal before acceptance")
+	}
+	if outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID); err != nil || outcome != SecretTxnDiscarded {
+		t.Fatal("unaccepted migration did not discard", outcome, err)
+	}
+}

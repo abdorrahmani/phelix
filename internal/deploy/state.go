@@ -224,8 +224,9 @@ type DeployState struct {
 	// every durable write inside a deployment's secret window; the secret
 	// store's recovery reads it as the only evidence that a pending binding
 	// transaction was accepted. Empty outside a deployment.
-	SecretTxnID string      `json:"secret_txn_id,omitempty"`
-	Retiring    []*Instance `json:"retiring,omitempty"`
+	SecretTxnID     string      `json:"secret_txn_id,omitempty"`
+	Retiring        []*Instance `json:"retiring,omitempty"`
+	secretPreparing bool
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -291,12 +292,12 @@ func (s *DeployState) MigrateTo(mode Mode) ([]*Instance, error) {
 	}
 	var retired []*Instance
 	for _, inst := range s.Slots {
-		if inst != nil && inst.PID > 0 {
+		if inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
 			retired = append(retired, inst)
 		}
 	}
 	for _, inst := range s.Replicas {
-		if inst != nil && inst.PID > 0 {
+		if inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
 			retired = append(retired, inst)
 		}
 	}
@@ -354,6 +355,9 @@ func statePath(appName string) (string, error) {
 func Store(s *DeployState) error {
 	if s == nil || s.AppName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: cannot store state without an app name")
+	}
+	if s.secretPreparing {
+		return nil
 	}
 
 	path, err := statePath(s.AppName)

@@ -143,6 +143,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state"))
 	}
 	state.AppID = bg.AppID
+	state.secretPreparing = bg.Secrets != nil
 	if bg.Runtime != "" {
 		state.Runtime = bg.Runtime
 	}

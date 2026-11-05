@@ -172,6 +172,7 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 	}
 
 	if w.Secrets != nil {
+		state.secretPreparing = true
 		w.previousSecrets = map[string]*secrets.PinnedSet{}
 		defer func() {
 			for _, set := range w.previousSecrets {
@@ -196,7 +197,13 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 	ReapStaleInstances(state)
 	surplus := applyReplicaSet(state.Replicas, w.Replicas)
 	state.Replicas = ensureReplicaMap(state.Replicas, w.Replicas)
-	w.stopSurplus(ctx, surplus)
+	if w.Secrets == nil {
+		w.stopSurplus(ctx, surplus)
+	} else {
+		for _, inst := range surplus {
+			state.Retiring = append(state.Retiring, cloneInstance(inst))
+		}
+	}
 
 	w.Telemetry.Building(w.Source.Describe())
 	binaryPath, envPath, err := w.Source.Build(ctx)

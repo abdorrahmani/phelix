@@ -109,7 +109,7 @@ func TestFinishSecretTxnCommitAndDiscard(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		if err := Store(&DeployState{AppName: "finish-app", AppID: txnTestAppID, SecretTxnID: txn.ID}); err != nil {
+		if err := Store(&DeployState{AppName: "finish-app", AppID: txnTestAppID, Mode: ModeRolling, SecretTxnID: txn.ID}); err != nil {
 			t.Fatal(err)
 		}
 		if err := FinishSecretTxn(txnTestAppID, txn, nil); err != nil {

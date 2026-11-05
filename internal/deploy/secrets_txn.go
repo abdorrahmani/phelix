@@ -74,6 +74,7 @@ func (t *SecretTxn) OverlayFor(envPath string) ([]string, error) {
 
 // Stamp marks a state that accepts instances using this deployment's values.
 func (t *SecretTxn) Stamp(state *DeployState, retired ...*Instance) {
+	state.secretPreparing = false
 	state.SecretTxnID = ""
 	if t != nil {
 		state.SecretTxnID = t.ID
@@ -141,6 +142,9 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 			return SecretTxnDiscarded, nil
 		}
 		return SecretTxnRetained, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: read deployment journal of %s", appName)
+	}
+	if state.AppName != appName || state.AppID != "" && state.AppID != appID || state.Mode != ModeRolling && state.Mode != ModeBlueGreen && state.Mode != ModeWorker && state.Mode != "classic" {
+		return SecretTxnRetained, phelixerr.New(phelixerr.CodeConfiguration, "deployment journal identity or strategy is invalid; pending secrets retained")
 	}
 	if state.SecretTxnID == st.Pending.TxnID {
 		if state.Canary != nil && state.Canary.Status == CanaryRunning {

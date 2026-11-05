@@ -115,6 +115,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
+	state.secretPreparing = r.Secrets != nil
 	if r.Runtime != "" {
 		state.Runtime = r.Runtime
 	}
@@ -148,6 +149,13 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	// Shrink handling: snapshot instances beyond the desired replica count so
 	// they can be drained once the proxy membership no longer includes them.
 	surplus := applyReplicaSet(state.Replicas, r.Replicas)
+	if r.Secrets != nil {
+		for _, group := range [][]*Instance{legacy, surplus} {
+			for _, inst := range group {
+				state.Retiring = append(state.Retiring, cloneInstance(inst))
+			}
+		}
+	}
 	state.Replicas = ensureReplicaMap(state.Replicas, r.Replicas)
 	r.enrolled = r.checkEnrolled()
 

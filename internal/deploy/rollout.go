@@ -264,6 +264,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Newf(phelixerr.CodeConfiguration, "rollout: unsupported deploy mode %q for %q", state.Mode, ro.AppName))
 	}
 	state.AppID = ro.AppID
+	state.secretPreparing = ro.Secrets != nil
 	if ro.Runtime != "" {
 		state.Runtime = ro.Runtime
 	}
@@ -303,6 +304,11 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	legacy, err := state.MigrateTo(ModeBlueGreen)
 	if err != nil {
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "rollout: persist strategy migration"))
+	}
+	if ro.Secrets != nil {
+		for _, inst := range legacy {
+			state.Retiring = append(state.Retiring, cloneInstance(inst))
+		}
 	}
 	stableSlot := state.ActiveSlot
 	if pre.mode == ModeRolling {
