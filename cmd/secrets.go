@@ -340,7 +340,7 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 	}
 
 	fmt.Printf("✓ Stored '%s' version %d (fingerprint %s)\n", name, res.Version, res.Fingerprint)
-	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
+	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "", name)
 
 	bound, err := secretIsBound(ref.ID(), name)
 	if err != nil {
@@ -447,7 +447,7 @@ func runSecretsRemove(ref *appInfoRef, name string) error {
 		return err
 	}
 	fmt.Printf("✓ Removed '%s' and all retained versions\n", name)
-	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
+	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "", name)
 	if secretsJSON {
 		result := struct {
 			App     string `json:"app"`
@@ -496,7 +496,15 @@ func runSecretsApply(ref *appInfoRef) error {
 		return err
 	}
 	fmt.Printf("✓ Active bindings now come from phelix.yaml (%d imports)\n", len(bindings))
-	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
+	names := make([]string, 0, len(bindings))
+	seen := map[string]bool{}
+	for _, binding := range bindings {
+		if !seen[binding.Secret] {
+			names = append(names, binding.Secret)
+			seen[binding.Secret] = true
+		}
+	}
+	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "", names...)
 
 	if secretsNoRestart {
 		if err := recordApply(ref.ID(), secrets.ApplyRestartNotNeeded); err != nil {

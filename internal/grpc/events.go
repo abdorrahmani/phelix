@@ -84,7 +84,7 @@ func (c *Client) SendEventChecked(event *pb.ApplicationEvent) error {
 // The error message is redacted: caller-supplied err.Error() chains can embed
 // lower-layer output (command stderr, environment dumps) and this event is
 // serialized to the backend verbatim.
-func NewApplicationEvent(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) *pb.ApplicationEvent {
+func NewApplicationEvent(appID, appName, action string, success bool, errMsg string, pid int, mode, version string, secretNames ...string) *pb.ApplicationEvent {
 	return &pb.ApplicationEvent{
 		ServerId:       server.GetServerID(),
 		AppId:          appID,
@@ -96,6 +96,7 @@ func NewApplicationEvent(appID, appName, action string, success bool, errMsg str
 		Pid:            int32(pid),
 		DeploymentMode: mode,
 		Version:        version,
+		SecretNames:    append([]string(nil), secretNames...),
 	}
 }
 
