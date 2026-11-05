@@ -158,20 +158,7 @@ func captureDockerOutput(proc Process, imageRef string, port int, env []string) 
 		return err
 	}
 	defer file.Close()
-	cmd := exec.Command("docker", "logs", "--follow", containerIDOf(proc))
-	cmd.Env = append(os.Environ(), env...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	closeDrain, err := logs.AttachDrain(cmd, file)
-	if err != nil {
-		return err
-	}
-	defer closeDrain()
-	cmd.Env = os.Environ()
-	if err := cmd.Start(); err != nil {
-		return phelixerr.New(phelixerr.CodeProcessFailed, "cannot start secure container log capture")
-	}
-	go func() { _ = cmd.Wait() }()
-	return nil
+	return logs.CaptureDockerLogs(containerIDOf(proc), env, file)
 }
 
 // newDockerLauncher is the test-injectable constructor. slot may be "" when the

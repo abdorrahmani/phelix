@@ -15,6 +15,11 @@ import (
 
 const drainArg = "--phelix-internal-log-drain"
 
+type drainConfig struct {
+	Values   []string
+	DockerID string
+}
+
 // init handles the private drain process before any commands or services start.
 func init() {
 	if len(os.Args) == 2 && os.Args[1] == drainArg {
@@ -24,8 +29,22 @@ func init() {
 
 // AttachDrain gives detached apps a redacted log sink that survives CLI exit.
 func AttachDrain(cmd *exec.Cmd, dst *os.File) (func(), error) {
+	return attachDrain(cmd, dst, "")
+}
+
+// CaptureDockerLogs keeps container output masked while reconnecting after Docker outages.
+func CaptureDockerLogs(id string, env []string, dst *os.File) error {
+	closeDrain, err := attachDrain(&exec.Cmd{Env: env}, dst, id)
+	if err == nil {
+		closeDrain()
+	}
+	return err
+}
+
+// attachDrain passes credentials over inherited pipes to the output owner.
+func attachDrain(cmd *exec.Cmd, dst *os.File, dockerID string) (func(), error) {
 	values := phelixerr.SecretValuesInEnv(cmd.Env)
-	if len(values) == 0 {
+	if len(values) == 0 && dockerID == "" {
 		cmd.Stdout, cmd.Stderr = dst, dst
 		return func() {}, nil
 	}
@@ -78,7 +97,7 @@ func AttachDrain(cmd *exec.Cmd, dst *os.File) (func(), error) {
 	_ = configR.Close()
 	_ = readyW.Close()
 	_ = configW.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := gob.NewEncoder(configW).Encode(values); err != nil {
+	if err := gob.NewEncoder(configW).Encode(drainConfig{Values: values, DockerID: dockerID}); err != nil {
 		closeFiles()
 		_ = helper.Process.Kill()
 		return nil, err
@@ -108,12 +127,15 @@ func runDrain() int {
 	defer dst.Close()
 	defer config.Close()
 	defer ready.Close()
-	var values []string
-	if err := gob.NewDecoder(config).Decode(&values); err != nil {
+	var settings drainConfig
+	if err := gob.NewDecoder(config).Decode(&settings); err != nil {
 		return 1
 	}
-	for _, value := range values {
+	for _, value := range settings.Values {
 		phelixerr.RegisterSecretValue(value)
+	}
+	if settings.DockerID != "" {
+		return runDockerDrain(settings.DockerID, dst, ready)
 	}
 	if _, err := ready.Write([]byte{1}); err != nil {
 		return 1
@@ -162,5 +184,6 @@ func runDrain() int {
 	if failed {
 		return 1
 	}
+	time.Sleep(200 * time.Millisecond)
 	return 0
 }
