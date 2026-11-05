@@ -108,8 +108,10 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 		return err
 	}
 	defer closeDrain()
+	releaseSecrets := phelixerr.AcquireSecretValues(phelixerr.SecretValuesInEnv(cmd.Env))
 	inst, err := resources.Start(cmd, app.Resources)
 	if err != nil {
+		releaseSecrets()
 		f.Close()
 		return phelixerr.Wrapf(
 			phelixerr.CodeProcessFailed,
@@ -123,6 +125,7 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	}
 
 	app.SecretEnvs = phelixerr.SecretEnvNames(cmd.Env)
+	app.releaseSecrets = releaseSecrets
 	app.Cmd = cmd
 	app.PID = cmd.Process.Pid
 	app.Status = "running"
@@ -154,7 +157,9 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 			app.Status = "failed"
 			app.PID = 0
 
-			if oomErr := app.classifyResourceExit(); oomErr != nil {
+			oomErr := app.classifyResourceExit()
+			m.waitAndCloseLog(app)
+			if oomErr != nil {
 				return oomErr
 			}
 			return phelixerr.Newf(
@@ -200,7 +205,7 @@ func (m *AppManager) stopNewlyStarted(app *AppInfo) {
 	}
 	app.Status = "failed"
 	app.PID = 0
-	app.closeResourceInstance()
+	m.waitAndCloseLog(app)
 }
 
 // classifyResourceExit closes the app's resource tracking handle and reports
@@ -250,6 +255,10 @@ func (m *AppManager) waitAndCloseLog(app *AppInfo) {
 	}
 
 	app.closeResourceInstance()
+	if app.releaseSecrets != nil {
+		app.releaseSecrets()
+		app.releaseSecrets = nil
+	}
 	if app.logFileHandle != nil {
 		app.logFileHandle.Close()
 		app.logFileHandle = nil
@@ -263,6 +272,7 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 	}
 
 	if !m.isProcessRunning(app.PID) {
+		m.waitAndCloseLog(app)
 		return nil
 	}
 

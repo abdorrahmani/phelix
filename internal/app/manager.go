@@ -82,8 +82,11 @@ func (m *AppManager) StartApplicationWithSecrets(id string, port int, name strin
 	if err := m.startApplicationProcessWithSecrets(id, name, port, logFile, pinned); err != nil {
 		return err
 	}
-
-	return m.SaveState()
+	if err := m.SaveState(); err != nil {
+		m.stopNewlyStarted(m.Apps[id])
+		return err
+	}
+	return nil
 }
 
 // StopApplication stops an application by its ID

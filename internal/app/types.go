@@ -75,6 +75,7 @@ type AppInfo struct {
 	// releases the lease through its file descriptors. Never persisted; nil
 	// for unlimited apps.
 	resourceInstance resourceTracker
+	releaseSecrets   func()
 
 	// Process holds the process-supervision configuration for this app
 	// (start/stop commands, resource limits, auto-restart policy).

@@ -195,6 +195,7 @@ func (m *AppManager) LoadState() error {
 	}
 
 	// Clear existing apps and load from saved state
+	previousApps := m.Apps
 	m.Apps = make(map[string]*AppInfo)
 	for id, saved := range savedApps {
 		// Check if process is still running
@@ -215,6 +216,16 @@ func (m *AppManager) LoadState() error {
 			UpdatedAt:   saved.UpdatedAt,
 			Directory:   saved.Directory,
 			Cmd:         nil,
+		}
+		if previous := previousApps[id]; previous != nil {
+			if isRunning && previous.PID == saved.PID {
+				appInfo.Cmd = previous.Cmd
+				appInfo.resourceInstance = previous.resourceInstance
+				appInfo.logFileHandle = previous.logFileHandle
+				appInfo.releaseSecrets = previous.releaseSecrets
+			} else if !m.isProcessRunning(previous.PID) {
+				m.waitAndCloseLog(previous)
+			}
 		}
 		// restore language and no-upload flag
 		appInfo.Language = saved.Language
