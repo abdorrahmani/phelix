@@ -116,7 +116,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
-	if r.Secrets != nil && r.Secrets.ID != "" {
+	if r.Secrets != nil {
 		previous := *state
 		previous.Slots = cloneInstanceMap(state.Slots)
 		previous.Replicas = cloneInstanceMap(state.Replicas)
@@ -230,7 +230,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 			}
 			return wrapDeployStep(err, fmt.Sprintf("rolling deploy failed at replica %s", key))
 		}
-		if !progressed && migrated && (r.Secrets == nil || r.Secrets.ID == "") {
+		if !progressed && migrated && r.Secrets == nil {
 			// First replacement healthy and in rotation: the previous
 			// strategy's instances are out of the serving path. Drain them.
 			stopRetiredInstances(ctx, legacy, grace, r.inFlight(r.AppName), log)
@@ -245,7 +245,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	// Every replica now runs the new binary. Surplus replicas were excluded
 	// from the backend set by the first membership update; retire them here so
 	// a --replicas shrink never leaves orphaned old processes behind.
-	if r.Secrets == nil || r.Secrets.ID == "" {
+	if r.Secrets == nil {
 		r.stopSurplusReplicas(ctx, surplus, grace)
 	}
 
@@ -266,7 +266,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 			return err
 		}
 	}
-	if r.Secrets != nil && r.Secrets.ID != "" {
+	if r.Secrets != nil {
 		if err := drainSecretRetirements(state); err != nil {
 			return err
 		}
@@ -472,12 +472,15 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 			return phelixerr.Wrapf(phelixerr.CodeProxy, compErr,
 				"replica %s: state persistence failed and proxy compensation failed", key)
 		}
-		stopHeldProcess(ctx, proc, grace)
 		state.SecretTxnID = previousStamp
+		if r.Secrets != nil {
+			state.Retiring = append(state.Retiring, cloneInstance(candidate))
+		}
 		if restoreErr := r.persist(state); restoreErr != nil {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 				"replica %s: persist proxy-switched replacement failed; proxy restored but restoring old state also failed: %v", key, restoreErr)
 		}
+		stopHeldProcess(ctx, proc, grace)
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 			"replica %s: persist proxy-switched replacement; proxy restored", key)
 	}
@@ -487,7 +490,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	r.Telemetry.SetProxy(r.PublicPort, primary.Label, port, upstreamHosts(primary, backends))
 	r.Telemetry.ReplicaReplaced(index, newPID, port,
 		fmt.Sprintf("proxy primary %s, %d upstream(s)", primary.Label, len(backends)+1))
-	if old != nil && (oldPID > 0 || old.ContainerID != "") && (r.Secrets == nil || r.Secrets.ID == "") {
+	if old != nil && (oldPID > 0 || old.ContainerID != "") && r.Secrets == nil {
 		r.Telemetry.ReplicaDraining(index, oldPID)
 		report := stopInstance(ctx, old, grace, r.inFlight(r.AppName))
 		if report.ForceKilled {

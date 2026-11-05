@@ -273,3 +273,18 @@ func launchOverlay(envPath, appID string, txn *SecretTxn) ([]string, error) {
 	}
 	return EnvOverlayFromSnapshot(envPath, appID)
 }
+
+// retireFailedCandidate records restored service before stopping a previously accepted candidate.
+func retireFailedCandidate(state *DeployState, candidate *Instance, persist func(*DeployState) error) error {
+	previous := cloneInstance(candidate)
+	retiring := state.Retiring
+	state.Retiring = append(append([]*Instance(nil), retiring...), previous)
+	candidate.PID, candidate.ContainerID, candidate.Status = 0, "", "failed"
+	state.secretPreparing = false
+	if err := persist(state); err != nil {
+		*candidate = *previous
+		state.Retiring = retiring
+		return err
+	}
+	return nil
+}

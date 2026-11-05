@@ -468,11 +468,6 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		}
 		if !keepCanary {
 			state.SecretTxnID = oldStamp
-			stopHeldProcess(cleanupCtx, proc, grace)
-			if ci := state.Slots[canarySlot]; ci != nil {
-				ci.Status = "failed"
-				ci.PID = 0
-			}
 		} else {
 			log.Warnf("canary left running because the stable baseline cannot take the traffic back; manual intervention required")
 		}
@@ -482,7 +477,14 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		state.Canary.Status = status
 		state.Canary.Reason = truncateReason(reason.Error())
 		state.Canary.UpdatedAt = time.Now()
-		ro.storeState(state)
+		if !keepCanary {
+			if err := retireFailedCandidate(state, canaryInst, ro.persist); err != nil {
+				return ro.failf(errors.Join(reason, err))
+			}
+			stopHeldProcess(cleanupCtx, proc, grace)
+		} else if err := ro.persist(state); err != nil {
+			return ro.failf(errors.Join(reason, err))
+		}
 		if !switched {
 			ro.undoMigration(state, pre)
 		}
@@ -615,12 +617,12 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 			return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 				"rollout: persist promotion failed and stable compensation failed: %v", compErr))
 		}
-		stopHeldProcess(compCtx, proc, grace)
-		canaryInst.Status = "failed"
-		canaryInst.PID = 0
 		state.Canary.Status = CanaryFailed
 		state.SecretTxnID = oldStamp
-		ro.storeState(state)
+		if restoreErr := retireFailedCandidate(state, canaryInst, ro.persist); restoreErr != nil {
+			return ro.failf(errors.Join(err, restoreErr))
+		}
+		stopHeldProcess(compCtx, proc, grace)
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 			"rollout: persist promotion failed; traffic restored to stable"))
 	}
@@ -635,15 +637,13 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 				compErr = ro.restoreStableRouting(compCtx, state, stable)
 			}
 			if compErr == nil {
-				stopHeldProcess(compCtx, proc, grace)
-				canaryInst.Status = "failed"
-				canaryInst.PID = 0
 				state.Canary.Status = CanaryFailed
 				state.SecretTxnID = oldStamp
-				if persistErr := ro.persist(state); persistErr != nil {
+				if persistErr := retireFailedCandidate(state, canaryInst, ro.persist); persistErr != nil {
 					return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 						"rollout: promote failed; traffic restored but state restore failed: %v", persistErr))
 				}
+				stopHeldProcess(compCtx, proc, grace)
 				return ro.failf(err)
 			}
 			// Traffic may still reach the canary; keep it alive and persist

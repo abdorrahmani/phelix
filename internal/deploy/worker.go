@@ -321,14 +321,19 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 	journal.UpdatedAt = time.Now()
 	w.Secrets.Stamp(state, old)
 	if err := Store(state); err != nil {
-		_, _, _ = GracefulStopWorker(inst, w.signal(), w.grace(), proc)
+		candidate := cloneInstance(inst)
 		restoreReplica(state, key, old)
 		state.SecretTxnID = oldStamp
+		state.Retiring = append(state.Retiring, candidate)
+		if restoreErr := Store(state); restoreErr != nil {
+			return errors.Join(err, restoreErr)
+		}
+		_, _, _ = GracefulStopWorker(candidate, w.signal(), w.grace(), proc)
 		return err
 	}
 	w.Telemetry.ReplicaHealthy(index, inst.PID, 0)
 
-	if oldAlive {
+	if oldAlive && w.Secrets == nil {
 		w.Telemetry.ReplicaDraining(index, old.PID)
 		report, _, _ := GracefulStopWorker(old, w.signal(), w.drain(), nil)
 		if report.ForceKilled {
@@ -343,6 +348,9 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 // deployClassic drains every replica first, then launches the new version on
 // all slots. Simpler than rolling, and the default worker strategy.
 func (w *Worker) deployClassic(ctx context.Context, state *DeployState, binaryPath, envPath string, env []string, targetVer int, journal *WorkerRollout) error {
+	if w.Secrets != nil {
+		return w.deploySecretFleet(ctx, state, binaryPath, envPath, env, targetVer, journal)
+	}
 	log := w.logger()
 	for _, key := range replicaIndices(state.Replicas) {
 		inst := state.Replicas[key]
@@ -709,4 +717,31 @@ func RecoverWorkerRollout(ctx context.Context, appName string) error {
 	}
 	w := &Worker{AppName: appName, AppID: state.AppID}
 	return w.revertRollout(ctx, state, state.WorkerRollout)
+}
+
+// deploySecretFleet proves the next fleet before accepting it and retiring previous credentials.
+func (w *Worker) deploySecretFleet(ctx context.Context, state *DeployState, binaryPath, envPath string, env []string, targetVer int, journal *WorkerRollout) error {
+	next := *state
+	next.Replicas = cloneInstanceMap(state.Replicas)
+	for _, key := range sortedReplicaKeys(next.Replicas) {
+		inst := next.Replicas[key]
+		journal.ReplacedFrom[key] = versionOf(inst)
+		inst.BinaryPath, inst.EnvPath, inst.Version = binaryPath, envPath, targetVer
+		if _, err := launchWorkerReplica(w.AppName, &next, key, w.Secrets); err != nil {
+			return err
+		}
+		if err := w.waitForReady(ctx, &next, inst, env); err != nil {
+			return err
+		}
+		inst.Status, inst.ReadyAt = "running", time.Now()
+	}
+	w.Secrets.Stamp(&next)
+	for _, inst := range state.Replicas {
+		next.Retiring = append(next.Retiring, cloneInstance(inst))
+	}
+	if err := Store(&next); err != nil {
+		return err
+	}
+	*state = next
+	return nil
 }

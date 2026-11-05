@@ -109,8 +109,13 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 			return err
 		}
 		client = proxy.NewClient(socket)
-		primary, backends := healthyTargets(next)
-		if err := client.Switch(ctx, state.AppName, primary, backends...); err != nil {
+		route := *state
+		if state.Mode == ModeBlueGreen {
+			route.Slots = next
+		} else {
+			route.Replicas = next
+		}
+		if err := RestoreProxyRoute(ctx, &route, client, &nopLogger{}); err != nil {
 			return err
 		}
 	}

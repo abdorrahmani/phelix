@@ -405,11 +405,11 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 				compensated = true
 				state.ActiveSlot = oldActive
 				state.ActiveVersion = oldVersion
-				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
-				newInst.Status = "failed"
-				newInst.PID = 0
 				state.SecretTxnID = oldStamp
-				_ = Store(state)
+				if restoreErr := retireFailedCandidate(state, newInst, bg.persist); restoreErr != nil {
+					return bg.failf(restoreErr)
+				}
+				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 			}
 		} else if oldActive == "" && bg.ProxyClient != nil {
 			if compErr := bg.ProxyClient.Remove(ctx, bg.AppName); compErr == nil {
@@ -417,11 +417,11 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 				compensated = true
 				state.ActiveSlot = ""
 				state.ActiveVersion = oldVersion
-				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
-				newInst.Status = "failed"
-				newInst.PID = 0
 				state.SecretTxnID = oldStamp
-				_ = Store(state)
+				if restoreErr := retireFailedCandidate(state, newInst, bg.persist); restoreErr != nil {
+					return bg.failf(restoreErr)
+				}
+				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 			}
 		}
 		if !compensated {
@@ -451,14 +451,12 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			}
 			if compErr == nil {
 				switched = false
-				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
-				newInst.Status = "failed"
-				newInst.PID = 0
 				state.SecretTxnID = oldStamp
-				if stateErr := bg.persist(state); stateErr != nil {
+				if stateErr := retireFailedCandidate(state, newInst, bg.persist); stateErr != nil {
 					return bg.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 						"promote target failed; traffic restored but state restoration failed: %v", stateErr))
 				}
+				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 				return bg.failf(err)
 			}
 			// Traffic may still reach the candidate; keep it alive and persist the

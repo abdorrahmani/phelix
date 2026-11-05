@@ -444,3 +444,50 @@ func TestWorkerLifecycleSettlesPendingBeforeChanges(t *testing.T) {
 		t.Fatal("worker start did not settle accepted transaction", err)
 	}
 }
+
+func TestSecretCompensationPersistsBeforeCandidateTermination(t *testing.T) {
+	for _, failedWrite := range []bool{false, true} {
+		t.Run(map[bool]string{false: "restored", true: "write_failed"}[failedWrite], func(t *testing.T) {
+			txnTestEnv(t)
+			stable := startChildInstance(t, SlotBlue, 1)
+			candidate := startChildInstance(t, SlotGreen, 2)
+			state := &DeployState{AppName: "compensation-order", AppID: txnTestAppID, Mode: ModeBlueGreen,
+				ActiveSlot: SlotGreen, SecretTxnID: secrets.NewTxnID(),
+				Slots: map[string]*Instance{SlotBlue: &stable.Instance, SlotGreen: &candidate.Instance}}
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			candidateRecord := cloneInstance(&candidate.Instance)
+			state.ActiveSlot, state.SecretTxnID = SlotBlue, ""
+			persist := func(s *DeployState) error {
+				if !InstanceAlive(candidateRecord) {
+					t.Fatal("candidate died before restored journal was saved")
+				}
+				if failedWrite {
+					return errors.New("injected write failure")
+				}
+				return Store(s)
+			}
+			err := retireFailedCandidate(state, &candidate.Instance, persist)
+			if (err != nil) != failedWrite {
+				t.Fatal("unexpected compensation outcome", err)
+			}
+			stored := mustLoad(t, state.AppName)
+			if failedWrite {
+				if stored.ActiveSlot != SlotGreen || stored.SecretTxnID == "" || !InstanceAlive(candidateRecord) {
+					t.Fatal("failed write destroyed accepted candidate")
+				}
+			} else {
+				if stored.ActiveSlot != SlotBlue || stored.SecretTxnID != "" || len(stored.Retiring) != 1 {
+					t.Fatal("restored journal lost retirement ownership")
+				}
+				if err := drainSecretRetirements(stored); err != nil {
+					t.Fatal(err)
+				}
+				if InstanceAlive(candidateRecord) || !InstanceAlive(&stable.Instance) {
+					t.Fatal("retirement stopped wrong instance")
+				}
+			}
+		})
+	}
+}
