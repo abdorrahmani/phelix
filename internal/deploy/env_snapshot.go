@@ -132,49 +132,7 @@ func snapshotOverlay(envPath, appID string) ([]string, error) {
 // every other base entry. Managed names therefore appear exactly once, with
 // the managed value, no matter what an older snapshot carried.
 func mergeByKey(base, overlay []string) []string {
-	if len(overlay) == 0 {
-		return base
-	}
-	managed := make(map[string]string, len(overlay))
-	for _, kv := range overlay {
-		if k, _, ok := splitEnvPair(kv); ok {
-			managed[k] = kv
-		}
-	}
-	seen := make(map[string]bool, len(base)+len(overlay))
-	out := make([]string, 0, len(base)+len(overlay))
-	for _, kv := range base {
-		k, _, ok := splitEnvPair(kv)
-		if ok {
-			if managed[k] != "" || seen[k] {
-				continue
-			}
-			seen[k] = true
-		}
-		out = append(out, kv)
-	}
-	for _, kv := range overlay {
-		k, _, ok := splitEnvPair(kv)
-		if ok {
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-		}
-		out = append(out, kv)
-	}
-	return out
-}
-
-// splitEnvPair splits a KEY=value string, reporting false when the separator
-// is missing so a malformed entry passes through rather than being dropped.
-func splitEnvPair(kv string) (key, value string, ok bool) {
-	for i := 0; i < len(kv); i++ {
-		if kv[i] == '=' {
-			return kv[:i], kv[i+1:], true
-		}
-	}
-	return "", "", false
+	return secrets.MergeEnv(base, overlay)
 }
 
 // RollbackEvent is logged and optionally sent via Notifier after rollback attempts.

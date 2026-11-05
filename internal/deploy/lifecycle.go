@@ -429,6 +429,7 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 				"restored %s instance did not listen on %s within %s; see ~/.phelix/logs",
 				state.AppName, addr, opts.ListenTimeout)
 		}
+		inst.SecretEnvs = phelixerr.SecretEnvNames(envOverlay)
 		inst.PID = proc.PID()
 
 		inst.ContainerID = containerIDOf(proc)

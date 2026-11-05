@@ -310,12 +310,12 @@ func toProtoLogEntry(e logs.LogEntry, source pb.LogSource) *pb.MonitorLogEntry {
 		Level:     string(e.Level),
 		Source:    source,
 		Stream:    toProtoLogStream(e.Stream),
-		Component: e.Component,
-		App:       e.App,
-		Version:   e.Version,
-		DeployId:  e.DeployID,
-		RequestId: e.RequestID,
-		Replica:   e.Replica,
+		Component: phelixerr.Redact(e.Component),
+		App:       phelixerr.Redact(e.App),
+		Version:   phelixerr.Redact(e.Version),
+		DeployId:  phelixerr.Redact(e.DeployID),
+		RequestId: phelixerr.Redact(e.RequestID),
+		Replica:   phelixerr.Redact(e.Replica),
 	}
 	if len(e.Fields) > 0 {
 		fields := make(map[string]string, len(e.Fields))
@@ -323,7 +323,7 @@ func toProtoLogEntry(e logs.LogEntry, source pb.LogSource) *pb.MonitorLogEntry {
 			if logs.IsSensitiveFieldKey(k) {
 				continue
 			}
-			fields[k] = phelixerr.Redact(v)
+			fields[phelixerr.Redact(k)] = phelixerr.Redact(v)
 		}
 		out.Fields = fields
 	}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -333,17 +334,21 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 		return writeSetEnvelope(ref, name, res, "not_requested")
 	}
 	if !appIsRunning(ref) {
-		recordApply(ref.ID(), secrets.ApplyRestartSkipped)
+		if err := recordApply(ref.ID(), secrets.ApplyRestartSkipped); err != nil {
+			return err
+		}
 		fmt.Printf("  application is not running; the value applies at the next start\n")
 		return writeSetEnvelope(ref, name, res, secrets.ApplyRestartSkipped)
 	}
-	if rerr := restartAppInfo(ref.AppInfo); rerr != nil {
-		recordApply(ref.ID(), secrets.ApplyRestartFailed)
+	if rerr := restartAppInfoLocked(ref.AppInfo); rerr != nil {
+		rerr = errors.Join(rerr, recordApply(ref.ID(), secrets.ApplyRestartFailed))
 		return phelixerr.Wrapf(phelixerr.CodeOf(rerr), rerr,
-			"the new value of %s is stored, but the restart failed: the running application still holds the previous values\nHint: retry with `phelix restart %s` or `phelix secrets apply`",
+			"the new value of %s is stored, but the restart failed\nHint: retry with `phelix restart %s` or `phelix secrets apply`",
 			name, ref.Name())
 	}
-	recordApply(ref.ID(), secrets.ApplyRestartSucceeded)
+	if err := recordApply(ref.ID(), secrets.ApplyRestartSucceeded); err != nil {
+		return err
+	}
 	return writeSetEnvelope(ref, name, res, secrets.ApplyRestartSucceeded)
 }
 
@@ -362,8 +367,8 @@ func writeSetEnvelope(ref *appInfoRef, name string, res secrets.SetResult, resta
 	return writeEnvelopeResult(machine.Success("", result))
 }
 
-func recordApply(appID, restart string) {
-	_ = secrets.RecordApply(appID, &secrets.ApplyStatus{Restart: restart})
+func recordApply(appID, restart string) error {
+	return secrets.RecordApply(appID, &secrets.ApplyStatus{Restart: restart})
 }
 
 // runSecretsHistory prints the retained versions of one secret.
@@ -407,6 +412,17 @@ func runSecretsRemove(ref *appInfoRef, name string) error {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
 	}
 	defer release()
+	cfg, err := loadProjectConfigFrom(ref.Directory())
+	if err != nil {
+		return err
+	}
+	if cfg != nil && cfg.Secrets != nil {
+		for _, imp := range cfg.Secrets.Imports {
+			if imp.Secret == name {
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "secrets: %s is imported by phelix.yaml; remove that import first", name)
+			}
+		}
+	}
 	if err := secrets.Remove(ref.ID(), name); err != nil {
 		return err
 	}
@@ -463,16 +479,20 @@ func runSecretsApply(ref *appInfoRef) error {
 	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
 
 	if secretsNoRestart || !appIsRunning(ref) {
-		recordApply(ref.ID(), secrets.ApplyRestartSkipped)
+		if err := recordApply(ref.ID(), secrets.ApplyRestartSkipped); err != nil {
+			return err
+		}
 		return writeApplyEnvelope(ref, len(bindings), secrets.ApplyRestartSkipped)
 	}
-	if rerr := restartAppInfo(ref.AppInfo); rerr != nil {
-		recordApply(ref.ID(), secrets.ApplyRestartFailed)
+	if rerr := restartAppInfoLocked(ref.AppInfo); rerr != nil {
+		rerr = errors.Join(rerr, recordApply(ref.ID(), secrets.ApplyRestartFailed))
 		return phelixerr.Wrapf(phelixerr.CodeOf(rerr), rerr,
-			"the bindings were committed, but the restart failed: the running application still holds the previous values\nHint: retry with `phelix restart %s`",
+			"the bindings were committed, but the restart failed\nHint: retry with `phelix restart %s`",
 			ref.Name())
 	}
-	recordApply(ref.ID(), secrets.ApplyRestartSucceeded)
+	if err := recordApply(ref.ID(), secrets.ApplyRestartSucceeded); err != nil {
+		return err
+	}
 	return writeApplyEnvelope(ref, len(bindings), secrets.ApplyRestartSucceeded)
 }
 
@@ -491,6 +511,20 @@ func writeApplyEnvelope(ref *appInfoRef, count int, restart string) error {
 // appIsRunning reports whether the application currently has instances to
 // restart.
 func appIsRunning(ref *appInfoRef) bool {
+	state, err := deploy.Load(ref.Name())
+	if err == nil && state.Mode != "classic" {
+		for _, inst := range state.Slots {
+			if inst != nil && deploy.InstanceAlive(inst) {
+				return true
+			}
+		}
+		for _, inst := range state.Replicas {
+			if inst != nil && deploy.InstanceAlive(inst) {
+				return true
+			}
+		}
+		return false
+	}
 	return ref.AppInfo.Status == "running"
 }
 
@@ -555,8 +589,8 @@ func readSecretValue(fromFile string) (string, error) {
 	}
 	value := string(data)
 	if fromFile == "" {
-		if strings.HasSuffix(value, "\r\n") {
-			value = strings.TrimSuffix(value, "\r\n")
+		if before, ok := strings.CutSuffix(value, "\r\n"); ok {
+			value = before
 		} else {
 			value = strings.TrimSuffix(value, "\n")
 		}
@@ -565,4 +599,42 @@ func readSecretValue(fromFile string) (string, error) {
 		return "", err
 	}
 	return value, nil
+}
+
+// beginProjectSecrets prepares imports before a deployment changes any instance.
+func beginProjectSecrets(info *app.AppInfo, cfg *project.Config, deploymentID string) (*deploy.SecretTxn, error) {
+	bindings, err := secrets.CommittedBindings(info.ID)
+	if err != nil {
+		return nil, err
+	}
+	if (cfg == nil || cfg.Secrets == nil) && len(bindings) == 0 {
+		return nil, nil
+	}
+	var imports []secrets.Binding
+	if cfg != nil && cfg.Secrets != nil {
+		imports = cfg.Secrets.Imports
+	}
+	return deploy.BeginSecretTxn(info.ID, info.Name, deploymentID, imports)
+}
+
+// startClassicWithSecrets passes deployment values to the existing process manager.
+func startClassicWithSecrets(id string, port int, name string, txn *deploy.SecretTxn) error {
+	if txn == nil {
+		return app.Manager.StartApplication(id, port, name)
+	}
+	manager, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return phelixerr.New(phelixerr.CodeConfiguration, "process manager does not support secret deployments")
+	}
+	return manager.StartApplicationWithSecrets(id, port, name, txn.Set)
+}
+
+// acceptClassicSecrets records a successful classic start in the deployment journal.
+func acceptClassicSecrets(info *app.AppInfo, port, version int, txn *deploy.SecretTxn) error {
+	if txn == nil {
+		return nil
+	}
+	state := &deploy.DeployState{AppName: info.Name, AppID: info.ID, Mode: "classic", PublicPort: port, ActiveVersion: version}
+	txn.Stamp(state)
+	return deploy.Store(state)
 }

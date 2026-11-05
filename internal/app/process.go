@@ -18,53 +18,9 @@ import (
 	"github.com/shirou/gopsutil/process"
 )
 
-// mergeEnvByKey overlays secret values over the assembled environment by
-// variable name, so a managed secret always appears exactly once and wins
-// over any same-named plain variable that slipped through.
+// mergeEnvByKey keeps the last value of each name, matching process launch behavior.
 func mergeEnvByKey(base, overlay []string) []string {
-	if len(overlay) == 0 {
-		return base
-	}
-	managed := make(map[string]string, len(overlay))
-	for _, kv := range overlay {
-		if i := indexByte(kv, '='); i >= 0 {
-			managed[kv[:i]] = kv
-		}
-	}
-	seen := make(map[string]bool)
-	out := make([]string, 0, len(base)+len(overlay))
-	for _, kv := range base {
-		i := indexByte(kv, '=')
-		if i >= 0 {
-			k := kv[:i]
-			if managed[k] != "" || seen[k] {
-				continue
-			}
-			seen[k] = true
-		}
-		out = append(out, kv)
-	}
-	for _, kv := range overlay {
-		i := indexByte(kv, '=')
-		if i >= 0 {
-			if seen[kv[:i]] {
-				continue
-			}
-			seen[kv[:i]] = true
-		}
-		out = append(out, kv)
-	}
-	return out
-}
-
-// indexByte returns the first position of c in s, or -1.
-func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
+	return secrets.MergeEnv(base, overlay)
 }
 
 // startupListenTimeout bounds the wait for an application to bind its port
@@ -84,6 +40,10 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 
 // startApplicationProcess starts the application process and updates the app info
 func (m *AppManager) startApplicationProcess(id string, name string, portNum int, logFile string) error {
+	return m.startApplicationProcessWithSecrets(id, name, portNum, logFile, nil)
+}
+
+func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, portNum int, logFile string, pinned *secrets.PinnedSet) error {
 
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -126,7 +86,12 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 		envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
 	}
 
-	secretEnvs, err := secrets.ClassicEnvOverlay(context.Background(), id)
+	var secretEnvs []string
+	if pinned != nil {
+		secretEnvs = pinned.Overlay()
+	} else {
+		secretEnvs, err = secrets.ClassicEnvOverlay(context.Background(), id)
+	}
 	if err != nil {
 		f.Close()
 		return phelixerr.Wrapf(phelixerr.CodeOf(err), err,
@@ -137,6 +102,12 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 	envVars = append(envVars, fmt.Sprintf("PORT=%d", portNum))
 	cmd.Env = envVars
 
+	closeDrain, err := logs.AttachDrain(cmd, f)
+	if err != nil {
+		f.Close()
+		return err
+	}
+	defer closeDrain()
 	inst, err := resources.Start(cmd, app.Resources)
 	if err != nil {
 		f.Close()
@@ -151,6 +122,7 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 		app.resourceInstance = inst
 	}
 
+	app.SecretEnvs = phelixerr.SecretEnvNames(cmd.Env)
 	app.Cmd = cmd
 	app.PID = cmd.Process.Pid
 	app.Status = "running"

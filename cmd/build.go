@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"net"
 	"os"
 	"path/filepath"
@@ -262,6 +265,23 @@ var BuildCmd = &cobra.Command{
 		defer flushTelemetry()
 		op.setDeploymentID(tracker)
 
+		info, err := GetAppInfo(id)
+		if err != nil {
+			return err
+		}
+		var secretTxn *deploy.SecretTxn
+		if isWorker {
+			if projCfg.Secrets != nil {
+				_, err = secrets.PinBindings(context.Background(), id, projCfg.Secrets.Imports)
+			}
+		} else {
+			secretTxn, err = beginProjectSecrets(info, projCfg, tracker.DeploymentID())
+		}
+		if err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, deploy.FinishSecretTxn(id, secretTxn, err)) }()
+
 		tracker.Building("classic build")
 		report, err := buildApplication(id, buildArgs, buildMgr, binPath)
 		if err != nil {
@@ -331,12 +351,15 @@ var BuildCmd = &cobra.Command{
 			}))
 		}
 
-		if err := startApplication(id, name); err != nil {
+		if err := startClassicWithSecrets(id, buildPort, name, secretTxn); err != nil {
 			tracker.Failed(err)
 			markBuildFailed(id)
 			return err
 		}
 
+		if err := acceptClassicSecrets(info, buildPort, buildVer, secretTxn); err != nil {
+			return errors.Join(err, app.Manager.StopApplication(id))
+		}
 		tracker.InstanceStarted("", classicPID(id), buildPort)
 
 		if rec != nil {

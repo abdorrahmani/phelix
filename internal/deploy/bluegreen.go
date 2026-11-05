@@ -119,7 +119,6 @@ type BlueGreen struct {
 // On the very first deploy there is no active instance: steps 2 and 7 enrol
 // the app with the proxy, and step 8 is skipped.
 func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
-	defer bg.Secrets.endOnReturn(bg.AppName)()
 	log := bg.logger()
 	grace := bg.GracePeriod
 	if grace <= 0 {
@@ -227,6 +226,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	}
 	targetVer := targetVersionFromSource(src)
 	newInst := &Instance{
+		SecretEnvs:  phelixerr.SecretEnvNames(envOverlay),
 		Slot:        inactive,
 		PID:         proc.PID(),
 		Port:        port,
@@ -382,8 +382,10 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	// exists, stop the candidate, and return without touching the old process.
 	oldActive := active
 	oldVersion := state.ActiveVersion
+	oldStamp := state.SecretTxnID
 	state.ActiveSlot = inactive
 	state.ActiveVersion = targetVer
+	bg.Secrets.Stamp(state)
 	if err := bg.persist(state); err != nil {
 		compensated := false
 		if oldActive != "" && bg.ProxyClient != nil {
@@ -400,6 +402,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 				newInst.Status = "failed"
 				newInst.PID = 0
+				state.SecretTxnID = oldStamp
 				_ = Store(state)
 			}
 		} else if oldActive == "" && bg.ProxyClient != nil {
@@ -411,6 +414,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 				newInst.Status = "failed"
 				newInst.PID = 0
+				state.SecretTxnID = oldStamp
 				_ = Store(state)
 			}
 		}
@@ -444,6 +448,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 				_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
 				newInst.Status = "failed"
 				newInst.PID = 0
+				state.SecretTxnID = oldStamp
 				if stateErr := bg.persist(state); stateErr != nil {
 					return bg.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 						"promote target failed; traffic restored but state restoration failed: %v", stateErr))

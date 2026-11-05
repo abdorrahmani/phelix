@@ -85,7 +85,6 @@ type Rolling struct {
 // until the first successful membership update excludes them, then they are
 // drained and stopped at the end of the rollout.
 func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
-	defer r.Secrets.endOnReturn(r.AppName)()
 	log := r.logger()
 	// Rolling reports failures from many points; one deferred hook keeps the
 	// telemetry's terminal event identical to what Deploy actually returned.
@@ -417,11 +416,14 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 	// instance is drained. If persistence fails, switch the proxy back to the old
 	// membership and stop the candidate; only drain after a durable commit.
 	candidate := &Instance{
-		Slot: key, PID: newPID, Port: port, BinaryPath: binaryPath,
+		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
+		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath,
 		ContainerID: containerIDOf(proc),
 		StartedAt:   time.Now(), Version: targetVer, Status: "running",
 	}
 	state.Replicas[key] = candidate
+	previousStamp := state.SecretTxnID
+	r.Secrets.Stamp(state)
 	if err := r.persist(state); err != nil {
 		restoreReplica(state, key, old)
 		var compErr error
@@ -443,6 +445,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath st
 				"replica %s: state persistence failed and proxy compensation failed", key)
 		}
 		stopHeldProcess(ctx, proc, grace)
+		state.SecretTxnID = previousStamp
 		if restoreErr := r.persist(state); restoreErr != nil {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 				"replica %s: persist proxy-switched replacement failed; proxy restored but restoring old state also failed: %v", key, restoreErr)

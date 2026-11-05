@@ -2,6 +2,8 @@ package secrets
 
 import (
 	"context"
+	"github.com/shirou/gopsutil/process"
+	"strings"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
@@ -16,6 +18,7 @@ type PinnedSet struct {
 	Bindings []Binding
 	Resolved []ResolvedVersion
 	values   map[string]string
+	release  func()
 }
 
 // PinBindings resolves every binding once and freezes the result. Resolution
@@ -57,7 +60,7 @@ func PinBindings(ctx context.Context, appID string, bindings []Binding) (*Pinned
 		set.values[b.Secret] = resolved.Value
 		values = append(values, resolved.Value)
 	}
-	AcquireCoverage(appID, values)
+	set.release = phelixerr.AcquireSecretValues(values)
 	return set, nil
 }
 
@@ -73,4 +76,59 @@ func (p *PinnedSet) Overlay() []string {
 		out = append(out, b.Env+"="+p.values[b.Secret])
 	}
 	return out
+}
+
+// Close releases this operation's references after all launchers have their own.
+func (p *PinnedSet) Close() {
+	if p != nil && p.release != nil {
+		p.release()
+	}
+}
+
+// FromRuntime captures only named secret variables from an instance's environment.
+func FromRuntime(env []string, names []string) (*PinnedSet, error) {
+	set := &PinnedSet{values: map[string]string{}}
+	vars := map[string]string{}
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			vars[k] = v
+		}
+	}
+	var values []string
+	for _, name := range names {
+		value, ok := vars[name]
+		if !ok || ValidateSecretValue(value) != nil {
+			return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot read running instance credentials")
+		}
+		set.Bindings = append(set.Bindings, Binding{Secret: name, Env: name})
+		set.values[name] = value
+		values = append(values, value)
+	}
+	set.release = phelixerr.AcquireSecretValues(values)
+	return set, nil
+}
+
+// RuntimeForPID reads credentials from a still-running process before replacing it.
+func RuntimeForPID(pid int, names []string) (*PinnedSet, error) {
+	if len(names) == 0 {
+		return FromRuntime(nil, nil)
+	}
+	proc, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot inspect running credentials")
+	}
+	env, err := proc.Environ()
+	if err != nil {
+		return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot read running credentials")
+	}
+	return FromRuntime(env, names)
+}
+
+// Values returns this set's values for an output owner to register.
+func (p *PinnedSet) Values() []string {
+	values := make([]string, 0, len(p.values))
+	for _, value := range p.values {
+		values = append(values, value)
+	}
+	return values
 }

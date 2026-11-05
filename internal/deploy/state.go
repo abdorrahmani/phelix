@@ -14,7 +14,6 @@ package deploy
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -58,6 +57,7 @@ const (
 
 // Instance describes one running backend instance behind the proxy.
 type Instance struct {
+	SecretEnvs []string `json:"secret_envs,omitempty"`
 	// Slot is the blue-green slot name ("blue"/"green") or, for rolling, a
 	// replica index string ("0", "1", ...).
 	Slot string `json:"slot"`
@@ -349,21 +349,10 @@ func statePath(appName string) (string, error) {
 	return filepath.Join(home, ".phelix", "apps", appName, "deploy.json"), nil
 }
 
-// Store persists the DeployState to disk atomically (write tmp + rename).
-// While a deployment's secret window is open for this app, every write is
-// stamped with that transaction's identifier: the stamp is what lets the
-// secret store derive, after any crash, that the instances this state
-// records were launched with the candidate bindings. Outside a window the
-// field is cleared, so the journal only ever carries the stamp of the
-// transaction that was actually executing.
+// Store saves the journal and waits for both the file and directory to reach disk.
 func Store(s *DeployState) error {
 	if s == nil || s.AppName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: cannot store state without an app name")
-	}
-	if id := stampedTxnID(s.AppName); id != "" {
-		s.SecretTxnID = id
-	} else {
-		s.SecretTxnID = ""
 	}
 
 	path, err := statePath(s.AppName)
@@ -380,11 +369,30 @@ func Store(s *DeployState) error {
 		return err
 	}
 
-	tmp := filepath.Join(filepath.Dir(path), fmt.Sprintf(".deploy.tmp.%d.%d", os.Getpid(), time.Now().UnixNano()))
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".deploy-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // Load reads a DeployState for the given app. It returns an error wrapping

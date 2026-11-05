@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,6 +49,11 @@ func (m *AppManager) GenerateAppID() (string, error) {
 
 // StartApplication starts an application with the given parameters
 func (m *AppManager) StartApplication(id string, port int, name string) error {
+	return m.StartApplicationWithSecrets(id, port, name, nil)
+}
+
+// StartApplicationWithSecrets starts a process with values pinned for this deployment.
+func (m *AppManager) StartApplicationWithSecrets(id string, port int, name string, pinned *secrets.PinnedSet) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
@@ -72,7 +79,7 @@ func (m *AppManager) StartApplication(id string, port int, name string) error {
 	}
 
 	logFile := filepath.Join(logDir, fmt.Sprintf("%s.log", id))
-	if err := m.startApplicationProcess(id, name, port, logFile); err != nil {
+	if err := m.startApplicationProcessWithSecrets(id, name, port, logFile, pinned); err != nil {
 		return err
 	}
 
@@ -138,13 +145,42 @@ func (m *AppManager) RestartApplication(id string) error {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "application %s not found", id)
 	}
 
-	if err := m.stopApplicationProcess(app); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to stop application", err)
+	bindings, err := secrets.CommittedBindings(id)
+	if err != nil {
+		return err
 	}
-
+	var desired, previous *secrets.PinnedSet
+	if len(bindings) > 0 || len(app.SecretEnvs) > 0 {
+		desired, err = secrets.PinBindings(context.Background(), id, bindings)
+		if err != nil {
+			return err
+		}
+		defer desired.Close()
+		if m.isProcessRunning(app.PID) {
+			names := app.SecretEnvs
+			if names == nil {
+				for _, b := range bindings {
+					names = append(names, b.Env)
+				}
+			}
+			previous, err = secrets.RuntimeForPID(app.PID, names)
+			if err != nil {
+				return err
+			}
+			defer previous.Close()
+		}
+	}
+	if err := m.stopApplicationProcess(app); err != nil {
+		return err
+	}
 	logFile := filepath.Join(logDir, fmt.Sprintf("%s.log", id))
-	if err := m.startApplicationProcess(id, app.Name, app.Port, logFile); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to start application", err)
+	if err := m.startApplicationProcessWithSecrets(id, app.Name, app.Port, logFile, desired); err != nil {
+		if previous != nil {
+			if restoreErr := m.startApplicationProcessWithSecrets(id, app.Name, app.Port, logFile, previous); restoreErr != nil {
+				return errors.Join(err, phelixerr.Wrap(phelixerr.CodeProcessFailed, "restart and restoration both failed", restoreErr), m.SaveState())
+			}
+		}
+		return errors.Join(err, m.SaveState())
 	}
 
 	return m.SaveState()
@@ -167,6 +203,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 		}
 
 		appList = append(appList, AppListItem{
+			SecretEnvs:  app.SecretEnvs,
 			ID:          id,
 			Name:        app.Name,
 			Directory:   app.Directory,

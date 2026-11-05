@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"fmt"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,8 +58,16 @@ func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config,
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
+	closeDrain, err := logs.AttachDrain(cmd, logFile)
+	if err != nil {
+		logFile.Close()
+		return nil, processex.ProcessIdentity{}, err
+	}
+	defer closeDrain()
+	releaseSecrets := phelixerr.AcquireSecretValues(phelixerr.SecretValuesInEnv(cmd.Env))
 	inst, err := resources.Start(cmd, cfg)
 	if err != nil {
+		releaseSecrets()
 		_ = logFile.Close()
 		return nil, processex.ProcessIdentity{}, phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "worker: start replica %s", replica)
 	}
@@ -67,6 +76,7 @@ func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config,
 
 	identity, err := processex.Identity(pid)
 	if err != nil {
+		releaseSecrets()
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 		if inst != nil {
@@ -79,6 +89,7 @@ func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config,
 	errCh := make(chan struct{})
 	proc := &osProcess{cmd: cmd, pid: pid, doneCh: errCh}
 	go func() {
+		defer releaseSecrets()
 		waitErr := cmd.Wait()
 		if inst != nil {
 			oom, oomErr := inst.ResourceOOM()

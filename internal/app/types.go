@@ -32,6 +32,7 @@ type resourceTracker interface {
 
 // AppInfo represents the state of a single application
 type AppInfo struct {
+	SecretEnvs  []string
 	ID          string
 	Name        string
 	Cmd         *exec.Cmd
@@ -206,6 +207,7 @@ type AppStatus struct {
 
 // AppListItem represents a simplified view of an application for listing
 type AppListItem struct {
+	SecretEnvs  []string
 	ID          string
 	Name        string
 	Directory   string

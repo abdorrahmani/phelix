@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -98,7 +99,7 @@ func TestRollingReplacementOOMUsesExistingFailurePath(t *testing.T) {
 	// Existing recovery semantics: the OOM replacement was rejected and the
 	// complete old record keeps serving.
 	got := mustLoad(t, app).Replicas["0"]
-	if *got != *old {
+	if !reflect.DeepEqual(got, old) {
 		t.Fatalf("old record not fully restored after OOM replacement:\n got %+v\nwant %+v", got, old)
 	}
 }

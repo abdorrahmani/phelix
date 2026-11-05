@@ -2,7 +2,9 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"os"
 	"sort"
 	"strconv"
@@ -53,8 +55,9 @@ type Worker struct {
 	// Secrets carries the deployment's secret execution context. Nil means
 	// the deployment resolves committed bindings (or none) at launch as
 	// before.
-	Secrets  *SecretTxn
-	Replicas int
+	Secrets       *SecretTxn
+	SecretImports []secrets.Binding
+	Replicas      int
 	// Dir is the app project directory: the exec probe's working directory.
 	Dir string
 	// Signal and grace govern replica shutdown; DrainTimeout bounds the wait
@@ -120,7 +123,6 @@ func (w *Worker) startupTimeout() time.Duration {
 // before the error returns: the returned error always describes the fleet
 // state truthfully.
 func (w *Worker) Deploy(ctx context.Context) (errRet error) {
-	defer w.Secrets.endOnReturn(w.AppName)()
 	defer func() { reportDeployFailure(w.Telemetry, errRet) }()
 	if w.Replicas < 1 {
 		w.Replicas = 1
@@ -133,6 +135,13 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 	}
 	defer release()
 
+	if w.SecretImports != nil {
+		w.Secrets, err = BeginSecretTxn(w.AppID, w.AppName, w.Telemetry.DeploymentID(), w.SecretImports)
+		if err != nil {
+			return err
+		}
+		defer func() { errRet = errors.Join(errRet, FinishSecretTxn(w.AppID, w.Secrets, errRet)) }()
+	}
 	state, err := LoadOrInit(w.AppName, ModeWorker, 0)
 	if err != nil {
 		return wrapDeployStep(err, "load worker deploy state")
@@ -222,7 +231,7 @@ func (w *Worker) deployRolling(ctx context.Context, state *DeployState, binaryPa
 	log := w.logger()
 	for _, key := range replicaIndices(state.Replicas) {
 		old := cloneInstance(state.Replicas[key])
-		if old != nil && old.Version == targetVer && old.Status == "running" && WorkerInstanceAlive(old) {
+		if old != nil && w.Secrets == nil && old.Version == targetVer && old.Status == "running" && WorkerInstanceAlive(old) {
 			log.Stepf("replica %s already runs v%d; skipping", key, targetVer)
 			continue
 		}
@@ -246,7 +255,7 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 	inst.BinaryPath = binaryPath
 	inst.EnvPath = envPath
 	inst.Version = targetVer
-	proc, err := LaunchWorkerReplica(w.AppName, state, key)
+	proc, err := launchWorkerReplica(w.AppName, state, key, w.Secrets)
 	if err != nil {
 		restoreReplica(state, key, old)
 		_ = Store(state)
@@ -265,7 +274,14 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 	}
 	inst.Status = "running"
 	inst.ReadyAt = time.Now()
-	_ = Store(state)
+	oldStamp := state.SecretTxnID
+	w.Secrets.Stamp(state)
+	if err := Store(state); err != nil {
+		_, _, _ = GracefulStopWorker(inst, w.signal(), w.grace(), proc)
+		restoreReplica(state, key, old)
+		state.SecretTxnID = oldStamp
+		return err
+	}
 	w.Telemetry.ReplicaHealthy(index, inst.PID, 0)
 
 	if old != nil {
@@ -321,7 +337,7 @@ func (w *Worker) deployClassic(ctx context.Context, state *DeployState, binaryPa
 		inst.BinaryPath = binaryPath
 		inst.EnvPath = envPath
 		inst.Version = targetVer
-		proc, err := LaunchWorkerReplica(w.AppName, state, key)
+		proc, err := launchWorkerReplica(w.AppName, state, key, w.Secrets)
 		if err != nil {
 			return wrapDeployStep(err, "launch worker replica "+key)
 		}
@@ -338,7 +354,10 @@ func (w *Worker) deployClassic(ctx context.Context, state *DeployState, binaryPa
 		inst.Status = "running"
 		inst.ReadyAt = time.Now()
 		journal.UpdatedAt = time.Now()
-		_ = Store(state)
+		w.Secrets.Stamp(state)
+		if err := Store(state); err != nil {
+			return err
+		}
 		w.Telemetry.ReplicaHealthy(index, inst.PID, 0)
 	}
 	return nil
@@ -454,6 +473,7 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 		log.Stepf("replica %s reverted to v%d", key, fromVer)
 	}
 	journal.Status = WorkerRolloutDone
+	state.SecretTxnID = ""
 	journal.Reason = "reverted to the previous versions after a failed deploy"
 	journal.ReplacedFrom = nil
 	journal.UpdatedAt = time.Now()

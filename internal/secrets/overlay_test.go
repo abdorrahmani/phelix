@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,33 +70,20 @@ func TestOverlayValuesAreMasked(t *testing.T) {
 	}
 }
 
-func TestCoverageRetainsBoundedHistory(t *testing.T) {
+func TestCoverageRetainsOwnedLiveValue(t *testing.T) {
 	testEnv(t)
-	releases := make([]string, 0, overlayGenerations+1)
-	for gen := 0; gen < overlayGenerations+1; gen++ {
-		value := "generation-value-" + string(rune('a'+gen))
-		releases = append(releases, value)
-		if _, err := Set(testAppID, "gen", value); err != nil {
-			t.Fatalf("set: %v", err)
-		}
-		bindings := []Binding{{Secret: "gen", Env: "GEN"}}
-		if _, err := OverlayForLaunch(context.Background(), testAppID, bindings); err != nil {
-			t.Fatalf("overlay: %v", err)
-		}
+	old := "live-old-credential"
+	release := phelixerr.AcquireSecretValues([]string{old})
+	for i := 0; i < 100; i++ {
+		AcquireCoverage(testAppID, []string{fmt.Sprintf("rotation-%d", i)})
 	}
-	oldest := releases[0]
-	rendered := phelixerr.Redact("log with " + oldest)
-	if !strings.Contains(rendered, oldest) {
-		t.Fatalf("after %d further generations the oldest value must be released: %q", overlayGenerations, rendered)
+	if strings.Contains(phelixerr.Redact(old), old) {
+		t.Fatal("live instance lost coverage")
 	}
-	current := releases[len(releases)-1]
-	rendered = phelixerr.Redact("log with " + current)
-	if strings.Contains(rendered, current) {
-		t.Fatalf("the current generation must stay masked: %q", rendered)
-	}
+	release()
 	ReleaseCoverage(testAppID)
-	if got := phelixerr.Redact("log with " + current); !strings.Contains(got, current) {
-		t.Fatalf("release must unmask everything for the app: %q", got)
+	if phelixerr.Redact(old) != old {
+		t.Fatal("released instance retained coverage")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"net"
 	"os"
 	"os/exec"
@@ -152,8 +153,16 @@ func launchInstance(_ context.Context, binaryPath string, env []string, cfg reso
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
+	closeDrain, err := logs.AttachDrain(cmd, logFile)
+	if err != nil {
+		logFile.Close()
+		return nil, 0, err
+	}
+	defer closeDrain()
+	releaseSecrets := phelixerr.AcquireSecretValues(phelixerr.SecretValuesInEnv(cmd.Env))
 	inst, err := resources.Start(cmd, cfg)
 	if err != nil {
+		releaseSecrets()
 		_ = logFile.Close()
 		return nil, 0, phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "deploy: start instance")
 	}
@@ -163,6 +172,7 @@ func launchInstance(_ context.Context, binaryPath string, env []string, cfg reso
 	errCh := make(chan struct{})
 	proc := &osProcess{cmd: cmd, pid: pid, doneCh: errCh}
 	go func() {
+		defer releaseSecrets()
 		waitErr := cmd.Wait()
 		// classify a cgroup memory OOM kill before releasing the
 		// cleanup lease (the watcher keeps the cgroup observable until here),

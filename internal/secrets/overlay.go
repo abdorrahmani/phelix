@@ -3,72 +3,46 @@ package secrets
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/abdorrahmani/phelix/internal/appid"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
-// overlayGenerations is how many recent launch generations an application
-// keeps masked at once. The current generation is the one the running
-// instances received; the retained previous ones cover instances that are
-// being replaced and log output that is still draining. Keeping a bounded
-// history is deliberately conservative: a value is dropped only after two
-// further full launches, by which time the instances that held it have
-// certainly ended and their logs drained. When in doubt the registry
-// over-retains, because under-retention would silently break the masking
-// guarantee while over-retention only costs a little memory.
-const overlayGenerations = 3
-
-// coverage tracks, per application, the sets of secret values that recent
-// launches resolved. Everything in it is registered with the redaction
-// layer; releasing an application or aging out a generation unregisters
-// exactly the values that set holds.
-type coverage struct {
+var appCoverage = struct {
 	mu   sync.Mutex
-	apps map[string][][]string
-}
+	apps map[string][]string
+}{apps: map[string][]string{}}
 
-var appCoverage = &coverage{apps: map[string][][]string{}}
-
-// AcquireCoverage registers a launch's resolved values for an application.
-// Repeated launches with the same values are safe: registration is
-// reference-counted underneath.
+// AcquireCoverage replaces app coverage only after registering every incoming value.
 func AcquireCoverage(appID string, values []string) {
-	if len(values) == 0 {
-		return
-	}
 	appCoverage.mu.Lock()
 	defer appCoverage.mu.Unlock()
-	sets := appCoverage.apps[appID]
-	for _, v := range values {
-		phelixerr.RegisterSecretValue(v)
-	}
-	sets = append(sets, values)
-	for len(sets) > overlayGenerations {
-		oldest := sets[0]
-		sets = sets[1:]
-		for _, v := range oldest {
-			phelixerr.UnregisterSecretValue(v)
+	unique := make(map[string]bool, len(values))
+	for _, value := range values {
+		if value != "" {
+			unique[value] = true
 		}
 	}
-	appCoverage.apps[appID] = sets
+	next := make([]string, 0, len(unique))
+	for value := range unique {
+		phelixerr.RegisterSecretValue(value)
+		next = append(next, value)
+	}
+	for _, value := range appCoverage.apps[appID] {
+		phelixerr.UnregisterSecretValue(value)
+	}
+	if len(next) == 0 {
+		delete(appCoverage.apps, appID)
+	} else {
+		appCoverage.apps[appID] = next
+	}
 }
 
-// ReleaseCoverage unregisters every value the application has resolved and
-// forgets its history. The monitor calls it once an application has fully
-// stopped and its log streams have drained; nothing that could still emit
-// the values is running at that point.
+// ReleaseCoverage releases app coverage after its instances and log drains are gone.
 func ReleaseCoverage(appID string) {
-	appCoverage.mu.Lock()
-	defer appCoverage.mu.Unlock()
-	sets := appCoverage.apps[appID]
-	delete(appCoverage.apps, appID)
-	for _, set := range sets {
-		for _, v := range set {
-			phelixerr.UnregisterSecretValue(v)
-		}
-	}
+	AcquireCoverage(appID, nil)
 }
 
 // RegisterResolvedValue masks a single value in the current process. The CLI
@@ -104,6 +78,7 @@ func CommittedBindings(appID string) ([]Binding, error) {
 func ClassicEnvOverlay(ctx context.Context, appID string) ([]string, error) {
 	bindings, err := CommittedBindings(appID)
 	if err != nil {
+		MarkDegraded(appID, "cannot read secret bindings")
 		return nil, err
 	}
 	return OverlayForLaunch(ctx, appID, bindings)
@@ -117,6 +92,9 @@ func ClassicEnvOverlay(ctx context.Context, appID string) ([]string, error) {
 // lifetime. Success marks the application healthy; failure marks it
 // degraded, which halts its log transmission until it resolves again.
 func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]string, error) {
+	if err := validateBindings(bindings); err != nil {
+		return nil, err
+	}
 	if len(bindings) == 0 {
 		MarkHealthy(appID)
 		return nil, nil
@@ -137,59 +115,26 @@ func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]
 	return overlay, nil
 }
 
-// mergeByKey merges an overlay over a base environment by variable name: an
-// overlay entry replaces the base entry of the same name, every other base
-// entry is kept, and each name appears exactly once in the result. This is
-// what makes an old snapshot with a stale copy of a managed name safe: the
-// managed value always wins and is never duplicated.
-func mergeByKey(base, overlay []string) []string {
+// MergeEnv applies the overlay and preserves the last value of each variable.
+func MergeEnv(base, overlay []string) []string {
 	if len(overlay) == 0 {
 		return base
 	}
-	keys := make(map[string]string, len(overlay))
-	for _, kv := range overlay {
-		if k, _, ok := splitEnv(kv); ok {
-			keys[k] = kv
+	all := append(append([]string(nil), base...), overlay...)
+	last := make(map[string]int, len(all))
+	for i, kv := range all {
+		if key, _, ok := strings.Cut(kv, "="); ok {
+			last[key] = i
 		}
 	}
-	seen := make(map[string]bool, len(base)+len(overlay))
-	out := make([]string, 0, len(base)+len(overlay))
-	for _, kv := range base {
-		k, _, ok := splitEnv(kv)
-		if ok && keys[k] != "" {
+	out := make([]string, 0, len(all))
+	for i, kv := range all {
+		if key, _, ok := strings.Cut(kv, "="); ok && last[key] != i {
 			continue
-		}
-		if ok {
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-		}
-		out = append(out, kv)
-	}
-	for _, kv := range overlay {
-		k, _, ok := splitEnv(kv)
-		if ok && seen[k] {
-			continue
-		}
-		if ok {
-			seen[k] = true
 		}
 		out = append(out, kv)
 	}
 	return out
-}
-
-// splitEnv splits a KEY=value string. It reports false for strings without
-// the separator so malformed entries are passed through untouched rather
-// than silently dropped.
-func splitEnv(kv string) (key, value string, ok bool) {
-	for i := 0; i < len(kv); i++ {
-		if kv[i] == '=' {
-			return kv[:i], kv[i+1:], true
-		}
-	}
-	return "", "", false
 }
 
 // sortBindings gives bindings a stable order for display and for the durable

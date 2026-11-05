@@ -1,6 +1,7 @@
 package logs
 
 import (
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"io"
 	"os"
 	"strings"
@@ -23,11 +24,13 @@ import (
 // Lines are written under a shared mutex so stdout and stderr writes from two
 // goroutines never interleave mid-line.
 type AppLogWriter struct {
-	mu     sync.Mutex
-	dst    io.Writer
-	stream LogStream
-	level  LogLevel
-	buf    []byte
+	mu      sync.Mutex
+	dst     io.Writer
+	stream  LogStream
+	level   LogLevel
+	buf     []byte
+	discard bool
+	err     error
 }
 
 // NewAppLogWriter wraps dst (the app log file) for a single output stream.
@@ -63,36 +66,54 @@ func (w *AppLogWriter) Write(p []byte) (int, error) {
 	defer w.mu.Unlock()
 
 	remaining := p
-	for {
+	for len(remaining) > 0 {
 		i := strings.IndexByte(string(remaining), '\n')
+		end := i
+		if end < 0 {
+			end = len(remaining)
+		}
+		if len(w.buf)+end > 1<<20 {
+			w.buf = nil
+			w.discard = true
+		}
+		if !w.discard {
+			w.buf = append(w.buf, remaining[:end]...)
+		}
 		if i < 0 {
-			w.buf = append(w.buf, remaining...)
 			break
 		}
-		line := append(w.buf, remaining[:i]...)
+		if w.discard {
+			w.emitLocked("[line omitted: exceeds log size limit]")
+		} else {
+			w.emitLocked(string(w.buf))
+		}
 		w.buf = w.buf[:0]
-		w.emitLocked(string(line))
+		w.discard = false
 		remaining = remaining[i+1:]
 	}
-	return len(p), nil
+	return len(p), w.err
 }
 
 // Close emits any buffered partial line and returns.
 func (w *AppLogWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.discard {
+		w.emitLocked("[line omitted: exceeds log size limit]")
+		w.discard = false
+	}
 	if len(w.buf) > 0 {
 		w.emitLocked(string(w.buf))
 		w.buf = w.buf[:0]
 	}
-	return nil
+	return w.err
 }
 
 // emitLocked writes one prefixed line to the destination writer. Callers must
 // hold w.mu.
 func (w *AppLogWriter) emitLocked(line string) {
-	msg := strings.TrimSuffix(strings.ReplaceAll(line, "\r", ""), "\n")
+	msg := strings.TrimSuffix(strings.ReplaceAll(phelixerr.Redact(line), "\r", ""), "\n")
 
 	ts := time.Now().Format(timeLayout)
-	_, _ = io.WriteString(w.dst, ts+" ["+string(w.level)+"] ["+string(w.stream)+"] "+msg+"\n")
+	_, w.err = io.WriteString(w.dst, ts+" ["+string(w.level)+"] ["+string(w.stream)+"] "+msg+"\n")
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"sync"
 
 	"github.com/abdorrahmani/phelix/internal/appid"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -18,41 +17,10 @@ import (
 // so that after any crash the store can derive its outcome from the journal
 // instead of deciding on its own.
 type SecretTxn struct {
+	AppName      string
 	ID           string
 	DeploymentID string
 	Set          *secrets.PinnedSet
-}
-
-// activeSecretTxns maps an application name to the transaction identifier
-// whose window is open in this process. A window is open exactly while a
-// deployment is executing, which the deploy lock guarantees cannot overlap
-// with another mutation of the application. Store consults it so every
-// durable write inside the window carries the stamp.
-var activeSecretTxns = struct {
-	mu sync.Mutex
-	m  map[string]string
-}{m: map[string]string{}}
-
-// beginSecretTxnWindow opens the stamping window for an application.
-func beginSecretTxnWindow(appName, txnID string) {
-	activeSecretTxns.mu.Lock()
-	defer activeSecretTxns.mu.Unlock()
-	activeSecretTxns.m[appName] = txnID
-}
-
-// endSecretTxnWindow closes the stamping window. Later writes, including a
-// recovery's, are never stamped with the ended transaction.
-func endSecretTxnWindow(appName string) {
-	activeSecretTxns.mu.Lock()
-	defer activeSecretTxns.mu.Unlock()
-	delete(activeSecretTxns.m, appName)
-}
-
-// stampedTxnID returns the identifier to stamp into a state write, or "".
-func stampedTxnID(appName string) string {
-	activeSecretTxns.mu.Lock()
-	defer activeSecretTxns.mu.Unlock()
-	return activeSecretTxns.m[appName]
 }
 
 // BeginSecretTxn pins the candidate bindings and records the write-ahead
@@ -63,7 +31,11 @@ func BeginSecretTxn(appID, appName, deploymentID string, imports []secrets.Bindi
 	if appID == "" || !appid.Valid(appID) {
 		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "deploy: cannot open a secret transaction for app %q", appName)
 	}
+	if _, err := ReconcileSecretTxn(appName, appID); err != nil {
+		return nil, err
+	}
 	txn := &SecretTxn{
+		AppName:      appName,
 		ID:           secrets.NewTxnID(),
 		DeploymentID: deploymentID,
 	}
@@ -79,6 +51,7 @@ func BeginSecretTxn(appID, appName, deploymentID string, imports []secrets.Bindi
 		Resolved:     set.Resolved,
 	}
 	if err := secrets.BeginTxn(appID, pending); err != nil {
+		set.Close()
 		return nil, err
 	}
 	return txn, nil
@@ -95,28 +68,22 @@ func (t *SecretTxn) OverlayFor(envPath string) ([]string, error) {
 	return mergeByKey(base, t.Set.Overlay()), nil
 }
 
-// endOnReturn opens the stamping window and returns the closer for a defer.
-// Without a transaction it is a no-op.
-func (t *SecretTxn) endOnReturn(appName string) func() {
-	if t == nil {
-		return func() {}
+// Stamp marks a state that accepts instances using this deployment's values.
+func (t *SecretTxn) Stamp(state *DeployState) {
+	state.SecretTxnID = ""
+	if t != nil {
+		state.SecretTxnID = t.ID
 	}
-	beginSecretTxnWindow(appName, t.ID)
-	return func() { endSecretTxnWindow(appName) }
 }
 
-// FinishSecretTxn settles the transaction after the deployment returned.
-// Success commits the candidate bindings; failure discards them. This runs
-// after the engine's final durable write either way, and before any recovery
-// the caller performs, so a rollback's journal writes are never stamped.
+// FinishSecretTxn settles bindings using the journal, including partial acceptance.
 func FinishSecretTxn(appID string, txn *SecretTxn, deployErr error) error {
 	if txn == nil {
 		return nil
 	}
-	if deployErr != nil {
-		return secrets.DiscardTxn(appID)
-	}
-	return secrets.CommitTxn(appID)
+	defer txn.Set.Close()
+	_, err := ReconcileSecretTxn(txn.AppName, appID)
+	return err
 }
 
 // SecretTxnOutcome describes what the reconciliation decided.

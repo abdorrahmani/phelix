@@ -88,8 +88,15 @@ func (r *secretRegistry) rebuildLocked() {
 		r.matcher.Store(valueRedactor(nil))
 		return
 	}
-	values := make([]string, 0, len(r.refs))
+	unique := make(map[string]bool)
 	for v := range r.refs {
+		unique[v] = true
+		for _, line := range strings.FieldsFunc(v, func(r rune) bool { return r == '\n' || r == '\r' }) {
+			unique[line] = true
+		}
+	}
+	values := make([]string, 0, len(unique))
+	for v := range unique {
 		values = append(values, v)
 	}
 	sort.Slice(values, func(i, j int) bool {
@@ -116,8 +123,15 @@ func (r *secretRegistry) rebuildLocked() {
 // under the registry lock and copies the values, so the returned closure
 // never races with later changes.
 func (r *secretRegistry) replaceLoopLocked() func(string) string {
-	values := make([]string, 0, len(r.refs))
+	unique := make(map[string]bool)
 	for v := range r.refs {
+		unique[v] = true
+		for _, line := range strings.FieldsFunc(v, func(r rune) bool { return r == '\n' || r == '\r' }) {
+			unique[line] = true
+		}
+	}
+	values := make([]string, 0, len(unique))
+	for v := range unique {
 		values = append(values, v)
 	}
 	return func(s string) string {
@@ -137,4 +151,46 @@ func applyRegisteredValues(s string) string {
 		return s
 	}
 	return m(s)
+}
+
+// SecretValuesInEnv returns registered values received by this instance.
+func SecretValuesInEnv(env []string) []string {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	var values []string
+	seen := map[string]bool{}
+	for _, kv := range env {
+		_, value, ok := strings.Cut(kv, "=")
+		if ok && registry.refs[value] > 0 && !seen[value] {
+			values = append(values, value)
+			seen[value] = true
+		}
+	}
+	return values
+}
+
+// AcquireSecretValues holds values until the owner calls the returned release function.
+func AcquireSecretValues(values []string) func() {
+	for _, value := range values {
+		RegisterSecretValue(value)
+	}
+	return sync.OnceFunc(func() {
+		for _, value := range values {
+			UnregisterSecretValue(value)
+		}
+	})
+}
+
+// SecretEnvNames records which variables need masking when an instance is adopted.
+func SecretEnvNames(env []string) []string {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	var names []string
+	for _, kv := range env {
+		key, value, ok := strings.Cut(kv, "=")
+		if ok && registry.refs[value] > 0 {
+			names = append(names, key)
+		}
+	}
+	return names
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/ops"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/fatih/color"
 )
 
@@ -137,7 +138,19 @@ func buildWorkerEngine(appInfo *app.AppInfo, name string, cfg *project.Config, s
 		rollingCfg = cfg.Deploy.Rolling
 	}
 	rs := rollingCfg.Resolve()
+	var imports []secrets.Binding
+	bound, err := secrets.CommittedBindings(appInfo.ID)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Secrets != nil || len(bound) > 0 {
+		imports = []secrets.Binding{}
+		if cfg.Secrets != nil {
+			imports = append(imports, cfg.Secrets.Imports...)
+		}
+	}
 	return &deploy.Worker{
+		SecretImports:  imports,
 		AppName:        name,
 		AppID:          appInfo.ID,
 		Source:         src,

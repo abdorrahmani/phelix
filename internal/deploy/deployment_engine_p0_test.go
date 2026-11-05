@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -86,7 +87,7 @@ func TestRollingRestoresCompleteOldRecordOnHealthFailure(t *testing.T) {
 		t.Fatalf("want HEALTH_CHECK_FAILED, got %v / %s", err, phelixerr.CodeOf(err))
 	}
 	got := mustLoad(t, app).Replicas["0"]
-	if *got != *old {
+	if !reflect.DeepEqual(got, old) {
 		t.Fatalf("old record not fully restored:\n got %+v\nwant %+v", got, old)
 	}
 }

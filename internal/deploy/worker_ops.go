@@ -37,6 +37,10 @@ var workerLauncherFactory = WorkerLauncherForApp
 // moves it to running once the startup gate passes. Restart accounting is the
 // caller's decision, not the launcher's.
 func LaunchWorkerReplica(appName string, state *DeployState, slot string) (Process, error) {
+	return launchWorkerReplica(appName, state, slot, nil)
+}
+
+func launchWorkerReplica(appName string, state *DeployState, slot string, txn *SecretTxn) (Process, error) {
 	inst := state.Replicas[slot]
 	if inst == nil {
 		inst = &Instance{Slot: slot}
@@ -45,7 +49,7 @@ func LaunchWorkerReplica(appName string, state *DeployState, slot string) (Proce
 	if inst.BinaryPath == "" {
 		return nil, phelixerr.Newf(phelixerr.CodeConfiguration, "worker: replica %s has no binary recorded (deploy first)", slot)
 	}
-	env, err := EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
+	env, err := launchOverlay(inst.EnvPath, state.AppID, txn)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +57,7 @@ func LaunchWorkerReplica(appName string, state *DeployState, slot string) (Proce
 	if err != nil {
 		return nil, err
 	}
+	inst.SecretEnvs = phelixerr.SecretEnvNames(env)
 	MarkWorkerLaunched(state, slot, id)
 	return proc, nil
 }

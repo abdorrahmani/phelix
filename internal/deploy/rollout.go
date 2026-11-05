@@ -223,7 +223,6 @@ type Rollout struct {
 
 // Deploy performs one canary/progressive rollout.
 func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
-	defer ro.Secrets.endOnReturn(ro.AppName)()
 	log := ro.logger()
 	grace := ro.GracePeriod
 	if grace <= 0 {
@@ -375,6 +374,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "rollout: start canary instance"))
 	}
 	canaryInst := &Instance{
+		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
 		Slot:       canarySlot,
 		PID:        proc.PID(),
 		Port:       port,
@@ -445,6 +445,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	// the operator aborts the rollout (Ctrl-C) the restore switch and the
 	// drain must still complete instead of inheriting the cancellation.
 	switched := false
+	oldStamp := state.SecretTxnID
 	abort := func(reason error, status string, keepCanary bool) error {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultRolloutVerifyTimeout+grace)
 		defer cancel()
@@ -458,6 +459,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 			}
 		}
 		if !keepCanary {
+			state.SecretTxnID = oldStamp
 			stopHeldProcess(cleanupCtx, proc, grace)
 			if ci := state.Slots[canarySlot]; ci != nil {
 				ci.Status = "failed"
@@ -530,6 +532,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		// still points recovery at the right traffic share.
 		state.Canary.Step = i
 		state.Canary.TrafficPercent = step.TrafficPercent
+		ro.Secrets.Stamp(state)
 		state.Canary.UpdatedAt = time.Now()
 		if err := ro.persist(state); err != nil {
 			return abort(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
@@ -587,6 +590,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	state.ActiveSlot = canarySlot
 	state.ActiveVersion = targetVer
 	state.Canary.Status = CanaryPromoted
+	ro.Secrets.Stamp(state)
 	state.Canary.UpdatedAt = time.Now()
 	if err := ro.persist(state); err != nil {
 		// Compensate: traffic back on stable, canary stopped, pre-promotion
@@ -607,6 +611,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		canaryInst.Status = "failed"
 		canaryInst.PID = 0
 		state.Canary.Status = CanaryFailed
+		state.SecretTxnID = oldStamp
 		ro.storeState(state)
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 			"rollout: persist promotion failed; traffic restored to stable"))
@@ -626,6 +631,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 				canaryInst.Status = "failed"
 				canaryInst.PID = 0
 				state.Canary.Status = CanaryFailed
+				state.SecretTxnID = oldStamp
 				if persistErr := ro.persist(state); persistErr != nil {
 					return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 						"rollout: promote failed; traffic restored but state restore failed: %v", persistErr))

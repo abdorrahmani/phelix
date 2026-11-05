@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -63,11 +64,11 @@ func AcquireDeployLock(appName, operation string) (release func(), err error) {
 	h.writeHolder(lock)
 	mirrorOpLock(appName, &lock)
 
-	release = func() {
+	release = sync.OnceFunc(func() {
 		mirrorOpLock(appName, nil)
 		_ = unlockFile(h.f)
 		_ = h.f.Close()
-	}
+	})
 	return release, nil
 }
 

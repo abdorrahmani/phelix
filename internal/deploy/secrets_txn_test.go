@@ -28,29 +28,34 @@ func seedSecret(t *testing.T, name, value string) {
 	}
 }
 
-func TestStoreStampingFollowsTheWindow(t *testing.T) {
+func TestStorePreservesOnlyExplicitAcceptanceStamp(t *testing.T) {
 	txnTestEnv(t)
-	state := &DeployState{AppName: "stamp-app", AppID: txnTestAppID, Mode: ModeRolling, PublicPort: 8080}
+	state := &DeployState{AppName: "stamp-app", AppID: txnTestAppID, Mode: ModeRolling}
 	if err := Store(state); err != nil {
-		t.Fatalf("store: %v", err)
+		t.Fatal(err)
 	}
-	if mustLoad(t, "stamp-app").SecretTxnID != "" {
-		t.Fatal("no window open must leave the journal unstamped")
+	if mustLoad(t, state.AppName).SecretTxnID != "" {
+		t.Fatal("preparation stamped")
 	}
 	txn := &SecretTxn{ID: secrets.NewTxnID()}
-	end := txn.endOnReturn("stamp-app")
+	txn.Stamp(state)
 	if err := Store(state); err != nil {
-		t.Fatalf("store: %v", err)
+		t.Fatal(err)
 	}
-	end()
-	if got := mustLoad(t, "stamp-app").SecretTxnID; got != txn.ID {
-		t.Fatalf("stamped id = %q, want %q", got, txn.ID)
+	release, err := AcquireDeployLock(state.AppName, "test")
+	if err != nil {
+		t.Fatal(err)
 	}
+	release()
+	if mustLoad(t, state.AppName).SecretTxnID != txn.ID {
+		t.Fatal("lock erased acceptance evidence")
+	}
+	(*SecretTxn)(nil).Stamp(state)
 	if err := Store(state); err != nil {
-		t.Fatalf("store: %v", err)
+		t.Fatal(err)
 	}
-	if got := mustLoad(t, "stamp-app").SecretTxnID; got != "" {
-		t.Fatalf("after the window closed the journal must be unstamped, got %q", got)
+	if mustLoad(t, state.AppName).SecretTxnID != "" {
+		t.Fatal("ordinary acceptance retained stamp")
 	}
 }
 
@@ -103,6 +108,9 @@ func TestFinishSecretTxnCommitAndDiscard(t *testing.T) {
 		txn, err := BeginSecretTxn(txnTestAppID, "finish-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}})
 		if err != nil {
 			t.Fatalf("begin: %v", err)
+		}
+		if err := Store(&DeployState{AppName: "finish-app", AppID: txnTestAppID, SecretTxnID: txn.ID}); err != nil {
+			t.Fatal(err)
 		}
 		if err := FinishSecretTxn(txnTestAppID, txn, nil); err != nil {
 			t.Fatalf("finish: %v", err)
@@ -168,11 +176,9 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		beginSecretTxnWindow("reconcile-app", txn.ID)
-		if err := Store(&DeployState{AppName: "reconcile-app", AppID: txnTestAppID, Mode: ModeRolling}); err != nil {
+		if err := Store(&DeployState{AppName: "reconcile-app", AppID: txnTestAppID, Mode: ModeRolling, SecretTxnID: txn.ID}); err != nil {
 			t.Fatalf("store: %v", err)
 		}
-		endSecretTxnWindow("reconcile-app")
 		outcome, err := ReconcileSecretTxn("reconcile-app", txnTestAppID)
 		if err != nil || outcome != SecretTxnCommitted {
 			t.Fatalf("outcome=%v err=%v", outcome, err)

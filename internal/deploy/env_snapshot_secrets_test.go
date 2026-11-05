@@ -168,7 +168,7 @@ func TestMergeByKeyUnit(t *testing.T) {
 			name:    "deduplicates repeated base keys",
 			base:    []string{"A=1", "A=2", "B=3"},
 			overlay: []string{"C=4"},
-			want:    []string{"A=1", "B=3", "C=4"},
+			want:    []string{"A=2", "B=3", "C=4"},
 		},
 		{
 			name:    "malformed entries pass through",

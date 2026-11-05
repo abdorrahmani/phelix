@@ -90,14 +90,13 @@ func runMonitor() error {
 		}
 		return runDeployAwareStart(info)
 	}
+	startupSecretsRuntime()
 	restoreDeployedApps()
 
 	if _, err := app.Manager.RestoreAutoStartApps(); err != nil {
 
 		logs.Warning("monitor", "app restore had errors: %v", err)
 	}
-
-	startupSecretsRuntime()
 
 	if err := server.Initialize(); err != nil {
 		return err
@@ -157,6 +156,20 @@ func runMonitor() error {
 	}
 
 	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				for _, info := range app.Manager.ListApplications() {
+					_ = deploy.RefreshSecretCoverage(info)
+				}
+			}
+		}
+	}()
 
 	appTargets := func() []logs.AppLogTarget {
 		var targets []logs.AppLogTarget

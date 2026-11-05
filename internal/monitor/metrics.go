@@ -166,6 +166,9 @@ func (c *appMetricsCollector) CollectAppLogs() ([]logs.LogEntry, error) {
 		if !a.Watching {
 			continue
 		}
+		if err := deploy.RefreshSecretCoverage(a); err != nil {
+			continue
+		}
 		if state, _ := secrets.SecurityOf(a.ID); state == secrets.SecurityDegraded {
 			continue
 		}

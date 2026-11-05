@@ -1,7 +1,12 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"github.com/abdorrahmani/phelix/internal/deploy"
+	"github.com/abdorrahmani/phelix/internal/secrets"
+	"os"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -52,6 +57,58 @@ func init() {
 // Every secrets command that needs to bring new values into a running
 // application uses the same helper, so restart behavior never diverges.
 func restartAppInfo(appInfo *app.AppInfo) error {
+	bindings, err := secrets.CommittedBindings(appInfo.ID)
+	if err != nil {
+		return err
+	}
+	if len(bindings) == 0 && len(appInfo.SecretEnvs) == 0 {
+		return restartAppInfoLegacy(appInfo)
+	}
+	release, err := deploy.AcquireDeployLock(appInfo.Name, "restart")
+	if err != nil {
+		return err
+	}
+	defer release()
+	return restartAppInfoLocked(appInfo)
+}
+
+// restartAppInfoLocked shares secret restart behavior with set and apply.
+func restartAppInfoLocked(appInfo *app.AppInfo) error {
+	state, err := deploy.Load(appInfo.Name)
+	if err == nil && state.Mode != "classic" {
+		bindings, err := secrets.CommittedBindings(appInfo.ID)
+		if err != nil {
+			return err
+		}
+		desired, err := secrets.PinBindings(context.Background(), appInfo.ID, bindings)
+		if err != nil {
+			return err
+		}
+		defer desired.Close()
+		var worker *deploy.Worker
+		if state.Mode == deploy.ModeWorker {
+			cfg, err := loadProjectConfigFrom(appInfo.Directory)
+			if err != nil {
+				return err
+			}
+			worker, err = buildWorkerEngine(appInfo, appInfo.Name, cfg, nil, len(state.Replicas), "", nil, &colorLogger{})
+			if err != nil {
+				return err
+			}
+		}
+		if err := deploy.RestartSecretInstances(context.Background(), state, desired, worker, restartReplica); err != nil {
+			return err
+		}
+		reconcileAppWithDeploy(appInfo.Name)
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return app.Manager.RestartApplication(appInfo.ID)
+}
+
+func restartAppInfoLegacy(appInfo *app.AppInfo) error {
 	if wstate, werr := workerAppState(appInfo.Name); werr == nil && wstate != nil {
 		fmt.Printf("• Restarting worker '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
 		if err := runWorkerRestart(appInfo, restartReplica); err != nil {

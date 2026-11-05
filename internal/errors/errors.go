@@ -48,6 +48,9 @@ func Wrap(code Code, message string, err error) error {
 	if err == nil {
 		return nil
 	}
+	if inner := CodeOf(err); inner == CodeSecretNotFound || inner == CodeEncryption {
+		code = inner
+	}
 	return &Error{Code: code, Message: message, Err: err}
 }
 
@@ -55,6 +58,9 @@ func Wrap(code Code, message string, err error) error {
 func Wrapf(code Code, err error, format string, args ...any) error {
 	if err == nil {
 		return nil
+	}
+	if inner := CodeOf(err); inner == CodeSecretNotFound || inner == CodeEncryption {
+		code = inner
 	}
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...), Err: err}
 }

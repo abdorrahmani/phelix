@@ -83,6 +83,9 @@ var sensitiveFieldKeys = []string{
 // remaining field value.
 func (r LogRecord) sanitized() LogRecord {
 	out := r
+	for _, field := range []*string{&out.TS, &out.Source, &out.App, &out.AppID, &out.Component, &out.Version, &out.DeployID, &out.RequestID, &out.Replica} {
+		*field = capMsg(phelixerr.Redact(*field))
+	}
 	out.Msg = capMsg(phelixerr.Redact(r.Msg))
 	if len(r.Fields) > 0 {
 		fields := make(map[string]string, len(r.Fields))
@@ -90,7 +93,7 @@ func (r LogRecord) sanitized() LogRecord {
 			if sensitiveFieldKey(k) {
 				continue
 			}
-			fields[k] = capMsg(phelixerr.Redact(v))
+			fields[phelixerr.Redact(k)] = capMsg(phelixerr.Redact(v))
 		}
 		out.Fields = fields
 	}
