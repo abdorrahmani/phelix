@@ -1,6 +1,9 @@
 package app
 
 import (
+	"context"
+	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -9,6 +12,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -47,6 +51,56 @@ func TestLoadStatePreservesLiveOutputOwnership(t *testing.T) {
 	}
 	if !resource.closed || phelixerr.Redact(value) != value {
 		t.Fatal("stopped process retained resources or credential references")
+	}
+}
+
+func TestClassicAcceptanceFailureRestoresPreviousCredentials(t *testing.T) {
+	isolateStateFile(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	const id = "0f0e1d2c-3b4a-4958-8677-8899aabbccdd"
+	m := &AppManager{Apps: map[string]*AppInfo{}}
+	writeFixtureApp(t, m, id, true)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	if _, err := secrets.Set(id, "db", "old-classic-value"); err != nil {
+		t.Fatal(err)
+	}
+	bindings := []secrets.Binding{{Secret: "db", Env: "DB"}}
+	if err := secrets.ReplaceBindings(id, bindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StartApplication(id, port, id); err != nil {
+		t.Fatal(err)
+	}
+	defer m.StopApplication(id)
+	if _, err := secrets.Set(id, "db", "new-classic-value"); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := secrets.PinBindings(context.Background(), id, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	failure := errors.New("acceptance write failed")
+	err = m.RestartApplicationWithSecrets(id, pinned, func() error { return failure })
+	if !errors.Is(err, failure) {
+		t.Fatal("restart hid journal failure", err)
+	}
+	runtime, err := secrets.RuntimeForPID(m.Apps[id].PID, []string{"DB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if runtime.Overlay()[0] != "DB=old-classic-value" {
+		t.Fatal("failed acceptance changed runtime credentials")
 	}
 }
 

@@ -136,6 +136,11 @@ func releaseAppSecretCoverage(appID string) {
 
 // RestartApplication restarts an application by its ID
 func (m *AppManager) RestartApplication(id string) error {
+	return m.RestartApplicationWithSecrets(id, nil, nil)
+}
+
+// RestartApplicationWithSecrets records acceptance before returning a successful restart.
+func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.PinnedSet, accept func() error) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
@@ -152,13 +157,16 @@ func (m *AppManager) RestartApplication(id string) error {
 	if err != nil {
 		return err
 	}
-	var desired, previous *secrets.PinnedSet
+	desired := pinned
+	var previous *secrets.PinnedSet
 	if len(bindings) > 0 || len(app.SecretEnvs) > 0 {
-		desired, err = secrets.PinBindings(context.Background(), id, bindings)
-		if err != nil {
-			return err
+		if desired == nil {
+			desired, err = secrets.PinBindings(context.Background(), id, bindings)
+			if err != nil {
+				return err
+			}
+			defer desired.Close()
 		}
-		defer desired.Close()
 		if m.isProcessRunning(app.PID) {
 			names := app.SecretEnvs
 			if names == nil {
@@ -177,7 +185,17 @@ func (m *AppManager) RestartApplication(id string) error {
 		return err
 	}
 	logFile := filepath.Join(logDir, fmt.Sprintf("%s.log", id))
-	if err := m.startApplicationProcessWithSecrets(id, app.Name, app.Port, logFile, desired); err != nil {
+	err = m.startApplicationProcessWithSecrets(id, app.Name, app.Port, logFile, desired)
+	if err == nil {
+		err = m.SaveState()
+	}
+	if err == nil && accept != nil {
+		err = accept()
+	}
+	if err != nil {
+		if m.isProcessRunning(app.PID) {
+			m.stopNewlyStarted(app)
+		}
 		if previous != nil {
 			if restoreErr := m.startApplicationProcessWithSecrets(id, app.Name, app.Port, logFile, previous); restoreErr != nil {
 				return errors.Join(err, phelixerr.Wrap(phelixerr.CodeProcessFailed, "restart and restoration both failed", restoreErr), m.SaveState())
@@ -186,7 +204,7 @@ func (m *AppManager) RestartApplication(id string) error {
 		return errors.Join(err, m.SaveState())
 	}
 
-	return m.SaveState()
+	return nil
 }
 
 // ListApplications returns a list of all applications

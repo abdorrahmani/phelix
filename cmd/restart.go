@@ -58,11 +58,11 @@ func init() {
 // Every secrets command that needs to bring new values into a running
 // application uses the same helper, so restart behavior never diverges.
 func restartAppInfo(appInfo *app.AppInfo) error {
-	bindings, err := secrets.CommittedBindings(appInfo.ID)
+	store, err := secrets.Open(appInfo.ID)
 	if err != nil {
 		return err
 	}
-	if len(bindings) == 0 && len(appInfo.SecretEnvs) == 0 {
+	if len(store.Bindings) == 0 && store.Pending == nil && len(appInfo.SecretEnvs) == 0 {
 		state, err := deploy.Load(appInfo.Name)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -130,7 +130,26 @@ func restartAppInfoLocked(appInfo *app.AppInfo) error {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return app.Manager.RestartApplication(appInfo.ID)
+	manager, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return app.Manager.RestartApplication(appInfo.ID)
+	}
+	bindings, err := secrets.CommittedBindings(appInfo.ID)
+	if err != nil {
+		return err
+	}
+	txn, err := deploy.BeginSecretTxn(appInfo.ID, appInfo.Name, "", bindings, deploy.RuntimeNative)
+	if err != nil {
+		return err
+	}
+	restartErr := manager.RestartApplicationWithSecrets(appInfo.ID, txn.Set, func() error {
+		version := 0
+		if state != nil {
+			version = state.ActiveVersion
+		}
+		return acceptClassicSecrets(appInfo, appInfo.Port, version, txn)
+	})
+	return errors.Join(restartErr, deploy.FinishSecretTxn(appInfo.ID, txn, restartErr))
 }
 
 func restartAppInfoLegacy(appInfo *app.AppInfo) error {
