@@ -4,6 +4,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
 // startupSecretsRuntime settles every pending secret transaction against the
@@ -20,6 +21,9 @@ func startupSecretsRuntime() {
 	for _, info := range apps {
 		release, err := deploy.AcquireDeployLock(info.Name, "secrets-recovery")
 		if err != nil {
+			if bindings, bindingErr := secrets.CommittedBindings(info.ID); bindingErr != nil || len(bindings) > 0 || len(info.SecretEnvs) > 0 {
+				secrets.MarkDegraded(info.ID, "secret coverage awaits the active deployment")
+			}
 			continue
 		}
 		outcome, err := deploy.ReconcileSecretTxn(info.Name, info.ID)

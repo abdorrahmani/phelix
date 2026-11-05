@@ -8,7 +8,24 @@ import (
 	"time"
 
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 )
+
+func TestLogBatcherWithholdsAlreadyQueuedDegradedApp(t *testing.T) {
+	const appID = "batch-degraded"
+	defer secrets.MarkHealthy(appID)
+	b := newLogBatcher()
+	defer b.stop()
+	for range maxBatchLines {
+		b.add([]*pb.MonitorLogEntry{{AppId: appID, Log: "withheld"}})
+	}
+	b.add([]*pb.MonitorLogEntry{{AppId: "healthy-app", Log: "allowed"}})
+	secrets.MarkDegraded(appID, "test failure")
+	batches := batchDrain(t, b)
+	if len(batches) != 1 || len(batches[0].Entries) != 1 || batches[0].Entries[0].GetLog() != "allowed" {
+		t.Fatal("degraded app blocked another app or transmitted queued output")
+	}
+}
 
 func batchDrain(t *testing.T, b *logBatcher) []*pb.MonitorLogBatch {
 	t.Helper()

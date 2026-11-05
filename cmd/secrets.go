@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -216,7 +217,13 @@ func runSecretsList(ref *appInfoRef) error {
 	if err != nil {
 		return err
 	}
-	_ = deploy.RefreshSecretCoverage(app.AppListItem{ID: ref.ID(), Name: ref.Name(), PID: ref.AppInfo.PID, Status: ref.AppInfo.Status, SecretEnvs: ref.AppInfo.SecretEnvs})
+	secrets.MarkHealthy(ref.ID())
+	for _, binding := range st.Bindings {
+		if _, err := secrets.Resolve(context.Background(), ref.ID(), binding.Secret); err != nil {
+			secrets.MarkDegraded(ref.ID(), "cannot resolve committed bindings")
+			break
+		}
+	}
 	security, reason := secrets.SecurityOf(ref.ID())
 	metas := st.List()
 	sortSecretMetas(metas)

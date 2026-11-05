@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -21,20 +20,32 @@ func RuntimeSecrets(inst *Instance, fallback []secrets.Binding) (*secrets.Pinned
 			names = append(names, b.Env)
 		}
 	}
+	if len(names) == 0 {
+		return secrets.FromRuntime(nil, nil)
+	}
 	if inst.ContainerID == "" {
 		return secrets.RuntimeForPID(inst.PID, names)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := execDockerRunner(ctx, "inspect", "--format", "{{json .Config.Env}}", inst.ContainerID)
+	out, err := execDockerRunner(ctx, "inspect", "--format", "{{json .}}", inst.ContainerID)
 	if err != nil {
+		if isDockerNotRunning(err) {
+			return secrets.FromRuntime(nil, nil)
+		}
 		return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot read container credentials")
 	}
-	var env []string
-	if err := json.Unmarshal([]byte(out), &env); err != nil {
+	var container struct {
+		State  struct{ Running bool }
+		Config struct{ Env []string }
+	}
+	if err := json.Unmarshal([]byte(out), &container); err != nil {
 		return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot decode container environment")
 	}
-	return secrets.FromRuntime(env, names)
+	if !container.State.Running {
+		return secrets.FromRuntime(nil, nil)
+	}
+	return secrets.FromRuntime(container.Config.Env, names)
 }
 
 // RefreshSecretCoverage refreshes one app without letting another app's failure stop it.
@@ -48,6 +59,28 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 	if err != nil {
 		return err
 	}
+	state, err := Load(info.Name)
+	if len(bindings) == 0 && len(info.SecretEnvs) == 0 && !hasInstanceSecrets(state) {
+		secrets.ReleaseCoverage(info.ID)
+		secrets.MarkHealthy(info.ID)
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	release, err := AcquireDeployLock(info.Name, "secrets-coverage")
+	if err != nil {
+		return err
+	}
+	defer release()
+	bindings, err = secrets.CommittedBindings(info.ID)
+	if err != nil {
+		return err
+	}
+	state, err = Load(info.Name)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	var values []string
 	for _, binding := range bindings {
 		resolved, err := secrets.Resolve(context.Background(), info.ID, binding.Secret)
@@ -56,54 +89,49 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 		}
 		values = append(values, resolved.Value)
 	}
-	state, err := Load(info.Name)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	var instances []*Instance
 	if state != nil && state.Mode != "classic" {
 		for _, inst := range state.Slots {
-			if inst != nil && InstanceAlive(inst) {
+			if inst != nil && (inst.ContainerID != "" || InstanceAlive(inst)) {
 				instances = append(instances, inst)
 			}
 		}
 		for _, inst := range state.Replicas {
-			if inst != nil && InstanceAlive(inst) {
+			if inst != nil && (inst.ContainerID != "" || InstanceAlive(inst)) {
 				instances = append(instances, inst)
 			}
 		}
 	} else if info.PID > 0 && info.Status == "running" {
 		instances = append(instances, &Instance{PID: info.PID, SecretEnvs: info.SecretEnvs})
 	}
+	live := false
 	for _, inst := range instances {
 		set, err := RuntimeSecrets(inst, bindings)
 		if err != nil {
 			return err
 		}
 		defer set.Close()
+		live = live || len(set.Bindings) > 0
 		values = append(values, set.Values()...)
+	}
+	if !live {
+		values = nil
 	}
 	secrets.AcquireCoverage(info.ID, values)
 	secrets.MarkHealthy(info.ID)
 	return nil
 }
 
-// overlayWithRuntime restores an instance's old credentials over its normal environment.
-func overlayWithRuntime(envPath, appID string, set *secrets.PinnedSet, desired []secrets.Binding) ([]string, error) {
-	base, err := snapshotOverlay(envPath, appID)
-	if err != nil {
-		return nil, err
-	}
-	managed := make(map[string]bool)
-	for _, b := range desired {
-		managed[b.Env] = true
-	}
-	clean := base[:0]
-	for _, kv := range base {
-		name, _, _ := strings.Cut(kv, "=")
-		if !managed[name] {
-			clean = append(clean, kv)
+// hasInstanceSecrets detects credentials still in use after bindings change.
+func hasInstanceSecrets(state *DeployState) bool {
+	if state != nil {
+		for _, group := range []map[string]*Instance{state.Slots, state.Replicas} {
+			for _, inst := range group {
+				if inst != nil && len(inst.SecretEnvs) > 0 {
+					return true
+				}
+			}
 		}
 	}
-	return mergeByKey(clean, set.Overlay()), nil
+	return false
 }

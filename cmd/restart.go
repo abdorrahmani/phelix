@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/secrets"
-	"os"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -62,18 +63,42 @@ func restartAppInfo(appInfo *app.AppInfo) error {
 		return err
 	}
 	if len(bindings) == 0 && len(appInfo.SecretEnvs) == 0 {
-		return restartAppInfoLegacy(appInfo)
+		state, err := deploy.Load(appInfo.Name)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		hasRuntimeSecrets := false
+		if state != nil {
+			for _, instances := range []map[string]*deploy.Instance{state.Slots, state.Replicas} {
+				for _, inst := range instances {
+					if inst != nil && len(inst.SecretEnvs) > 0 {
+						hasRuntimeSecrets = true
+					}
+				}
+			}
+		}
+		if !hasRuntimeSecrets {
+			return restartAppInfoLegacy(appInfo)
+		}
 	}
 	release, err := deploy.AcquireDeployLock(appInfo.Name, "restart")
 	if err != nil {
 		return err
 	}
 	defer release()
-	return restartAppInfoLocked(appInfo)
+	err = restartAppInfoLocked(appInfo)
+	status := secrets.ApplyRestartSucceeded
+	if err != nil {
+		status = secrets.ApplyRestartFailed
+	}
+	return errors.Join(err, recordApply(appInfo.ID, status))
 }
 
 // restartAppInfoLocked shares secret restart behavior with set and apply.
 func restartAppInfoLocked(appInfo *app.AppInfo) error {
+	if _, err := deploy.ReconcileSecretTxn(appInfo.Name, appInfo.ID); err != nil {
+		return err
+	}
 	state, err := deploy.Load(appInfo.Name)
 	if err == nil && state.Mode != "classic" {
 		bindings, err := secrets.CommittedBindings(appInfo.ID)

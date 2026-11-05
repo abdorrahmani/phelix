@@ -6,6 +6,7 @@ import (
 
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
@@ -106,7 +107,12 @@ func (b *logBatcher) drain(sender func(*pb.MonitorEvent) error) {
 		if n > maxBatchLines {
 			n = maxBatchLines
 		}
-		entries := b.pending[:n]
+		entries := make([]*pb.MonitorLogEntry, 0, n)
+		for _, entry := range b.pending[:n] {
+			if state, _ := secrets.SecurityOf(entry.GetAppId()); state != secrets.SecurityDegraded {
+				entries = append(entries, entry)
+			}
+		}
 		rest := b.pending[n:]
 		b.bytes = 0
 		for _, e := range rest {
@@ -118,7 +124,10 @@ func (b *logBatcher) drain(sender func(*pb.MonitorEvent) error) {
 		b.mu.Unlock()
 
 		if len(entries) == 0 && dropped == 0 {
-			return
+			if len(rest) == 0 {
+				return
+			}
+			continue
 		}
 
 		event := &pb.MonitorEvent{
