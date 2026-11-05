@@ -6,10 +6,13 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
+	"github.com/abdorrahmani/phelix/internal/env"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -202,6 +205,8 @@ func runDoctorChecks(dir string) []checkResult {
 		})
 	}
 
+	results = appendSecretsChecks(results, cfg)
+
 	if cfg != nil && cfg.IsWorker() {
 		results = append(results, checkResult{
 			name: "PORT configuration", pass: true,
@@ -291,4 +296,89 @@ func toolchainVersion(lang builder.Language) string {
 		return "installed"
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// appendSecretsChecks reports on the local secret management layer when the
+// project declares imports: the master key, whether the application's store
+// can satisfy every import, and whether any import collides with a plain
+// environment variable. Never prints a value; only names, fingerprints and
+// presence.
+func appendSecretsChecks(results []checkResult, cfg *project.Config) []checkResult {
+	if cfg == nil || cfg.Secrets == nil || len(cfg.Secrets.Imports) == 0 {
+		return results
+	}
+	if _, err := env.GetMasterKey(); err != nil {
+		results = append(results, checkResult{
+			name: "Secrets master key", detail: "unavailable",
+			message: "\nPhelix could not read or create the master key that encrypts secrets.\n" + err.Error() + "\n",
+		})
+		return results
+	}
+	results = append(results, checkResult{name: "Secrets master key", pass: true, detail: "ready"})
+
+	manager, _ := app.Manager.(*app.AppManager)
+	var appInfo *app.AppInfo
+	if manager != nil {
+		_ = manager.LoadState()
+		for _, candidate := range manager.Apps {
+			if candidate.Name == cfg.Name {
+				appInfo = candidate
+				break
+			}
+		}
+	}
+	if appInfo == nil {
+		results = append(results, checkResult{
+			name:   "Secrets imports",
+			warn:   true,
+			detail: fmt.Sprintf("%d declared; application %q is not registered yet, so the store cannot be checked from here", len(cfg.Secrets.Imports), cfg.Name),
+		})
+		return results
+	}
+
+	st, err := secrets.Open(appInfo.ID)
+	if err != nil {
+		results = append(results, checkResult{
+			name: "Secrets imports", detail: "store unreadable",
+			message: "\n" + err.Error() + "\n",
+		})
+		return results
+	}
+	var missing, bound []string
+	for _, imp := range cfg.Secrets.Imports {
+		if _, err := st.Peek(imp.Secret); err != nil {
+			missing = append(missing, imp.Secret+" (as "+imp.Env+")")
+			continue
+		}
+		bound = append(bound, imp.Env)
+	}
+	if existing, err := env.Instance.ListEnv(appInfo.ID); err == nil {
+		for _, imp := range cfg.Secrets.Imports {
+			if _, taken := existing[imp.Env]; taken {
+				results = append(results, checkResult{
+					name:   "Secrets imports",
+					warn:   true,
+					detail: imp.Env + " is also set as a plain environment variable",
+					message: "\nThe import for " + imp.Env + " collides with a plain environment variable of the same name.\n" +
+						"Deploy, apply and start stop until you resolve it: unset the variable with\n" +
+						"'phelix env unset " + cfg.Name + " " + imp.Env + "' or remove the import from phelix.yaml.\n",
+				})
+			}
+		}
+	}
+	if len(missing) > 0 {
+		results = append(results, checkResult{
+			name:   "Secrets imports",
+			detail: "missing in store",
+			message: "\nThese imports have no value in the store yet; deploys and starts fail closed until they exist:\n  " +
+				strings.Join(missing, "\n  ") + "\nCreate them with 'phelix secrets set <name>'.\n",
+		})
+		return results
+	}
+	results = append(results, checkResult{
+		name:   "Secrets imports",
+		pass:   true,
+		detail: fmt.Sprintf("%d resolvable (%s)", len(bound), strings.Join(bound, ", ")),
+	})
+	return results
 }

@@ -38,6 +38,10 @@ type Rolling struct {
 	// (docker runtime only). Persisted into DeployState so rollback/recovery
 	// reattach to the same network. Empty means none (default bridge).
 	Network string
+	// Secrets carries the deployment's secret execution context. Nil means
+	// the deployment resolves committed bindings (or none) at launch as
+	// before.
+	Secrets *SecretTxn
 	// stateStore is a test seam for deterministic persistence-failure coverage.
 	// Production leaves it nil and uses Store.
 	stateStore func(*DeployState) error
@@ -81,6 +85,7 @@ type Rolling struct {
 // until the first successful membership update excludes them, then they are
 // drained and stopped at the end of the rollout.
 func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
+	defer r.Secrets.endOnReturn(r.AppName)()
 	log := r.logger()
 	// Rolling reports failures from many points; one deferred hook keeps the
 	// telemetry's terminal event identical to what Deploy actually returned.
@@ -159,7 +164,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		}
 		return phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact")
 	}
-	envOverlay, err := EnvOverlayFromSnapshot(envPath, r.AppID)
+	envOverlay, err := launchOverlay(envPath, r.AppID, r.Secrets)
 	if err != nil {
 		if migrated {
 			r.undoMigration(state, pre, log)

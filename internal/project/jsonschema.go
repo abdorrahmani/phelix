@@ -150,6 +150,8 @@ var configSchemaAnnotations = map[string]map[string]any{
 	"process.shutdown.signal":        {"enum": sortedSetKeys(supportedShutdownSignals)},
 	"deploy.rolling.max_surge":       {"minimum": 1, "maximum": 1},
 	"deploy.rolling.max_unavailable": {"minimum": 0, "maximum": 0},
+	"secrets.imports[].secret":       {"pattern": secretNamePattern.String()},
+	"secrets.imports[].env":          {"pattern": envNamePattern.String()},
 }
 
 // configSchemaDescriptions is the hover text an editor shows for each key. It
@@ -238,4 +240,8 @@ var configSchemaDescriptions = map[string]string{
 	"webhook.enabled":                             "Turns the webhook trigger on for this app.",
 	"webhook.branch":                              "Bare branch name whose pushes trigger a rebuild, not a full ref.",
 	"webhook.secret_env":                          "Name of the environment variable holding the HMAC-SHA256 secret. The secret itself is never stored in phelix.yaml.",
+	"secrets":                                     "Local secret management: maps secrets from the app's encrypted secret store onto environment variables. Values are resolved at launch, never stored in phelix.yaml, and are not part of version snapshots or rollbacks.",
+	"secrets.imports":                             "Declarations of which secrets the application consumes. Manage the secrets themselves with `phelix secrets`.",
+	"secrets.imports[].secret":                    "Name of the secret in the app's secret store, for example database_url. It must exist in the store when the app starts or deploys.",
+	"secrets.imports[].env":                       "Environment variable name the application receives, for example DATABASE_URL. Each name may be declared once; reserved names such as PORT are rejected.",
 }

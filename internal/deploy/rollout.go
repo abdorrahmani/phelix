@@ -183,6 +183,10 @@ type Rollout struct {
 	Notifier       Notifier
 	InFlight       InFlightProvider
 	GracePeriod    time.Duration
+	// Secrets carries the deployment's secret execution context. Nil means
+	// the deployment resolves committed bindings (or none) at launch as
+	// before.
+	Secrets *SecretTxn
 	// Runtime records how instances are launched ("native"/"docker"). Persisted
 	// into DeployState so rollback and recovery resolve the matching launcher.
 	// Empty is treated as native.
@@ -219,6 +223,7 @@ type Rollout struct {
 
 // Deploy performs one canary/progressive rollout.
 func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
+	defer ro.Secrets.endOnReturn(ro.AppName)()
 	log := ro.logger()
 	grace := ro.GracePeriod
 	if grace <= 0 {
@@ -353,7 +358,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "rollout: prepare deploy artifact"))
 	}
 	log.Successf("artifact ready: %s", binaryPath)
-	envOverlay, err := EnvOverlayFromSnapshot(envPath, ro.AppID)
+	envOverlay, err := launchOverlay(envPath, ro.AppID, ro.Secrets)
 	if err != nil {
 		ro.undoMigration(state, pre)
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "rollout: load env snapshot"))

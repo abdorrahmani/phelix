@@ -45,6 +45,10 @@ type Config struct {
 	// Webhook configures the Git-push webhook trigger. Optional; an app
 	// without the section never accepts webhook deliveries.
 	Webhook *WebhookConfig `yaml:"webhook,omitempty"`
+	// Secrets declares the secrets the app consumes and the environment
+	// variable names they are exposed under. Optional; values live only in
+	// the encrypted secret store, never in this file.
+	Secrets *SecretsConfig `yaml:"secrets,omitempty"`
 }
 
 // Load reads and validates phelix.yaml from dir. A missing file is reported as
@@ -96,6 +100,9 @@ func load(dir string, strict bool) (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Webhook.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Secrets.validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil

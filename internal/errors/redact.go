@@ -55,7 +55,7 @@ func Redact(s string) string {
 	if s == "" {
 		return s
 	}
-	out := s
+	out := applyRegisteredValues(s)
 	for _, pat := range credentialPatterns {
 		idx := 0
 		lowPat := strings.ToLower(pat)

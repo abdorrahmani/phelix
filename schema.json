@@ -456,6 +456,31 @@
       },
       "type": "object"
     },
+    "secrets": {
+      "description": "Local secret management: maps secrets from the app's encrypted secret store onto environment variables. Values are resolved at launch, never stored in phelix.yaml, and are not part of version snapshots or rollbacks.",
+      "properties": {
+        "imports": {
+          "description": "Declarations of which secrets the application consumes. Manage the secrets themselves with `phelix secrets`.",
+          "items": {
+            "properties": {
+              "env": {
+                "description": "Environment variable name the application receives, for example DATABASE_URL. Each name may be declared once; reserved names such as PORT are rejected.",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                "type": "string"
+              },
+              "secret": {
+                "description": "Name of the secret in the app's secret store, for example database_url. It must exist in the store when the app starts or deploys.",
+                "pattern": "^[a-z][a-z0-9_-]*$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "type": {
       "description": "Workload type: service (default, a port-listening app) or worker (a supervised background process with no public port).",
       "enum": [

@@ -219,6 +219,12 @@ type DeployState struct {
 	// worker). Status "running" is the interrupted-rollout marker the monitor
 	// reconciles after a daemon restart.
 	WorkerRollout *WorkerRollout `json:"worker_rollout,omitempty"`
+	// SecretTxnID is the secret transaction whose binding set the instances
+	// recorded in this state were launched with. The engine stamps it on
+	// every durable write inside a deployment's secret window; the secret
+	// store's recovery reads it as the only evidence that a pending binding
+	// transaction was accepted. Empty outside a deployment.
+	SecretTxnID string `json:"secret_txn_id,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -344,9 +350,20 @@ func statePath(appName string) (string, error) {
 }
 
 // Store persists the DeployState to disk atomically (write tmp + rename).
+// While a deployment's secret window is open for this app, every write is
+// stamped with that transaction's identifier: the stamp is what lets the
+// secret store derive, after any crash, that the instances this state
+// records were launched with the candidate bindings. Outside a window the
+// field is cleared, so the journal only ever carries the stamp of the
+// transaction that was actually executing.
 func Store(s *DeployState) error {
 	if s == nil || s.AppName == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: cannot store state without an app name")
+	}
+	if id := stampedTxnID(s.AppName); id != "" {
+		s.SecretTxnID = id
+	} else {
+		s.SecretTxnID = ""
 	}
 
 	path, err := statePath(s.AppName)

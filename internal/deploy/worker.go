@@ -50,6 +50,10 @@ type Worker struct {
 	Source BuildSource
 	// Strategy is StrategyClassic or StrategyRolling.
 	Strategy string
+	// Secrets carries the deployment's secret execution context. Nil means
+	// the deployment resolves committed bindings (or none) at launch as
+	// before.
+	Secrets  *SecretTxn
 	Replicas int
 	// Dir is the app project directory: the exec probe's working directory.
 	Dir string
@@ -116,6 +120,7 @@ func (w *Worker) startupTimeout() time.Duration {
 // before the error returns: the returned error always describes the fleet
 // state truthfully.
 func (w *Worker) Deploy(ctx context.Context) (errRet error) {
+	defer w.Secrets.endOnReturn(w.AppName)()
 	defer func() { reportDeployFailure(w.Telemetry, errRet) }()
 	if w.Replicas < 1 {
 		w.Replicas = 1
@@ -177,7 +182,7 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 		return wrapDeployStep(err, "persist worker rollout journal")
 	}
 
-	env, err := EnvOverlayFromSnapshot(envPath, state.AppID)
+	env, err := launchOverlay(envPath, state.AppID, w.Secrets)
 	if err != nil {
 		return wrapDeployStep(err, "decrypt worker env snapshot")
 	}

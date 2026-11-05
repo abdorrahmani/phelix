@@ -104,8 +104,19 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 	defer flushTelemetry()
 	op.setDeploymentID(tracker)
 
+	var secretTxn *deploy.SecretTxn
+	if cfg, cerr := loadProjectConfigFrom(buildSource); cerr == nil && cfg != nil && cfg.Secrets != nil && len(cfg.Secrets.Imports) > 0 {
+		txn, terr := deploy.BeginSecretTxn(appInfo.ID, name, tracker.DeploymentID(), cfg.Secrets.Imports)
+		if terr != nil {
+			tracker.Failed(terr)
+			return terr
+		}
+		secretTxn = txn
+	}
+
 	if err := stopExistingApp(out, appInfo); err != nil {
 		tracker.Failed(err)
+		_ = deploy.FinishSecretTxn(appInfo.ID, secretTxn, err)
 		return err
 	}
 
@@ -113,8 +124,10 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) error {
 	rebuildReport, rerr := rebuildApp(out, appInfo.ID, spec.Args, buildMgr, buildSource)
 	if rerr != nil {
 		tracker.Failed(rerr)
+		_ = deploy.FinishSecretTxn(appInfo.ID, secretTxn, rerr)
 		return rerr
 	}
+	_ = deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil)
 
 	gitCommit := deploy.DetectGitCommit(buildSource)
 	logger := &colorLogger{Writer: out}
@@ -372,6 +385,16 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 	op.setDeploymentID(tracker)
 	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
 
+	var secretTxn *deploy.SecretTxn
+	if runtimeCfg != nil && runtimeCfg.Secrets != nil && len(runtimeCfg.Secrets.Imports) > 0 {
+		txn, terr := deploy.BeginSecretTxn(appInfo.ID, name, tracker.DeploymentID(), runtimeCfg.Secrets.Imports)
+		if terr != nil {
+			release()
+			return terr
+		}
+		secretTxn = txn
+	}
+
 	deployCtx := context.Background()
 	if spec.Rollout != nil {
 		signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -395,9 +418,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 			Logger:         logger,
 			PortHandoff:    stopPublicPortOwner,
 			Telemetry:      tracker,
+			Secrets:        secretTxn,
 		}
 		err := ro.Deploy(deployCtx)
 		reconcileAppWithDeploy(name)
+		_ = deploy.FinishSecretTxn(appInfo.ID, secretTxn, err)
 		if err != nil {
 			release()
 			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
@@ -439,9 +464,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 			Telemetry:      tracker,
 
 			PortHandoff: stopPublicPortOwner,
+			Secrets:     secretTxn,
 		}
 		err := bg.Deploy(context.Background())
 		reconcileAppWithDeploy(name)
+		_ = deploy.FinishSecretTxn(appInfo.ID, secretTxn, err)
 		if err != nil {
 			release()
 			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
@@ -482,9 +509,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) error {
 		Logger:         logger,
 		PortHandoff:    stopPublicPortOwner,
 		Telemetry:      tracker,
+		Secrets:        secretTxn,
 	}
 	err = r.Deploy(context.Background())
 	reconcileAppWithDeploy(name)
+	_ = deploy.FinishSecretTxn(appInfo.ID, secretTxn, err)
 	if err != nil {
 		release()
 		return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
