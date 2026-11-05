@@ -14,6 +14,9 @@ func TestReconcileOrphanContainers_RemovesOnlyUnknown(t *testing.T) {
 	run := func(_ context.Context, args ...string) (string, error) {
 		switch args[0] {
 		case "ps":
+			if !strings.Contains(strings.Join(args, " "), "label=phelix.app=billing") {
+				t.Fatal("orphan search crossed app boundary")
+			}
 			return "keep1\norphan1\norphan2\n", nil
 		case "rm":
 			rmCalls = append(rmCalls, args[len(args)-1])
@@ -23,7 +26,7 @@ func TestReconcileOrphanContainers_RemovesOnlyUnknown(t *testing.T) {
 		}
 	}
 	known := map[string]bool{"keep1": true}
-	removed, err := reconcileOrphanContainers(context.Background(), known, run)
+	removed, err := reconcileOrphanContainers(context.Background(), "billing", known, run)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -53,7 +56,7 @@ func TestReconcileOrphanContainers_ForceFlag(t *testing.T) {
 		}
 		return "", nil
 	}
-	if _, err := reconcileOrphanContainers(context.Background(), nil, run); err != nil {
+	if _, err := reconcileOrphanContainers(context.Background(), "billing", nil, run); err != nil {
 		t.Fatal(err)
 	}
 	if !sawForce {
@@ -69,7 +72,7 @@ func TestReconcileOrphanContainers_NothingToDo(t *testing.T) {
 		t.Fatalf("rm must not be called when there are no containers: %v", args)
 		return "", nil
 	}
-	removed, err := reconcileOrphanContainers(context.Background(), nil, run)
+	removed, err := reconcileOrphanContainers(context.Background(), "billing", nil, run)
 	if err != nil || len(removed) != 0 {
 		t.Fatalf("expected clean no-op, got removed=%v err=%v", removed, err)
 	}
@@ -79,7 +82,7 @@ func TestReconcileOrphanContainers_DaemonDownIsError(t *testing.T) {
 	run := func(_ context.Context, args ...string) (string, error) {
 		return "", errors.New("Cannot connect to the Docker daemon")
 	}
-	if _, err := reconcileOrphanContainers(context.Background(), nil, run); err == nil {
+	if _, err := reconcileOrphanContainers(context.Background(), "billing", nil, run); err == nil {
 		t.Fatal("a docker ps failure must surface as an error (logged by caller, not fatal)")
 	}
 }
@@ -98,7 +101,7 @@ func TestReconcileOrphanContainers_PerContainerFailureSkips(t *testing.T) {
 		}
 		return "", nil
 	}
-	removed, err := reconcileOrphanContainers(context.Background(), nil, run)
+	removed, err := reconcileOrphanContainers(context.Background(), "billing", nil, run)
 	if err != nil {
 		t.Fatalf("a single rm failure must not fail the whole reconcile: %v", err)
 	}
