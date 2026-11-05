@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/abdorrahmani/phelix/internal/secrets"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/secrets"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
@@ -132,6 +133,11 @@ func ExecuteRollback(ctx context.Context, opts RollbackOptions) error {
 
 // executeRollbackLocked keeps recovery and its failed deployment under one lock.
 func executeRollbackLocked(ctx context.Context, opts RollbackOptions) error {
+	if opts.Recovery == nil {
+		if _, err := ReconcileSecretTxn(opts.AppName, opts.AppID); err != nil {
+			return err
+		}
+	}
 	state, err := Load(opts.AppName)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -159,7 +165,7 @@ func executeRollbackLocked(ctx context.Context, opts RollbackOptions) error {
 			return err
 		}
 		defer set.Close()
-		rollbackSecrets = &SecretTxn{Set: set, ID: state.SecretTxnID}
+		rollbackSecrets = &SecretTxn{Set: set}
 	}
 
 	var fromVer int

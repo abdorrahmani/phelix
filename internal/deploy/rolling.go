@@ -168,7 +168,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		if migrated {
 			r.undoMigration(state, pre, log)
 		}
-		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "env snapshot")
+		return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "env snapshot")
 	}
 
 	targetVer := targetVersionFromSource(src)

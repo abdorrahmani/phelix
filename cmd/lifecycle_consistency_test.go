@@ -108,3 +108,19 @@ func selfBinaryOrSkip(t *testing.T) string {
 	}
 	return exe
 }
+
+func TestStatusCannotOverwriteDeploymentAcceptance(t *testing.T) {
+	info := &app.AppInfo{ID: "stale-reader", Name: "stamp-race", Status: "stopped"}
+	stale := writeDeployState(t, info, map[string]*deploy.Instance{"0": {PID: 999999, Status: "running"}})
+	accepted := *stale
+	accepted.SecretTxnID = "sec_1234567890abcdef"
+	if err := deploy.Store(&accepted); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncAppInfoWithDeploy(info, stale); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustLoadDeployState(t, info.Name).SecretTxnID; got != accepted.SecretTxnID {
+		t.Fatal("status reader erased deployment acceptance")
+	}
+}

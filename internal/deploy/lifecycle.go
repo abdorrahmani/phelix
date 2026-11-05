@@ -415,7 +415,7 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 	for _, inst := range toStart {
 		envOverlay, err := EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
 		if err != nil {
-			return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "deploy: load env snapshot for %s", state.AppName)
+			return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "deploy: load env snapshot for %s", state.AppName)
 		}
 		log.Stepf("starting %s instance on slot %s", state.AppName, inst.Slot)
 		proc, newPort, err := opts.Launcher(ctx, inst.BinaryPath, envOverlay)
@@ -436,9 +436,11 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		inst.Port = newPort
 		inst.Status = "running"
 		inst.StartedAt = time.Now()
+		state.SecretTxnID = ""
 		log.Successf("instance %s listening on %s", instanceRef(inst), addr)
 
 		if err := Store(state); err != nil {
+			_, _ = GracefulStop(context.WithoutCancel(ctx), proc, 3*time.Second, 0)
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: persists start state for %s", state.AppName)
 		}
 	}

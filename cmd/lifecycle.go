@@ -57,10 +57,7 @@ func syncAppInfoWithDeploy(info *app.AppInfo, state *deploy.DeployState) error {
 		return nil
 	}
 
-	d, err := state.Reconcile()
-	if err != nil {
-		return err
-	}
+	d := deploy.DecideLifecycle(state)
 	before := *info
 	switch d.Status {
 	case "running":

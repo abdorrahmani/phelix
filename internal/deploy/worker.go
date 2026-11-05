@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/abdorrahmani/phelix/internal/secrets"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/secrets"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
@@ -231,7 +232,7 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 	if err != nil {
 		if rerr := w.revertRollout(ctx, state, journal); rerr != nil {
 			return phelixerr.Wrap(phelixerr.CodeDeployFailed,
-				"worker deploy failed and recovery also failed; the rollout is marked recovery_required", err)
+				"worker deploy failed and recovery also failed; the rollout is marked recovery_required", errors.Join(err, rerr))
 		}
 		return err
 	}
@@ -241,12 +242,16 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 	if targetVer > 0 {
 		state.ActiveVersion = targetVer
 		if err := PromoteVersion(w.AppName, targetVer, "worker"); err != nil {
-			log.Warnf("worker deploy: promote version: %v", err)
+			return err
 		}
 	}
 	if err := Store(state); err != nil {
 		return wrapDeployStep(err, "persist worker deploy state")
 	}
+	if err := FinishSecretTxn(w.AppID, w.Secrets, nil); err != nil {
+		return err
+	}
+	w.Secrets = nil
 	w.Telemetry.PromoteCurrentVersion()
 	w.Telemetry.Completed(fmt.Sprintf("%d worker replicas on v%d", w.Replicas, targetVer))
 	return nil
@@ -457,7 +462,9 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 		if fromVer <= 0 {
 			// The slot had no version before: leave it stopped.
 			if inst != nil && WorkerInstanceAlive(inst) {
-				_, _, _ = GracefulStopWorker(inst, w.signal(), w.drain(), nil)
+				if _, _, err := GracefulStopWorker(inst, w.signal(), w.drain(), nil); err != nil {
+					return err
+				}
 			}
 			if inst != nil {
 				inst.PID = 0
@@ -473,7 +480,9 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 			return w.recoveryRequired(state, journal, fmt.Sprintf("replica %s: resolve v%d: %v", key, fromVer, err))
 		}
 		if inst != nil && WorkerInstanceAlive(inst) {
-			_, _, _ = GracefulStopWorker(inst, w.signal(), w.drain(), nil)
+			if _, _, err := GracefulStopWorker(inst, w.signal(), w.drain(), nil); err != nil {
+				return err
+			}
 			inst.PID = 0
 		}
 		if inst == nil {
@@ -507,6 +516,7 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 		inst.Status = "running"
 		inst.ReadyAt = time.Now()
 		journal.UpdatedAt = time.Now()
+		state.SecretTxnID = ""
 		if err := Store(state); err != nil {
 			return err
 		}

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/abdorrahmani/phelix/internal/appid"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
@@ -135,6 +137,15 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		return SecretTxnRetained, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: read deployment journal of %s", appName)
 	}
 	if state.SecretTxnID == st.Pending.TxnID {
+		if state.Canary != nil && state.Canary.Status == CanaryRunning {
+			socket, err := proxy.DefaultSocketPath()
+			if err != nil {
+				return SecretTxnRetained, err
+			}
+			if err := recoverAcceptedSecretCanary(state, proxy.NewClient(socket)); err != nil {
+				return SecretTxnRetained, err
+			}
+		}
 		if err := reclaimSecretLaunches(appName, st.Pending.TxnID, state); err != nil {
 			return SecretTxnRetained, err
 		}
@@ -157,6 +168,39 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		return SecretTxnRetained, derr
 	}
 	return SecretTxnDiscarded, nil
+}
+
+// recoverAcceptedSecretCanary preserves an accepted candidate across interrupted rollouts.
+func recoverAcceptedSecretCanary(state *DeployState, client ProxyClient) error {
+	canary := state.Canary
+	candidate := state.Slots[canary.Slot]
+	if candidate == nil {
+		return phelixerr.New(phelixerr.CodeConfiguration, "accepted secret rollout has no candidate record")
+	}
+	state.ActiveSlot, state.ActiveVersion = canary.Slot, candidate.Version
+	if err := Store(state); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if InstanceAlive(candidate) {
+		if err := RestoreProxyRoute(ctx, state, client, &nopLogger{}); err != nil {
+			return err
+		}
+		for slot, inst := range state.Slots {
+			if slot == canary.Slot || inst == nil {
+				continue
+			}
+			if report := stopInstance(ctx, inst, 3*time.Second, 0); !report.Exited {
+				return phelixerr.New(phelixerr.CodeProcessFailed, "accepted secret rollout could not stop its retired instance")
+			}
+			inst.PID, inst.Status = 0, "stopped"
+		}
+	}
+	canary.Status, canary.TrafficPercent = CanaryPromoted, 100
+	canary.Reason = "accepted secret rollout recovered from deployment journal"
+	canary.UpdatedAt = time.Now()
+	return Store(state)
 }
 
 // launchOverlay builds the environment overlay for a deployment's instance

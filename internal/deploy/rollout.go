@@ -360,7 +360,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	envOverlay, err := launchOverlay(envPath, ro.AppID, ro.Secrets)
 	if err != nil {
 		ro.undoMigration(state, pre)
-		return ro.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "rollout: load env snapshot"))
+		return ro.failf(phelixerr.Wrapf(phelixerr.CodeOf(err), err, "rollout: load env snapshot"))
 	}
 	targetVer := targetVersionFromSource(ro.Source)
 	ro.Telemetry.SetTargetVersion(targetVer)
@@ -374,15 +374,16 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "rollout: start canary instance"))
 	}
 	canaryInst := &Instance{
-		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
-		Slot:       canarySlot,
-		PID:        proc.PID(),
-		Port:       port,
-		BinaryPath: binaryPath,
-		EnvPath:    envPath,
-		StartedAt:  time.Now(),
-		Status:     "starting",
-		Version:    targetVer,
+		ContainerID: containerIDOf(proc),
+		SecretEnvs:  phelixerr.SecretEnvNames(envOverlay),
+		Slot:        canarySlot,
+		PID:         proc.PID(),
+		Port:        port,
+		BinaryPath:  binaryPath,
+		EnvPath:     envPath,
+		StartedAt:   time.Now(),
+		Status:      "starting",
+		Version:     targetVer,
 	}
 	state.Slots[canarySlot] = canaryInst
 	if err := ro.persist(state); err != nil {
@@ -654,11 +655,11 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		fmt.Sprintf("%s promoted to 100%% of traffic on slot %s", stableVersionLabel(canaryInst), canarySlot))
 
 	// 10. The promotion is durable; the old stable instance can drain.
-	if oldInst != nil && oldInst.PID > 0 {
+	if oldInst != nil && (oldInst.PID > 0 || oldInst.ContainerID != "") {
 		log.Stepf("draining previous stable slot %s (pid %d, grace %s)", oldSlot, oldInst.PID, grace)
 		ro.Telemetry.InstanceDraining(oldSlot, oldInst.PID)
 		stoppedPID := oldInst.PID
-		report := stopByPID(ctx, oldInst.PID, grace, ro.inFlight(ro.AppName), oldInst.BinaryPath)
+		report := stopInstance(ctx, oldInst, grace, ro.inFlight(ro.AppName))
 		if report.ForceKilled {
 			log.Warnf("old slot %s did not exit within grace; SIGKILL applied", oldSlot)
 		} else {

@@ -132,3 +132,29 @@ func TestSecretDeployLockExcludesMutationCommand(t *testing.T) {
 	}
 	next()
 }
+
+func TestAcceptedCanaryRecoveryKeepsCandidate(t *testing.T) {
+	txnTestEnv(t)
+	stable := startChildInstance(t, SlotBlue, 1)
+	candidate := startChildInstance(t, SlotGreen, 2)
+	state := &DeployState{
+		AppName: "accepted-canary", AppID: txnTestAppID, Mode: ModeBlueGreen,
+		ActiveSlot: SlotBlue, ActiveVersion: 1, SecretTxnID: secrets.NewTxnID(),
+		Slots:  map[string]*Instance{SlotBlue: &stable.Instance, SlotGreen: &candidate.Instance},
+		Canary: &CanaryState{Slot: SlotGreen, Status: CanaryRunning, TrafficPercent: 25},
+	}
+	client := &rolloutProxyClient{alive: true, enrolled: true}
+	if err := recoverAcceptedSecretCanary(state, client); err != nil {
+		t.Fatal(err)
+	}
+	after := mustLoad(t, state.AppName)
+	if after.ActiveSlot != SlotGreen || after.Canary.Status != CanaryPromoted || !InstanceAlive(after.ActiveInstance()) {
+		t.Fatal("accepted canary was lost during recovery")
+	}
+	if InstanceAlive(&stable.Instance) {
+		t.Fatal("retired stable instance survived recovery")
+	}
+	if targets := client.lastSwitchSet(); len(targets) != 1 || targets[0].Host != hostPort(candidate.Port) {
+		t.Fatal("recovery did not route traffic to accepted candidate")
+	}
+}

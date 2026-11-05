@@ -215,7 +215,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	log.Successf("artifact ready: %s", binaryPath)
 	envOverlay, err := launchOverlay(envPath, bg.AppID, bg.Secrets)
 	if err != nil {
-		return bg.failf(phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "load env snapshot"))
+		return bg.failf(phelixerr.Wrapf(phelixerr.CodeOf(err), err, "load env snapshot"))
 	}
 
 	// 4. Start the new instance on a free internal port.
