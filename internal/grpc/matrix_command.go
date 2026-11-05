@@ -347,10 +347,11 @@ func (c *Client) handleMatrixCommand(req *pb.MonitorCommandRequest, ledger *roll
 
 	pendingMatrixWG.Add(1)
 	go func() {
-		defer func() { <-slots }()
 		defer pendingMatrixWG.Done()
 		result := executeMatrixCommand(req)
-		if err := ledger.complete(req.GetRequestId(), result); err != nil {
+		err := ledger.complete(req.GetRequestId(), result)
+		<-slots
+		if err != nil {
 			logs.ErrorFile("grpc", "[gRPC Matrix] result persistence failed: %v", err)
 			result = finalizeMatrixResult(req, commandErrorResult(req, phelixerr.Wrap(phelixerr.CodeUnavailable,
 				"matrix command completed but its durable result could not be recorded", err)))
