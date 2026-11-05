@@ -27,6 +27,26 @@ func TestLogBatcherWithholdsAlreadyQueuedDegradedApp(t *testing.T) {
 	}
 }
 
+func TestMonitorSendWithholdsDegradedAppAtTransmission(t *testing.T) {
+	const appID = "transmission-degraded"
+	secrets.MarkDegraded(appID, "test failure")
+	defer secrets.MarkHealthy(appID)
+	s := &monitorStreamManager{}
+	entry := &pb.MonitorLogEntry{AppId: appID, Log: "withheld"}
+	for _, event := range []*pb.MonitorEvent{
+		{Payload: &pb.MonitorEvent_LogEntry{LogEntry: entry}},
+		{Payload: &pb.MonitorEvent_LogBatch{LogBatch: &pb.MonitorLogBatch{Entries: []*pb.MonitorLogEntry{entry}}}},
+	} {
+		if err := s.send(event); err != nil {
+			t.Fatal("degraded output reached disconnected transport", err)
+		}
+	}
+	secrets.MarkHealthy(appID)
+	if err := s.send(&pb.MonitorEvent{Payload: &pb.MonitorEvent_LogEntry{LogEntry: entry}}); err == nil {
+		t.Fatal("healthy output never reached transport")
+	}
+}
+
 func batchDrain(t *testing.T, b *logBatcher) []*pb.MonitorLogBatch {
 	t.Helper()
 	var mu sync.Mutex

@@ -15,6 +15,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/abdorrahmani/phelix/internal/monitor"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"google.golang.org/protobuf/proto"
 )
@@ -174,6 +175,24 @@ var oversizedEventLog = func(payloadType string) {
 func (s *monitorStreamManager) send(event *pb.MonitorEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if entry := event.GetLogEntry(); entry != nil {
+		if state, _ := secrets.SecurityOf(entry.GetAppId()); state == secrets.SecurityDegraded {
+			return nil
+		}
+	}
+	if batch := event.GetLogBatch(); batch != nil {
+		entries := make([]*pb.MonitorLogEntry, 0, len(batch.Entries))
+		for _, entry := range batch.Entries {
+			if state, _ := secrets.SecurityOf(entry.GetAppId()); state != secrets.SecurityDegraded {
+				entries = append(entries, entry)
+			}
+		}
+		if len(entries) == 0 && batch.Dropped == 0 {
+			return nil
+		}
+		event = proto.Clone(event).(*pb.MonitorEvent)
+		event.GetLogBatch().Entries = entries
+	}
 	if s.stream == nil {
 		return phelixerr.New(phelixerr.CodeConnection, "monitor stream is not connected")
 	}
