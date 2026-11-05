@@ -63,7 +63,7 @@ func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
 		if merr != nil {
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode webhook config", merr)
 		}
-		return os.WriteFile(path, append([]byte(webhookConfigHeader()), body...), 0o644)
+		return writeWebhookConfig(path, append([]byte(webhookConfigHeader()), body...))
 	}
 
 	var doc yaml.Node
@@ -105,7 +105,36 @@ func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
 	if cerr := enc.Close(); cerr != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
 	}
-	return os.WriteFile(path, []byte(buf.String()), 0o644)
+	return writeWebhookConfig(path, []byte(buf.String()))
+}
+
+// writeWebhookConfig keeps readers from seeing an incomplete configuration.
+func writeWebhookConfig(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".phelix-config-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 func webhookConfigHeader() string {

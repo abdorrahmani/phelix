@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
@@ -184,6 +185,11 @@ func remoteWebhookMutate(req *pb.MonitorCommandRequest, enabled int8, branch, se
 		return remoteWebhookError(req, phelixerr.Newf(phelixerr.CodeConfiguration,
 			"application %q has no project directory", info.Name))
 	}
+	release, err := deploy.AcquireDeployLock(info.Name, "webhook-config")
+	if err != nil {
+		return remoteWebhookError(req, err)
+	}
+	defer release()
 
 	// Current state: the same load the local webhook server performs per
 	// delivery. A missing phelix.yaml is a valid starting point (empty
