@@ -12,7 +12,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
-// RestartSecretInstances proves replacements before retiring any running credentials.
+// RestartSecretInstances applies each strategy while retaining the previous fleet for recovery.
 func RestartSecretInstances(ctx context.Context, state *DeployState, desired *secrets.PinnedSet, worker *Worker, slot string) (errRet error) {
 	if state.Mode == ModeWorker && worker == nil {
 		return phelixerr.New(phelixerr.CodeConfiguration, "worker restart settings are missing")
@@ -36,17 +36,64 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 	}
 	desired.LaunchTxnID = txn.ID
 	defer func() { errRet = errors.Join(errRet, FinishSecretTxn(state.AppID, txn, errRet)) }()
-	old := make(map[string]*Instance, len(instances))
+	previous := *state
+	previous.Replicas, previous.Slots = cloneInstanceMap(state.Replicas), cloneInstanceMap(state.Slots)
+	previous.Retiring = append([]*Instance(nil), state.Retiring...)
 	next := make(map[string]*Instance, len(instances))
 	processes := make(map[string]Process, len(instances))
-	cleanup := true
+	var client *proxy.Client
+	if state.Mode != ModeWorker {
+		socket, err := proxy.DefaultSocketPath()
+		if err != nil {
+			return err
+		}
+		client = proxy.NewClient(socket)
+	}
+	changed := false
 	defer func() {
-		if cleanup {
-			for _, proc := range processes {
-				stopHeldProcess(context.Background(), proc, 3*time.Second)
+		if errRet == nil {
+			return
+		}
+		if changed {
+			if client != nil {
+				if err := RestoreProxyRoute(context.WithoutCancel(ctx), &previous, client, &nopLogger{}); err != nil {
+					errRet = errors.Join(errRet, err)
+					return
+				}
 			}
+			for _, inst := range next {
+				previous.Retiring = append(previous.Retiring, inst)
+			}
+			if err := Store(&previous); err != nil {
+				errRet = errors.Join(errRet, err)
+				return
+			}
+			*state = previous
+		}
+		for _, proc := range processes {
+			stopHeldProcess(context.Background(), proc, 3*time.Second)
 		}
 	}()
+	accept := func(records map[string]*Instance) error {
+		for key, inst := range records {
+			if state.Mode == ModeBlueGreen {
+				state.Slots[key] = inst
+			} else {
+				state.Replicas[key] = inst
+			}
+			state.Retiring = append(state.Retiring, instances[key])
+		}
+		changed = true
+		if client != nil {
+			if err := RestoreProxyRoute(ctx, state, client, &nopLogger{}); err != nil {
+				return err
+			}
+		}
+		txn.Stamp(state)
+		return Store(state)
+	}
+	instances = cloneInstanceMap(instances)
+	rolling := state.Mode == ModeRolling || state.Mode == ModeWorker && worker.Strategy == workerStrategyRolling
 	launcher := LauncherForRuntime(state.Runtime, state.Network, state.AppName)
 	for _, key := range sortedReplicaKeys(instances) {
 		if err := ctx.Err(); err != nil {
@@ -56,13 +103,11 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 		if inst == nil {
 			continue
 		}
-		old[key] = cloneInstance(inst)
 		candidate := cloneInstance(inst)
-		env, err := snapshotOverlay(inst.EnvPath, state.AppID)
+		env, err := txn.OverlayFor(inst.EnvPath)
 		if err != nil {
 			return err
 		}
-		env = mergeByKey(env, desired.Overlay())
 		if state.Mode == ModeWorker {
 			proc, id, err := workerLauncherFactory(state.AppName)(inst.BinaryPath, env, key)
 			if err != nil {
@@ -88,7 +133,7 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 				}
 				candidate.StartTicks = identity.StartTime
 			}
-			cfg := DefaultHealthProvider()(state.AppName)
+			cfg := DefaultHealthProvider()(state.AppID)
 			tier := selectDeployHealth(ctx, cfg, state.AppName, hostPort(listenPort), &nopLogger{}, nil)
 			if err := health.WaitForHealthy(ctx, tier, cfg, hostPort(listenPort), proc.PID(), deployResolver(proc)); err != nil {
 				return err
@@ -101,60 +146,21 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 		candidate.LastExitAt = time.Time{}
 		candidate.LastExitCode, candidate.LastExitReason = 0, ""
 		next[key] = candidate
-	}
-	var client *proxy.Client
-	if state.Mode != ModeWorker {
-		socket, err := proxy.DefaultSocketPath()
-		if err != nil {
-			return err
-		}
-		client = proxy.NewClient(socket)
-		route := *state
-		if state.Mode == ModeBlueGreen {
-			route.Slots = next
-		} else {
-			route.Replicas = next
-		}
-		if err := RestoreProxyRoute(ctx, &route, client, &nopLogger{}); err != nil {
-			return err
-		}
-	}
-	put := func(records map[string]*Instance) {
-		for key, inst := range records {
-			if state.Mode == ModeBlueGreen {
-				state.Slots[key] = inst
-			} else {
-				state.Replicas[key] = inst
+		if rolling {
+			if err := accept(map[string]*Instance{key: candidate}); err != nil {
+				return err
 			}
 		}
 	}
-	put(next)
-	stamp := state.SecretTxnID
-	txn.Stamp(state)
-	for _, inst := range old {
-		state.Retiring = append(state.Retiring, inst)
-	}
-	cleanup = false
-	if err := Store(state); err != nil {
-		if client != nil {
-			primary, backends := healthyTargets(old)
-			if restoreErr := client.Switch(context.WithoutCancel(ctx), state.AppName, primary, backends...); restoreErr != nil {
-				cleanup = false
-				return errors.Join(err, restoreErr)
-			}
+	if !rolling {
+		if err := accept(next); err != nil {
+			return err
 		}
-		put(old)
-		state.SecretTxnID = stamp
-		for _, inst := range next {
-			state.Retiring = append(state.Retiring, inst)
-		}
-		restoreErr := Store(state)
-		cleanup = restoreErr == nil
-		return errors.Join(err, restoreErr)
 	}
-	cleanup = false
+	changed = false
+	processes = nil
 	var stopErrors []error
-	for _, inst := range old {
+	for _, inst := range instances {
 		if state.Mode == ModeWorker {
 			_, _, err := GracefulStopWorker(inst, worker.signal(), worker.drain(), nil)
 			stopErrors = append(stopErrors, err)

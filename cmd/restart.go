@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -122,7 +123,11 @@ func restartAppInfoLocked(appInfo *app.AppInfo) error {
 			if err != nil {
 				return err
 			}
-			worker, err = buildWorkerEngine(appInfo, appInfo.Name, cfg, nil, len(state.Replicas), "", nil, &colorLogger{})
+			strategy := project.StrategyClassic
+			if cfg != nil && cfg.Deploy != nil {
+				strategy = cfg.Deploy.Strategy
+			}
+			worker, err = buildWorkerEngine(appInfo, appInfo.Name, cfg, nil, len(state.Replicas), strategy, nil, &colorLogger{})
 			if err != nil {
 				return err
 			}

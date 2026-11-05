@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
@@ -465,7 +467,22 @@ func restartWorkerSecrets(ctx context.Context, state *DeployState, slot string, 
 		return err
 	}
 	defer desired.Close()
-	err = RestartSecretInstances(ctx, state, desired, &Worker{Signal: sig, Grace: grace}, slot)
+	dir := app.AppDirectories()[state.AppName]
+	if dir == "" {
+		return phelixerr.New(phelixerr.CodeConfiguration, "worker project directory is missing")
+	}
+	cfg, err := project.Load(dir)
+	if err != nil {
+		return err
+	}
+	ps, hs := cfg.Process.Resolve(), cfg.Health.ResolveWorker()
+	worker := &Worker{AppName: state.AppName, AppID: state.AppID, Dir: dir, Signal: sig, Grace: grace,
+		StartupTimeout: ps.StartupTimeout, Health: WorkerGate{Mode: hs.Mode, Command: hs.Command, Timeout: hs.Timeout}}
+	if cfg.Deploy != nil {
+		worker.Strategy = cfg.Deploy.Strategy
+		worker.DrainTimeout = cfg.Deploy.Rolling.Resolve().DrainTimeout
+	}
+	err = RestartSecretInstances(ctx, state, desired, worker, slot)
 	outcome := secrets.ApplyRestartSucceeded
 	if slot != "" {
 		outcome = secrets.ApplyRestartPartial
