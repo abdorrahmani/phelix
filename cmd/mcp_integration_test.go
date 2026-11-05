@@ -53,13 +53,21 @@ func TestMCPStdioServer_AcceptanceWorkflow(t *testing.T) {
 
 	proc := exec.Command(bin, "mcp", "serve", "--stdio")
 	proc.Env = append(os.Environ(), "HOME="+home, "PHELIX_DATA_DIR="+dataDir)
-	var stderr strings.Builder
-	proc.Stderr = &stderr
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	proc.Stderr = stderr
+	readStderr := func() string {
+		data, _ := os.ReadFile(stderr.Name())
+		return string(data)
+	}
 
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "phelix-itest", Version: "0"}, nil)
 	cs, err := client.Connect(ctx, &mcpsdk.CommandTransport{Command: proc}, nil)
 	if err != nil {
-		t.Fatalf("connect to stdio server: %v (stderr: %s)", err, stderr.String())
+		t.Fatalf("connect to stdio server: %v (stderr: %s)", err, readStderr())
 	}
 	defer func() {
 		_ = cs.Close()
@@ -159,8 +167,8 @@ func TestMCPStdioServer_AcceptanceWorkflow(t *testing.T) {
 	}
 
 	// Diagnostics went to stderr, never stdout (stdout decoded cleanly above).
-	if !strings.Contains(stderr.String(), "serving on stdio") {
-		t.Fatalf("expected a readiness diagnostic on stderr, got: %q", stderr.String())
+	if !strings.Contains(readStderr(), "serving on stdio") {
+		t.Fatalf("expected a readiness diagnostic on stderr, got: %q", readStderr())
 	}
 }
 

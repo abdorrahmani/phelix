@@ -150,13 +150,18 @@ func newHarness(t *testing.T, config string) *harness {
 
 // testProc adapts exec.Cmd to deploy.Process for the supervisor's handle.
 type testProc struct {
-	cmd *exec.Cmd
+	cmd      *exec.Cmd
+	waitOnce sync.Once
+	waitErr  error
 }
 
 func (p *testProc) PID() int                   { return p.cmd.Process.Pid }
 func (p *testProc) Signal(sig os.Signal) error { return p.cmd.Process.Signal(sig) }
 func (p *testProc) Kill() error                { return p.cmd.Process.Kill() }
-func (p *testProc) Wait() error                { return p.cmd.Wait() }
+func (p *testProc) Wait() error {
+	p.waitOnce.Do(func() { p.waitErr = p.cmd.Wait() })
+	return p.waitErr
+}
 
 func (h *harness) writeConfig(config string) {
 	h.t.Helper()

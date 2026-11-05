@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -269,17 +270,16 @@ func TestStreamRateEscalation(t *testing.T) {
 type rateBudgetBackend struct {
 	pb.UnimplementedPhelixServiceServer
 
-	mu       chan struct{} // closed once; guards attempts
-	attempts int
+	attempts atomic.Int64
 	reject   error
 }
 
 func newRateBudgetBackend(reject error) *rateBudgetBackend {
-	return &rateBudgetBackend{mu: make(chan struct{}), reject: reject}
+	return &rateBudgetBackend{reject: reject}
 }
 
 func (b *rateBudgetBackend) MonitorStream(stream pb.PhelixService_MonitorStreamServer) error {
-	b.attempts++
+	b.attempts.Add(1)
 	// Drain in the background so the client's sends succeed.
 	go func() {
 		for {
@@ -319,16 +319,16 @@ func TestMonitorStreamLoop_BackoffsOnRateBudget(t *testing.T) {
 
 	// Within the window: exactly one attempt.
 	time.Sleep(150 * time.Millisecond)
-	if n := backend.attempts; n != 1 {
+	if n := backend.attempts.Load(); n != 1 {
 		t.Fatalf("stream re-opened inside the budget window (attempts=%d, want 1)", n)
 	}
 
 	// After the window: a second attempt arrives.
 	resumed := waitForCondition(2*time.Second, 20*time.Millisecond, func() bool {
-		return backend.attempts >= 2
+		return backend.attempts.Load() >= 2
 	})
 	if !resumed {
-		t.Fatalf("stream did not resume after the budget window elapsed (attempts=%d)", backend.attempts)
+		t.Fatalf("stream did not resume after the budget window elapsed (attempts=%d)", backend.attempts.Load())
 	}
 
 	close(c.done)
@@ -343,11 +343,11 @@ func TestMonitorStreamLoop_BackoffsOnRateBudget(t *testing.T) {
 // error, counting attempts.
 type capBackend struct {
 	pb.UnimplementedPhelixServiceServer
-	attempts int
+	attempts atomic.Int64
 }
 
 func (b *capBackend) MonitorStream(pb.PhelixService_MonitorStreamServer) error {
-	b.attempts++
+	b.attempts.Add(1)
 	return status.Error(codes.ResourceExhausted, "account has too many concurrent agent streams")
 }
 
@@ -374,7 +374,7 @@ func TestMonitorStreamLoop_CapErrorSurfacesWithoutStorm(t *testing.T) {
 	// The normal cadence would re-open within ~2s; within the cap window
 	// there must be exactly one attempt.
 	time.Sleep(150 * time.Millisecond)
-	if n := backend.attempts; n != 1 {
+	if n := backend.attempts.Load(); n != 1 {
 		t.Fatalf("cap error retried at the fast cadence (attempts=%d, want 1)", n)
 	}
 
@@ -390,11 +390,11 @@ func TestMonitorStreamLoop_CapErrorSurfacesWithoutStorm(t *testing.T) {
 // timeout, counting sessions.
 type idleTimeoutBackend struct {
 	pb.UnimplementedPhelixServiceServer
-	attempts int
+	attempts atomic.Int64
 }
 
 func (b *idleTimeoutBackend) MonitorStream(stream pb.PhelixService_MonitorStreamServer) error {
-	b.attempts++
+	b.attempts.Add(1)
 	go func() {
 		for {
 			if _, err := stream.Recv(); err != nil {
@@ -431,10 +431,10 @@ func TestMonitorStreamLoop_IdleTimeoutReconnectsNormally(t *testing.T) {
 	// Two attempts must happen within the normal 2s cadence (stream runs
 	// ~30ms + monitorStreamRetryDelay 2s ≈ 2.1s per cycle).
 	resumed := waitForCondition(6*time.Second, 50*time.Millisecond, func() bool {
-		return backend.attempts >= 2
+		return backend.attempts.Load() >= 2
 	})
 	if !resumed {
-		t.Fatalf("idle-timeout did not reconnect on the normal cadence (attempts=%d)", backend.attempts)
+		t.Fatalf("idle-timeout did not reconnect on the normal cadence (attempts=%d)", backend.attempts.Load())
 	}
 
 	close(c.done)

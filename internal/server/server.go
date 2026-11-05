@@ -23,9 +23,10 @@ import (
 )
 
 var (
-	agentID     string
-	serverInfo  *Info
-	agentIDFile string
+	agentID      string
+	serverInfo   *Info
+	serverInfoMu sync.RWMutex
+	agentIDFile  string
 
 	// agentIDMu serializes agent-ID file reads and writes. Without it, two
 	// goroutines racing to initialize the runtime could both observe a
@@ -107,7 +108,8 @@ func getProcessCount() (uint32, error) {
 
 // Initialize initializes the server information
 func Initialize() error {
-	if _, err := loadOrGenerateAgentID(); err != nil {
+	id, err := loadOrGenerateAgentID()
+	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeServer, "failed to load/generate agent ID", err)
 	}
 
@@ -185,9 +187,9 @@ func Initialize() error {
 		status = "critical"
 	}
 
-	serverInfo = &Info{
-		ID:            agentID,
-		AgentID:       agentID,
+	info := &Info{
+		ID:            id,
+		AgentID:       id,
 		Hostname:      hostname,
 		IPv4:          ipv4,
 		IPv6:          ipv6,
@@ -209,10 +211,13 @@ func Initialize() error {
 	}
 
 	if s := EnsureSettings(); s != nil {
-		serverInfo.Connection = &s.Connection
-		serverInfo.Alert = &s.Alert
-		serverInfo.Security = &s.Security
+		info.Connection = &s.Connection
+		info.Alert = &s.Alert
+		info.Security = &s.Security
 	}
+	serverInfoMu.Lock()
+	serverInfo = info
+	serverInfoMu.Unlock()
 
 	return nil
 }
@@ -309,11 +314,19 @@ func loadOrGenerateAgentID() (string, error) {
 
 // GetServerInfo returns the server information
 func GetServerInfo() *Info {
-	return serverInfo
+	serverInfoMu.RLock()
+	defer serverInfoMu.RUnlock()
+	if serverInfo == nil {
+		return nil
+	}
+	info := *serverInfo
+	return &info
 }
 
 // GetAgentID returns the persistent identity of this Phelix runtime.
 func GetAgentID() string {
+	agentIDMu.Lock()
+	defer agentIDMu.Unlock()
 	return agentID
 }
 
@@ -321,7 +334,7 @@ func GetAgentID() string {
 // agent ID, not a host-derived machine ID. Backends must resolve it by
 // agent_id to their internal servers.id.
 func GetServerID() string {
-	return agentID
+	return GetAgentID()
 }
 
 // CollectMetrics collects current server metrics
@@ -361,6 +374,7 @@ func CollectMetrics() (*Metrics, error) {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get process count", err)
 	}
 
+	serverInfoMu.Lock()
 	if serverInfo != nil {
 		status := "healthy"
 		if memInfo.UsedPercent > 90 || diskInfo.UsedPercent > 90 {
@@ -371,6 +385,7 @@ func CollectMetrics() (*Metrics, error) {
 		}
 		serverInfo.Status = status
 	}
+	serverInfoMu.Unlock()
 
 	var swapPercent float64
 	if swapInfo.Total > 0 {
@@ -378,7 +393,7 @@ func CollectMetrics() (*Metrics, error) {
 	}
 
 	return &Metrics{
-		ServerID:         agentID,
+		ServerID:         GetAgentID(),
 		UsedMemory:       memInfo.Used,
 		FreeMemory:       memInfo.Free,
 		MemoryPercent:    memInfo.UsedPercent,
