@@ -86,6 +86,7 @@ type ResolvedVersion struct {
 // becomes reality is decided by the deployment engine's own journal, never by
 // this record.
 type PendingTxn struct {
+	Runtime      string            `json:"runtime,omitempty"`
 	TxnID        string            `json:"txn_id"`
 	DeploymentID string            `json:"deployment_id,omitempty"`
 	Bindings     []Binding         `json:"bindings"`

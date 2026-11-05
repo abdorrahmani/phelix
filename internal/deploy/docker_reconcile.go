@@ -17,6 +17,11 @@ func KnownContainerIDs(state *DeployState) []string {
 		return nil
 	}
 	var ids []string
+	for _, inst := range state.Retiring {
+		if inst != nil && inst.ContainerID != "" {
+			ids = append(ids, inst.ContainerID)
+		}
+	}
 	for _, inst := range state.Slots {
 		if inst != nil && inst.ContainerID != "" {
 			ids = append(ids, inst.ContainerID)

@@ -117,6 +117,19 @@ func TestStopInstance_DockerRoutesToContainerStop(t *testing.T) {
 	}
 }
 
+func TestStopInstanceKeepsUncertainContainerRetirement(t *testing.T) {
+	for _, fd := range []*fakeIdentityDocker{
+		{inspectErr: errors.New("docker daemon unavailable")},
+		{inspectOut: "unreadable"},
+	} {
+		withIdentityRunner(t, fd.runner())
+		state := &DeployState{Retiring: []*Instance{{ContainerID: "unconfirmed"}}}
+		if err := drainSecretRetirements(state); err == nil || len(state.Retiring) != 1 {
+			t.Fatal("uncertain stop must keep retirement for retry")
+		}
+	}
+}
+
 func TestRollbackSourceForRuntime_PicksByRuntime(t *testing.T) {
 	if _, ok := RollbackSourceForRuntime(RuntimeDocker, "app", "id", 3).(*DockerVersionSource); !ok {
 		t.Fatal("docker runtime must resolve a DockerVersionSource")

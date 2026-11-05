@@ -423,7 +423,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	}
 	state.Replicas[key] = candidate
 	previousStamp := state.SecretTxnID
-	r.Secrets.Stamp(state)
+	r.Secrets.Stamp(state, old)
 	if err := r.persist(state); err != nil {
 		restoreReplica(state, key, old)
 		var compErr error

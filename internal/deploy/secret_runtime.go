@@ -91,6 +91,7 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 	}
 	var instances []*Instance
 	if state != nil && state.Mode != "classic" {
+		instances = append(instances, state.Retiring...)
 		for _, inst := range state.Slots {
 			if inst != nil && (inst.ContainerID != "" || InstanceAlive(inst)) {
 				instances = append(instances, inst)
@@ -106,6 +107,9 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 	}
 	live := false
 	for _, inst := range instances {
+		if inst == nil || inst.ContainerID == "" && !InstanceAlive(inst) {
+			continue
+		}
 		set, err := RuntimeSecrets(inst, bindings)
 		if err != nil {
 			return err
@@ -125,6 +129,11 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 // hasInstanceSecrets detects credentials still in use after bindings change.
 func hasInstanceSecrets(state *DeployState) bool {
 	if state != nil {
+		for _, inst := range state.Retiring {
+			if inst != nil && len(inst.SecretEnvs) > 0 {
+				return true
+			}
+		}
 		for _, group := range []map[string]*Instance{state.Slots, state.Replicas} {
 			for _, inst := range group {
 				if inst != nil && len(inst.SecretEnvs) > 0 {

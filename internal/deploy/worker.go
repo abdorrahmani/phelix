@@ -164,7 +164,7 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 	}
 
 	if w.SecretImports != nil {
-		w.Secrets, err = BeginSecretTxn(w.AppID, w.AppName, w.Telemetry.DeploymentID(), w.SecretImports)
+		w.Secrets, err = BeginSecretTxn(w.AppID, w.AppName, w.Telemetry.DeploymentID(), w.SecretImports, RuntimeNative)
 		if err != nil {
 			return err
 		}
@@ -309,7 +309,7 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 	oldStamp := state.SecretTxnID
 	journal.ReplacedFrom[key] = versionOf(old)
 	journal.UpdatedAt = time.Now()
-	w.Secrets.Stamp(state)
+	w.Secrets.Stamp(state, old)
 	if err := Store(state); err != nil {
 		_, _, _ = GracefulStopWorker(inst, w.signal(), w.grace(), proc)
 		restoreReplica(state, key, old)

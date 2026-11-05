@@ -31,7 +31,7 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 		instances = map[string]*Instance{slot: instances[slot]}
 	}
 	txn := &SecretTxn{AppName: state.AppName, ID: secrets.NewTxnID(), Set: desired}
-	if err := secrets.BeginTxn(state.AppID, &secrets.PendingTxn{TxnID: txn.ID, Bindings: desired.Bindings, Resolved: desired.Resolved}); err != nil {
+	if err := secrets.BeginTxn(state.AppID, &secrets.PendingTxn{TxnID: txn.ID, Bindings: desired.Bindings, Resolved: desired.Resolved, Runtime: state.Runtime}); err != nil {
 		return err
 	}
 	desired.LaunchTxnID = txn.ID
@@ -126,6 +126,9 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 	put(next)
 	stamp := state.SecretTxnID
 	txn.Stamp(state)
+	for _, inst := range old {
+		state.Retiring = append(state.Retiring, inst)
+	}
 	if err := Store(state); err != nil {
 		if client != nil {
 			primary, backends := healthyTargets(old)

@@ -636,7 +636,7 @@ func beginProjectSecrets(info *app.AppInfo, cfg *project.Config, deploymentID st
 	if cfg != nil && cfg.Secrets != nil {
 		imports = cfg.Secrets.Imports
 	}
-	return deploy.BeginSecretTxn(info.ID, info.Name, deploymentID, imports)
+	return deploy.BeginSecretTxn(info.ID, info.Name, deploymentID, imports, cfg.DeployRuntime())
 }
 
 // startClassicWithSecrets passes deployment values to the existing process manager.

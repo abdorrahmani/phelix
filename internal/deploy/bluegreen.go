@@ -386,6 +386,10 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	state.ActiveSlot = inactive
 	state.ActiveVersion = targetVer
 	bg.Secrets.Stamp(state)
+	if bg.Secrets != nil {
+		state.Retiring = append(state.Retiring, legacy...)
+		state.Retiring = append(state.Retiring, cloneInstance(state.Slots[oldActive]))
+	}
 	if err := bg.persist(state); err != nil {
 		compensated := false
 		if oldActive != "" && bg.ProxyClient != nil {

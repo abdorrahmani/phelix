@@ -20,7 +20,7 @@ func TestSecretRecoveryChecksRealProcesses(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			txnTestEnv(t)
 			seedSecret(t, "db", "candidate-credential")
-			txn, err := BeginSecretTxn(txnTestAppID, name, "dep-1", []secrets.Binding{{Secret: "db", Env: "DB"}})
+			txn, err := BeginSecretTxn(txnTestAppID, name, "dep-1", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -86,7 +86,7 @@ func TestSecretRecoveryChecksRealProcesses(t *testing.T) {
 func TestAcceptedWorkerRecoveryDoesNotRevert(t *testing.T) {
 	txnTestEnv(t)
 	seedSecret(t, "db", "accepted-value")
-	txn, err := BeginSecretTxn(txnTestAppID, "accepted-worker", "dep-1", []secrets.Binding{{Secret: "db", Env: "DB"}})
+	txn, err := BeginSecretTxn(txnTestAppID, "accepted-worker", "dep-1", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,5 +156,41 @@ func TestAcceptedCanaryRecoveryKeepsCandidate(t *testing.T) {
 	}
 	if targets := client.lastSwitchSet(); len(targets) != 1 || targets[0].Host != hostPort(candidate.Port) {
 		t.Fatal("recovery did not route traffic to accepted candidate")
+	}
+}
+
+func TestSecretRecoveryDrainsRecordedRetirements(t *testing.T) {
+	for _, mode := range []Mode{ModeRolling, ModeBlueGreen, ModeWorker} {
+		t.Run(string(mode), func(t *testing.T) {
+			txnTestEnv(t)
+			seedSecret(t, "db", "accepted-retirement-value")
+			txn, err := BeginSecretTxn(txnTestAppID, "retirement", "dep-1", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer txn.Set.Close()
+			old := startChildInstance(t, "0", 1)
+			current := startChildInstance(t, "0", 2)
+			state := &DeployState{AppName: txn.AppName, AppID: txnTestAppID, Mode: mode,
+				ActiveSlot: "0", Slots: map[string]*Instance{"0": &current.Instance},
+				Replicas: map[string]*Instance{"0": &current.Instance}}
+			txn.Stamp(state, &old.Instance, &current.Instance)
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			outcome, err := ReconcileSecretTxn(txn.AppName, txnTestAppID)
+			if err != nil || outcome != SecretTxnCommitted {
+				t.Fatalf("recovery: %s %v", outcome, err)
+			}
+			if InstanceAlive(&old.Instance) || !InstanceAlive(&current.Instance) {
+				t.Fatal("recovery must stop retired process and keep accepted process")
+			}
+			if len(mustLoad(t, txn.AppName).Retiring) != 0 {
+				t.Fatal("completed retirement remained in journal")
+			}
+			if outcome, err := ReconcileSecretTxn(txn.AppName, txnTestAppID); err != nil || outcome != SecretTxnNone {
+				t.Fatal("recovery must be idempotent", outcome, err)
+			}
+		})
 	}
 }

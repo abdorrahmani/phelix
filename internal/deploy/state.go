@@ -224,7 +224,8 @@ type DeployState struct {
 	// every durable write inside a deployment's secret window; the secret
 	// store's recovery reads it as the only evidence that a pending binding
 	// transaction was accepted. Empty outside a deployment.
-	SecretTxnID string `json:"secret_txn_id,omitempty"`
+	SecretTxnID string      `json:"secret_txn_id,omitempty"`
+	Retiring    []*Instance `json:"retiring,omitempty"`
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }

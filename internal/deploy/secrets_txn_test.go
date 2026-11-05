@@ -63,7 +63,7 @@ func TestBeginSecretTxnWritesDurableIntent(t *testing.T) {
 	txnTestEnv(t)
 	seedSecret(t, "db", "postgres://pinned-1")
 	imports := []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}
-	txn, err := BeginSecretTxn(txnTestAppID, "intent-app", "dep-1", imports)
+	txn, err := BeginSecretTxn(txnTestAppID, "intent-app", "dep-1", imports, RuntimeNative)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestBeginSecretTxnWritesDurableIntent(t *testing.T) {
 func TestBeginSecretTxnMissingSecretLeavesNoIntent(t *testing.T) {
 	txnTestEnv(t)
 	imports := []secrets.Binding{{Secret: "ghost", Env: "GHOST"}}
-	if _, err := BeginSecretTxn(txnTestAppID, "intent-app", "dep-1", imports); err == nil {
+	if _, err := BeginSecretTxn(txnTestAppID, "intent-app", "dep-1", imports, RuntimeNative); err == nil {
 		t.Fatal("pinning must fail on a missing secret")
 	}
 	st, err := secrets.Open(txnTestAppID)
@@ -105,7 +105,7 @@ func TestFinishSecretTxnCommitAndDiscard(t *testing.T) {
 	t.Run("success commits the candidates", func(t *testing.T) {
 		txnTestEnv(t)
 		seedSecret(t, "db", "value-a")
-		txn, err := BeginSecretTxn(txnTestAppID, "finish-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}})
+		txn, err := BeginSecretTxn(txnTestAppID, "finish-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative)
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
@@ -127,7 +127,7 @@ func TestFinishSecretTxnCommitAndDiscard(t *testing.T) {
 		if err := secrets.ReplaceBindings(txnTestAppID, []secrets.Binding{{Secret: "old", Env: "OLD"}}); err != nil {
 			t.Fatalf("seed bindings: %v", err)
 		}
-		txn, err := BeginSecretTxn(txnTestAppID, "finish-app", "dep-2", []secrets.Binding{{Secret: "new", Env: "NEW"}})
+		txn, err := BeginSecretTxn(txnTestAppID, "finish-app", "dep-2", []secrets.Binding{{Secret: "new", Env: "NEW"}}, RuntimeNative)
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
@@ -152,7 +152,7 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 	t.Run("unstamped journal discards", func(t *testing.T) {
 		txnTestEnv(t)
 		seedSecret(t, "db", "value")
-		txn, err := BeginSecretTxn(txnTestAppID, "reconcile-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}})
+		txn, err := BeginSecretTxn(txnTestAppID, "reconcile-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative)
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
@@ -172,7 +172,7 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 	t.Run("stamped journal commits", func(t *testing.T) {
 		txnTestEnv(t)
 		seedSecret(t, "db", "value")
-		txn, err := BeginSecretTxn(txnTestAppID, "reconcile-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}})
+		txn, err := BeginSecretTxn(txnTestAppID, "reconcile-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative)
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
@@ -191,7 +191,7 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 	t.Run("missing journal discards", func(t *testing.T) {
 		txnTestEnv(t)
 		seedSecret(t, "db", "value")
-		if _, err := BeginSecretTxn(txnTestAppID, "nojournal-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}); err != nil {
+		if _, err := BeginSecretTxn(txnTestAppID, "nojournal-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative); err != nil {
 			t.Fatalf("begin: %v", err)
 		}
 		outcome, err := ReconcileSecretTxn("nojournal-app", txnTestAppID)
@@ -202,7 +202,7 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 	t.Run("unreadable journal retains and fails closed", func(t *testing.T) {
 		txnTestEnv(t)
 		seedSecret(t, "db", "value")
-		if _, err := BeginSecretTxn(txnTestAppID, "corrupt-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}); err != nil {
+		if _, err := BeginSecretTxn(txnTestAppID, "corrupt-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative); err != nil {
 			t.Fatalf("begin: %v", err)
 		}
 		home := os.Getenv("HOME")
@@ -227,7 +227,7 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 func TestPendingDeploymentRejectsStoreRotation(t *testing.T) {
 	txnTestEnv(t)
 	seedSecret(t, "db", "pin-time-value")
-	txn, err := BeginSecretTxn(txnTestAppID, "pin-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}})
+	txn, err := BeginSecretTxn(txnTestAppID, "pin-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestPendingDeploymentRejectsStoreRotation(t *testing.T) {
 func TestRollingDeployUsesPinnedValuesUniformly(t *testing.T) {
 	txnTestEnv(t)
 	seedSecret(t, "db", "uniform-value-3")
-	txn, err := BeginSecretTxn(txnTestAppID, "uniform-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}})
+	txn, err := BeginSecretTxn(txnTestAppID, "uniform-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}

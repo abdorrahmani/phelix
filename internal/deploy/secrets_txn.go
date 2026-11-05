@@ -29,7 +29,7 @@ type SecretTxn struct {
 // intent before anything about the deployment changes. The caller must hold
 // the app's deploy lock. The intent record holds bindings and versions
 // only; values stay in the returned context.
-func BeginSecretTxn(appID, appName, deploymentID string, imports []secrets.Binding) (*SecretTxn, error) {
+func BeginSecretTxn(appID, appName, deploymentID string, imports []secrets.Binding, runtime string) (*SecretTxn, error) {
 	if appID == "" || !appid.Valid(appID) {
 		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument, "deploy: cannot open a secret transaction for app %q", appName)
 	}
@@ -48,6 +48,7 @@ func BeginSecretTxn(appID, appName, deploymentID string, imports []secrets.Bindi
 	txn.Set = set
 	set.LaunchTxnID = txn.ID
 	pending := &secrets.PendingTxn{
+		Runtime:      runtime,
 		TxnID:        txn.ID,
 		DeploymentID: deploymentID,
 		Bindings:     set.Bindings,
@@ -72,10 +73,15 @@ func (t *SecretTxn) OverlayFor(envPath string) ([]string, error) {
 }
 
 // Stamp marks a state that accepts instances using this deployment's values.
-func (t *SecretTxn) Stamp(state *DeployState) {
+func (t *SecretTxn) Stamp(state *DeployState, retired ...*Instance) {
 	state.SecretTxnID = ""
 	if t != nil {
 		state.SecretTxnID = t.ID
+		for _, inst := range retired {
+			if inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
+				state.Retiring = append(state.Retiring, cloneInstance(inst))
+			}
+		}
 	}
 }
 
@@ -126,7 +132,7 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 	state, err := Load(appName)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if err := reclaimSecretLaunches(appName, st.Pending.TxnID, nil); err != nil {
+			if err := reclaimSecretLaunches(appName, st.Pending.TxnID, st.Pending.Runtime, nil); err != nil {
 				return SecretTxnRetained, err
 			}
 			if derr := secrets.DiscardTxn(appID); derr != nil {
@@ -146,7 +152,10 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 				return SecretTxnRetained, err
 			}
 		}
-		if err := reclaimSecretLaunches(appName, st.Pending.TxnID, state); err != nil {
+		if err := reclaimSecretLaunches(appName, st.Pending.TxnID, state.Runtime, state); err != nil {
+			return SecretTxnRetained, err
+		}
+		if err := drainSecretRetirements(state); err != nil {
 			return SecretTxnRetained, err
 		}
 		if state.WorkerRollout != nil && state.WorkerRollout.Status != WorkerRolloutDone {
@@ -161,13 +170,54 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		}
 		return SecretTxnCommitted, nil
 	}
-	if err := reclaimSecretLaunches(appName, st.Pending.TxnID, nil); err != nil {
+	runtime := st.Pending.Runtime
+	if runtime == "" {
+		runtime = state.Runtime
+	}
+	if err := reclaimSecretLaunches(appName, st.Pending.TxnID, runtime, nil); err != nil {
 		return SecretTxnRetained, err
 	}
 	if derr := secrets.DiscardTxn(appID); derr != nil {
 		return SecretTxnRetained, derr
 	}
 	return SecretTxnDiscarded, nil
+}
+
+// drainSecretRetirements finishes stops recorded with the replacement acceptance.
+func drainSecretRetirements(state *DeployState) error {
+	if len(state.Retiring) == 0 {
+		return nil
+	}
+	serving := state.Replicas
+	if state.Mode == ModeBlueGreen {
+		serving = map[string]*Instance{state.ActiveSlot: state.ActiveInstance()}
+		if state.Canary != nil && state.Canary.Status == CanaryRunning {
+			serving[state.Canary.Slot] = state.Slots[state.Canary.Slot]
+		}
+	}
+	for _, retired := range state.Retiring {
+		if retired == nil {
+			continue
+		}
+		inUse := false
+		for _, inst := range serving {
+			if inst != nil && ((retired.ContainerID != "" && retired.ContainerID == inst.ContainerID) || (retired.ContainerID == "" && retired.PID == inst.PID)) {
+				inUse = true
+			}
+		}
+		if inUse {
+			continue
+		}
+		if state.Mode == ModeWorker {
+			if _, _, err := GracefulStopWorker(retired, nil, 3*time.Second, nil); err != nil {
+				return err
+			}
+		} else if report := stopInstance(context.Background(), retired, 3*time.Second, 0); !report.Exited {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "cannot stop retired secret instance")
+		}
+	}
+	state.Retiring = nil
+	return Store(state)
 }
 
 // recoverAcceptedSecretCanary preserves an accepted candidate across interrupted rollouts.

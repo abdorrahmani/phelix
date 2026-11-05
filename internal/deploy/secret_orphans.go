@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"time"
@@ -15,7 +14,7 @@ import (
 )
 
 // reclaimSecretLaunches stops tagged launches that the journal never accepted.
-func reclaimSecretLaunches(appName, txnID string, accepted *DeployState) error {
+func reclaimSecretLaunches(appName, txnID, runtime string, accepted *DeployState) error {
 	keepPIDs := map[int]bool{}
 	keepContainers := map[string]bool{}
 	if accepted != nil {
@@ -24,7 +23,9 @@ func reclaimSecretLaunches(appName, txnID string, accepted *DeployState) error {
 				if inst == nil || inst.Status != "running" && inst.Status != "replacing" {
 					continue
 				}
-				keepPIDs[inst.PID] = true
+				if inst.ContainerID == "" && InstanceAlive(inst) {
+					keepPIDs[inst.PID] = true
+				}
 				if inst.ContainerID != "" {
 					keepContainers[inst.ContainerID] = true
 				}
@@ -74,16 +75,13 @@ func reclaimSecretLaunches(appName, txnID string, accepted *DeployState) error {
 			}
 		}
 	}
-	if _, err := exec.LookPath("docker"); err != nil {
+	if runtime != RuntimeDocker {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := execDockerRunner(ctx, "ps", "-a", "--no-trunc", "--filter", "label="+DockerLabelApp+"="+appName, "--filter", "label=phelix.secret-txn="+txnID, "--format", "{{.ID}}")
 	if err != nil {
-		if accepted == nil || accepted.Runtime != RuntimeDocker {
-			return nil
-		}
 		return err
 	}
 	for _, id := range strings.Fields(out) {

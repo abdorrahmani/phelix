@@ -263,7 +263,11 @@ func pidAlive(pid int) bool {
 		return false
 	}
 	running, err := p.IsRunning()
-	return err == nil && running
+	if err != nil || !running {
+		return false
+	}
+	status, err := p.Status()
+	return err != nil || status != "Z"
 }
 
 // GracefulStop sends SIGTERM to the process and waits up to grace for it to

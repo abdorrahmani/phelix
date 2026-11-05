@@ -58,10 +58,20 @@ func dockerProcessByID(containerID string) Process {
 // was stale so an unrelated container was protected) — matching stopByPID's
 // contract so the deploy flow treats both runtimes identically.
 func stopByContainerID(ctx context.Context, containerID string, grace time.Duration, inFlight int64) ShutdownReport {
-	proc := dockerProcessByID(containerID)
-	if proc == nil {
+	verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := dockerIdentityRunner(verifyCtx, "inspect", "--format", "{{.State.Running}}|{{index .Config.Labels \""+DockerLabelManaged+"\"}}", containerID)
+	if err != nil {
+		return ShutdownReport{Exited: isDockerNotRunning(err), InFlight: inFlight}
+	}
+	running, managed, ok := strings.Cut(strings.TrimSpace(out), "|")
+	if !ok || (running != "true" && running != "false") {
+		return ShutdownReport{InFlight: inFlight}
+	}
+	if running == "false" || managed != "true" {
 		return ShutdownReport{Exited: true, InFlight: inFlight}
 	}
+	proc := &dockerProcess{id: containerID, run: dockerIdentityRunner}
 	report, _ := GracefulStop(ctx, proc, grace, inFlight)
 	return report
 }
