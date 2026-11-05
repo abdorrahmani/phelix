@@ -287,6 +287,7 @@ type ShutdownReport struct {
 	Exited      bool
 	InFlight    int64
 	Elapsed     time.Duration
+	waitErr     error
 }
 
 type unconfirmedExit struct{ error }
@@ -329,6 +330,7 @@ func GracefulStopSignal(sig os.Signal, ctx context.Context, proc Process, grace 
 
 	select {
 	case err := <-waitCh:
+		report.waitErr = err
 		var unknown *unconfirmedExit
 		if errors.As(err, &unknown) {
 			report.Elapsed = time.Since(start)
@@ -350,6 +352,7 @@ func GracefulStopSignal(sig os.Signal, ctx context.Context, proc Process, grace 
 	report.ForceKilled = true
 	select {
 	case err := <-waitCh:
+		report.waitErr = err
 		var unknown *unconfirmedExit
 		if errors.As(err, &unknown) {
 			report.Elapsed = time.Since(start)

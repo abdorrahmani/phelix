@@ -159,7 +159,7 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 			_, _, err := GracefulStopWorker(inst, worker.signal(), worker.drain(), nil)
 			stopErrors = append(stopErrors, err)
 		} else {
-			stopRetiredInstances(ctx, []*Instance{inst}, 3*time.Second, 0, &nopLogger{})
+			stopErrors = append(stopErrors, stopRetiredInstances(ctx, []*Instance{inst}, 3*time.Second, 0, &nopLogger{}))
 		}
 	}
 	return errors.Join(stopErrors...)

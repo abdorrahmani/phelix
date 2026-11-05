@@ -25,7 +25,7 @@ import (
 // longer routes to them — i.e. after the new strategy's first successful
 // membership update. Processes are verified by executable path before being
 // signalled, so a stale record can never kill an unrelated process.
-func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.Duration, inFlight int64, log Logger) {
+func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.Duration, inFlight int64, log Logger) error {
 	if log == nil {
 		log = &nopLogger{}
 	}
@@ -36,6 +36,9 @@ func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.D
 
 		log.Stepf("stopping retired %q instance (%s) from previous strategy", inst.Slot, instanceRef(inst))
 		report := stopInstance(ctx, inst, grace, inFlight)
+		if !report.Exited {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm retired instance stopped")
+		}
 
 		if report.ForceKilled {
 			log.Warnf("retired instance %q ignored SIGTERM; SIGKILL applied", inst.Slot)
@@ -44,6 +47,7 @@ func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.D
 		inst.Status = "stopped"
 		inst.PID = 0
 	}
+	return nil
 }
 
 // InstanceAlive reports whether inst's recorded process is alive AND still

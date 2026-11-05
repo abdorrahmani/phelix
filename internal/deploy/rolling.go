@@ -233,7 +233,9 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		if !progressed && migrated && r.Secrets == nil {
 			// First replacement healthy and in rotation: the previous
 			// strategy's instances are out of the serving path. Drain them.
-			stopRetiredInstances(ctx, legacy, grace, r.inFlight(r.AppName), log)
+			if err := stopRetiredInstances(ctx, legacy, grace, r.inFlight(r.AppName), log); err != nil {
+				return err
+			}
 			legacy = nil
 		}
 		progressed = true
@@ -246,7 +248,9 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	// from the backend set by the first membership update; retire them here so
 	// a --replicas shrink never leaves orphaned old processes behind.
 	if r.Secrets == nil {
-		r.stopSurplusReplicas(ctx, surplus, grace)
+		if err := r.stopSurplusReplicas(ctx, surplus, grace); err != nil {
+			return err
+		}
 	}
 
 	if state.Health == nil {
@@ -620,23 +624,8 @@ func applyReplicaSet(existing map[string]*Instance, n int) []*Instance {
 
 // stopSurplusReplicas drains instances removed by a --replicas shrink. By the
 // time this runs, a successful membership update has already excluded them.
-func (r *Rolling) stopSurplusReplicas(ctx context.Context, surplus []*Instance, grace time.Duration) {
-	if len(surplus) == 0 {
-		return
-	}
-	log := r.logger()
-	for _, inst := range surplus {
-		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
-			continue
-		}
-		log.Stepf("stopping surplus replica %s (pid %d) removed by shrink", inst.Slot, inst.PID)
-		report := stopInstance(ctx, inst, grace, 0)
-		if report.ForceKilled {
-			log.Warnf("surplus replica %s ignored SIGTERM; SIGKILL applied", inst.Slot)
-		}
-		inst.PID = 0
-		inst.Status = "stopped"
-	}
+func (r *Rolling) stopSurplusReplicas(ctx context.Context, surplus []*Instance, grace time.Duration) error {
+	return stopRetiredInstances(ctx, surplus, grace, 0, r.logger())
 }
 
 // checkEnrolled asks the daemon whether this app is already registered so the

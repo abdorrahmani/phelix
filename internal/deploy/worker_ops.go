@@ -112,7 +112,7 @@ func GracefulStopWorker(inst *Instance, sig os.Signal, grace time.Duration, held
 		proc = &pidProcess{pid: inst.PID, proc: p}
 	}
 	report, stopErr = GracefulStopSignal(sig, context.Background(), proc, grace, -1)
-	waitErr = proc.Wait()
+	waitErr = report.waitErr
 	return report, waitErr, stopErr
 }
 
@@ -127,20 +127,23 @@ func StopWorkerReplica(state *DeployState, slot string, sig os.Signal, grace tim
 		return ShutdownReport{Exited: true}, nil
 	}
 	if !WorkerInstanceAlive(inst) {
-		inst.Status = "stopped"
-		_ = Store(state)
-		return ShutdownReport{Exited: true}, nil
+		inst.Status, inst.PID = "stopped", 0
+		return ShutdownReport{Exited: true}, Store(state)
 	}
 	inst.Status = "stopping"
-	_ = Store(state)
+	if err := Store(state); err != nil {
+		return ShutdownReport{}, err
+	}
 	report, waitErr, stopErr := GracefulStopWorker(inst, sig, grace, held)
-	inst.Status = "stopped"
+	if !report.Exited {
+		return report, stopErr
+	}
+	inst.Status, inst.PID = "stopped", 0
 	inst.LastExitAt = time.Now()
 	code, reason := exitCodeOf(waitErr)
 	inst.LastExitCode = code
 	inst.LastExitReason = "stopped by phelix: " + reason
-	_ = Store(state)
-	return report, stopErr
+	return report, errors.Join(stopErr, Store(state))
 }
 
 // RecordInstanceExit writes the exit bookkeeping of a dead replica onto its

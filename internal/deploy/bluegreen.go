@@ -190,7 +190,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	// orphaned when this deploy overwrites their slot records. (The active
 	// slot is intentionally not rewritten here — a failed deploy must leave
 	// it byte-identical; a dead active PID is cleared after the switch.)
-	recoverStaleSlots(ctx, state, bg.AppName, grace, bg.inFlight(bg.AppName), log)
+	if err := recoverStaleSlots(ctx, state, bg.AppName, grace, bg.inFlight(bg.AppName), log); err != nil {
+		return err
+	}
 	if state.Slots[inactive] == nil {
 		state.Slots[inactive] = &Instance{Slot: inactive, Status: "stopped"}
 	}
@@ -471,7 +473,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	bg.Telemetry.PromoteCurrentVersion()
 	// Retired instances from a previous strategy are now excluded by a durable
 	// proxy/state commit and may be drained safely.
-	stopRetiredInstances(ctx, legacy, grace, bg.inFlight(bg.AppName), log)
+	if err := stopRetiredInstances(ctx, legacy, grace, bg.inFlight(bg.AppName), log); err != nil {
+		return err
+	}
 	legacy = nil
 
 	if oldActive != "" {
@@ -574,7 +578,7 @@ func (bg *BlueGreen) storeState(state *DeployState) {
 // by the next deploy. Processes are verified by executable path before being
 // signalled so PID recycling can never make Phelix kill an unrelated victim.
 // Shared by the blue-green and canary-rollout engines.
-func recoverStaleSlots(ctx context.Context, state *DeployState, appName string, grace time.Duration, inFlight int64, log Logger) {
+func recoverStaleSlots(ctx context.Context, state *DeployState, appName string, grace time.Duration, inFlight int64, log Logger) error {
 	if log == nil {
 		log = &nopLogger{}
 	}
@@ -586,7 +590,7 @@ func recoverStaleSlots(ctx context.Context, state *DeployState, appName string, 
 		if inst.PID <= 0 && inst.ContainerID == "" {
 			continue
 		}
-		if !instanceAliveViaRuntime(inst) {
+		if inst.ContainerID == "" && !instanceAliveViaRuntime(inst) {
 			if inst.Status == "running" || inst.Status == "starting" {
 				inst.Status = "stopped"
 				inst.PID = 0
@@ -595,12 +599,16 @@ func recoverStaleSlots(ctx context.Context, state *DeployState, appName string, 
 		}
 		log.Stepf("recovering stale %s instance from previous deploy (slot %s, pid %d)", appName, name, inst.PID)
 		report := stopInstance(ctx, inst, grace, inFlight)
+		if !report.Exited {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm stale slot stopped")
+		}
 		if report.ForceKilled {
 			log.Warnf("stale slot %s ignored SIGTERM; SIGKILL applied", name)
 		}
 		inst.Status = "stopped"
 		inst.PID = 0
 	}
+	return nil
 }
 
 // failf logs err and returns it unchanged so Deploy's callers see a single

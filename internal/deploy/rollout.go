@@ -346,7 +346,9 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		ro.storeState(state)
 	}
 	ReapStaleInstances(state)
-	recoverStaleSlots(ctx, state, ro.AppName, grace, ro.inFlight(ro.AppName), log)
+	if err := recoverStaleSlots(ctx, state, ro.AppName, grace, ro.inFlight(ro.AppName), log); err != nil {
+		return err
+	}
 	ro.enrolled = ro.checkEnrolled(ctx)
 
 	canarySlot := state.InactiveSlot()
@@ -586,7 +588,9 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		// d. After the first successful switch the previous strategy's fleet
 		// is out of the serving path and may retire.
 		if i == 0 && len(legacy) > 0 {
-			stopRetiredInstances(ctx, legacy, grace, ro.inFlight(ro.AppName), log)
+			if err := stopRetiredInstances(ctx, legacy, grace, ro.inFlight(ro.AppName), log); err != nil {
+				return err
+			}
 			legacy = nil
 		}
 	}
