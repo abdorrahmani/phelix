@@ -148,7 +148,7 @@ func inspectSecretCoverage(info app.AppListItem, reconcile bool) (errRet error) 
 			}
 		}
 	} else if info.PID > 0 && info.Status == "running" {
-		instances = append(instances, &Instance{PID: info.PID, SecretEnvs: info.SecretEnvs})
+		instances = append(instances, &Instance{PID: info.PID, StartTicks: info.StartTicks, SecretEnvs: info.SecretEnvs})
 	}
 	live := false
 	for _, inst := range instances {

@@ -184,3 +184,28 @@ func TestRestoreSkipsOnlyAppWhoseGuardFails(t *testing.T) {
 		t.Fatal("blocked app prevented independent restore or leaked its lock")
 	}
 }
+
+func TestClassicStateRejectsRecycledPID(t *testing.T) {
+	isolateStateFile(t)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	manager := &AppManager{Apps: map[string]*AppInfo{"stale": {ID: "stale", PID: cmd.Process.Pid, StartTicks: 1, Status: "running"}}}
+	if err := manager.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.LoadState(); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Apps["stale"].PID != 0 || manager.Apps["stale"].Status == "running" {
+		t.Fatal("recycled PID was adopted")
+	}
+	if err := manager.StopApplication("stale"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatal("unrelated process was stopped")
+	}
+}

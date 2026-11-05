@@ -368,7 +368,7 @@ func appendSecretsChecks(results []checkResult, cfg *project.Config) []checkResu
 		}
 		results = append(results, check)
 	}
-	err = deploy.InspectSecretCoverage(app.AppListItem{ID: info.ID, Name: info.Name, PID: info.PID, Status: info.Status, SecretEnvs: info.SecretEnvs})
+	err = deploy.InspectSecretCoverage(app.AppListItem{ID: info.ID, Name: info.Name, PID: info.PID, StartTicks: info.StartTicks, Status: info.Status, SecretEnvs: info.SecretEnvs})
 	state, reason := secrets.SecurityOf(info.ID)
 	results = append(results, checkResult{name: "Secrets security", pass: err == nil, detail: string(state), message: reason})
 	return results

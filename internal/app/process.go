@@ -13,6 +13,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/port"
+	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/shirou/gopsutil/process"
@@ -35,7 +36,7 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 		return false
 	}
 
-	return m.isProcessRunning(app.PID)
+	return m.appProcessRunning(app)
 }
 
 // startApplicationProcess starts the application process and updates the app info
@@ -137,6 +138,12 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 
 	app.AutoStart = true
 	app.logFileHandle = f
+	identity, err := processex.Identity(app.PID)
+	if err != nil {
+		m.stopNewlyStarted(app)
+		return phelixerr.New(phelixerr.CodeProcessFailed, "cannot identify started application")
+	}
+	app.StartTicks = identity.StartTime
 
 	addr := fmt.Sprintf("127.0.0.1:%d", portNum)
 	deadline := time.Now().Add(startupListenTimeout)
@@ -146,14 +153,14 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 			listening = true
 			break
 		}
-		if !m.isProcessRunning(app.PID) {
+		if !m.appProcessRunning(app) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	if !listening {
-		if !m.isProcessRunning(app.PID) {
+		if !m.appProcessRunning(app) {
 			app.Status = "failed"
 			app.PID = 0
 
@@ -271,7 +278,7 @@ func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
 		return nil
 	}
 
-	if !m.isProcessRunning(app.PID) {
+	if !m.appProcessRunning(app) {
 		m.waitAndCloseLog(app)
 		return nil
 	}
@@ -429,4 +436,16 @@ func (m *AppManager) ensureLogDirectory() error {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create log directory %s", logDir)
 	}
 	return nil
+}
+
+// appProcessRunning rejects recycled process IDs before adoption or termination.
+func (m *AppManager) appProcessRunning(info *AppInfo) bool {
+	if !m.isProcessRunning(info.PID) {
+		return false
+	}
+	if info.StartTicks != 0 {
+		id, err := processex.Identity(info.PID)
+		return err == nil && id.StartTime == info.StartTicks
+	}
+	return true
 }

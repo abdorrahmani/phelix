@@ -32,6 +32,7 @@ type resourceTracker interface {
 
 // AppInfo represents the state of a single application
 type AppInfo struct {
+	StartTicks  uint64
 	SecretEnvs  []string
 	ID          string
 	Name        string
@@ -208,6 +209,7 @@ type AppStatus struct {
 
 // AppListItem represents a simplified view of an application for listing
 type AppListItem struct {
+	StartTicks  uint64
 	SecretEnvs  []string
 	ID          string
 	Name        string

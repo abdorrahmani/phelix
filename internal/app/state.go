@@ -77,6 +77,7 @@ func ensureDirectories() error {
 // SaveState saves the current state to disk
 func (m *AppManager) SaveState() error {
 	type SavedApp struct {
+		StartTicks  uint64           `json:"start_ticks,omitempty"`
 		SecretEnvs  []string         `json:"secret_envs,omitzero"`
 		ID          string           `json:"id"`
 		Name        string           `json:"name"`
@@ -99,6 +100,7 @@ func (m *AppManager) SaveState() error {
 	for id, app := range m.Apps {
 		savedApps[id] = SavedApp{
 			SecretEnvs:  app.SecretEnvs,
+			StartTicks:  app.StartTicks,
 			ID:          id,
 			Name:        app.Name,
 			PID:         app.PID,
@@ -161,6 +163,7 @@ func (m *AppManager) LoadState() error {
 	fileMutex.Unlock()
 
 	type SavedApp struct {
+		StartTicks  uint64           `json:"start_ticks,omitempty"`
 		SecretEnvs  []string         `json:"secret_envs,omitzero"`
 		ID          string           `json:"id"`
 		Name        string           `json:"name"`
@@ -192,11 +195,12 @@ func (m *AppManager) LoadState() error {
 	m.Apps = make(map[string]*AppInfo)
 	for id, saved := range savedApps {
 		// Check if process is still running
-		isRunning := m.isProcessRunning(saved.PID)
+		isRunning := m.appProcessRunning(&AppInfo{PID: saved.PID, StartTicks: saved.StartTicks})
 
 		// Create app info with appropriate status
 		appInfo := &AppInfo{
 			SecretEnvs:  saved.SecretEnvs,
+			StartTicks:  saved.StartTicks,
 			ID:          id,
 			Name:        saved.Name,
 			PID:         saved.PID,
@@ -216,7 +220,7 @@ func (m *AppManager) LoadState() error {
 				appInfo.resourceInstance = previous.resourceInstance
 				appInfo.logFileHandle = previous.logFileHandle
 				appInfo.releaseSecrets = previous.releaseSecrets
-			} else if !m.isProcessRunning(previous.PID) {
+			} else if !m.appProcessRunning(previous) {
 				m.waitAndCloseLog(previous)
 			}
 		}

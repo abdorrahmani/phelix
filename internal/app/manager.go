@@ -104,7 +104,7 @@ func (m *AppManager) StopApplication(id string) error {
 	}
 
 	if app.Status != "running" {
-		if !m.isProcessRunning(app.PID) {
+		if !m.appProcessRunning(app) {
 			app.Status = "stopped"
 			app.PID = 0
 			app.Cmd = nil
@@ -167,7 +167,7 @@ func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.Pi
 			}
 			defer desired.Close()
 		}
-		if m.isProcessRunning(app.PID) {
+		if m.appProcessRunning(app) {
 			names := app.SecretEnvs
 			if names == nil {
 				for _, b := range bindings {
@@ -193,7 +193,7 @@ func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.Pi
 		err = accept()
 	}
 	if err != nil {
-		if m.isProcessRunning(app.PID) {
+		if m.appProcessRunning(app) {
 			m.stopNewlyStarted(app)
 		}
 		if previous != nil {
@@ -225,6 +225,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 
 		appList = append(appList, AppListItem{
 			SecretEnvs:  app.SecretEnvs,
+			StartTicks:  app.StartTicks,
 			ID:          id,
 			Name:        app.Name,
 			Directory:   app.Directory,
