@@ -355,7 +355,7 @@ func (g *GoMatrixBuilder) buildInDocker(ctx context.Context, c Combination, resu
 	if c.Variant != "" {
 		args = append(args, "-e", "GOARM="+goarmFromVariant(c.Variant))
 	}
-	args = append(args, "-e", "CGO_ENABLED=0", image, "go", "build")
+	args = append(args, "-e", "CGO_ENABLED=0", image, "go", "build", "-v")
 
 	args = append(args, g.ExtraArgs...)
 	args = append(args, "-o", "/out/"+binName, mainPkg)

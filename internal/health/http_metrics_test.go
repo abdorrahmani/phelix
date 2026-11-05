@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 )
 
 const caddyMetricsFixture = `# HELP caddy_http_requests_total Total HTTP requests.
@@ -21,7 +22,7 @@ caddy_http_requests_total{code="200",handler="",host="other.example",server="s1"
 caddy_http_request_duration_seconds_bucket{code="200",handler="",host="example.com",le="0.005",server="s1"} 1
 caddy_http_request_duration_seconds_bucket{code="200",handler="",host="example.com",le="0.01",server="s1"} 3
 caddy_http_request_duration_seconds_bucket{code="200",handler="",host="example.com",le="+Inf",server="s1"} 3
-caddy_http_request_duration_seconds_bucket{code="400",handler="",host="example.com",le="0.1",server="s1"} 1
+caddy_http_request_duration_seconds_bucket{code="400",handler="",host="example.com",le="0.1",server="s1"} 2
 caddy_http_request_duration_seconds_bucket{code="400",handler="",host="example.com",le="+Inf",server="s1"} 2
 caddy_http_request_duration_seconds_bucket{code="500",handler="",host="example.com",le="0.25",server="s1"} 2
 caddy_http_request_duration_seconds_bucket{code="500",handler="",host="example.com",le="0.5",server="s1"} 6
@@ -69,9 +70,9 @@ func TestCaddyMetricsSourceScrape(t *testing.T) {
 	if first.HasRequestDelta {
 		t.Fatal("first successful scrape should establish baseline only")
 	}
-	if first.LatencyP50 != 175*time.Millisecond ||
-		first.LatencyP95 != 468750*time.Microsecond ||
-		first.LatencyP99 != 493750*time.Microsecond {
+	if first.LatencyP50 != 137500*time.Microsecond ||
+		first.LatencyP95 != 465625*time.Microsecond ||
+		first.LatencyP99 != 493125*time.Microsecond {
 		t.Fatalf("unexpected estimates: p50=%s p95=%s p99=%s", first.LatencyP50, first.LatencyP95, first.LatencyP99)
 	}
 
@@ -105,7 +106,8 @@ func TestHTTPMetricsConfigValidateAndURL(t *testing.T) {
 }
 
 func TestParseCaddySample(t *testing.T) {
-	families, err := (&expfmt.TextParser{}).TextToMetricFamilies(strings.NewReader(caddyMetricsFixture))
+	parser := expfmt.NewTextParser(model.UTF8Validation)
+	families, err := parser.TextToMetricFamilies(strings.NewReader(caddyMetricsFixture))
 	if err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}

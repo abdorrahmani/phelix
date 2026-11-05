@@ -14,6 +14,7 @@ import (
 
 	ioprom "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 )
 
 // HTTPMetricsSource reads HTTP-level metrics from a reverse proxy or another
@@ -123,7 +124,8 @@ func (s *CaddyMetricsSource) Scrape(ctx context.Context, cfg HTTPMetricsConfig) 
 		return nil, fmt.Errorf("Caddy metrics returned %s", resp.Status)
 	}
 
-	families, err := (&expfmt.TextParser{}).TextToMetricFamilies(io.LimitReader(resp.Body, 32<<20))
+	parser := expfmt.NewTextParser(model.UTF8Validation)
+	families, err := parser.TextToMetricFamilies(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil, fmt.Errorf("parse Caddy metrics: %w", err)
 	}
@@ -203,6 +205,13 @@ func parseCaddySample(observedAt time.Time, configuredDomain string, families ma
 
 		histogram := metric.GetHistogram()
 		count := histogram.GetSampleCount()
+		if histogram.SampleCount == nil {
+			for _, bucket := range histogram.GetBucket() {
+				if math.IsInf(bucket.GetUpperBound(), 1) {
+					count = bucket.GetCumulativeCount()
+				}
+			}
+		}
 		sample.histogramSize += count
 
 		switch statusCodeClass(labelValue(metric.GetLabel(), "code")) {
@@ -285,7 +294,7 @@ func estimateQuantile(sample caddySample, total, quantile float64) time.Duration
 				break
 			}
 			seconds := previousBoundary + (rank-previousCount)/(count-previousCount)*(boundary-previousBoundary)
-			return time.Duration(seconds * float64(time.Second))
+			return time.Duration(math.Round(seconds * float64(time.Second)))
 		}
 		previousBoundary = boundary
 		previousCount = count
