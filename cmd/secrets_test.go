@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,7 +22,6 @@ func TestReadSecretValueFromStdin(t *testing.T) {
 		{"multi-line body keeps inner newlines", "-----BEGIN-----\nMIIE\n-----END-----\n", "-----BEGIN-----\nMIIE\n-----END-----"},
 		{"no trailing newline stays untouched", "hunter2", "hunter2"},
 		{"only one trailing newline is removed", "hunter2\n\n", "hunter2\n"},
-		{"empty input is empty and rejected later", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,5 +61,17 @@ func TestReadSecretValueFromFileIsVerbatim(t *testing.T) {
 	}
 	if _, err := readSecretValue(filepath.Join(dir, "missing.txt")); err == nil {
 		t.Fatal("a missing file must fail")
+	}
+}
+
+func TestReadSecretValueRejectsInvalidInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "value")
+	for _, value := range []string{"", "invalid\x00value", strings.Repeat("x", secrets.MaxValueBytes+1)} {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readSecretValue(path); err == nil {
+			t.Fatal("invalid input accepted")
+		}
 	}
 }

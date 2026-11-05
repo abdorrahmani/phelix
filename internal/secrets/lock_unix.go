@@ -21,6 +21,10 @@ func acquireStoreLock(path string, exclusive bool) (*os.File, error) {
 	if err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "secrets: open lock %s", path)
 	}
+	if err := checkPrivateFile(f); err != nil {
+		f.Close()
+		return nil, err
+	}
 	how := syscall.LOCK_SH
 	if exclusive {
 		how = syscall.LOCK_EX
@@ -28,6 +32,13 @@ func acquireStoreLock(path string, exclusive bool) (*os.File, error) {
 	if err := syscall.Flock(int(f.Fd()), how); err != nil {
 		f.Close()
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "secrets: lock %s", path)
+	}
+	info, err := f.Stat()
+	current, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || !os.SameFile(info, current) {
+		releaseStoreLock(f)
+		f.Close()
+		return nil, phelixerr.New(phelixerr.CodeFilesystem, "secrets: lock file changed while waiting")
 	}
 	return f, nil
 }

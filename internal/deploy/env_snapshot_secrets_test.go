@@ -200,8 +200,23 @@ func TestMergeByKeyUnit(t *testing.T) {
 
 func TestMissingDeclaredSecretFailsLaunch(t *testing.T) {
 	secretsTestEnv(t)
+	if _, err := secrets.Set(secretsTestAppID, "ghost", "value"); err != nil {
+		t.Fatal(err)
+	}
 	if err := secrets.ReplaceBindings(secretsTestAppID, []secrets.Binding{{Secret: "ghost", Env: "GHOST"}}); err != nil {
-		t.Fatalf("bindings: %v", err)
+		t.Fatal(err)
+	}
+	st, err := secrets.Open(secretsTestAppID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(st.Secrets, "ghost")
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("PHELIX_DATA_DIR"), "secrets", secretsTestAppID+".json"), raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	path := writeSnapshot(t, secretsTestAppID, nil)
 	if _, err := EnvOverlayFromSnapshot(path, secretsTestAppID); err == nil {

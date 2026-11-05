@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,10 +41,10 @@ const storeSchemaVersion = 1
 // pruning a version removes its last copy.
 const maxVersions = 5
 
-// maxValueBytes caps the size of one secret value. Environment variables are
+// MaxValueBytes caps the size of one secret value. Environment variables are
 // a poor container for large payloads, and the cap keeps a mistaken file
 // upload from filling the store.
-const maxValueBytes = 1 << 20
+const MaxValueBytes = 1 << 20
 
 // Binding maps one secret onto one environment variable name. It is the same
 // shape the phelix.yaml secrets section declares, so no conversion is needed
@@ -202,10 +203,22 @@ func openStoreLocked(path, appID string) (*Store, error) {
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "secrets: open store %s", path)
 	}
 	defer f.Close()
+	if err := checkPrivateFile(f); err != nil {
+		return nil, err
+	}
 	var st Store
 	dec := json.NewDecoder(f)
 	if err := dec.Decode(&st); err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "secrets: store %s is unreadable", path)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return nil, phelixerr.New(phelixerr.CodeFilesystem, "secrets: store has trailing data")
+	}
+	if st.AppID != appID {
+		return nil, phelixerr.New(phelixerr.CodeFilesystem, "secrets: store belongs to another application")
+	}
+	if err := validateBindings(st.Bindings); err != nil {
+		return nil, err
 	}
 	if st.SchemaVersion != storeSchemaVersion {
 		return nil, phelixerr.Newf(phelixerr.CodeFilesystem, "secrets: store %s has unsupported schema version %d", path, st.SchemaVersion)
@@ -249,11 +262,12 @@ func persistLocked(st *Store, path string) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "secrets: replace store %s", path)
 	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
+	d, err := os.Open(dir)
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "secrets: open store directory", err)
 	}
-	return nil
+	defer d.Close()
+	return phelixerr.Wrap(phelixerr.CodeFilesystem, "secrets: sync store directory", d.Sync())
 }
 
 // withStoreLock runs fn while holding the app's store lock. exclusive picks
@@ -267,12 +281,19 @@ func withStoreLock(appID string, exclusive bool, fn func() error) error {
 	if err := os.MkdirAll(filepath.Dir(lp), 0o700); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "secrets: create secrets directory")
 	}
+	info, err := os.Lstat(filepath.Dir(lp))
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "secrets: inspect directory", err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return phelixerr.New(phelixerr.CodeFilesystem, "secrets: directory must have mode 0700 and must not be a symlink")
+	}
 	f, err := acquireStoreLock(lp, exclusive)
 	if err != nil {
 		return err
 	}
-	defer releaseStoreLock(f)
 	defer f.Close()
+	defer releaseStoreLock(f)
 	return fn()
 }
 
@@ -337,8 +358,8 @@ func ValidateSecretValue(value string) error {
 	if value == "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "secrets: value must not be empty\nHint: pass the value on stdin or with --from-file")
 	}
-	if len(value) > maxValueBytes {
-		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "secrets: value exceeds the %d byte limit", maxValueBytes)
+	if len(value) > MaxValueBytes {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "secrets: value exceeds the %d byte limit", MaxValueBytes)
 	}
 	for i := 0; i < len(value); i++ {
 		if value[i] == 0 {
@@ -371,6 +392,9 @@ type SetResult struct {
 // deployment.
 func Set(appID, name, value string) (SetResult, error) {
 	res := SetResult{Name: name}
+	if _, err := storePath(appID); err != nil {
+		return res, err
+	}
 	if err := validateSecretName(name); err != nil {
 		return res, err
 	}
@@ -460,6 +484,17 @@ func ReplaceBindings(appID string, bindings []Binding) error {
 		return err
 	}
 	return mutate(appID, func(st *Store) error {
+		if st.Pending != nil {
+			return phelixerr.New(phelixerr.CodeDeployLocked, "secrets: reconcile the pending deployment before changing bindings")
+		}
+		if err := CheckCollisions(appID, bindings); err != nil {
+			return err
+		}
+		for _, b := range bindings {
+			if _, err := st.resolve(b.Secret); err != nil {
+				return err
+			}
+		}
 		st.Bindings = append([]Binding(nil), bindings...)
 		return nil
 	})
@@ -478,6 +513,9 @@ func BeginTxn(appID string, txn *PendingTxn) error {
 	}
 	txn.UpdatedAt = time.Now().UTC()
 	return mutate(appID, func(st *Store) error {
+		if st.Pending != nil {
+			return phelixerr.New(phelixerr.CodeDeployLocked, "secrets: reconcile the pending deployment before starting another")
+		}
 		st.Pending = txn
 		return nil
 	})
@@ -531,6 +569,11 @@ func Resolve(ctx context.Context, appID, name string) (ResolvedSecret, error) {
 	if err != nil {
 		return ResolvedSecret{}, err
 	}
+	return st.resolve(name)
+}
+
+// resolve reads one value from a store already held by the caller.
+func (st *Store) resolve(name string) (ResolvedSecret, error) {
 	rec, ok := st.Secrets[name]
 	if !ok {
 		return ResolvedSecret{}, phelixerr.Newf(phelixerr.CodeSecretNotFound, "secrets: %s does not exist in this app's store", name)
@@ -551,6 +594,12 @@ func Resolve(ctx context.Context, appID, name string) (ResolvedSecret, error) {
 	value, err := env.DecryptData(ver.EncValue, key)
 	if err != nil {
 		return ResolvedSecret{}, phelixerr.Wrap(phelixerr.CodeEncryption, "secrets: decryption failed; the master key may have changed", err)
+	}
+	if err := ValidateSecretValue(value); err != nil {
+		return ResolvedSecret{}, phelixerr.New(phelixerr.CodeEncryption, "secrets: decrypted value is invalid")
+	}
+	if fingerprint(key, value) != ver.Fingerprint {
+		return ResolvedSecret{}, phelixerr.New(phelixerr.CodeEncryption, "secrets: stored fingerprint does not match the value")
 	}
 	return ResolvedSecret{Value: value, Fingerprint: ver.Fingerprint, Version: ver.Version}, nil
 }
@@ -640,3 +689,35 @@ func validateSecretName(name string) error {
 
 // secretNameRe mirrors the pattern in the phelix.yaml schema.
 var secretNameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+
+// checkPrivateFile refuses files that expose secret records to other users.
+func checkPrivateFile(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "secrets: inspect file", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return phelixerr.New(phelixerr.CodeFilesystem, "secrets: store and lock must be regular files with mode 0600")
+	}
+	return nil
+}
+
+// CheckCollisions refuses live environment entries that also have secret bindings.
+func CheckCollisions(appID string, bindings []Binding) error {
+	if err := validateBindings(bindings); err != nil {
+		return err
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	st, err := env.Instance.LoadEnvStore(appID)
+	if err != nil {
+		return err
+	}
+	for _, b := range bindings {
+		if _, exists := st.Entries[b.Env]; exists {
+			return phelixerr.Newf(phelixerr.CodeConfiguration, "secrets: %s also exists in the live environment store\nHint: remove it with phelix env remove %s before deploy or apply", b.Env, b.Env)
+		}
+	}
+	return nil
+}

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/abdorrahmani/phelix/internal/appid"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -86,6 +87,9 @@ func UnregisterResolvedValue(value string) {
 // CommittedBindings returns the active bindings of an application. An app
 // with no store yet simply has none.
 func CommittedBindings(appID string) ([]Binding, error) {
+	if !appid.Valid(appID) {
+		return nil, nil
+	}
 	st, err := Open(appID)
 	if err != nil {
 		return nil, err

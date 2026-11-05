@@ -118,7 +118,7 @@ func TestValueValidation(t *testing.T) {
 	cases := map[string]string{
 		"empty":     "",
 		"nul byte":  "pass\x00word",
-		"oversized": strings.Repeat("a", maxValueBytes+1),
+		"oversized": strings.Repeat("a", MaxValueBytes+1),
 	}
 	for name, value := range cases {
 		if _, err := Set(testAppID, "x", value); err == nil {
@@ -227,6 +227,9 @@ func TestTransactionCommitAndDiscard(t *testing.T) {
 	})
 	t.Run("discard leaves active bindings untouched", func(t *testing.T) {
 		testEnv(t)
+		if _, err := Set(testAppID, "old", "old-value"); err != nil {
+			t.Fatal(err)
+		}
 		if err := ReplaceBindings(testAppID, []Binding{{Secret: "old", Env: "OLD"}}); err != nil {
 			t.Fatalf("replace: %v", err)
 		}
@@ -328,8 +331,8 @@ func TestValidAppIDShape(t *testing.T) {
 	if !appid.Valid(testAppID) {
 		t.Fatal("a generated UUID-shaped id must validate")
 	}
-	if !appid.Valid("42") {
-		t.Fatal("the short identifiers workers use must validate")
+	if appid.Valid("42") {
+		t.Fatal("numeric identifiers must not validate")
 	}
 	for _, bad := range []string{"../../../etc", "..", ".", "a/b", "a\\b", "", "a:b"} {
 		if appid.Valid(bad) {

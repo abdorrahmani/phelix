@@ -35,51 +35,6 @@ type EnvStore struct {
 	Entries map[string]EnvEntry `json:"entries"`
 }
 
-// GetMasterKey retrieves the master key from ~/.phelix/master.key
-func GetMasterKey() ([]byte, error) {
-	homeDir := os.Getenv("HOME")
-	if homeDir == "" {
-		homeDir = os.Getenv("USERPROFILE") // For Windows
-	}
-
-	keyPath := filepath.Join(homeDir, ".phelix", "master.key")
-
-	// Try to read existing key
-	if data, err := os.ReadFile(keyPath); err == nil {
-		// Decode hex string to bytes
-		keyString := strings.TrimSpace(string(data))
-		// The key should be hex-encoded
-		if len(keyString) == 64 { // 32 bytes in hex
-			key := make([]byte, 32)
-			if _, err := fmt.Sscanf(keyString, "%x", &key); err == nil {
-				return key, nil
-			}
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read master key %s", keyPath)
-	}
-
-	// Generate new key if it doesn't exist
-	key, err := GenerateMasterKey()
-	if err != nil {
-		return nil, phelixerr.Wrap(phelixerr.CodeEncryption, "failed to generate master key", err)
-	}
-
-	// Create ~/.phelix directory if it doesn't exist
-	phelixDir := filepath.Dir(keyPath)
-	if err := os.MkdirAll(phelixDir, 0700); err != nil {
-		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create .phelix directory %s", phelixDir)
-	}
-
-	// Save key in hex format
-	keyHex := fmt.Sprintf("%x", key)
-	if err := os.WriteFile(keyPath, []byte(keyHex), 0600); err != nil {
-		return nil, phelixerr.Wrapf(phelixerr.CodeEncryption, err, "failed to save master key %s", keyPath)
-	}
-
-	return key, nil
-}
-
 // GetEnvFilePath returns the path to the app's .env.enc file
 func GetEnvFilePath(appID string) (string, error) {
 	homeDir := os.Getenv("HOME")

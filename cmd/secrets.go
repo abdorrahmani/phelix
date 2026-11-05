@@ -537,26 +537,32 @@ func sortSecretMetas(metas []secrets.SecretMeta) {
 // removed. A value is never taken from an argument, because arguments are
 // visible to every process on the host.
 func readSecretValue(fromFile string) (string, error) {
-	if strings.TrimSpace(fromFile) != "" {
-		raw, err := os.ReadFile(fromFile)
+	var reader io.Reader = os.Stdin
+	if fromFile != "" {
+		f, err := os.Open(fromFile)
 		if err != nil {
 			return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "secrets: cannot read %s", fromFile)
 		}
-		return string(raw), nil
-	}
-	if IsInteractive() {
+		defer f.Close()
+		reader = f
+	} else if IsInteractive() {
 		return "", phelixerr.New(phelixerr.CodeInvalidArgument,
-			"a secret value is read from stdin or --from-file, never from arguments or a prompt\nHint: phelix secrets set NAME < value.txt  or  phelix secrets set NAME --from-file key.txt")
+			"read a secret from stdin or --from-file\nHint: phelix secrets set NAME < value.txt")
 	}
-	data, err := io.ReadAll(os.Stdin)
+	data, err := io.ReadAll(io.LimitReader(reader, secrets.MaxValueBytes+3))
 	if err != nil {
-		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "secrets: cannot read stdin", err)
+		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "secrets: cannot read value", err)
 	}
 	value := string(data)
-	if strings.HasSuffix(value, "\r\n") {
-		value = strings.TrimSuffix(value, "\r\n")
-	} else if strings.HasSuffix(value, "\n") {
-		value = strings.TrimSuffix(value, "\n")
+	if fromFile == "" {
+		if strings.HasSuffix(value, "\r\n") {
+			value = strings.TrimSuffix(value, "\r\n")
+		} else {
+			value = strings.TrimSuffix(value, "\n")
+		}
+	}
+	if err := secrets.ValidateSecretValue(value); err != nil {
+		return "", err
 	}
 	return value, nil
 }

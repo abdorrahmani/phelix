@@ -3,7 +3,6 @@ package project
 import (
 	"regexp"
 	"strconv"
-	"strings"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
@@ -64,7 +63,7 @@ func (s *SecretsConfig) validate() error {
 		where := func(field string) string {
 			return "secrets.imports[" + strconv.Itoa(i) + "]." + field
 		}
-		secret := strings.TrimSpace(imp.Secret)
+		secret := imp.Secret
 		if secret == "" {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: %s is required\nHint: name the secret as it exists in the store, e.g. secret: database_url", where("secret"))
@@ -73,7 +72,7 @@ func (s *SecretsConfig) validate() error {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: invalid %s %q\nHint: use a lowercase name like database_url (letters, digits, hyphen, underscore; must start with a letter)", where("secret"), imp.Secret)
 		}
-		env := strings.TrimSpace(imp.Env)
+		env := imp.Env
 		if env == "" {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: %s is required\nHint: name the environment variable the app receives, e.g. env: DATABASE_URL", where("env"))

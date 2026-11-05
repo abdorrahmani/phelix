@@ -23,6 +23,9 @@ type PinnedSet struct {
 // registered. The resolved values are masked for this process and retained
 // with the application's coverage for the lifetime of the deployment.
 func PinBindings(ctx context.Context, appID string, bindings []Binding) (*PinnedSet, error) {
+	if err := CheckCollisions(appID, bindings); err != nil {
+		return nil, err
+	}
 	if len(bindings) == 0 {
 		return &PinnedSet{values: map[string]string{}}, nil
 	}
@@ -30,9 +33,19 @@ func PinBindings(ctx context.Context, appID string, bindings []Binding) (*Pinned
 		Bindings: append([]Binding(nil), bindings...),
 		values:   make(map[string]string, len(bindings)),
 	}
+	st, err := Open(appID)
+	if err != nil {
+		return nil, err
+	}
 	values := make([]string, 0, len(bindings))
 	for _, b := range bindings {
-		resolved, err := Resolve(ctx, appID, b.Secret)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if _, exists := set.values[b.Secret]; exists {
+			continue
+		}
+		resolved, err := st.resolve(b.Secret)
 		if err != nil {
 			return nil, phelixerr.Wrapf(phelixerr.CodeOf(err), err, "secrets: cannot pin %s (bound to %s)", b.Secret, b.Env)
 		}

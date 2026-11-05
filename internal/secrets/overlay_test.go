@@ -127,10 +127,7 @@ func TestClassicEnvOverlay(t *testing.T) {
 		ReleaseCoverage(testAppID)
 	})
 	t.Run("missing declared secret fails closed", func(t *testing.T) {
-		if err := ReplaceBindings(testAppID, []Binding{{Secret: "gone", Env: "GONE"}}); err != nil {
-			t.Fatalf("bindings: %v", err)
-		}
-		_, err := ClassicEnvOverlay(context.Background(), testAppID)
+		err := ReplaceBindings(testAppID, []Binding{{Secret: "gone", Env: "GONE"}})
 		if phelixerr.CodeOf(err) != phelixerr.CodeSecretNotFound {
 			t.Fatalf("expected SECRET_NOT_FOUND, got %v", err)
 		}

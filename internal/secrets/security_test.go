@@ -17,8 +17,8 @@ func TestSecurityStateIsPerApp(t *testing.T) {
 	if _, err := Set(badApp, "db", "value"); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	if err := ReplaceBindings(badApp, []Binding{{Secret: "ghost", Env: "GHOST"}}); err != nil {
-		t.Fatalf("bindings: %v", err)
+	if err := ReplaceBindings(badApp, []Binding{{Secret: "ghost", Env: "GHOST"}}); err == nil {
+		t.Fatal("missing import was accepted")
 	}
 	if _, err := OverlayForLaunch(context.Background(), badApp, []Binding{{Secret: "ghost", Env: "GHOST"}}); err == nil {
 		t.Fatal("the broken app must fail to resolve")
