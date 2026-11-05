@@ -229,7 +229,8 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 		return wrapDeployStep(err, "persist worker rollout journal")
 	}
 
-	env, err := launchOverlay(envPath, state.AppID, w.Secrets)
+	env, releaseOverlay, err := launchOverlay(envPath, state.AppID, w.Secrets)
+	defer releaseOverlay()
 	if err != nil {
 		return wrapDeployStep(err, "decrypt worker env snapshot")
 	}
@@ -522,7 +523,8 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 		if err != nil {
 			return w.recoveryRequired(state, journal, fmt.Sprintf("replica %s: relaunch v%d: %v", key, fromVer, err))
 		}
-		env, err := launchOverlay(envPath, state.AppID, previous)
+		env, releaseOverlay, err := launchOverlay(envPath, state.AppID, previous)
+		defer releaseOverlay()
 		if err != nil {
 			return err
 		}

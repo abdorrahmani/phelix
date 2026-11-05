@@ -49,7 +49,8 @@ func launchWorkerReplica(appName string, state *DeployState, slot string, txn *S
 	if inst.BinaryPath == "" {
 		return nil, phelixerr.Newf(phelixerr.CodeConfiguration, "worker: replica %s has no binary recorded (deploy first)", slot)
 	}
-	env, err := launchOverlay(inst.EnvPath, state.AppID, txn)
+	env, releaseOverlay, err := launchOverlay(inst.EnvPath, state.AppID, txn)
+	defer releaseOverlay()
 	if err != nil {
 		return nil, err
 	}

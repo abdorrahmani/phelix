@@ -183,7 +183,8 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		}
 		return phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact")
 	}
-	envOverlay, err := launchOverlay(envPath, r.AppID, r.Secrets)
+	envOverlay, releaseOverlay, err := launchOverlay(envPath, r.AppID, r.Secrets)
+	defer releaseOverlay()
 	if err != nil {
 		if migrated {
 			r.undoMigration(state, pre, log)

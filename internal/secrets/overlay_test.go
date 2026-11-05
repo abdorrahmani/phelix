@@ -20,7 +20,8 @@ func TestOverlayForLaunchAllOrNothing(t *testing.T) {
 			{Secret: "db_url", Env: "DATABASE_URL"},
 			{Secret: "ghost", Env: "GHOST_URL"},
 		}
-		overlay, err := OverlayForLaunch(context.Background(), testAppID, bindings)
+		overlay, releaseOverlay, err := OverlayForLaunch(context.Background(), testAppID, bindings)
+		defer releaseOverlay()
 		if err == nil {
 			t.Fatal("one missing secret must fail the overlay")
 		}
@@ -36,7 +37,8 @@ func TestOverlayForLaunchAllOrNothing(t *testing.T) {
 			{Secret: "db_url", Env: "DATABASE_URL"},
 			{Secret: "db_url", Env: "DB_DSN"},
 		}
-		overlay, err := OverlayForLaunch(context.Background(), testAppID, bindings)
+		overlay, releaseOverlay, err := OverlayForLaunch(context.Background(), testAppID, bindings)
+		defer releaseOverlay()
 		if err != nil {
 			t.Fatalf("overlay: %v", err)
 		}
@@ -56,7 +58,9 @@ func TestOverlayValuesAreMasked(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 	bindings := []Binding{{Secret: "cred", Env: "CRED"}}
-	if _, err := OverlayForLaunch(context.Background(), testAppID, bindings); err != nil {
+	_, releaseOverlay, err := OverlayForLaunch(context.Background(), testAppID, bindings)
+	defer releaseOverlay()
+	if err != nil {
 		t.Fatalf("overlay: %v", err)
 	}
 	rendered := phelixerr.Redact("app said: token " + value + " done")
@@ -64,6 +68,10 @@ func TestOverlayValuesAreMasked(t *testing.T) {
 		t.Fatalf("resolved value must be masked after launch registration: %q", rendered)
 	}
 	ReleaseCoverage(testAppID)
+	if phelixerr.Redact(value) != "***" {
+		t.Fatal("app coverage released an in-flight launch")
+	}
+	releaseOverlay()
 	rendered = phelixerr.Redact("app said: token " + value + " done")
 	if !strings.Contains(rendered, value) {
 		t.Fatalf("released coverage must stop masking: %q", rendered)
@@ -90,7 +98,8 @@ func TestCoverageRetainsOwnedLiveValue(t *testing.T) {
 func TestClassicEnvOverlay(t *testing.T) {
 	testEnv(t)
 	t.Run("app without bindings gets nothing", func(t *testing.T) {
-		overlay, err := ClassicEnvOverlay(context.Background(), testAppID)
+		overlay, releaseOverlay, err := ClassicEnvOverlay(context.Background(), testAppID)
+		defer releaseOverlay()
 		if err != nil {
 			t.Fatalf("classic overlay: %v", err)
 		}
@@ -105,7 +114,8 @@ func TestClassicEnvOverlay(t *testing.T) {
 		if err := ReplaceBindings(testAppID, []Binding{{Secret: "redis_pass", Env: "REDIS_PASSWORD"}}); err != nil {
 			t.Fatalf("bindings: %v", err)
 		}
-		overlay, err := ClassicEnvOverlay(context.Background(), testAppID)
+		overlay, releaseOverlay, err := ClassicEnvOverlay(context.Background(), testAppID)
+		defer releaseOverlay()
 		if err != nil {
 			t.Fatalf("classic overlay: %v", err)
 		}
@@ -144,14 +154,16 @@ func TestLaunchResolutionPreservesRuntimeCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	bindings := []Binding{{Secret: "current", Env: "DB"}}
-	if _, err := OverlayForLaunch(context.Background(), testAppID, bindings); err != nil {
+	_, releaseOverlay, err := OverlayForLaunch(context.Background(), testAppID, bindings)
+	defer releaseOverlay()
+	if err != nil {
 		t.Fatal(err)
 	}
 	if phelixerr.Redact(old) != "***" {
 		t.Fatal("launch resolution dropped old instance coverage")
 	}
 	MarkRuntimeDegraded(testAppID, "runtime inspection failed")
-	if _, err := OverlayForLaunch(context.Background(), testAppID, bindings); err == nil {
+	if _, _, err := OverlayForLaunch(context.Background(), testAppID, bindings); err == nil {
 		t.Fatal("launch bypassed degraded runtime coverage")
 	}
 	if _, err := PinBindings(context.Background(), testAppID, bindings); err == nil {

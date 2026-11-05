@@ -365,7 +365,8 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "rollout: prepare deploy artifact"))
 	}
 	log.Successf("artifact ready: %s", binaryPath)
-	envOverlay, err := launchOverlay(envPath, ro.AppID, ro.Secrets)
+	envOverlay, releaseOverlay, err := launchOverlay(envPath, ro.AppID, ro.Secrets)
+	defer releaseOverlay()
 	if err != nil {
 		ro.undoMigration(state, pre)
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeOf(err), err, "rollout: load env snapshot"))

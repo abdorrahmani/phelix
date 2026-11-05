@@ -216,7 +216,8 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact failed"))
 	}
 	log.Successf("artifact ready: %s", binaryPath)
-	envOverlay, err := launchOverlay(envPath, bg.AppID, bg.Secrets)
+	envOverlay, releaseOverlay, err := launchOverlay(envPath, bg.AppID, bg.Secrets)
+	defer releaseOverlay()
 	if err != nil {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeOf(err), err, "load env snapshot"))
 	}

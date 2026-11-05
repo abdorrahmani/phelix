@@ -311,9 +311,10 @@ func recoverAcceptedSecretCanary(state *DeployState, client ProxyClient) error {
 // launcher. With an execution context it renders the pinned candidate set;
 // without one it resolves the committed bindings as every non-deployment
 // launch always has.
-func launchOverlay(envPath, appID string, txn *SecretTxn) ([]string, error) {
+func launchOverlay(envPath, appID string, txn *SecretTxn) ([]string, func(), error) {
 	if txn != nil {
-		return txn.OverlayFor(envPath)
+		overlay, err := txn.OverlayFor(envPath)
+		return overlay, func() {}, err
 	}
 	return EnvOverlayFromSnapshot(envPath, appID)
 }

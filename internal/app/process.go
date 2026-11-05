@@ -92,7 +92,9 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	if pinned != nil {
 		secretEnvs = pinned.Overlay()
 	} else {
-		secretEnvs, err = secrets.ClassicEnvOverlay(context.Background(), id)
+		var releaseOverlay func()
+		secretEnvs, releaseOverlay, err = secrets.ClassicEnvOverlay(context.Background(), id)
+		defer releaseOverlay()
 	}
 	if err != nil {
 		f.Close()

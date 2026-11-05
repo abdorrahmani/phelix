@@ -50,7 +50,8 @@ func writeSnapshot(t *testing.T, appID string, entries map[string]string) string
 func TestEnvOverlayWithoutSecretsUnchanged(t *testing.T) {
 	secretsTestEnv(t)
 	path := writeSnapshot(t, secretsTestAppID, map[string]string{"PLAIN_VAR": "plain-value"})
-	overlay, err := EnvOverlayFromSnapshot(path, secretsTestAppID)
+	overlay, releaseOverlay, err := EnvOverlayFromSnapshot(path, secretsTestAppID)
+	defer releaseOverlay()
 	if err != nil {
 		t.Fatalf("overlay: %v", err)
 	}
@@ -71,7 +72,8 @@ func TestEnvOverlayMergesSecretsByKey(t *testing.T) {
 		"DATABASE_URL": "postgres://stale-snapshot-value",
 		"PLAIN_VAR":    "plain-value",
 	})
-	overlay, err := EnvOverlayFromSnapshot(path, secretsTestAppID)
+	overlay, releaseOverlay, err := EnvOverlayFromSnapshot(path, secretsTestAppID)
+	defer releaseOverlay()
 	if err != nil {
 		t.Fatalf("overlay: %v", err)
 	}
@@ -106,7 +108,8 @@ func TestEnvOverlayWithCandidateBindings(t *testing.T) {
 	}
 	path := writeSnapshot(t, secretsTestAppID, nil)
 	candidates := []secrets.Binding{{Secret: "api_key", Env: "API_KEY"}}
-	overlay, err := EnvOverlayWithBindings(path, secretsTestAppID, candidates)
+	overlay, releaseOverlay, err := EnvOverlayWithBindings(path, secretsTestAppID, candidates)
+	defer releaseOverlay()
 	if err != nil {
 		t.Fatalf("overlay: %v", err)
 	}
@@ -135,7 +138,8 @@ func TestSnapshotNeverContainsSecretValues(t *testing.T) {
 	if strings.Contains(string(raw), secretValue) {
 		t.Fatal("the version snapshot must never contain a secret value")
 	}
-	overlay, err := EnvOverlayFromSnapshot(snapshotPath, secretsTestAppID)
+	overlay, releaseOverlay, err := EnvOverlayFromSnapshot(snapshotPath, secretsTestAppID)
+	defer releaseOverlay()
 	if err != nil {
 		t.Fatalf("overlay: %v", err)
 	}
@@ -219,7 +223,7 @@ func TestMissingDeclaredSecretFailsLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := writeSnapshot(t, secretsTestAppID, nil)
-	if _, err := EnvOverlayFromSnapshot(path, secretsTestAppID); err == nil {
+	if _, _, err := EnvOverlayFromSnapshot(path, secretsTestAppID); err == nil {
 		t.Fatal("a declared but missing secret must fail the launch overlay")
 	}
 }

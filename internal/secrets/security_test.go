@@ -20,7 +20,7 @@ func TestSecurityStateIsPerApp(t *testing.T) {
 	if err := ReplaceBindings(badApp, []Binding{{Secret: "ghost", Env: "GHOST"}}); err == nil {
 		t.Fatal("missing import was accepted")
 	}
-	if _, err := OverlayForLaunch(context.Background(), badApp, []Binding{{Secret: "ghost", Env: "GHOST"}}); err == nil {
+	if _, _, err := OverlayForLaunch(context.Background(), badApp, []Binding{{Secret: "ghost", Env: "GHOST"}}); err == nil {
 		t.Fatal("the broken app must fail to resolve")
 	}
 	if state, reason := SecurityOf(badApp); state != SecurityDegraded || reason == "" {
@@ -34,7 +34,9 @@ func TestSecurityStateIsPerApp(t *testing.T) {
 	if _, err := Set(goodApp, "ok", "fine"); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	if _, err := OverlayForLaunch(context.Background(), goodApp, []Binding{{Secret: "ok", Env: "OK"}}); err != nil {
+	_, releaseGood, err := OverlayForLaunch(context.Background(), goodApp, []Binding{{Secret: "ok", Env: "OK"}})
+	defer releaseGood()
+	if err != nil {
 		t.Fatalf("healthy app overlay: %v", err)
 	}
 	if state, _ := SecurityOf(goodApp); state != SecurityHealthy {
@@ -44,7 +46,9 @@ func TestSecurityStateIsPerApp(t *testing.T) {
 	if err := ReplaceBindings(badApp, []Binding{{Secret: "db", Env: "DB"}}); err != nil {
 		t.Fatalf("rebind: %v", err)
 	}
-	if _, err := OverlayForLaunch(context.Background(), badApp, []Binding{{Secret: "db", Env: "DB"}}); err != nil {
+	_, releaseBad, err := OverlayForLaunch(context.Background(), badApp, []Binding{{Secret: "db", Env: "DB"}})
+	defer releaseBad()
+	if err != nil {
 		t.Fatalf("recovery overlay: %v", err)
 	}
 	if state, _ := SecurityOf(badApp); state != SecurityHealthy {

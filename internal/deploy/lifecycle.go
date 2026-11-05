@@ -424,7 +424,8 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 			}
 		}
 
-		envOverlay, err := EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
+		envOverlay, releaseOverlay, err := EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
+		defer releaseOverlay()
 		if err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "deploy: load env snapshot for %s", state.AppName)
 		}
