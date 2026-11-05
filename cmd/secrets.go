@@ -149,6 +149,10 @@ func init() {
 	}
 	secretsApply.Flags().BoolVar(&secretsNoRestart, "no-restart", false, "Commit the bindings only; do not restart the application")
 
+	for _, c := range []*cobra.Command{secretsList, secretsGet, secretsSet, secretsHistory, secretsRemove, secretsApply} {
+		c.Flags().BoolVar(&secretsJSON, "json", false, "Emit the machine-readable envelope")
+	}
+
 	SecretsCmd.AddCommand(secretsList, secretsGet, secretsSet, secretsHistory, secretsRemove, secretsApply)
 }
 
