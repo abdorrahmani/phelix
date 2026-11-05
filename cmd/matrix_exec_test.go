@@ -117,7 +117,10 @@ func TestMatrixSession_AttemptStartIsJournaled(t *testing.T) {
 	// arrives. This is the state a second `matrix status` process reads.
 	release := make(chan struct{})
 	started := make(chan struct{})
+	done := make(chan struct{})
+	t.Cleanup(func() { close(release); <-done })
 	go func() {
+		defer close(done)
 		matrix.Execute(
 			&matrix.MatrixPlan{Lang: builder.Go, Combinations: run.IncompleteCombinations()},
 			func(_ context.Context, c matrix.Combination) *matrix.Result {
@@ -164,5 +167,4 @@ func TestMatrixSession_AttemptStartIsJournaled(t *testing.T) {
 		t.Fatal("the run document was rewritten for an attempt start")
 	}
 
-	close(release)
 }

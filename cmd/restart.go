@@ -153,10 +153,7 @@ func restartAppInfoLocked(appInfo *app.AppInfo) error {
 		if state != nil {
 			version = state.ActiveVersion
 		}
-		journal := &deploy.DeployState{AppName: appInfo.Name, AppID: appInfo.ID, Mode: "classic", PublicPort: appInfo.Port, ActiveVersion: version}
-		if current != nil {
-			journal.Slots = map[string]*deploy.Instance{"classic": {PID: current.PID, StartTicks: current.StartTicks, Port: current.Port, SecretEnvs: current.SecretEnvs, Status: "running"}}
-		}
+		journal := classicSecretJournal(current, appInfo, appInfo.Port, version)
 		if accepted {
 			txn.Stamp(journal)
 		}

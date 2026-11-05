@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/machine"
-	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/fatih/color"
@@ -675,18 +675,42 @@ func acceptClassicSecrets(info *app.AppInfo, port, version int, txn *deploy.Secr
 	if txn == nil {
 		return nil
 	}
-	state := &deploy.DeployState{AppName: info.Name, AppID: info.ID, Mode: "classic", PublicPort: port, ActiveVersion: version}
-	pid := classicPID(info.ID)
-	identity, err := processex.Identity(pid)
+	current, err := GetAppInfo(info.ID)
 	if err != nil {
-		return phelixerr.New(phelixerr.CodeProcessFailed, "cannot identify accepted classic instance")
+		return err
 	}
-	names := make([]string, 0, len(txn.Set.Bindings))
-	for _, binding := range txn.Set.Bindings {
-		names = append(names, binding.Env)
-	}
-	state.Slots = map[string]*deploy.Instance{"classic": {PID: pid, Port: port, Version: version, StartTicks: identity.StartTime, BinaryPath: identity.ExePath, SecretEnvs: names, Status: "running"}}
-
+	state := classicSecretJournal(current, info, port, version)
 	txn.Stamp(state)
 	return deploy.Store(state)
+}
+
+// classicSecretJournal records the process accepted for a classic application.
+func classicSecretJournal(current, info *app.AppInfo, port, version int) *deploy.DeployState {
+	state := &deploy.DeployState{AppName: info.Name, AppID: info.ID, Mode: "classic", PublicPort: port, ActiveVersion: version}
+	if current != nil && current.PID > 0 {
+		state.Slots = map[string]*deploy.Instance{"classic": {
+			PID: current.PID, StartTicks: current.StartTicks, Port: current.Port, Version: version,
+			BinaryPath: filepath.Join(current.Directory, fmt.Sprintf("app_%s", current.ID)),
+			SecretEnvs: current.SecretEnvs, Status: "running", StartedAt: current.Start,
+		}}
+	}
+	return state
+}
+
+// classicRuntimeSecrets preserves the credentials of the process being replaced.
+func classicRuntimeSecrets(info *app.AppInfo) (*secrets.PinnedSet, error) {
+	if info.Status != "running" || !app.ValidAppID(info.ID) {
+		return nil, nil
+	}
+	names := info.SecretEnvs
+	if names == nil {
+		bindings, err := secrets.CommittedBindings(info.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, binding := range bindings {
+			names = append(names, binding.Env)
+		}
+	}
+	return secrets.RuntimeForPID(info.PID, names)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/ops"
 	"github.com/abdorrahmani/phelix/internal/proxy"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/fatih/color"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
@@ -840,20 +841,6 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 	fmt.Printf("%s Rolling back %s to v%d (classic stop→start)\n",
 		color.BlueString("→"), color.CyanString("'%s'", appName), target)
 
-	// Step: stopping_old
-	if appInfo.Status == "running" {
-		stepStart = time.Now()
-		fmt.Printf("  %s Stopping current instance (PID %d)...\n", color.BlueString("→"), appInfo.PID)
-		r.SetMetadata("stopped_pid", fmt.Sprintf("%d", appInfo.PID))
-		if err := app.Manager.StopApplication(appInfo.ID); err != nil {
-			// Non-fatal: the process may have already exited.
-			fmt.Printf("  %s Warning: stop returned: %v\n", color.YellowString("⚠"), err)
-			r.Emit(phelixgrpc.RollbackStepOldStopped, true, fmt.Sprintf("stop returned warning: %v", err), time.Since(stepStart), "")
-		} else {
-			r.Emit(phelixgrpc.RollbackStepOldStopped, true, fmt.Sprintf("stopped PID %d", appInfo.PID), time.Since(stepStart), "")
-		}
-	}
-
 	// Step: copying_binary. The destination is replaced atomically from a staged
 	// file in the same directory, while the prior binary is retained for
 	// compensation until start and promotion both succeed.
@@ -875,6 +862,15 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 	}()
 	r.Emit(phelixgrpc.RollbackStepBinaryCopied, true, fmt.Sprintf("v%d binary copied into place", target), time.Since(stepStart), "")
 
+	previous, err := classicRuntimeSecrets(appInfo)
+	if err != nil {
+		return fail(errors.Join(err, backup.Restore()))
+	}
+	defer previous.Close()
+	if err := stopExistingApp(os.Stdout, appInfo); err != nil {
+		return fail(errors.Join(err, backup.Restore()))
+	}
+
 	// Determine the port.
 	port := appInfo.Port
 	if port == 0 {
@@ -886,20 +882,22 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 	stepStart = time.Now()
 	fmt.Printf("  %s Starting rolled-back binary on port %d...\n", color.BlueString("→"), port)
 	if err := app.Manager.StartApplication(appInfo.ID, port, appName); err != nil {
-		terminal := compensateClassicRollback(appInfo, appName, port, backup,
+		terminal := compensateClassicRollback(appInfo, appName, port, backup, previous, currentVer,
 			phelixerr.Wrapf(phelixerr.CodeRollbackFailed, err,
 				"failed to start rolled-back application %q (ID: %s)", appName, appInfo.ID))
 		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
 		r.Emit(phelixgrpc.RollbackStepFailed, false, "failed to start rolled-back application; prior binary restoration attempted", time.Since(totalStart), terminal.Error())
 		return fail(terminal)
 	}
+	if err := refreshClassicSecretJournal(appInfo, port, target); err != nil {
+		return fail(compensateClassicRollback(appInfo, appName, port, backup, previous, currentVer, err))
+	}
 	r.Emit(phelixgrpc.RollbackStepNewStarted, true, fmt.Sprintf("started on port %d", port), time.Since(stepStart), "")
 
 	// Step: promoting_version
 	stepStart = time.Now()
 	if err := deploy.PromoteVersion(appName, target, "classic"); err != nil {
-		_ = app.Manager.StopApplication(appInfo.ID)
-		terminal := compensateClassicRollback(appInfo, appName, port, backup,
+		terminal := compensateClassicRollback(appInfo, appName, port, backup, previous, currentVer,
 			phelixerr.Wrap(phelixerr.CodeRollbackFailed, "failed to promote rolled-back version", err))
 		r.SetErrorCode(string(phelixerr.CodeOf(terminal)))
 		r.Emit(phelixgrpc.RollbackStepFailed, false, "version promotion failed; prior binary restoration attempted", time.Since(totalStart), terminal.Error())
@@ -957,25 +955,28 @@ type rollbackBinaryBackup struct {
 	existed bool
 }
 
-func replaceBinaryForRollback(src, dst string) (*rollbackBinaryBackup, error) {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return nil, err
-	}
+// backupBinaryForRollback keeps a copy until replacement is accepted.
+func backupBinaryForRollback(dst string) (*rollbackBinaryBackup, error) {
 	backup := &rollbackBinaryBackup{dest: dst, path: dst + ".rollback-backup"}
 	if _, err := os.Stat(dst); err == nil {
 		backup.existed = true
-		_ = os.Remove(backup.path)
-		// Copying the old destination to a same-directory backup leaves the live
-		// path untouched. The target copy below then replaces it with one rename.
 		if err := copyFileForRollback(dst, backup.path); err != nil {
 			return nil, err
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	if err := copyFileForRollback(src, dst); err != nil {
-		_ = backup.Discard()
+	return backup, nil
+}
+
+// replaceBinaryForRollback retains the previous binary before replacement.
+func replaceBinaryForRollback(src, dst string) (*rollbackBinaryBackup, error) {
+	backup, err := backupBinaryForRollback(dst)
+	if err != nil {
 		return nil, err
+	}
+	if err := copyFileForRollback(src, dst); err != nil {
+		return nil, errors.Join(err, backup.Restore())
 	}
 	return backup, nil
 }
@@ -998,19 +999,48 @@ func (b *rollbackBinaryBackup) Discard() error {
 	return os.Remove(b.path)
 }
 
-func compensateClassicRollback(appInfo *app.AppInfo, appName string, port int, backup *rollbackBinaryBackup, cause error) error {
-	if restoreErr := backup.Restore(); restoreErr != nil {
-		return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, cause,
-			"rollback failed and prior binary restore failed: %v", restoreErr)
+// compensateClassicRollback restores the previous binary and running credentials.
+func compensateClassicRollback(appInfo *app.AppInfo, appName string, port int, backup *rollbackBinaryBackup, previous *secrets.PinnedSet, version int, cause error) error {
+	current, err := GetAppInfo(appInfo.ID)
+	if err != nil {
+		return errors.Join(cause, err)
 	}
-	if !backup.existed || appInfo.Status != "running" {
+	stillServing := current.PID == appInfo.PID && current.StartTicks == appInfo.StartTicks && current.Status == "running"
+	if !stillServing && current.Status == "running" {
+		if err := app.Manager.StopApplication(appInfo.ID); err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+	if err := backup.Restore(); err != nil {
+		return errors.Join(cause, phelixerr.Wrap(phelixerr.CodeRollbackFailed, "prior binary restore failed", err))
+	}
+	if stillServing || !backup.existed || appInfo.Status != "running" {
 		return cause
 	}
-	if restartErr := app.Manager.StartApplication(appInfo.ID, port, appName); restartErr != nil {
-		return phelixerr.Wrapf(phelixerr.CodeRollbackFailed, cause,
-			"rollback failed; prior binary restored but restart failed: %v", restartErr)
+	var restartErr error
+	if manager, ok := app.Manager.(*app.AppManager); ok && previous != nil {
+		restartErr = manager.StartApplicationWithSecrets(appInfo.ID, port, appName, previous)
+	} else {
+		restartErr = app.Manager.StartApplication(appInfo.ID, port, appName)
 	}
-	return cause
+	if restartErr != nil {
+		return errors.Join(cause, phelixerr.Wrap(phelixerr.CodeRollbackFailed, "prior binary restored but restart failed", restartErr))
+	}
+	return errors.Join(cause, refreshClassicSecretJournal(appInfo, port, version))
+}
+
+// refreshClassicSecretJournal updates an existing classic journal after rollback.
+func refreshClassicSecretJournal(info *app.AppInfo, port, version int) error {
+	if _, err := deploy.Load(info.Name); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	current, err := GetAppInfo(info.ID)
+	if err != nil {
+		return err
+	}
+	return deploy.Store(classicSecretJournal(current, info, port, version))
 }
 
 // copyFileForRollback stages src in dst's directory, fsyncs it, and atomically
