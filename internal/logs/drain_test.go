@@ -53,3 +53,44 @@ func TestDetachedDrainMasksSplitAndMultilineValues(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestDetachedDrainPreservesInvalidUTF8(t *testing.T) {
+	value := "opaque-\xff-byte"
+	release := phelixerr.AcquireSecretValues([]string{value})
+	defer release()
+	path := filepath.Join(t.TempDir(), "app.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cmd := exec.Command("sh", "-c", "printf '%s\\n' \"$CREDENTIAL\"")
+	cmd.Env = append(os.Environ(), "CREDENTIAL="+value)
+	closeDrain, err := AttachDrain(cmd, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		closeDrain()
+		t.Fatal(err)
+	}
+	closeDrain()
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "opaque") {
+			t.Fatal("plaintext reached disk")
+		}
+		if strings.Contains(string(data), "***") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("drain did not flush")
+}

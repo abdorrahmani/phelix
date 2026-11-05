@@ -331,6 +331,9 @@ func appendSecretsChecks(results []checkResult, cfg *project.Config) []checkResu
 		}
 		return results
 	}
+	if len(imports) == 0 && !app.ValidAppID(info.ID) {
+		return results
+	}
 	st, err := secrets.Open(info.ID)
 	if err != nil {
 		return append(results, checkResult{name: "Secrets store", detail: "unreadable or unsafe permissions", message: err.Error()})

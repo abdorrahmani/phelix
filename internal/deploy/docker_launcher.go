@@ -91,8 +91,9 @@ func dockerErrCode(stderr string) phelixerr.Code {
 // is still actionable. Env is passed via --env-file (not on argv), but this is
 // defense in depth in case a caller ever inlines one.
 func redactDockerArgs(args []string) string {
-	out := make([]string, len(args))
-	for i, a := range args {
+	out := append([]string(nil), args...)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if (a == "--label" || a == "-e" || a == "--env") && i+1 < len(args) {
 			out[i] = a
 			if k, _, ok := strings.Cut(args[i+1], "="); ok && k != "" {
@@ -100,11 +101,9 @@ func redactDockerArgs(args []string) string {
 			} else {
 				out[i+1] = args[i+1]
 			}
-			continue
+			i++
 		}
-		out[i] = a
 	}
-	// The next index may have been pre-filled by the lookahead above; join as-is.
 	return strings.Join(out, " ")
 }
 

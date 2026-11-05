@@ -51,12 +51,6 @@ var LogCmd = &cobra.Command{
 			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
 		}
 
-		for _, info := range app.Manager.ListApplications() {
-			if err := deploy.RefreshSecretCoverage(info); err != nil {
-				return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "cannot safely display logs for %s", info.Name)
-			}
-		}
-
 		// --json is a bounded snapshot: a following stream would never produce
 		// a terminal envelope, so machine mode implies --no-follow. Human mode
 		// keeps its historical default of tailing until Ctrl+C; --no-follow
@@ -76,6 +70,14 @@ var LogCmd = &cobra.Command{
 		}
 		if len(args) == 0 && logApp != "" {
 			args = []string{logApp}
+		}
+		for _, info := range app.Manager.ListApplications() {
+			if len(args) > 0 && args[0] != info.Name && args[0] != info.ID {
+				continue
+			}
+			if err := deploy.RefreshSecretCoverage(info); err != nil {
+				return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "cannot safely display logs for %s", info.Name)
+			}
 		}
 
 		if logLevel != "" || logVersion != "" {

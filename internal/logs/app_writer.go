@@ -115,5 +115,8 @@ func (w *AppLogWriter) emitLocked(line string) {
 	msg := strings.TrimSuffix(strings.ReplaceAll(phelixerr.Redact(line), "\r", ""), "\n")
 
 	ts := time.Now().Format(timeLayout)
-	_, w.err = io.WriteString(w.dst, ts+" ["+string(w.level)+"] ["+string(w.stream)+"] "+msg+"\n")
+	_, err := io.WriteString(w.dst, ts+" ["+string(w.level)+"] ["+string(w.stream)+"] "+msg+"\n")
+	if w.err == nil {
+		w.err = err
+	}
 }

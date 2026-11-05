@@ -272,7 +272,9 @@ var BuildCmd = &cobra.Command{
 		var secretTxn *deploy.SecretTxn
 		if isWorker {
 			if projCfg.Secrets != nil {
-				_, err = secrets.PinBindings(context.Background(), id, projCfg.Secrets.Imports)
+				var pinned *secrets.PinnedSet
+				pinned, err = secrets.PinBindings(context.Background(), id, projCfg.Secrets.Imports)
+				pinned.Close()
 			}
 		} else {
 			secretTxn, err = beginProjectSecrets(info, projCfg, tracker.DeploymentID())

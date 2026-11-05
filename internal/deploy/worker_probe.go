@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"os"
 	"os/exec"
 	"time"
@@ -48,18 +49,24 @@ func RunProbe(command []string, dir string, env []string, timeout time.Duration)
 // boundedBuffer is an io.Writer keeping only the last max bytes, so a chatty
 // probe cannot grow memory without bound.
 type boundedBuffer struct {
-	buf []byte
-	max int
+	buf      []byte
+	max      int
+	overflow bool
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
-	b.buf = append(b.buf, p...)
-	if len(b.buf) > b.max {
-		b.buf = b.buf[len(b.buf)-b.max:]
+	if b.overflow || len(b.buf)+len(p) > b.max {
+		b.overflow = true
+		b.buf = nil
+		return len(p), nil
 	}
+	b.buf = append(b.buf, p...)
 	return len(p), nil
 }
 
 func (b *boundedBuffer) String() string {
-	return string(b.buf)
+	if b.overflow {
+		return "probe output exceeded limit; output withheld"
+	}
+	return phelixerr.Redact(string(b.buf))
 }

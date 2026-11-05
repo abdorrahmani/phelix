@@ -111,35 +111,17 @@ func (r *secretRegistry) rebuildLocked() {
 	}
 	re, err := regexp.Compile("(" + strings.Join(parts, "|") + ")")
 	if err != nil {
-		r.matcher.Store(valueRedactor(r.replaceLoopLocked()))
+		r.matcher.Store(valueRedactor(func(s string) string {
+			for _, value := range values {
+				s = strings.ReplaceAll(s, value, "***")
+			}
+			return s
+		}))
 		return
 	}
 	r.matcher.Store(valueRedactor(func(s string) string {
 		return re.ReplaceAllString(s, "***")
 	}))
-}
-
-// replaceLoopLocked builds the fallback redactor. It reads the reference set
-// under the registry lock and copies the values, so the returned closure
-// never races with later changes.
-func (r *secretRegistry) replaceLoopLocked() func(string) string {
-	unique := make(map[string]bool)
-	for v := range r.refs {
-		unique[v] = true
-		for _, line := range strings.FieldsFunc(v, func(r rune) bool { return r == '\n' || r == '\r' }) {
-			unique[line] = true
-		}
-	}
-	values := make([]string, 0, len(unique))
-	for v := range unique {
-		values = append(values, v)
-	}
-	return func(s string) string {
-		for _, v := range values {
-			s = strings.ReplaceAll(s, v, "***")
-		}
-		return s
-	}
 }
 
 // applyRegisteredValues masks registered secret values in s. It is the first

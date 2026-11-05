@@ -102,13 +102,11 @@ func TestConcurrentRegisterRedactUnregister(t *testing.T) {
 	}
 }
 
-func TestFallbackReplaceLoopMasksEverything(t *testing.T) {
-	registry.mu.Lock()
-	values := map[string]int{"fallback-one-aaa": 1, "fallback-two-bbb": 1}
-	registry.refs = values
-	red := registry.replaceLoopLocked()
-	registry.mu.Unlock()
-	if got := red("has fallback-one-aaa and fallback-two-bbb inside"); strings.Contains(got, "fallback") {
-		t.Fatalf("fallback loop must mask every registered value: %q", got)
+func TestFallbackMasksInvalidBytesAndOverlappingValues(t *testing.T) {
+	values := []string{"fallback-\xff", "fallback-\xff-long\nsecond-line"}
+	release := AcquireSecretValues(values)
+	defer release()
+	if got := Redact("before " + values[1] + " after"); got != "before *** after" {
+		t.Fatalf("fallback left secret fragments: %q", got)
 	}
 }

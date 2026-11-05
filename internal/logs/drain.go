@@ -2,7 +2,7 @@ package logs
 
 import (
 	"bufio"
-	"encoding/json"
+	"encoding/gob"
 	"io"
 	"os"
 	"os/exec"
@@ -78,7 +78,7 @@ func AttachDrain(cmd *exec.Cmd, dst *os.File) (func(), error) {
 	_ = configR.Close()
 	_ = readyW.Close()
 	_ = configW.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if err := json.NewEncoder(configW).Encode(values); err != nil {
+	if err := gob.NewEncoder(configW).Encode(values); err != nil {
 		closeFiles()
 		_ = helper.Process.Kill()
 		return nil, err
@@ -109,7 +109,7 @@ func runDrain() int {
 	defer config.Close()
 	defer ready.Close()
 	var values []string
-	if err := json.NewDecoder(config).Decode(&values); err != nil {
+	if err := gob.NewDecoder(config).Decode(&values); err != nil {
 		return 1
 	}
 	for _, value := range values {
@@ -140,6 +140,11 @@ func runDrain() int {
 				}
 				mu.Unlock()
 				if err != nil && err != bufio.ErrBufferFull {
+					if err != io.EOF {
+						mu.Lock()
+						failed = true
+						mu.Unlock()
+					}
 					break
 				}
 			}
