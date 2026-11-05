@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
 // dockerInternalPort is the port the managed app is told to bind (via PORT)
@@ -253,7 +255,7 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 			return nil, 0, phelixerr.New(phelixerr.CodeInstanceStartFailed, "deploy: docker run returned no container id")
 		}
 
-		proc := &dockerProcess{id: containerID, run: run}
+		proc := &dockerProcess{id: containerID, run: run, secretEnvs: phelixerr.SecretEnvNames(env)}
 
 		hostPort, err := dockerPublishedPort(ctx, run, containerID, dockerInternalPort)
 		if err != nil {
@@ -354,8 +356,9 @@ func dockerPublishedPort(ctx context.Context, run dockerRunner, containerID stri
 // GracefulStop drives it exactly like a native process: Signal(SIGTERM) asks
 // politely, Wait blocks on `docker wait`, and Kill force-removes on timeout.
 type dockerProcess struct {
-	id  string
-	run dockerRunner
+	id         string
+	run        dockerRunner
+	secretEnvs []string
 }
 
 // PID returns the container's main process id on the host, resolved lazily via
@@ -386,6 +389,21 @@ func (p *dockerProcess) ContainerID() string { return p.id }
 func (p *dockerProcess) Logs(ctx context.Context, maxBytes int64) string {
 	if p.id == "" || p.run == nil {
 		return ""
+	}
+	if len(p.secretEnvs) > 0 {
+		out, err := p.run(ctx, "inspect", "--format", "{{json .Config.Env}}", p.id)
+		if err != nil {
+			return ""
+		}
+		var env []string
+		if json.Unmarshal([]byte(out), &env) != nil {
+			return ""
+		}
+		set, err := secrets.FromRuntime(env, p.secretEnvs)
+		if err != nil {
+			return ""
+		}
+		defer set.Close()
 	}
 	out, _ := p.run(ctx, "logs", "--tail", "200", p.id)
 	out = phelixerr.Redact(out)

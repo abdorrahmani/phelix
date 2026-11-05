@@ -117,7 +117,7 @@ func PlanRollback(appName string, in RollbackPlanInput) (*RollbackPlan, error) {
 	switch {
 	case stateErr != nil && !os.IsNotExist(stateErr):
 		return nil, stateErr
-	case stateErr != nil || state == nil || state.Mode == "":
+	case stateErr != nil || state == nil || state.Mode == "" || state.Mode == "classic":
 		p.planClassic(in)
 	case state.Mode == ModeBlueGreen:
 		p.planBlueGreen(state, in, env)

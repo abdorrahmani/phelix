@@ -127,11 +127,12 @@ func RecordRollbackResultSource(appName string, fromVer, toVer int, mode, reason
 		// never be persisted for later output paths to leak.
 		rec.Error = phelixerr.Redact(runErr.Error())
 	}
-	if rec.Verification != nil && rec.Verification.Error != "" {
-		rec.Verification.Error = phelixerr.Redact(rec.Verification.Error)
+	if verification != nil {
+		masked := *verification
+		masked.Error = phelixerr.Redact(masked.Error)
+		rec.Verification = &masked
 	}
 	rec.Reason = phelixerr.Redact(rec.Reason)
-	rec.Verification = verification
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return

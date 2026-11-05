@@ -56,7 +56,7 @@ func appendRollbackLog(appName string, ev RollbackEvent) {
 	}
 	line := fmt.Sprintf("%s rollback v%d -> v%d %s\n",
 		ev.Timestamp.Format(time.RFC3339), ev.FromVer, ev.ToVer, status)
-	_, _ = f.WriteString(line)
+	_, _ = f.WriteString(phelixerr.Redact(line))
 }
 
 // RollbackOptions configures a rollback that reuses blue-green or rolling Deploy.
