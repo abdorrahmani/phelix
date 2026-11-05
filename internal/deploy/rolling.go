@@ -16,11 +16,12 @@ import (
 
 // Rolling holds the dependencies for a rolling deploy over N replicas.
 type Rolling struct {
-	AppName    string
-	AppID      string
-	PublicPort int
-	Replicas   int // desired replica count
-	ExtraArgs  []string
+	atomicSecretRecovery bool
+	AppName              string
+	AppID                string
+	PublicPort           int
+	Replicas             int // desired replica count
+	ExtraArgs            []string
 
 	Builder        Builder
 	Source         BuildSource
@@ -122,7 +123,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		previous.Replicas = cloneInstanceMap(state.Replicas)
 		previous.Retiring = append([]*Instance(nil), state.Retiring...)
 		defer func() {
-			if errRet != nil && state.SecretTxnID == r.Secrets.ID {
+			if errRet != nil && (r.atomicSecretRecovery || state.SecretTxnID == r.Secrets.ID) {
 				errRet = errors.Join(errRet, r.restoreSecretFleet(context.WithoutCancel(ctx), state, &previous))
 			}
 		}()
@@ -224,6 +225,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 				// serve the previous version. Persist that mixed fleet explicitly;
 				// ActiveVersion must not falsely claim one homogeneous release.
 				state.ActiveVersion = 0
+				state.secretPreparing = r.atomicSecretRecovery
 				if persistErr := r.persist(state); persistErr != nil {
 					return phelixerr.Wrapf(phelixerr.CodeFilesystem, persistErr,
 						"persist mixed rolling fleet after replica %s failed: %v", key, err)
@@ -262,6 +264,12 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	state.Health.HealthyAt = time.Now()
 	ver := targetVersionFromSource(src)
 	state.ActiveVersion = ver
+	if r.atomicSecretRecovery {
+		if err := RestoreProxyRoute(ctx, state, r.ProxyClient, log); err != nil {
+			return err
+		}
+		r.Secrets.Stamp(state)
+	}
 	if err := r.persist(state); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 			"persist completed rolling deploy state before promotion")
@@ -391,6 +399,19 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 			fmt.Sprintf("replica %s replacement exceeded its configured memory limit and was killed by the kernel OOM killer; previous instance still serving", key))
 	}
 
+	candidate := &Instance{
+		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
+		StartTicks: startTicksOf(proc),
+		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath, EnvPath: envPath,
+		ContainerID: containerIDOf(proc),
+		StartedAt:   time.Now(), Version: targetVer, Status: "running",
+	}
+	if r.atomicSecretRecovery {
+		state.Replicas[key] = candidate
+		state.Retiring = append(state.Retiring, old)
+		return nil
+	}
+
 	// 3. Membership swap FIRST: new instance in, old instance out.
 	r.Telemetry.ReplicaHealthy(index, newPID, port)
 	primary, backends := membershipAfterReplace(state.Replicas, key, port)
@@ -447,13 +468,6 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	// The proxy now routes to the candidate. Persist that reality before the old
 	// instance is drained. If persistence fails, switch the proxy back to the old
 	// membership and stop the candidate; only drain after a durable commit.
-	candidate := &Instance{
-		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
-		StartTicks: startTicksOf(proc),
-		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath, EnvPath: envPath,
-		ContainerID: containerIDOf(proc),
-		StartedAt:   time.Now(), Version: targetVer, Status: "running",
-	}
 	state.Replicas[key] = candidate
 	previousStamp := state.SecretTxnID
 	r.Secrets.Stamp(state, old)

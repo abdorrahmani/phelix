@@ -3,12 +3,14 @@ package deploy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -557,5 +559,107 @@ func TestAcceptedRecoveryRetriesOrphansAfterSecretCommit(t *testing.T) {
 	}
 	if mustLoad(t, txn.AppName).SecretCleanupPending {
 		t.Fatal("completed cleanup remained pending")
+	}
+}
+
+func TestAutomaticSecretRollbackAcceptsRestoredFleetTogether(t *testing.T) {
+	for _, failSecond := range []bool{false, true} {
+		t.Run(fmt.Sprint(failSecond), func(t *testing.T) {
+			txnTestEnv(t)
+			seedSecret(t, "old", "old-rollback-value")
+			seedSecret(t, "next", "candidate-rollback-value")
+			bindings := []secrets.Binding{{Secret: "old", Env: "DB"}}
+			if err := secrets.ReplaceBindings(txnTestAppID, bindings); err != nil {
+				t.Fatal(err)
+			}
+			name := "atomic-secret-rollback"
+			lgFixture(t, name, map[int]bool{2: true}, 2)
+			versionPath, err := versionDir(name, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := copyFile("/usr/bin/sleep", filepath.Join(versionPath, "binary"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			txn, err := BeginSecretTxn(txnTestAppID, name, "failed-deploy", []secrets.Binding{{Secret: "next", Env: "DB"}}, RuntimeNative)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer txn.Set.Close()
+			state := &DeployState{AppName: name, AppID: txnTestAppID, Mode: ModeRolling, Replicas: map[string]*Instance{}}
+			spawn := func(binary string, env []string) *exec.Cmd {
+				cmd := exec.Command(binary, "30")
+				cmd.Env = append(os.Environ(), env...)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+				return cmd
+			}
+			for _, slot := range []string{"0", "1"} {
+				cmd := spawn("sleep", txn.Set.Overlay())
+				id, err := processex.Identity(cmd.Process.Pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state.Replicas[slot] = &Instance{Slot: slot, PID: id.PID, StartTicks: id.StartTime, BinaryPath: id.ExePath, Port: 9000, Version: 3, Status: "running", SecretEnvs: []string{"DB"}}
+			}
+			txn.Stamp(state)
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			calls := 0
+			result := RunAutoRollback(context.Background(), AutoRollbackOptions{
+				AppName: name, AppID: txnTestAppID, FailedVersion: 3,
+				ProxyClient:    &rolloutProxyClient{alive: true, enrolled: true},
+				HealthProvider: func(string) *health.DeployTierConfig { return fastHealth() },
+				Launcher: func(_ context.Context, binary string, env []string) (Process, int, error) {
+					calls++
+					journal := mustLoad(t, name)
+					if journal.SecretTxnID != txn.ID {
+						t.Fatal("rollback changed authority before its fleet was ready")
+					}
+					for _, inst := range journal.Replicas {
+						if inst.Version != 3 {
+							t.Fatal("rollback accepted an incomplete restored fleet")
+						}
+					}
+					if failSecond && calls == 2 {
+						return nil, 0, errors.New("second rollback launch failed")
+					}
+					cmd := spawn(binary, env)
+					return &engineProc{cmd: cmd}, listener.Addr().(*net.TCPAddr).Port, nil
+				},
+			})
+			if result.Restored == failSecond {
+				t.Fatal("unexpected rollback result", result.Err)
+			}
+			outcome, err := ReconcileSecretTxn(name, txnTestAppID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantOutcome, wantValue := SecretTxnDiscarded, "DB=old-rollback-value"
+			if failSecond {
+				wantOutcome, wantValue = SecretTxnCommitted, "DB=candidate-rollback-value"
+			}
+			if outcome != wantOutcome {
+				t.Fatal("rollback recovery chose inconsistent bindings", outcome)
+			}
+			for _, inst := range mustLoad(t, name).Replicas {
+				set, err := RuntimeSecrets(inst, bindings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer set.Close()
+				if len(set.Overlay()) != 1 || set.Overlay()[0] != wantValue {
+					t.Fatal("runtime disagrees with recovered bindings")
+				}
+			}
+		})
 	}
 }

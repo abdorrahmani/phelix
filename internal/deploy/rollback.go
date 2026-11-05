@@ -167,7 +167,6 @@ func executeRollbackLocked(ctx context.Context, opts RollbackOptions) error {
 		defer set.Close()
 		rollbackSecrets = &SecretTxn{Set: set}
 		if opts.Recovery != nil {
-			rollbackSecrets.ID = state.SecretTxnID
 			set.LaunchTxnID = state.SecretTxnID
 		}
 	}
@@ -278,19 +277,20 @@ func executeRollbackLocked(ctx context.Context, opts RollbackOptions) error {
 			replicas = 1
 		}
 		r := &Rolling{
-			AppName:        opts.AppName,
-			AppID:          opts.AppID,
-			PublicPort:     state.PublicPort,
-			Replicas:       replicas,
-			Source:         src,
-			Launcher:       opts.Launcher,
-			ProxyClient:    opts.ProxyClient,
-			HealthProvider: opts.HealthProvider,
-			Logger:         log,
-			Notifier:       opts.Notifier,
-			InFlight:       opts.InFlight,
-			Telemetry:      opts.Telemetry,
-			Secrets:        rollbackSecrets,
+			AppName:              opts.AppName,
+			AppID:                opts.AppID,
+			PublicPort:           state.PublicPort,
+			Replicas:             replicas,
+			Source:               src,
+			Launcher:             opts.Launcher,
+			ProxyClient:          opts.ProxyClient,
+			HealthProvider:       opts.HealthProvider,
+			Logger:               log,
+			Notifier:             opts.Notifier,
+			InFlight:             opts.InFlight,
+			Telemetry:            opts.Telemetry,
+			Secrets:              rollbackSecrets,
+			atomicSecretRecovery: opts.Recovery != nil && rollbackSecrets != nil,
 		}
 		deployErr = r.Deploy(ctx)
 	default:
