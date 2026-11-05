@@ -314,6 +314,9 @@ func Open(appID string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return &Store{SchemaVersion: storeSchemaVersion, AppID: appID, Secrets: map[string]SecretRecord{}}, nil
+	}
 	var st *Store
 	err = withStoreLock(appID, false, func() error {
 		var lerr error
@@ -462,17 +465,13 @@ func Remove(appID, name string) error {
 		return err
 	}
 	return mutate(appID, func(st *Store) error {
+		if st.Pending != nil {
+			return phelixerr.New(phelixerr.CodeDeployLocked, "secrets: reconcile the pending deployment before removing values")
+		}
 		var users []string
 		for _, b := range st.Bindings {
 			if b.Secret == name {
 				users = append(users, b.Env)
-			}
-		}
-		if st.Pending != nil {
-			for _, b := range st.Pending.Bindings {
-				if b.Secret == name {
-					users = append(users, b.Env+" (pending)")
-				}
 			}
 		}
 		if len(users) > 0 {
@@ -528,9 +527,42 @@ func BeginTxn(appID string, txn *PendingTxn) error {
 		if st.Pending != nil {
 			return phelixerr.New(phelixerr.CodeDeployLocked, "secrets: reconcile the pending deployment before starting another")
 		}
-		st.Pending = txn
+		if err := st.validatePending(txn); err != nil {
+			return err
+		}
+		pending := *txn
+		pending.Bindings = append([]Binding(nil), txn.Bindings...)
+		pending.Resolved = append([]ResolvedVersion(nil), txn.Resolved...)
+		st.Pending = &pending
 		return nil
 	})
+}
+
+// validatePending checks that pinned versions still match the store before launch.
+func (st *Store) validatePending(txn *PendingTxn) error {
+	resolved := make(map[string]ResolvedVersion, len(txn.Resolved))
+	for _, version := range txn.Resolved {
+		if _, exists := resolved[version.Secret]; exists {
+			return phelixerr.New(phelixerr.CodeConfiguration, "secrets: duplicate pinned secret")
+		}
+		resolved[version.Secret] = version
+	}
+	bound := make(map[string]bool, len(txn.Bindings))
+	for _, binding := range txn.Bindings {
+		bound[binding.Secret] = true
+		meta, err := st.Peek(binding.Secret)
+		if err != nil {
+			return err
+		}
+		version, ok := resolved[binding.Secret]
+		if !ok || version.Version != meta.Version || version.Fingerprint != meta.Fingerprint {
+			return phelixerr.New(phelixerr.CodeDeployLocked, "secrets: pinned versions changed; retry the deployment")
+		}
+	}
+	if len(bound) != len(resolved) {
+		return phelixerr.New(phelixerr.CodeConfiguration, "secrets: pinned versions do not match bindings")
+	}
+	return nil
 }
 
 // CommitTxn promotes the pending bindings to the active set and clears the

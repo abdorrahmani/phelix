@@ -203,7 +203,11 @@ func TestConcurrentWritersLoseNothing(t *testing.T) {
 func TestTransactionCommitAndDiscard(t *testing.T) {
 	t.Run("commit promotes pending bindings idempotently", func(t *testing.T) {
 		testEnv(t)
-		txn := &PendingTxn{TxnID: NewTxnID(), Bindings: []Binding{{Secret: "db", Env: "DATABASE_URL"}}}
+		res, err := Set(testAppID, "db", "database-credential")
+		if err != nil {
+			t.Fatal(err)
+		}
+		txn := &PendingTxn{TxnID: NewTxnID(), Bindings: []Binding{{Secret: "db", Env: "DATABASE_URL"}}, Resolved: []ResolvedVersion{{Secret: "db", Version: res.Version, Fingerprint: res.Fingerprint}}}
 		if err := BeginTxn(testAppID, txn); err != nil {
 			t.Fatalf("begin: %v", err)
 		}
@@ -233,7 +237,11 @@ func TestTransactionCommitAndDiscard(t *testing.T) {
 		if err := ReplaceBindings(testAppID, []Binding{{Secret: "old", Env: "OLD"}}); err != nil {
 			t.Fatalf("replace: %v", err)
 		}
-		txn := &PendingTxn{TxnID: NewTxnID(), Bindings: []Binding{{Secret: "new", Env: "NEW"}}}
+		res, err := Set(testAppID, "new", "new-credential")
+		if err != nil {
+			t.Fatal(err)
+		}
+		txn := &PendingTxn{TxnID: NewTxnID(), Bindings: []Binding{{Secret: "new", Env: "NEW"}}, Resolved: []ResolvedVersion{{Secret: "new", Version: res.Version, Fingerprint: res.Fingerprint}}}
 		if err := BeginTxn(testAppID, txn); err != nil {
 			t.Fatalf("begin: %v", err)
 		}
