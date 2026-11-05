@@ -1,6 +1,7 @@
 package phelixerr
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +74,7 @@ func TestRegistrySurvives(t *testing.T) {
 }
 
 func TestConcurrentRegisterRedactUnregister(t *testing.T) {
+	before := registeredValueCount()
 	values := make([]string, 16)
 	for i := range values {
 		values[i] = "concurrent-secret-" + string(rune('a'+i)) + "-value"
@@ -80,25 +82,51 @@ func TestConcurrentRegisterRedactUnregister(t *testing.T) {
 	var wg sync.WaitGroup
 	for round := 0; round < 4; round++ {
 		for _, v := range values {
-			wg.Add(3)
+			wg.Add(1)
 			go func(v string) {
 				defer wg.Done()
-				RegisterSecretValue(v)
-			}(v)
-			go func(v string) {
-				defer wg.Done()
-				_ = Redact("log line containing " + v + " and more text")
-			}(v)
-			go func(v string) {
-				defer wg.Done()
-				UnregisterSecretValue(v)
+				release := AcquireSecretValues([]string{v})
+				defer release()
+				if strings.Contains(Redact("log line containing "+v+" and more text"), v) {
+					t.Error("owned value leaked during concurrent rotation")
+				}
 			}(v)
 		}
 	}
 	wg.Wait()
-	for _, v := range values {
-		RegisterSecretValue(v)
-		defer UnregisterSecretValue(v)
+	if got := registeredValueCount(); got != before {
+		t.Fatalf("rotation leaked references: %d -> %d", before, got)
+	}
+}
+
+func TestRegistryBatchOwnsItsValueList(t *testing.T) {
+	before := registeredValueCount()
+	values := []string{"batch-owned-credential"}
+	release := AcquireSecretValues(values)
+	values[0] = "changed-by-caller"
+	release()
+	release()
+	if registeredValueCount() != before {
+		t.Fatal("caller mutation prevented reference release")
+	}
+}
+
+func BenchmarkRegisteredRedact(b *testing.B) {
+	for _, count := range []int{1, 100, 1000} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			values := make([]string, count)
+			for i := range values {
+				values[i] = fmt.Sprintf("credential-%08d-private", i)
+			}
+			release := AcquireSecretValues(values)
+			defer release()
+			line := "request completed using " + values[count-1] + " with status 200"
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = Redact(line)
+			}
+		})
 	}
 }
 

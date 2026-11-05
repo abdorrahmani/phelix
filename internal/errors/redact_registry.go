@@ -35,39 +35,40 @@ var registry secretRegistry
 // it. Empty values are ignored: there is nothing to mask and an empty
 // pattern would over-mask everything.
 func RegisterSecretValue(value string) {
-	if value == "" {
-		return
-	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	if registry.refs == nil {
-		registry.refs = make(map[string]int)
-	}
-	registry.refs[value]++
-	if registry.refs[value] == 1 {
-		registry.rebuildLocked()
-	}
+	registry.changeReferences([]string{value}, 1)
 }
 
 // UnregisterSecretValue drops one reference to a value. The value stays
 // masked until its last reference is released. Releasing an unknown value is
 // harmless.
 func UnregisterSecretValue(value string) {
-	if value == "" {
-		return
+	registry.changeReferences([]string{value}, -1)
+}
+
+// changeReferences rebuilds once when a batch adds or releases distinct values.
+func (r *secretRegistry) changeReferences(values []string, delta int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.refs == nil {
+		r.refs = make(map[string]int)
 	}
-	registry.mu.Lock()
-	defer registry.mu.Unlock()
-	n, ok := registry.refs[value]
-	if !ok {
-		return
+	changed := false
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		before := r.refs[value]
+		after := max(0, before+delta)
+		if after == 0 {
+			delete(r.refs, value)
+		} else {
+			r.refs[value] = after
+		}
+		changed = changed || (before == 0) != (after == 0)
 	}
-	if n <= 1 {
-		delete(registry.refs, value)
-		registry.rebuildLocked()
-		return
+	if changed {
+		r.rebuildLocked()
 	}
-	registry.refs[value] = n - 1
 }
 
 // registeredValueCount reports how many distinct values are currently
@@ -111,12 +112,11 @@ func (r *secretRegistry) rebuildLocked() {
 	}
 	re, err := regexp.Compile("(" + strings.Join(parts, "|") + ")")
 	if err != nil {
-		r.matcher.Store(valueRedactor(func(s string) string {
-			for _, value := range values {
-				s = strings.ReplaceAll(s, value, "***")
-			}
-			return s
-		}))
+		pairs := make([]string, 0, 2*len(values))
+		for _, value := range values {
+			pairs = append(pairs, value, "***")
+		}
+		r.matcher.Store(valueRedactor(strings.NewReplacer(pairs...).Replace))
 		return
 	}
 	r.matcher.Store(valueRedactor(func(s string) string {
@@ -153,13 +153,10 @@ func SecretValuesInEnv(env []string) []string {
 
 // AcquireSecretValues holds values until the owner calls the returned release function.
 func AcquireSecretValues(values []string) func() {
-	for _, value := range values {
-		RegisterSecretValue(value)
-	}
+	values = append([]string(nil), values...)
+	registry.changeReferences(values, 1)
 	return sync.OnceFunc(func() {
-		for _, value := range values {
-			UnregisterSecretValue(value)
-		}
+		registry.changeReferences(values, -1)
 	})
 }
 

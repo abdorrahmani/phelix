@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/abdorrahmani/phelix/internal/logs"
 	"net"
 	"os"
 	"os/exec"
@@ -13,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/logs"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -244,14 +245,11 @@ func instanceLogTail(binaryPath string, port int, maxBytes int64) string {
 	if err != nil {
 		return ""
 	}
-	if maxBytes > 0 && int64(len(data)) > maxBytes {
-		data = data[len(data)-int(maxBytes):]
+	tail := phelixerr.Redact(string(data))
+	if maxBytes > 0 && int64(len(tail)) > maxBytes {
+		tail = tail[len(tail)-int(maxBytes):]
 	}
-	tail := strings.TrimSpace(string(data))
-	if tail == "" {
-		return ""
-	}
-	return phelixerr.Redact(tail)
+	return strings.TrimSpace(tail)
 }
 
 // pidAlive reports whether the given PID is currently running, using the same

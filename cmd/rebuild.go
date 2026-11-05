@@ -176,6 +176,10 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 			fmt.Fprintf(out, "  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
 		}
 	}
+	if err := deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil); err != nil {
+		return err
+	}
+	secretTxn = nil
 	tracker.PromoteCurrentVersion()
 	tracker.Completed(fmt.Sprintf("running on port %d", portToUse))
 
@@ -431,6 +435,10 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 				proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 		}
+		if err := deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil); err != nil {
+			return err
+		}
+		secretTxn = nil
 		fmt.Fprintf(out, "%s %s rollout complete for %s (%d steps)\n",
 			color.GreenString("✓"), spec.Rollout.Strategy, color.CyanString("'%s'", name), len(spec.Rollout.Steps))
 		// Build Report + regression analysis (observability only).
@@ -474,6 +482,10 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 				proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 		}
+		if err := deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil); err != nil {
+			return err
+		}
+		secretTxn = nil
 		fmt.Fprintf(out, "%s Zero-downtime blue-green deploy complete for %s\n", color.GreenString("✓"), color.CyanString("'%s'", name))
 		// Build Report + regression analysis (observability only; the deploy
 		// outcome above is already committed).
@@ -516,6 +528,10 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 		return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
 			proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
 	}
+	if err := deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil); err != nil {
+		return err
+	}
+	secretTxn = nil
 	fmt.Fprintf(out, "%s Zero-downtime rolling deploy complete for %s (%d replicas)\n",
 		color.GreenString("✓"), color.CyanString("'%s'", name), spec.Replicas)
 	// Build Report + regression analysis (observability only).

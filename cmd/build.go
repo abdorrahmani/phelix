@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/abdorrahmani/phelix/internal/secrets"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/secrets"
 
 	"github.com/abdorrahmani/phelix/cmd/auth"
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -369,6 +370,10 @@ var BuildCmd = &cobra.Command{
 				fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
 			}
 		}
+		if err := deploy.FinishSecretTxn(id, secretTxn, nil); err != nil {
+			return err
+		}
+		secretTxn = nil
 		tracker.PromoteCurrentVersion()
 		tracker.Completed(fmt.Sprintf("running on port %d", buildPort))
 
