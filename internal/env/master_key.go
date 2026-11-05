@@ -2,6 +2,7 @@ package env
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -22,6 +23,33 @@ func GetMasterKey() ([]byte, error) {
 	key, err := readMasterKey(path)
 	if !errors.Is(err, os.ErrNotExist) {
 		return key, err
+	}
+	dataDir := os.Getenv("PHELIX_DATA_DIR")
+	if dataDir == "" {
+		dataDir = filepath.Dir(path)
+		if _, err := os.Stat("/.dockerenv"); err == nil {
+			dataDir = "/var/lib/phelix"
+		}
+	}
+	for _, pattern := range []string{
+		filepath.Join(dataDir, "secrets", "*.json"),
+		filepath.Join(home, ".phelix", "envs", "*.env.enc"),
+		filepath.Join(home, ".phelix", "apps", "*", "env", "*.enc"),
+	} {
+		files, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot inspect existing encrypted stores")
+		}
+		for _, file := range files {
+			data, err := os.ReadFile(file)
+			var stored struct {
+				Secrets map[string]json.RawMessage
+				Entries map[string]json.RawMessage
+			}
+			if err != nil || json.Unmarshal(data, &stored) != nil || len(stored.Secrets) > 0 || len(stored.Entries) > 0 {
+				return nil, phelixerr.New(phelixerr.CodeEncryption, "master key is missing; restore the original key before changing encrypted data")
+			}
+		}
 	}
 	key, err = GenerateMasterKey()
 	if err != nil {

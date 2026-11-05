@@ -155,3 +155,32 @@ func TestLoadStateRetainsOwnershipAndFileOnCorruption(t *testing.T) {
 		}
 	}
 }
+
+func TestRestoreSkipsOnlyAppWhoseGuardFails(t *testing.T) {
+	root := isolateStateFile(t)
+	previousGuard, previousSkipper := RestoreAppGuard, DeployedAppSkipper
+	defer func() { RestoreAppGuard, DeployedAppSkipper = previousGuard, previousSkipper }()
+	DeployedAppSkipper = nil
+	manager := &AppManager{Apps: map[string]*AppInfo{
+		"blocked": {ID: "blocked", Name: "blocked", AutoStart: true, Status: "stopped", Directory: root},
+		"ready":   {ID: "ready", Name: "ready", AutoStart: true, Status: "stopped", Directory: root},
+	}}
+	if err := manager.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	checked := map[string]bool{}
+	released := false
+	RestoreAppGuard = func(id, name string) (func(), error) {
+		checked[id] = true
+		if id == "blocked" {
+			return nil, errors.New("deployment in progress")
+		}
+		return func() { released = true }, nil
+	}
+	if _, err := manager.RestoreAutoStartApps(); err != nil {
+		t.Fatal(err)
+	}
+	if !checked["blocked"] || !checked["ready"] || !released {
+		t.Fatal("blocked app prevented independent restore or leaked its lock")
+	}
+}

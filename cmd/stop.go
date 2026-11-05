@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/spf13/cobra"
@@ -68,6 +69,14 @@ var StopCmd = &cobra.Command{
 			return nil
 		}
 
+		release, err := deploy.AcquireDeployLock(appInfo.Name, "stop-classic")
+		if err != nil {
+			return err
+		}
+		defer release()
+		if _, err := deploy.ReconcileSecretTxn(appInfo.Name, appInfo.ID); err != nil {
+			return err
+		}
 		if err := app.Manager.StopApplication(appInfo.ID); err != nil {
 			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "stop", false, err.Error(), 0, "", "")
 			return phelixerr.Wrapf(

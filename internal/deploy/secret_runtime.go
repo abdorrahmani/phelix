@@ -102,6 +102,9 @@ func inspectSecretCoverage(info app.AppListItem, reconcile bool) (errRet error) 
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if store.Pending != nil && state != nil && (state.AppName != info.Name || state.AppID != "" && state.AppID != info.ID || state.Mode != ModeRolling && state.Mode != ModeBlueGreen && state.Mode != ModeWorker && state.Mode != "classic") {
+		return phelixerr.New(phelixerr.CodeConfiguration, "pending secrets have an invalid deployment journal")
+	}
 	if reconcile {
 		release, err := AcquireDeployLock(info.Name, "secrets-coverage")
 		if err != nil {

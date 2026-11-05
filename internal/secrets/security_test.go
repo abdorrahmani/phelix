@@ -53,3 +53,18 @@ func TestSecurityStateIsPerApp(t *testing.T) {
 	ReleaseCoverage(goodApp)
 	ReleaseCoverage(badApp)
 }
+
+func TestResolvedStoreDoesNotClearRuntimeFailure(t *testing.T) {
+	testEnv(t)
+	defer MarkHealthy(testAppID)
+	MarkRuntimeDegraded(testAppID, "cannot inspect running credentials")
+	markResolved(testAppID)
+	MarkDegraded(testAppID, "store is unreadable")
+	if CheckRuntimeSecurity(testAppID) == nil {
+		t.Fatal("store status cleared runtime failure")
+	}
+	MarkHealthy(testAppID)
+	if err := CheckRuntimeSecurity(testAppID); err != nil {
+		t.Fatal(err)
+	}
+}

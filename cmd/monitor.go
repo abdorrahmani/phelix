@@ -84,6 +84,17 @@ func runMonitor() error {
 		}
 		return restartAppInfo(info)
 	}
+	app.RestoreAppGuard = func(id, name string) (func(), error) {
+		release, err := deploy.AcquireDeployLock(name, "restore-classic")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := deploy.ReconcileSecretTxn(name, id); err != nil {
+			release()
+			return nil, err
+		}
+		return release, nil
+	}
 	startupSecretsRuntime()
 	restoreDeployedApps()
 

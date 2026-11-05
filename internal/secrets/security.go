@@ -41,12 +41,17 @@ var securityStates = map[string]securityEntry{}
 // callers pass errors that were built to be display-safe, and the redactor
 // runs over them one more time for good measure.
 func MarkDegraded(appID, reason string) {
+	markDegraded(appID, reason, false)
+}
+
+// markDegraded changes the failure reason and its scope together.
+func markDegraded(appID, reason string, runtime bool) {
 	securityMu.Lock()
 	wasDegraded := false
 	if entry, ok := securityStates[appID]; ok && entry.State == SecurityDegraded {
 		wasDegraded = true
 	}
-	securityStates[appID] = securityEntry{State: SecurityDegraded, Reason: phelixerr.Redact(reason), Since: time.Now().UTC(), Runtime: securityStates[appID].Runtime}
+	securityStates[appID] = securityEntry{State: SecurityDegraded, Reason: phelixerr.Redact(reason), Since: time.Now().UTC(), Runtime: runtime || securityStates[appID].Runtime}
 	securityMu.Unlock()
 	if !wasDegraded {
 		logs.Warning("secrets", "application %s is degraded: its secrets cannot be resolved securely; launches and log transmission for it are halted until this is resolved", appID)
@@ -55,12 +60,7 @@ func MarkDegraded(appID, reason string) {
 
 // MarkRuntimeDegraded keeps a runtime inspection failure active until coverage is verified.
 func MarkRuntimeDegraded(appID, reason string) {
-	MarkDegraded(appID, reason)
-	securityMu.Lock()
-	entry := securityStates[appID]
-	entry.Runtime = true
-	securityStates[appID] = entry
-	securityMu.Unlock()
+	markDegraded(appID, reason, true)
 }
 
 // CheckRuntimeSecurity blocks launches while running credentials cannot be inspected.

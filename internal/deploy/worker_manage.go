@@ -115,10 +115,15 @@ func WorkerStop(ctx context.Context, appName string, sig os.Signal, grace time.D
 			}
 			continue
 		}
-		report, _, _ := GracefulStopWorker(inst, sig, grace, nil)
+		report, _, stopErr := GracefulStopWorker(inst, sig, grace, nil)
+		if stopErr != nil {
+			return stopped, stopErr
+		}
 		inst.PID = 0
 		inst.Status = "stopped"
-		_ = Store(state)
+		if err := Store(state); err != nil {
+			return stopped, err
+		}
 		stopped++
 		_ = report
 	}

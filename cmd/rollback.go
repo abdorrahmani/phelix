@@ -788,6 +788,9 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 		return fail(terminal)
 	}
 	defer release()
+	if _, err := deploy.ReconcileSecretTxn(appName, appInfo.ID); err != nil {
+		return fail(err)
+	}
 
 	// Revalidate both the serving version and target artifact while exclusion is
 	// held. A concurrent prune/promote before lock acquisition must not make the

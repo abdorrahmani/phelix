@@ -110,8 +110,10 @@ func snapshotOverlay(envPath, appID string) ([]string, error) {
 	if store.AppID == "" {
 		store.AppID = appID
 	}
-	// Use the manager's decryption path via a temporary load pattern.
-	masterKey, err := envpkg.GetMasterKey()
+	if len(store.Entries) == 0 {
+		return nil, nil
+	}
+	masterKey, err := envpkg.ReadMasterKey()
 	if err != nil {
 		return nil, err
 	}

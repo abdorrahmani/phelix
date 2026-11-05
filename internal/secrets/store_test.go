@@ -458,3 +458,20 @@ func TestReadRejectsInconsistentSecretMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestNewAppCannotReplaceMissingMasterKey(t *testing.T) {
+	root := testEnv(t)
+	if _, err := Set(testAppID, "db", "existing-credential"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".phelix", "master.key")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Set("5f0e1d2c-3b4a-4958-8677-8899aabbccdd", "db", "new-credential"); !phelixerr.IsCode(err, phelixerr.CodeEncryption) {
+		t.Fatal("new app replaced missing shared key", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("missing key was recreated")
+	}
+}
