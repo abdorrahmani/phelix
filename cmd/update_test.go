@@ -60,12 +60,13 @@ func buildStampedBinaries(t *testing.T) string {
 		releasePayload = filepath.Join(dir, "phelix-release-1.0.1")
 
 		build := func(version, out string) error {
-			ldflags := fmt.Sprintf("-X github.com/abdorrahmani/phelix/internal/version.Version=%s", version)
+			ldflags := fmt.Sprintf("-s -w -X github.com/abdorrahmani/phelix/internal/version.BuildID=test -X github.com/abdorrahmani/phelix/internal/version.Commit=test -X github.com/abdorrahmani/phelix/internal/version.BuildTime=2026-11-06T11:46:12Z -X github.com/abdorrahmani/phelix/internal/version.Version=%s", version)
 			cmd, err := testCmd("go", "build", "-ldflags", ldflags, "-o", out, ".")
 			if err != nil {
 				return err
 			}
 			cmd.Dir = repoRoot
+			cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=")
 			if output, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("go build %s: %v: %s", version, err, output)
 			}

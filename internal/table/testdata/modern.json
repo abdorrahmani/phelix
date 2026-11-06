@@ -1,0 +1,702 @@
+[
+  {
+    "Name": "empty-left",
+    "Header": [],
+    "Rows": [],
+    "Centered": false,
+    "Output": ""
+  },
+  {
+    "Name": "header-left",
+    "Header": [
+      "ID",
+      "Name"
+    ],
+    "Rows": [],
+    "Centered": false,
+    "Output": "┌────┬──────┐\n│ ID │ NAME │\n└────┴──────┘\n"
+  },
+  {
+    "Name": "row-only-left",
+    "Header": [],
+    "Rows": [
+      [
+        "abc",
+        "def"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌─────┬─────┐\n│ abc │ def │\n└─────┴─────┘\n"
+  },
+  {
+    "Name": "empty-cells-left",
+    "Header": [
+      "A",
+      "B"
+    ],
+    "Rows": [
+      [
+        "",
+        ""
+      ],
+      [
+        "",
+        ""
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌───┬───┐\n│ A │ B │\n├───┼───┤\n│   │   │\n│   │   │\n└───┴───┘\n"
+  },
+  {
+    "Name": "ascii-left",
+    "Header": [
+      "id",
+      "appName"
+    ],
+    "Rows": [
+      [
+        "a",
+        "one"
+      ],
+      [
+        "abcd",
+        "longer"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌──────┬──────────┐\n│  ID  │ APP NAME │\n├──────┼──────────┤\n│ a    │ one      │\n│ abcd │ longer   │\n└──────┴──────────┘\n"
+  },
+  {
+    "Name": "multiline-left",
+    "Header": [
+      "First\nSecond",
+      "Value"
+    ],
+    "Rows": [
+      [
+        "a\nb",
+        "one"
+      ],
+      [
+        "c",
+        "two\nthree"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌──────────────┬───────┐\n│ FIRST SECOND │ VALUE │\n├──────────────┼───────┤\n│ a            │ one   │\n│ b            │       │\n│ c            │ two   │\n│              │ three │\n└──────────────┴───────┘\n"
+  },
+  {
+    "Name": "whitespace-left",
+    "Header": [
+      " RAM Usage (MB) ",
+      "CODE"
+    ],
+    "Rows": [
+      [
+        " a \n b ",
+        "  x  "
+      ],
+      [
+        "\n\n",
+        "\t"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌───────────────────┬──────┐\n│ RAM USAGE  ( MB ) │ CODE │\n├───────────────────┼──────┤\n│ a                 │ x    │\n│  b                │      │\n│                   │      │\n└───────────────────┴──────┘\n"
+  },
+  {
+    "Name": "tabs-left",
+    "Header": [
+      "Name",
+      "Value"
+    ],
+    "Rows": [
+      [
+        "a\tb",
+        " c\td "
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌────────┬────────┐\n│  NAME  │ VALUE  │\n├────────┼────────┤\n│ a    b │ c    d │\n└────────┴────────┘\n"
+  },
+  {
+    "Name": "unicode-left",
+    "Header": [
+      "名称",
+      "Status"
+    ],
+    "Rows": [
+      [
+        "订单",
+        "运行"
+      ],
+      [
+        "é",
+        "👩‍💻"
+      ],
+      [
+        "سلام",
+        "🙂"
+      ],
+      [
+        "α",
+        "─"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌──────┬────────┐\n│ 名称 │ STATUS │\n├──────┼────────┤\n│ 订单 │ 运行   │\n│ é    │ 👩‍💻   │\n│ سلام │ 🙂     │\n│ α   │ ─      │\n└──────┴────────┘\n"
+  },
+  {
+    "Name": "ansi-left",
+    "Header": [
+      "Name",
+      "Status"
+    ],
+    "Rows": [
+      [
+        "\u001b[31mred\u001b[0m",
+        "\u001b[32mgreen\u001b[0m"
+      ],
+      [
+        "\u001b]8;;https://example.test\u0007link\u001b]8;;\u0007",
+        "plain"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌──────┬────────┐\n│ NAME │ STATUS │\n├──────┼────────┤\n│ \u001b[31mred\u001b[0m  │ \u001b[32mgreen\u001b[0m  │\n│ \u001b]8;;https://example.test\u0007link\u001b]8;;\u0007 │ plain  │\n└──────┴────────┘\n"
+  },
+  {
+    "Name": "long-left",
+    "Header": [
+      "ID",
+      "Details"
+    ],
+    "Rows": [
+      [
+        "a",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      [
+        "b",
+        "many words many words many words many words many words many words many words many words many words many words many words many words many words many words many words many words "
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│ ID │                                                                                     DETAILS                                                                                     │\n├────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤\n│ a  │ xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                                                        │\n│ b  │ many words many words many words many words many words many words many words many words many words many words many words many words many words many words many words many words │\n└────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n"
+  },
+  {
+    "Name": "uneven-left",
+    "Header": [
+      "A",
+      "B",
+      "C"
+    ],
+    "Rows": [
+      [
+        "one"
+      ],
+      [
+        "two",
+        "three",
+        "four",
+        "five"
+      ],
+      []
+    ],
+    "Centered": false,
+    "Output": "┌─────┬───────┬──────┬──────┐\n│  A  │   B   │  C   │      │\n├─────┼───────┼──────┼──────┤\n│ one │       │      │      │\n│ two │ three │ four │ five │\n└─────┴───────┴──────┴──────┘\n"
+  },
+  {
+    "Name": "headers-left",
+    "Header": [
+      "RAM Usage (MB)",
+      "CPU Usage (%)",
+      "RequestID",
+      "LAST CHECK",
+      "Prune soon"
+    ],
+    "Rows": [
+      [
+        "1",
+        "2",
+        "r",
+        "now",
+        "no"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌───────────────────┬────────────────┬────────────┬────────────┬────────────┐\n│ RAM USAGE  ( MB ) │ CPU USAGE  (%) │ REQUEST ID │ LAST CHECK │ PRUNE SOON │\n├───────────────────┼────────────────┼────────────┼────────────┼────────────┤\n│ 1                 │ 2              │ r          │ now        │ no         │\n└───────────────────┴────────────────┴────────────┴────────────┴────────────┘\n"
+  },
+  {
+    "Name": "empty-centered",
+    "Header": [],
+    "Rows": [],
+    "Centered": true,
+    "Output": ""
+  },
+  {
+    "Name": "header-centered",
+    "Header": [
+      "ID",
+      "Name"
+    ],
+    "Rows": [],
+    "Centered": true,
+    "Output": "┌────┬──────┐\n│ ID │ NAME │\n└────┴──────┘\n"
+  },
+  {
+    "Name": "row-only-centered",
+    "Header": [],
+    "Rows": [
+      [
+        "abc",
+        "def"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌─────┬─────┐\n│ abc │ def │\n└─────┴─────┘\n"
+  },
+  {
+    "Name": "empty-cells-centered",
+    "Header": [
+      "A",
+      "B"
+    ],
+    "Rows": [
+      [
+        "",
+        ""
+      ],
+      [
+        "",
+        ""
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌───┬───┐\n│ A │ B │\n├───┼───┤\n│   │   │\n├───┼───┤\n│   │   │\n└───┴───┘\n"
+  },
+  {
+    "Name": "ascii-centered",
+    "Header": [
+      "id",
+      "appName"
+    ],
+    "Rows": [
+      [
+        "a",
+        "one"
+      ],
+      [
+        "abcd",
+        "longer"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌──────┬──────────┐\n│  ID  │ APP NAME │\n├──────┼──────────┤\n│ a    │   one    │\n├──────┼──────────┤\n│ abcd │  longer  │\n└──────┴──────────┘\n"
+  },
+  {
+    "Name": "multiline-centered",
+    "Header": [
+      "First\nSecond",
+      "Value"
+    ],
+    "Rows": [
+      [
+        "a\nb",
+        "one"
+      ],
+      [
+        "c",
+        "two\nthree"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌──────────────┬───────┐\n│ FIRST SECOND │ VALUE │\n├──────────────┼───────┤\n│ a            │  one  │\n│ b            │       │\n├──────────────┼───────┤\n│ c            │  two  │\n│              │ three │\n└──────────────┴───────┘\n"
+  },
+  {
+    "Name": "whitespace-centered",
+    "Header": [
+      " RAM Usage (MB) ",
+      "CODE"
+    ],
+    "Rows": [
+      [
+        " a \n b ",
+        "  x  "
+      ],
+      [
+        "\n\n",
+        "\t"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌───────────────────┬───────┐\n│ RAM USAGE  ( MB ) │ CODE  │\n├───────────────────┼───────┤\n│  a                │   x   │\n│  b                │       │\n├───────────────────┼───────┤\n│                   │       │\n└───────────────────┴───────┘\n"
+  },
+  {
+    "Name": "tabs-centered",
+    "Header": [
+      "Name",
+      "Value"
+    ],
+    "Rows": [
+      [
+        "a\tb",
+        " c\td "
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌────────┬──────────┐\n│  NAME  │  VALUE   │\n├────────┼──────────┤\n│ a    b │  c    d  │\n└────────┴──────────┘\n"
+  },
+  {
+    "Name": "unicode-centered",
+    "Header": [
+      "名称",
+      "Status"
+    ],
+    "Rows": [
+      [
+        "订单",
+        "运行"
+      ],
+      [
+        "é",
+        "👩‍💻"
+      ],
+      [
+        "سلام",
+        "🙂"
+      ],
+      [
+        "α",
+        "─"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌──────┬────────┐\n│ 名称 │ STATUS │\n├──────┼────────┤\n│ 订单 │  运行  │\n├──────┼────────┤\n│ é    │  👩‍💻  │\n├──────┼────────┤\n│ سلام │   🙂   │\n├──────┼────────┤\n│ α   │   ─    │\n└──────┴────────┘\n"
+  },
+  {
+    "Name": "ansi-centered",
+    "Header": [
+      "Name",
+      "Status"
+    ],
+    "Rows": [
+      [
+        "\u001b[31mred\u001b[0m",
+        "\u001b[32mgreen\u001b[0m"
+      ],
+      [
+        "\u001b]8;;https://example.test\u0007link\u001b]8;;\u0007",
+        "plain"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌──────┬────────┐\n│ NAME │ STATUS │\n├──────┼────────┤\n│ \u001b[31mred\u001b[0m  │ \u001b[32mgreen\u001b[0m  │\n├──────┼────────┤\n│ \u001b]8;;https://example.test\u0007link\u001b]8;;\u0007 │ plain  │\n└──────┴────────┘\n"
+  },
+  {
+    "Name": "long-centered",
+    "Header": [
+      "ID",
+      "Details"
+    ],
+    "Rows": [
+      [
+        "a",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      [
+        "b",
+        "many words many words many words many words many words many words many words many words many words many words many words many words many words many words many words many words "
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐\n│ ID │                                                                                     DETAILS                                                                                      │\n├────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤\n│ a  │                             xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx                             │\n├────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤\n│ b  │ many words many words many words many words many words many words many words many words many words many words many words many words many words many words many words many words  │\n└────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n"
+  },
+  {
+    "Name": "uneven-centered",
+    "Header": [
+      "A",
+      "B",
+      "C"
+    ],
+    "Rows": [
+      [
+        "one"
+      ],
+      [
+        "two",
+        "three",
+        "four",
+        "five"
+      ],
+      []
+    ],
+    "Centered": true,
+    "Output": "┌─────┬───────┬──────┬──────┐\n│  A  │   B   │  C   │      │\n├─────┼───────┼──────┼──────┤\n│ one │       │      │      │\n├─────┼───────┼──────┼──────┤\n│ two │ three │ four │ five │\n├─────┼───────┼──────┼──────┤\n└─────┴───────┴──────┴──────┘\n"
+  },
+  {
+    "Name": "headers-centered",
+    "Header": [
+      "RAM Usage (MB)",
+      "CPU Usage (%)",
+      "RequestID",
+      "LAST CHECK",
+      "Prune soon"
+    ],
+    "Rows": [
+      [
+        "1",
+        "2",
+        "r",
+        "now",
+        "no"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌───────────────────┬────────────────┬────────────┬────────────┬────────────┐\n│ RAM USAGE  ( MB ) │ CPU USAGE  (%) │ REQUEST ID │ LAST CHECK │ PRUNE SOON │\n├───────────────────┼────────────────┼────────────┼────────────┼────────────┤\n│ 1                 │       2        │     r      │    now     │     no     │\n└───────────────────┴────────────────┴────────────┴────────────┴────────────┘\n"
+  },
+  {
+    "Name": "cmd-list.go0",
+    "Header": [
+      "ID",
+      "Name",
+      "Version",
+      "Status",
+      "Watching",
+      "Language",
+      "PID",
+      "Uptime",
+      "Deploy",
+      "Proxy"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌────┬──────┬─────────┬────────┬──────────┬──────────┬─────┬────────┬────────┬───────┐\n│ ID │ NAME │ VERSION │ STATUS │ WATCHING │ LANGUAGE │ PID │ UPTIME │ DEPLOY │ PROXY │\n├────┼──────┼─────────┼────────┼──────────┼──────────┼─────┼────────┼────────┼───────┤\n│ 0  │  1   │    2    │   3    │    4     │    5     │  6  │   7    │   8    │   9   │\n└────┴──────┴─────────┴────────┴──────────┴──────────┴─────┴────────┴────────┴───────┘\n"
+  },
+  {
+    "Name": "cmd-status.go0",
+    "Header": [
+      "ID",
+      "Name",
+      "Language",
+      "Status",
+      "Watching",
+      "PID",
+      "Uptime",
+      "RAM Usage (MB)",
+      "CPU Usage (%)"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌────┬──────┬──────────┬────────┬──────────┬─────┬────────┬───────────────────┬────────────────┐\n│ ID │ NAME │ LANGUAGE │ STATUS │ WATCHING │ PID │ UPTIME │ RAM USAGE  ( MB ) │ CPU USAGE  (%) │\n├────┼──────┼──────────┼────────┼──────────┼─────┼────────┼───────────────────┼────────────────┤\n│ 0  │  1   │    2     │   3    │    4     │  5  │   6    │         7         │       8        │\n└────┴──────┴──────────┴────────┴──────────┴─────┴────────┴───────────────────┴────────────────┘\n"
+  },
+  {
+    "Name": "cmd-workspace_status.go0",
+    "Header": [
+      "Name",
+      "Status",
+      "Version",
+      "Health",
+      "Port",
+      "Strategy",
+      "Depends On"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌──────┬────────┬─────────┬────────┬──────┬──────────┬────────────┐\n│ NAME │ STATUS │ VERSION │ HEALTH │ PORT │ STRATEGY │ DEPENDS ON │\n├──────┼────────┼─────────┼────────┼──────┼──────────┼────────────┤\n│ 0    │   1    │    2    │   3    │  4   │    5     │     6      │\n└──────┴────────┴─────────┴────────┴──────┴──────────┴────────────┘\n"
+  },
+  {
+    "Name": "cmd-webhook_jobs.go0",
+    "Header": [
+      "Job",
+      "Status",
+      "Stage",
+      "Commit",
+      "Version"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌─────┬────────┬───────┬────────┬─────────┐\n│ JOB │ STATUS │ STAGE │ COMMIT │ VERSION │\n├─────┼────────┼───────┼────────┼─────────┤\n│ 0   │   1    │   2   │   3    │    4    │\n└─────┴────────┴───────┴────────┴─────────┘\n"
+  },
+  {
+    "Name": "cmd-webhook_jobs.go1",
+    "Header": [
+      "Time",
+      "Status",
+      "Commit",
+      "Version",
+      "Message"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4"
+      ]
+    ],
+    "Centered": true,
+    "Output": "┌──────┬────────┬────────┬─────────┬─────────┐\n│ TIME │ STATUS │ COMMIT │ VERSION │ MESSAGE │\n├──────┼────────┼────────┼─────────┼─────────┤\n│ 0    │   1    │   2    │    3    │    4    │\n└──────┴────────┴────────┴─────────┴─────────┘\n"
+  },
+  {
+    "Name": "cmd-matrix.go0",
+    "Header": [
+      "ID",
+      "STATUS",
+      "APP",
+      "COMBINATIONS",
+      "STARTED"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌────┬────────┬─────┬──────────────┬─────────┐\n│ ID │ STATUS │ APP │ COMBINATIONS │ STARTED │\n├────┼────────┼─────┼──────────────┼─────────┤\n│ 0  │ 1      │ 2   │ 3            │ 4       │\n└────┴────────┴─────┴──────────────┴─────────┘\n"
+  },
+  {
+    "Name": "cmd-rollback.go0",
+    "Header": [
+      "Version",
+      "Tag",
+      "Commit",
+      "Built",
+      "Size",
+      "Current",
+      "Prune soon"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌─────────┬─────┬────────┬───────┬──────┬─────────┬────────────┐\n│ VERSION │ TAG │ COMMIT │ BUILT │ SIZE │ CURRENT │ PRUNE SOON │\n├─────────┼─────┼────────┼───────┼──────┼─────────┼────────────┤\n│ 0       │ 1   │ 2      │ 3     │ 4    │ 5       │ 6          │\n└─────────┴─────┴────────┴───────┴──────┴─────────┴────────────┘\n"
+  },
+  {
+    "Name": "cmd-rollback_history.go0",
+    "Header": [
+      "TIME",
+      "FROM",
+      "TO",
+      "STATUS",
+      "MODE",
+      "SOURCE",
+      "REASON"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌──────┬──────┬────┬────────┬──────┬────────┬────────┐\n│ TIME │ FROM │ TO │ STATUS │ MODE │ SOURCE │ REASON │\n├──────┼──────┼────┼────────┼──────┼────────┼────────┤\n│ 0    │ 1    │ 2  │ 3      │ 4    │ 5      │ 6      │\n└──────┴──────┴────┴────────┴──────┴────────┴────────┘\n"
+  },
+  {
+    "Name": "internal-health-display.go0",
+    "Header": [
+      "NAME",
+      "URL",
+      "LATENCY",
+      "CODE",
+      "STATUS",
+      "LAST CHECK"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌──────┬─────┬─────────┬──────┬────────┬────────────┐\n│ NAME │ URL │ LATENCY │ CODE │ STATUS │ LAST CHECK │\n├──────┼─────┼─────────┼──────┼────────┼────────────┤\n│ 0    │ 1   │ 2       │ 3    │ 4      │ 5          │\n└──────┴─────┴─────────┴──────┴────────┴────────────┘\n"
+  },
+  {
+    "Name": "internal-health-display.go1",
+    "Header": [
+      "NAME",
+      "URL",
+      "LATENCY",
+      "CODE",
+      "STATUS",
+      "LAST CHECK"
+    ],
+    "Rows": [
+      [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    ],
+    "Centered": false,
+    "Output": "┌──────┬─────┬─────────┬──────┬────────┬────────────┐\n│ NAME │ URL │ LATENCY │ CODE │ STATUS │ LAST CHECK │\n├──────┼─────┼─────────┼──────┼────────┼────────────┤\n│ 0    │ 1   │ 2       │ 3    │ 4      │ 5          │\n└──────┴─────┴─────────┴──────┴────────┴────────────┘\n"
+  }
+]
