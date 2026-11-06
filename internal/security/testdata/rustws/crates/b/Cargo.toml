@@ -1,0 +1,7 @@
+[package]
+name = "beta"
+version = "0.1.0"
+
+[dependencies]
+twovers = "1.0"
+serde = "1.0"

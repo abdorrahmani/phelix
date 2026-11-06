@@ -1,0 +1,18 @@
+[package]
+name = "alpha"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+shared = { workspace = true }
+renamed = { package = "actual-crate", version = "0.4" }
+optdep = { version = "2.0", optional = true }
+gitdep = { git = "https://example.com/gitdep" }
+localdep = { path = "../lib" }
+
+[dev-dependencies]
+testkit = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+unixonly = "0.3"
