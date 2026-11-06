@@ -184,6 +184,14 @@ const (
 	CodeServer     Code = "SERVER_ERROR"
 	CodeEncryption Code = "ENCRYPTION_ERROR"
 
+	// CodeSecurityFindings: a dependency vulnerability scan completed and
+	// found findings at or above the configured severity threshold. The
+	// scan itself succeeded and its record is persisted; the dedicated
+	// code exists so CI gates can fail a build on findings without
+	// conflating them with invalid configuration (CONFIGURATION_ERROR) or
+	// generic failure.
+	CodeSecurityFindings Code = "SECURITY_FINDINGS"
+
 	// Remote command channel (MonitorStream). CodeUnimplemented marks a
 	// command type the agent cannot execute (e.g. rollback before a handler
 	// is wired); CodeUnavailable a capability temporarily not usable.

@@ -78,6 +78,9 @@ func (c *AdvisoryCache) Put(advisory *OSVAdvisory, fetchedAt time.Time) error {
 	if advisory == nil || !validOSVID(advisory.ID) {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "cannot cache an advisory without a valid id")
 	}
+	if err := os.MkdirAll(c.dir, 0o700); err != nil {
+		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "security: create advisory cache %s", c.dir)
+	}
 	entry := advisoryCacheEntry{
 		SchemaVersion: cacheEntrySchemaVersion,
 		ID:            advisory.ID,

@@ -49,6 +49,7 @@ const (
 	ExitRollback       = 22 // rollback failure
 	ExitRollbackVerify = 23 // rollback executed, verification failed/cancelled
 	ExitAutoRollback   = 24 // deployment failed AND automatic rollback failed (state degraded)
+	ExitSecurity       = 25 // dependency vulnerability scan found findings at or above the threshold
 	ExitNetwork        = 30 // network / connection failure
 	ExitConfig         = 40 // configuration failure
 	ExitDocker         = 50 // docker failure
@@ -152,6 +153,8 @@ func ExitCodeFor(err error) int {
 		return ExitConfig
 	case phelixerr.CodeDocker, phelixerr.CodeDockerDaemonUnavailable:
 		return ExitDocker
+	case phelixerr.CodeSecurityFindings:
+		return ExitSecurity
 	case phelixerr.CodeTimeout:
 		return ExitTimeout
 	case phelixerr.CodeEncryption:

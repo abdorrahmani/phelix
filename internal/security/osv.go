@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,19 @@ import (
 
 // DefaultOSVBaseURL is the public OSV.dev API endpoint.
 const DefaultOSVBaseURL = "https://api.osv.dev"
+
+// OSVBaseURLEnv is the environment override for the advisory endpoint,
+// following the PHELIX_GRPC_URL / PHELIX_API conventions. It exists for
+// tests and for pointing a deployment at a private advisory mirror.
+const OSVBaseURLEnv = "PHELIX_OSV_URL"
+
+// OSVBaseURL returns the configured advisory endpoint.
+func OSVBaseURL() string {
+	if override := os.Getenv(OSVBaseURLEnv); override != "" {
+		return override
+	}
+	return DefaultOSVBaseURL
+}
 
 // Request bounds for advisory retrieval. The response caps keep a hostile
 // or broken endpoint from exhausting memory; the per-request timeout keeps
