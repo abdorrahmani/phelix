@@ -1,0 +1,316 @@
+[
+  {
+    "Name": "embedded",
+    "YAML": "app:\n  mode: \"production\"\n  api: \"https://phelix.anophel.com/api/v1\"\n  grpcUrl: \"phelix.anophel.com:443\"\n\n# Alert thresholds (percentages) reported to the backend as the server's real\n# configuration. Tune these to match the host policy; they are sent verbatim\n# on every ServerInfo.\nalert:\n  cpuThreshold: 80\n  ramThreshold: 90\n  diskThreshold: 90\n",
+    "Config": {
+      "App": {
+        "Mode": "production",
+        "API": "https://phelix.anophel.com/api/v1",
+        "GRPCUrl": "phelix.anophel.com:443"
+      },
+      "Alert": {
+        "CPUThreshold": 80,
+        "RAMThreshold": 90,
+        "DiskThreshold": 90
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "empty",
+    "YAML": "",
+    "Config": {
+      "App": {
+        "Mode": "",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "null",
+    "YAML": "null",
+    "Config": {
+      "App": {
+        "Mode": "",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "empty-map",
+    "YAML": "{}",
+    "Config": {
+      "App": {
+        "Mode": "",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "missing",
+    "YAML": "app: {}",
+    "Config": {
+      "App": {
+        "Mode": "",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "case",
+    "YAML": "APP:\n  MODE: dev\n  Api: https://example.test\n  GRPCURL: example.test:443\nALERT:\n  CPUThreshold: 83.5\n",
+    "Config": {
+      "App": {
+        "Mode": "dev",
+        "API": "https://example.test",
+        "GRPCUrl": "example.test:443"
+      },
+      "Alert": {
+        "CPUThreshold": 83.5,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "dotted",
+    "YAML": "app.mode: dev\napp.api: https://example.test\nalert.cpuThreshold: \"82.5\"\n",
+    "Config": {
+      "App": {
+        "Mode": "dev",
+        "API": "https://example.test",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 82.5,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "null-fields",
+    "YAML": "app:\n  mode: null\nalert: null\n",
+    "Config": {
+      "App": {
+        "Mode": "",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "weak",
+    "YAML": "app:\n  mode: true\n  api: 123\n  grpcUrl: 45.5\nalert:\n  cpuThreshold: \"80.5\"\n  ramThreshold: true\n  diskThreshold: false\n",
+    "Config": {
+      "App": {
+        "Mode": "1",
+        "API": "123",
+        "GRPCUrl": "45.5"
+      },
+      "Alert": {
+        "CPUThreshold": 80.5,
+        "RAMThreshold": 1,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "unknown",
+    "YAML": "unused: {a: [1, 2]}\napp:\n  other: thing\n  mode: dev\n",
+    "Config": {
+      "App": {
+        "Mode": "dev",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "aliases",
+    "YAML": "defaults: \u0026d\n  mode: dev\napp:\n  \u003c\u003c: *d\n  api: https://example.test\n",
+    "Config": {
+      "App": {
+        "Mode": "dev",
+        "API": "https://example.test",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "sequence-map",
+    "YAML": "app:\n  - mode: dev\n  - api: example\n",
+    "Config": null,
+    "Error": "unable to decode config"
+  },
+  {
+    "Name": "empty-sequence",
+    "YAML": "app: []\nalert: []\n",
+    "Config": null,
+    "Error": "unable to decode config"
+  },
+  {
+    "Name": "wrong-scalar",
+    "YAML": "app: hello\n",
+    "Config": null,
+    "Error": "unable to decode config"
+  },
+  {
+    "Name": "bad-number",
+    "YAML": "alert:\n  cpuThreshold: nope\n",
+    "Config": null,
+    "Error": "unable to decode config"
+  },
+  {
+    "Name": "sequence-root",
+    "YAML": "- app\n- mode\n",
+    "Config": null,
+    "Error": "unable to read embedded config"
+  },
+  {
+    "Name": "bad-yaml",
+    "YAML": "app: [\n",
+    "Config": null,
+    "Error": "unable to read embedded config"
+  },
+  {
+    "Name": "duplicate",
+    "YAML": "app:\n  mode: dev\n  mode: production\n",
+    "Config": null,
+    "Error": "unable to read embedded config"
+  },
+  {
+    "Name": "empty-string",
+    "YAML": "app:\n  mode: \"\"\nalert:\n  cpuThreshold: \"\"\n",
+    "Config": {
+      "App": {
+        "Mode": "",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "multi-document",
+    "YAML": "app:\n  mode: dev\n---\napp:\n  mode: production\n",
+    "Config": {
+      "App": {
+        "Mode": "dev",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "dotted-nested",
+    "YAML": "app:\n  mode: dev\n  unknown.value: anything\n",
+    "Config": {
+      "App": {
+        "Mode": "dev",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "nested-dot",
+    "YAML": "APP.MODE: dev\nAPP.GRPCURL: server:443\n",
+    "Config": {
+      "App": {
+        "Mode": "dev",
+        "API": "",
+        "GRPCUrl": "server:443"
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  },
+  {
+    "Name": "numeric-key",
+    "YAML": "42: ignored\napp: {mode: dev}\n",
+    "Config": {
+      "App": {
+        "Mode": "dev",
+        "API": "",
+        "GRPCUrl": ""
+      },
+      "Alert": {
+        "CPUThreshold": 0,
+        "RAMThreshold": 0,
+        "DiskThreshold": 0
+      }
+    },
+    "Error": ""
+  }
+]

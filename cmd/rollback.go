@@ -19,8 +19,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/ops"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/secrets"
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/fatih/color"
-	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 )
 
@@ -1341,7 +1341,7 @@ func listRollbackVersions(appName string, policy deploy.RetentionPolicy, appInfo
 	r.SetMetadata("version_count", fmt.Sprintf("%d", len(vers)))
 
 	// Render table.
-	table := tablewriter.NewTable(os.Stdout)
+	table := table.New(os.Stdout, false)
 	table.Header([]string{"Version", "Tag", "Commit", "Built", "Size", "Current", "Prune soon"})
 	for _, v := range vers {
 		commit := v.GitCommit

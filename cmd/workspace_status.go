@@ -11,10 +11,9 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/machine"
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/abdorrahmani/phelix/internal/workspace"
 	"github.com/fatih/color"
-	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 )
 
 // wsStatus switches `phelix status` into the whole-workspace overview.
@@ -214,22 +213,7 @@ func workspaceStatusSummary(views []workspaceServiceStatusView) string {
 // renderWorkspaceStatus prints the human overview table.
 func renderWorkspaceStatus(ws *workspace.Workspace, views []workspaceServiceStatusView) {
 	printWorkspaceHeader(ws, "status")
-	table := tablewriter.NewTable(os.Stdout,
-		tablewriter.WithRendition(tw.Rendition{
-			Settings: tw.Settings{Separators: tw.Separators{BetweenRows: tw.On}},
-		}),
-		tablewriter.WithConfig(tablewriter.Config{
-			Header: tw.CellConfig{
-				Alignment: tw.CellAlignment{Global: tw.AlignCenter},
-			},
-			Row: tw.CellConfig{
-				Alignment: tw.CellAlignment{
-					Global:    tw.AlignCenter,
-					PerColumn: []tw.Align{tw.AlignLeft},
-				},
-			},
-		}),
-	)
+	table := table.New(os.Stdout, true)
 	table.Header([]string{"Name", "Status", "Version", "Health", "Port", "Strategy", "Depends On"})
 	for _, view := range views {
 		version := "-"

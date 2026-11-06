@@ -120,9 +120,10 @@ func buildPhelixRelease(t *testing.T) []byte {
 			return
 		}
 		releaseBinPath = filepath.Join(dir, "phelix")
-		ldflags := fmt.Sprintf("-X github.com/abdorrahmani/phelix/internal/version.Version=%s", releaseTestVersion)
+		ldflags := fmt.Sprintf("-s -w -X github.com/abdorrahmani/phelix/internal/version.BuildID=test -X github.com/abdorrahmani/phelix/internal/version.Commit=test -X github.com/abdorrahmani/phelix/internal/version.BuildTime=2026-11-06T11:46:12Z -X github.com/abdorrahmani/phelix/internal/version.Version=%s", releaseTestVersion)
 		build := exec.Command("go", "build", "-ldflags", ldflags, "-o", releaseBinPath, ".")
 		build.Dir = repoRoot
+		build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=")
 		if out, err := build.CombinedOutput(); err != nil {
 			releaseBuildErr = fmt.Errorf("go build: %v: %s", err, out)
 		}

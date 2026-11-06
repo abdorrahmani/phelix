@@ -11,8 +11,8 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/fatih/color"
-	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 )
 
@@ -67,7 +67,7 @@ var matrixListCmd = &cobra.Command{
 			return nil
 		}
 
-		table := tablewriter.NewTable(os.Stdout)
+		table := table.New(os.Stdout, false)
 		table.Header([]string{"ID", "STATUS", "APP", "COMBINATIONS", "STARTED"})
 		for _, r := range runs {
 			table.Append([]string{

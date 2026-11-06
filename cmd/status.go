@@ -15,9 +15,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/proxy"
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/fatih/color"
-	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 )
 
@@ -412,28 +411,13 @@ func displayStatus(status app.AppStatus) {
 	table.Render()
 }
 
-func createStatusTable() *tablewriter.Table {
-	table := tablewriter.NewTable(os.Stdout,
-		tablewriter.WithRendition(tw.Rendition{
-			Settings: tw.Settings{Separators: tw.Separators{BetweenRows: tw.On}},
-		}),
-		tablewriter.WithConfig(tablewriter.Config{
-			Header: tw.CellConfig{
-				Alignment: tw.CellAlignment{Global: tw.AlignCenter},
-			},
-			Row: tw.CellConfig{
-				Alignment: tw.CellAlignment{
-					Global:    tw.AlignCenter,
-					PerColumn: []tw.Align{tw.AlignLeft},
-				},
-			},
-		}),
-	)
+func createStatusTable() *table.Table {
+	table := table.New(os.Stdout, true)
 	table.Header([]string{"ID", "Name", "Language", "Status", "Watching", "PID", "Uptime", "RAM Usage (MB)", "CPU Usage (%)"})
 	return table
 }
 
-func populateStatusTable(table *tablewriter.Table, status app.AppStatus) {
+func populateStatusTable(table *table.Table, status app.AppStatus) {
 	statusText := FormatStatus(status.Status)
 	ramUsageMB := float64(status.RAMUsage) / (1024 * 1024)
 	lang := status.Language

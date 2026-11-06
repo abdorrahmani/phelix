@@ -11,8 +11,8 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/fatih/color"
-	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 )
 
@@ -98,7 +98,7 @@ func runRollbackHistory(appInfo *app.AppInfo) error {
 			color.YellowString("⚠"), skipped, plural(skipped))
 	}
 
-	table := tablewriter.NewTable(os.Stdout)
+	table := table.New(os.Stdout, false)
 	table.Header([]string{"TIME", "FROM", "TO", "STATUS", "MODE", "SOURCE", "REASON"})
 	for _, rec := range records {
 		status := strings.ToUpper(rec.Status)
