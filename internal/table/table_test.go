@@ -9,9 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-
-	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 )
 
 type tableFixture struct {
@@ -23,19 +20,10 @@ type tableFixture struct {
 }
 
 func renderReference(w io.Writer, header []string, rows [][]string, centered bool) error {
-	var options []tablewriter.Option
-	if centered {
-		options = []tablewriter.Option{
-			tablewriter.WithRendition(tw.Rendition{Settings: tw.Settings{Separators: tw.Separators{BetweenRows: tw.On}}}),
-			tablewriter.WithConfig(tablewriter.Config{Header: tw.CellConfig{Alignment: tw.CellAlignment{Global: tw.AlignCenter}}, Row: tw.CellConfig{Alignment: tw.CellAlignment{Global: tw.AlignCenter, PerColumn: []tw.Align{tw.AlignLeft}}}}),
-		}
-	}
-	table := tablewriter.NewTable(w, options...)
+	table := New(w, centered)
 	table.Header(header)
 	for _, row := range rows {
-		if err := table.Append(row); err != nil {
-			return err
-		}
+		table.Append(row)
 	}
 	return table.Render()
 }

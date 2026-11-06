@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/fatih/color"
-	"github.com/olekukonko/tablewriter"
 )
 
 // TerminalDisplay manages the live-updating terminal UI
@@ -107,7 +107,7 @@ func (td *TerminalDisplay) draw() {
 	}
 
 	// Create table
-	table := tablewriter.NewTable(os.Stdout)
+	table := table.New(os.Stdout, false)
 	table.Header([]string{"NAME", "URL", "LATENCY", "CODE", "STATUS", "LAST CHECK"})
 
 	// Add rows
@@ -211,7 +211,7 @@ func PrintStatusTable(appID, appName string, daemon *Daemon) {
 	status := daemon.GetStatus(appID)
 
 	// Create table
-	table := tablewriter.NewTable(os.Stdout)
+	table := table.New(os.Stdout, false)
 	table.Header([]string{"NAME", "URL", "LATENCY", "CODE", "STATUS", "LAST CHECK"})
 
 	for endpointName, endpointConfig := range config.Endpoints {

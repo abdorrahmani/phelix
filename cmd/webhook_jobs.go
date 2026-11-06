@@ -9,10 +9,9 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/abdorrahmani/phelix/internal/webhook"
 	"github.com/fatih/color"
-	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 )
 
@@ -103,24 +102,8 @@ func runWebhookJobsHistory(app string, limit int, asJSON bool) error {
 	return nil
 }
 
-func newWebhookJobsTable(w io.Writer) *tablewriter.Table {
-	table := tablewriter.NewTable(w,
-		tablewriter.WithRendition(tw.Rendition{
-			Settings: tw.Settings{Separators: tw.Separators{BetweenRows: tw.On}},
-		}),
-		tablewriter.WithConfig(tablewriter.Config{
-			Header: tw.CellConfig{
-				Alignment: tw.CellAlignment{Global: tw.AlignCenter},
-			},
-			Row: tw.CellConfig{
-				Alignment: tw.CellAlignment{
-					Global:    tw.AlignCenter,
-					PerColumn: []tw.Align{tw.AlignLeft},
-				},
-			},
-		}),
-	)
-	return table
+func newWebhookJobsTable(w io.Writer) *table.Table {
+	return table.New(w, true)
 }
 
 func renderWebhookStatusTable(w io.Writer, recs []webhook.JobRecord) {

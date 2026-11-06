@@ -10,9 +10,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/proxy"
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/fatih/color"
-	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 	"github.com/spf13/cobra"
 )
 
@@ -117,28 +116,13 @@ func buildListResult(apps []app.AppListItem, proxyUp bool, proxyByApp map[string
 	return &listResult{Apps: views, ProxyUp: proxyUp, ProxyApps: len(proxyByApp)}
 }
 
-func createTable() *tablewriter.Table {
-	table := tablewriter.NewTable(os.Stdout,
-		tablewriter.WithRendition(tw.Rendition{
-			Settings: tw.Settings{Separators: tw.Separators{BetweenRows: tw.On}},
-		}),
-		tablewriter.WithConfig(tablewriter.Config{
-			Header: tw.CellConfig{
-				Alignment: tw.CellAlignment{Global: tw.AlignCenter},
-			},
-			Row: tw.CellConfig{
-				Alignment: tw.CellAlignment{
-					Global:    tw.AlignCenter,
-					PerColumn: []tw.Align{tw.AlignLeft},
-				},
-			},
-		}),
-	)
+func createTable() *table.Table {
+	table := table.New(os.Stdout, true)
 	table.Header([]string{"ID", "Name", "Version", "Status", "Watching", "Language", "PID", "Uptime", "Deploy", "Proxy"})
 	return table
 }
 
-func populateTable(table *tablewriter.Table, apps []app.AppListItem, proxyByApp map[string]proxy.AppStatus) {
+func populateTable(table *table.Table, apps []app.AppListItem, proxyByApp map[string]proxy.AppStatus) {
 	for _, a := range apps {
 		status := FormatStatus(a.Status)
 		lang := a.Language

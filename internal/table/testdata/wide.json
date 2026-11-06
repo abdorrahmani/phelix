@@ -698,5 +698,23 @@
     ],
     "Centered": false,
     "Output": "┌───┬── ┬──── ┬───┬────┬──────┐\n│ NAME │ URL │ LATENCY │ CODE │ STATUS │ LAST CHECK │\n├───┼── ┼──── ┼───┼────┼──────┤\n│ 0    │ 1   │ 2       │ 3    │ 4      │ 5          │\n└───┴── ┴──── ┴───┴────┴──────┘\n"
+  },
+  {
+    "Name": "empty-row-false",
+    "Header": [],
+    "Rows": [
+      []
+    ],
+    "Centered": false,
+    "Output": "┌┐\n└┘\n"
+  },
+  {
+    "Name": "empty-row-true",
+    "Header": [],
+    "Rows": [
+      []
+    ],
+    "Centered": true,
+    "Output": "┌┐\n└┘\n"
   }
 ]
