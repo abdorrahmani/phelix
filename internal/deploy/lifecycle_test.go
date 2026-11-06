@@ -491,3 +491,26 @@ func TestStartDeployment_PersistsInstancesAlreadyStarted(t *testing.T) {
 		t.Fatalf("replica 1 was started but not persisted: %+v", replica)
 	}
 }
+
+func TestStartDeploymentPreservesLiveReplica(t *testing.T) {
+	resetHome(t)
+	live := startChildInstance(t, "0", 1)
+	state := &DeployState{AppName: "partial-start", Mode: ModeRolling, Replicas: map[string]*Instance{
+		"0": &live.Instance,
+		"1": {Slot: "1", BinaryPath: "/bin/true", Status: "stopped"},
+	}}
+	oldPID := live.PID
+	launcher := &httpLauncher{}
+	defer launcher.close()
+	launches := 0
+	err := StartDeployment(context.Background(), state, StartOptions{Launcher: func(ctx context.Context, binary string, env []string) (Process, int, error) {
+		launches++
+		return launcher.Launch(ctx, binary, env)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launches != 1 || state.Replicas["0"].PID != oldPID || !InstanceAlive(&live.Instance) {
+		t.Fatalf("partial start: launches=%d old=%d now=%d alive=%v executable=%q want=%q", launches, oldPID, state.Replicas["0"].PID, InstanceAlive(&live.Instance), processExecutable(oldPID), live.BinaryPath)
+	}
+}

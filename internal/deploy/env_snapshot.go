@@ -50,7 +50,7 @@ func snapshotEnvForVersion(appName, appID string, ver int) (string, error) {
 // store at launch, so a rollback restores the version's plain variables while
 // secrets always resolve to their current values. An application without
 // bindings gets exactly the same overlay as before.
-func EnvOverlayFromSnapshot(envPath, appID string) ([]string, error) {
+func EnvOverlayFromSnapshot(envPath, appID string) ([]string, func(), error) {
 	return envOverlay(envPath, appID, nil)
 }
 
@@ -58,7 +58,7 @@ func EnvOverlayFromSnapshot(envPath, appID string) ([]string, error) {
 // the caller supplies the candidate bindings the deployment pinned, instead
 // of reading the committed set from the store. All instances of one
 // deployment therefore resolve the identical binding set.
-func EnvOverlayWithBindings(envPath, appID string, bindings []secrets.Binding) ([]string, error) {
+func EnvOverlayWithBindings(envPath, appID string, bindings []secrets.Binding) ([]string, func(), error) {
 	return envOverlay(envPath, appID, bindings)
 }
 
@@ -66,28 +66,28 @@ func EnvOverlayWithBindings(envPath, appID string, bindings []secrets.Binding) (
 // bindings merged over them by name, each name appearing exactly once. An
 // empty app identity means the flow carries no application context at all,
 // and therefore no bindings either.
-func envOverlay(envPath, appID string, bindings []secrets.Binding) ([]string, error) {
+func envOverlay(envPath, appID string, bindings []secrets.Binding) ([]string, func(), error) {
 	base, err := snapshotOverlay(envPath, appID)
 	if err != nil {
-		return nil, err
+		return nil, func() {}, err
 	}
 	if appID == "" {
-		return base, nil
+		return base, func() {}, nil
 	}
 	if bindings == nil {
 		bindings, err = secrets.CommittedBindings(appID)
 		if err != nil {
-			return nil, err
+			return nil, func() {}, err
 		}
 	}
 	if len(bindings) == 0 {
-		return base, nil
+		return base, func() {}, nil
 	}
-	overlay, err := secrets.OverlayForLaunch(context.Background(), appID, bindings)
+	overlay, release, err := secrets.OverlayForLaunch(context.Background(), appID, bindings)
 	if err != nil {
-		return nil, err
+		return nil, func() {}, err
 	}
-	return mergeByKey(base, overlay), nil
+	return mergeByKey(base, overlay), release, nil
 }
 
 // snapshotOverlay decrypts env/vN.enc into KEY=value strings. It is the
@@ -110,8 +110,10 @@ func snapshotOverlay(envPath, appID string) ([]string, error) {
 	if store.AppID == "" {
 		store.AppID = appID
 	}
-	// Use the manager's decryption path via a temporary load pattern.
-	masterKey, err := envpkg.GetMasterKey()
+	if len(store.Entries) == 0 {
+		return nil, nil
+	}
+	masterKey, err := envpkg.ReadMasterKey()
 	if err != nil {
 		return nil, err
 	}

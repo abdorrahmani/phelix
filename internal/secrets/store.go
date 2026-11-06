@@ -109,10 +109,12 @@ type ApplyStatus struct {
 
 // Apply outcomes recorded in ApplyStatus.Restart.
 const (
-	ApplyRestartSucceeded = "succeeded"
-	ApplyRestartFailed    = "failed"
-	ApplyRestartSkipped   = "skipped_not_running"
-	ApplyRestartNotNeeded = "not_requested"
+	ApplyRestartSucceeded   = "succeeded"
+	ApplyRestartFailed      = "failed"
+	ApplyRestartPartial     = "partial"
+	ApplyDeploymentAccepted = "accepted"
+	ApplyRestartSkipped     = "skipped_not_running"
+	ApplyRestartNotNeeded   = "not_requested"
 )
 
 // Store is the on-disk state of one application's secrets. Read methods on
@@ -239,6 +241,27 @@ func openStoreLocked(path, appID string) (*Store, error) {
 	if st.Secrets == nil {
 		st.Secrets = map[string]SecretRecord{}
 	}
+	for name, record := range st.Secrets {
+		if validateSecretName(name) != nil || record.Name != name || len(record.Versions) == 0 || len(record.Versions) > maxVersions {
+			return nil, phelixerr.New(phelixerr.CodeFilesystem, "secrets: invalid secret metadata")
+		}
+		previous := 0
+		for _, version := range record.Versions {
+			fp, err := hex.DecodeString(version.Fingerprint)
+			if version.Version <= previous || err != nil || len(fp) != 6 || version.EncValue == "" {
+				return nil, phelixerr.New(phelixerr.CodeFilesystem, "secrets: invalid version metadata")
+			}
+			previous = version.Version
+		}
+		if record.ActiveVersion != previous {
+			return nil, phelixerr.New(phelixerr.CodeFilesystem, "secrets: invalid active version")
+		}
+	}
+	if st.Pending != nil {
+		if err := st.validatePending(st.Pending); err != nil {
+			return nil, err
+		}
+	}
 	st.AppID = appID
 	return &st, nil
 }
@@ -318,7 +341,7 @@ func Open(appID string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(path); os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Dir(path)); os.IsNotExist(err) {
 		return &Store{SchemaVersion: storeSchemaVersion, AppID: appID, Secrets: map[string]SecretRecord{}}, nil
 	}
 	var st *Store
@@ -417,20 +440,26 @@ func Set(appID, name, value string) (SetResult, error) {
 	if err := ValidateSecretValue(value); err != nil {
 		return res, err
 	}
-	key, err := env.GetMasterKey()
-	if err != nil {
-		return res, err
-	}
-	enc, err := env.EncryptData(value, key)
-	if err != nil {
-		return res, err
-	}
-	fp := fingerprint(key, value)
 	now := time.Now().UTC()
-	err = mutate(appID, func(st *Store) error {
+	err := mutate(appID, func(st *Store) error {
 		if st.Pending != nil {
 			return phelixerr.New(phelixerr.CodeDeployLocked, "secrets: reconcile the pending deployment before changing values")
 		}
+		var key []byte
+		var err error
+		if len(st.Secrets) == 0 {
+			key, err = env.GetMasterKey()
+		} else {
+			key, err = env.ReadMasterKey()
+		}
+		if err != nil {
+			return err
+		}
+		enc, err := env.EncryptData(value, key)
+		if err != nil {
+			return err
+		}
+		fp := fingerprint(key, value)
 		rec, ok := st.Secrets[name]
 		if !ok {
 			rec = SecretRecord{Name: name, CreatedAt: now}
@@ -541,6 +570,9 @@ func BeginTxn(appID string, txn *PendingTxn) error {
 		if err := st.validatePending(txn); err != nil {
 			return err
 		}
+		if err := CheckCollisions(appID, txn.Bindings); err != nil {
+			return err
+		}
 		pending := *txn
 		pending.Bindings = append([]Binding(nil), txn.Bindings...)
 		pending.Resolved = append([]ResolvedVersion(nil), txn.Resolved...)
@@ -586,6 +618,7 @@ func CommitTxn(appID string) error {
 			return nil
 		}
 		st.Bindings = st.Pending.Bindings
+		st.recordApply(ApplyDeploymentAccepted)
 		st.Pending = nil
 		return nil
 	})
@@ -607,7 +640,7 @@ func RecordApply(appID string, status *ApplyStatus) error {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "secrets: apply status must not be nil")
 	}
 	switch status.Restart {
-	case ApplyRestartSucceeded, ApplyRestartFailed, ApplyRestartSkipped, ApplyRestartNotNeeded:
+	case ApplyRestartSucceeded, ApplyRestartFailed, ApplyRestartSkipped, ApplyRestartNotNeeded, ApplyRestartPartial:
 	default:
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "secrets: invalid apply outcome")
 	}
@@ -669,7 +702,7 @@ func (st *Store) resolve(name string) (ResolvedSecret, error) {
 	if ver == nil {
 		return ResolvedSecret{}, phelixerr.Newf(phelixerr.CodeFilesystem, "secrets: %s has no active version %d", name, rec.ActiveVersion)
 	}
-	key, err := env.GetMasterKey()
+	key, err := env.ReadMasterKey()
 	if err != nil {
 		return ResolvedSecret{}, err
 	}

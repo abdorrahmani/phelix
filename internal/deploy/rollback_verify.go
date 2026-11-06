@@ -79,7 +79,7 @@ func VerifyRollbackStability(ctx context.Context, opts VerificationOptions) erro
 
 	var targets []verifyTarget
 	state, err := Load(opts.AppName)
-	if err != nil || state == nil {
+	if len(opts.Targets) > 0 || err != nil || state == nil {
 		if len(opts.Targets) == 0 {
 			return phelixerr.Wrapf(phelixerr.CodeInvalidArgument, err,
 				"deploy: stability verification requires a zero-downtime deploy state for %q", opts.AppName)
@@ -209,7 +209,7 @@ func servingTargets(state *DeployState) []verifyTarget {
 	}
 	var out []verifyTarget
 	add := func(label string, inst *Instance) {
-		if inst == nil || inst.PID <= 0 || inst.Port <= 0 || inst.Status != "running" {
+		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") || inst.Port <= 0 || inst.Status != "running" {
 			return
 		}
 		out = append(out, verifyTarget{
@@ -220,6 +220,8 @@ func servingTargets(state *DeployState) []verifyTarget {
 		})
 	}
 	switch state.Mode {
+	case "classic":
+		add("classic", state.Slots["classic"])
 	case ModeBlueGreen:
 		add("slot "+state.ActiveSlot, state.ActiveInstance())
 	case ModeRolling:

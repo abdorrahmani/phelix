@@ -65,15 +65,15 @@ func sendWithTemporaryClient(event *pb.ApplicationEvent) error {
 // echoed to the terminal and failures only land in phelix.log. Interactive
 // commands should prefer ReportEventResult, which reports why the backend
 // was not updated.
-func ReportEvent(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) {
-	_ = ReportEventResult(appID, appName, action, success, errMsg, pid, mode, version)
+func ReportEvent(appID, appName, action string, success bool, errMsg string, pid int, mode, version string, secretNames ...string) {
+	_ = ReportEventResult(appID, appName, action, success, errMsg, pid, mode, version, secretNames...)
 }
 
 // ReportEventResult sends an application event synchronously like ReportEvent,
 // but tells the caller whether the backend actually received it. A nil return
 // means the backend accepted the event (e.g. the app really was deleted from
 // its database); non-nil explains why the dashboard is now out of date.
-func ReportEventResult(appID, appName, action string, success bool, errMsg string, pid int, mode, version string) error {
+func ReportEventResult(appID, appName, action string, success bool, errMsg string, pid int, mode, version string, secretNames ...string) error {
 	// Unwatched apps do not participate in backend monitoring/reporting: the
 	// event is intentionally not sent, which is not a staleness condition the
 	// caller should warn about.
@@ -97,7 +97,7 @@ func ReportEventResult(appID, appName, action string, success bool, errMsg strin
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to initialize server identity", err)
 	}
 
-	event := NewApplicationEvent(appID, appName, action, success, errMsg, pid, mode, version)
+	event := NewApplicationEvent(appID, appName, action, success, errMsg, pid, mode, version, secretNames...)
 
 	c := GetClient()
 	if c != nil && c.IsConnected() {

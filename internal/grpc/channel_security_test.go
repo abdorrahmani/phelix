@@ -439,3 +439,12 @@ func TestIsAuthRejection_StreamRecvShape(t *testing.T) {
 }
 
 var _ = context.Background
+
+func TestSecretChangeEventContainsOnlyNames(t *testing.T) {
+	names := []string{"database_url", "api_key"}
+	event := NewApplicationEvent("app", "service", "secret_change", true, "", 0, "", "", names...)
+	names[0] = "changed"
+	if len(event.SecretNames) != 2 || event.SecretNames[0] != "database_url" || event.ErrorMessage != "" {
+		t.Fatal("secret event lost names or retained caller memory")
+	}
+}

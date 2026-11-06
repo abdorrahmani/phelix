@@ -18,6 +18,7 @@ message ApplicationEvent {
   int32 pid = 10;
   string deployment_mode = 11;
   string version = 12;
+  repeated string secret_names = 13;
 }
 
 // EventResponse is the backend's response to a reported event.

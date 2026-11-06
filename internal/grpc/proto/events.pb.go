@@ -36,6 +36,7 @@ type ApplicationEvent struct {
 	Pid            int32                  `protobuf:"varint,10,opt,name=pid,proto3" json:"pid,omitempty"`
 	DeploymentMode string                 `protobuf:"bytes,11,opt,name=deployment_mode,json=deploymentMode,proto3" json:"deployment_mode,omitempty"`
 	Version        string                 `protobuf:"bytes,12,opt,name=version,proto3" json:"version,omitempty"`
+	SecretNames    []string               `protobuf:"bytes,13,rep,name=secret_names,json=secretNames,proto3" json:"secret_names,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -154,6 +155,13 @@ func (x *ApplicationEvent) GetVersion() string {
 	return ""
 }
 
+func (x *ApplicationEvent) GetSecretNames() []string {
+	if x != nil {
+		return x.SecretNames
+	}
+	return nil
+}
+
 // EventResponse is the backend's response to a reported event.
 type EventResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -264,7 +272,7 @@ var File_internal_grpc_proto_events_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_events_proto_rawDesc = "" +
 	"\n" +
-	" internal/grpc/proto/events.proto\x12\x06phelix\"\xe9\x02\n" +
+	" internal/grpc/proto/events.proto\x12\x06phelix\"\x8c\x03\n" +
 	"\x10ApplicationEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12#\n" +
@@ -278,7 +286,8 @@ const file_internal_grpc_proto_events_proto_rawDesc = "" +
 	"\x03pid\x18\n" +
 	" \x01(\x05R\x03pid\x12'\n" +
 	"\x0fdeployment_mode\x18\v \x01(\tR\x0edeploymentMode\x12\x18\n" +
-	"\aversion\x18\f \x01(\tR\aversion\"E\n" +
+	"\aversion\x18\f \x01(\tR\aversion\x12!\n" +
+	"\fsecret_names\x18\r \x03(\tR\vsecretNames\"E\n" +
 	"\rEventResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"A\n" +

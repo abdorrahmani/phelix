@@ -5,6 +5,7 @@ package processex
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Identity reads the full identity of a live process: start time from
@@ -46,4 +47,20 @@ func Matches(id ProcessIdentity) bool {
 		return false
 	}
 	return sameExe(cur.ExePath, id.ExePath)
+}
+
+// Alive reads process state without estimating boot time from the wall clock.
+func Alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	i := strings.LastIndexByte(string(stat), ')')
+	if i < 0 || i+2 >= len(stat) {
+		return false
+	}
+	return stat[i+2] != 'Z' && stat[i+2] != 'X'
 }

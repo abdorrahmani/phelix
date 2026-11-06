@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -64,41 +66,37 @@ func ensureDirectories() error {
 		return fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
-	// Initialize state file if it doesn't exist
-	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
-		if err := os.WriteFile(stateFile, []byte("{}"), 0644); err != nil {
-			return fmt.Errorf("failed to initialize state file: %w", err)
-		}
-	}
-
 	return nil
+}
+
+type savedApp struct {
+	StartTicks  uint64           `json:"start_ticks,omitempty"`
+	SecretEnvs  []string         `json:"secret_envs,omitzero"`
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	PID         int              `json:"pid"`
+	Status      string           `json:"status"`
+	Start       time.Time        `json:"start"`
+	Port        int              `json:"port"`
+	LogFile     string           `json:"log_file"`
+	BuildStatus string           `json:"build_status"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+	Directory   string           `json:"directory"`
+	Language    string           `json:"language"`
+	AutoStart   bool             `json:"auto_start"`
+	Watching    bool             `json:"watching"`
+	Resources   resources.Config `json:"resources,omitzero"`
 }
 
 // SaveState saves the current state to disk
 func (m *AppManager) SaveState() error {
-	type SavedApp struct {
-		SecretEnvs  []string         `json:"secret_envs,omitempty"`
-		ID          string           `json:"id"`
-		Name        string           `json:"name"`
-		PID         int              `json:"pid"`
-		Status      string           `json:"status"`
-		Start       time.Time        `json:"start"`
-		Port        int              `json:"port"`
-		LogFile     string           `json:"log_file"`
-		BuildStatus string           `json:"build_status"`
-		CreatedAt   time.Time        `json:"created_at"`
-		UpdatedAt   time.Time        `json:"updated_at"`
-		Directory   string           `json:"directory"`
-		Language    string           `json:"language"`
-		AutoStart   bool             `json:"auto_start"`
-		Watching    bool             `json:"watching"`
-		Resources   resources.Config `json:"resources,omitzero"`
-	}
 
-	savedApps := make(map[string]SavedApp)
+	savedApps := make(map[string]savedApp)
 	for id, app := range m.Apps {
-		savedApps[id] = SavedApp{
+		savedApps[id] = savedApp{
 			SecretEnvs:  app.SecretEnvs,
+			StartTicks:  app.StartTicks,
 			ID:          id,
 			Name:        app.Name,
 			PID:         app.PID,
@@ -117,93 +115,144 @@ func (m *AppManager) SaveState() error {
 		}
 	}
 
-	data, err := json.MarshalIndent(savedApps, "", "  ")
+	data, err := json.Marshal(savedApps)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to marshal application state", err)
 	}
 
-	// Serialize file operations to avoid concurrent writes
+	var current map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(data, &current); err != nil {
+		return err
+	}
 	fileMutex.Lock()
 	defer fileMutex.Unlock()
-
-	tmpFile := stateFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write state file %s", tmpFile)
+	if err := os.MkdirAll(filepath.Dir(stateFile), 0755); err != nil {
+		return err
 	}
-	if err := os.Rename(tmpFile, stateFile); err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to replace state file %s", stateFile)
+	lock, err := lockStateFile(stateFile + ".lock")
+	if err != nil {
+		return err
 	}
+	defer unlockStateFile(lock)
+	latest := map[string]map[string]json.RawMessage{}
+	stored, err := os.ReadFile(stateFile)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err == nil {
+		if err := json.Unmarshal(stored, &latest); err != nil || latest == nil {
+			return phelixerr.New(phelixerr.CodeFilesystem, "application state is unreadable; existing state retained")
+		}
+	}
+	for id, fields := range current {
+		before := m.savedState[id]
+		if before != nil && latest[id] == nil {
+			if reflect.DeepEqual(before, fields) {
+				continue
+			}
+			return phelixerr.New(phelixerr.CodeFilesystem, "application was removed during update; reload state before retrying")
+		}
+		if latest[id] == nil {
+			latest[id] = map[string]json.RawMessage{}
+		}
+		for key, value := range fields {
+			if before == nil || !bytes.Equal(value, before[key]) {
+				latest[id][key] = value
+			}
+		}
+		for key := range before {
+			if _, exists := fields[key]; !exists {
+				delete(latest[id], key)
+			}
+		}
+	}
+	for id := range m.savedState {
+		if _, exists := current[id]; !exists {
+			delete(latest, id)
+		}
+	}
+	data, err = json.MarshalIndent(latest, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeAppState(data); err != nil {
+		return err
+	}
+	m.savedState = current
 	return nil
+}
+
+// writeAppState replaces the state only after its complete contents reach disk.
+func writeAppState(data []byte) error {
+	file, err := os.CreateTemp(filepath.Dir(stateFile), ".apps-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if err := file.Chmod(0644); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(file.Name(), stateFile); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(stateFile))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // LoadState loads the state from disk
 func (m *AppManager) LoadState() error {
-	// Ensure only one goroutine performs file read/repair at a time
 	fileMutex.Lock()
 	data, err := os.ReadFile(stateFile)
-	if os.IsNotExist(err) {
-		// If file doesn't exist, create it with empty state
-		if err := os.MkdirAll(filepath.Dir(stateFile), 0755); err != nil {
-			fileMutex.Unlock()
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to create state directory", err)
-		}
-		if err := os.WriteFile(stateFile, []byte("{}"), 0644); err != nil {
-			fileMutex.Unlock()
-			return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to initialize state file", err)
-		}
-		// Release lock and return after creating file
-		fileMutex.Unlock()
-		return nil
-	} else if err != nil {
-		fileMutex.Unlock()
-		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read state file %s", stateFile)
-	}
 	fileMutex.Unlock()
-
-	type SavedApp struct {
-		SecretEnvs  []string         `json:"secret_envs,omitempty"`
-		ID          string           `json:"id"`
-		Name        string           `json:"name"`
-		PID         int              `json:"pid"`
-		Status      string           `json:"status"`
-		Start       time.Time        `json:"start"`
-		Port        int              `json:"port"`
-		LogFile     string           `json:"log_file"`
-		BuildStatus string           `json:"build_status"`
-		CreatedAt   time.Time        `json:"created_at"`
-		UpdatedAt   time.Time        `json:"updated_at"`
-		Directory   string           `json:"directory"`
-		Language    string           `json:"language"`
-		AutoStart   bool             `json:"auto_start"`
-		Watching    bool             `json:"watching"`
-		Resources   resources.Config `json:"resources,omitzero"`
+	if os.IsNotExist(err) {
+		data = []byte("{}")
+	} else if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to read application state", err)
 	}
 
-	var savedApps map[string]SavedApp
+	var savedApps map[string]savedApp
 	if err := json.Unmarshal(data, &savedApps); err != nil {
-		// Handle corrupted JSON: back up corrupted file and reinitialize
-		corruptName := stateFile + ".corrupt." + fmt.Sprintf("%d", time.Now().Unix())
-		_ = os.WriteFile(corruptName, data, 0644)
-
-		// Recreate a fresh state file
-		fileMutex.Lock()
-		_ = os.WriteFile(stateFile, []byte("{}"), 0644)
-		fileMutex.Unlock()
-
-		// Continue with empty state instead of failing
-		savedApps = make(map[string]SavedApp)
+		return phelixerr.New(phelixerr.CodeFilesystem, "application state is unreadable; existing state retained")
 	}
+	if savedApps == nil {
+		return phelixerr.New(phelixerr.CodeFilesystem, "application state is invalid; existing state retained")
+	}
+
+	baseline, err := json.Marshal(savedApps)
+	if err != nil {
+		return err
+	}
+	var savedState map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(baseline, &savedState); err != nil {
+		return err
+	}
+	m.savedState = savedState
 
 	// Clear existing apps and load from saved state
 	previousApps := m.Apps
 	m.Apps = make(map[string]*AppInfo)
 	for id, saved := range savedApps {
 		// Check if process is still running
-		isRunning := m.isProcessRunning(saved.PID)
+		isRunning := m.appProcessRunning(&AppInfo{PID: saved.PID, StartTicks: saved.StartTicks})
 
 		// Create app info with appropriate status
 		appInfo := &AppInfo{
 			SecretEnvs:  saved.SecretEnvs,
+			StartTicks:  saved.StartTicks,
 			ID:          id,
 			Name:        saved.Name,
 			PID:         saved.PID,
@@ -223,7 +272,7 @@ func (m *AppManager) LoadState() error {
 				appInfo.resourceInstance = previous.resourceInstance
 				appInfo.logFileHandle = previous.logFileHandle
 				appInfo.releaseSecrets = previous.releaseSecrets
-			} else if !m.isProcessRunning(previous.PID) {
+			} else if !m.appProcessRunning(previous) {
 				m.waitAndCloseLog(previous)
 			}
 		}
@@ -262,8 +311,7 @@ func (m *AppManager) LoadState() error {
 		m.Apps[id] = appInfo
 	}
 
-	// Save the updated state
-	return m.SaveState()
+	return nil
 }
 
 // AppDirectories returns a name-to-project-directory snapshot parsed

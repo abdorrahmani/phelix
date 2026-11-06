@@ -73,6 +73,16 @@ func reclaimSecretLaunches(appName, txnID, runtime string, accepted *DeployState
 			if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
 				return phelixerr.New(phelixerr.CodeProcessFailed, "cannot reclaim interrupted secret launch")
 			}
+			deadline := time.Now().Add(5 * time.Second)
+			for pidAlive(int(proc.Pid)) {
+				if current, err := processex.Identity(int(proc.Pid)); err == nil && current.StartTime != identity.StartTime {
+					break
+				}
+				if time.Now().After(deadline) {
+					return phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm interrupted secret launch has stopped")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
 	}
 	if runtime != RuntimeDocker {

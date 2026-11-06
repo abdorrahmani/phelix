@@ -25,7 +25,7 @@ import (
 // longer routes to them — i.e. after the new strategy's first successful
 // membership update. Processes are verified by executable path before being
 // signalled, so a stale record can never kill an unrelated process.
-func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.Duration, inFlight int64, log Logger) {
+func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.Duration, inFlight int64, log Logger) error {
 	if log == nil {
 		log = &nopLogger{}
 	}
@@ -36,6 +36,9 @@ func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.D
 
 		log.Stepf("stopping retired %q instance (%s) from previous strategy", inst.Slot, instanceRef(inst))
 		report := stopInstance(ctx, inst, grace, inFlight)
+		if !report.Exited {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm retired instance stopped")
+		}
 
 		if report.ForceKilled {
 			log.Warnf("retired instance %q ignored SIGTERM; SIGKILL applied", inst.Slot)
@@ -44,6 +47,7 @@ func stopRetiredInstances(ctx context.Context, retired []*Instance, grace time.D
 		inst.Status = "stopped"
 		inst.PID = 0
 	}
+	return nil
 }
 
 // InstanceAlive reports whether inst's recorded process is alive AND still
@@ -67,6 +71,8 @@ func (s *DeployState) ServingInstance() *Instance {
 	switch s.Mode {
 	case ModeBlueGreen:
 		return s.ActiveInstance()
+	case "classic":
+		return s.Slots["classic"]
 	case ModeRolling, ModeWorker:
 		keys := sortedReplicaKeys(s.Replicas)
 		for _, k := range keys {
@@ -111,7 +117,8 @@ type LifecycleDecision struct {
 	Alive   int
 	Desired int
 	// PID is the serving process id (first alive instance; 0 when none).
-	PID int
+	PID        int
+	StartTicks uint64
 	// StartedAt is when the serving instance was launched (zero when unknown).
 	StartedAt time.Time
 	// PublicPort is the proxy-owned public port (0 when unknown).
@@ -174,6 +181,7 @@ func DecideLifecycle(state *DeployState) LifecycleDecision {
 		}
 		if d.PID == 0 {
 			d.PID = inst.PID
+			d.StartTicks = inst.StartTicks
 			d.StartedAt = inst.StartedAt
 		}
 		d.Alive++
@@ -406,14 +414,18 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		opts.Launcher = LauncherForRuntime(runtime, state.Network, state.AppName)
 	}
 
-	if !IsDockerRuntime(runtime) {
-		if _, err := os.Stat(toStart[0].BinaryPath); err != nil {
-			return phelixerr.Wrapf(phelixerr.CodeNotFound, err, "deploy: recorded binary for %s is gone", state.AppName)
-		}
-	}
-
 	for _, inst := range toStart {
-		envOverlay, err := EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
+		if InstanceAlive(inst) {
+			continue
+		}
+		if !IsDockerRuntime(runtime) {
+			if _, err := os.Stat(inst.BinaryPath); err != nil {
+				return phelixerr.Wrapf(phelixerr.CodeNotFound, err, "deploy: recorded binary for %s is gone", state.AppName)
+			}
+		}
+
+		envOverlay, releaseOverlay, err := EnvOverlayFromSnapshot(inst.EnvPath, state.AppID)
+		defer releaseOverlay()
 		if err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "deploy: load env snapshot for %s", state.AppName)
 		}
@@ -431,12 +443,14 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		}
 		inst.SecretEnvs = phelixerr.SecretEnvNames(envOverlay)
 		inst.PID = proc.PID()
+		inst.StartTicks = startTicksOf(proc)
 
 		inst.ContainerID = containerIDOf(proc)
 		inst.Port = newPort
 		inst.Status = "running"
 		inst.StartedAt = time.Now()
 		state.SecretTxnID = ""
+		state.SecretCleanupPending = false
 		log.Successf("instance %s listening on %s", instanceRef(inst), addr)
 
 		if err := Store(state); err != nil {

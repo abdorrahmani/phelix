@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/processex"
 )
 
 // dockerInspector reads container state for identity verification. It is the
@@ -31,7 +33,7 @@ func dockerContainerAlive(containerID string) bool {
 		"inspect", "--format", "{{.State.Running}}|{{index .Config.Labels \""+DockerLabelManaged+"\"}}", containerID)
 	if err != nil {
 		// No such container / daemon down → not a live managed instance.
-		return false
+		return !isDockerNotRunning(err)
 	}
 	running, managed, ok := strings.Cut(strings.TrimSpace(out), "|")
 	if !ok {
@@ -92,6 +94,12 @@ func instanceAliveViaRuntime(inst *Instance) bool {
 	if inst.PID <= 0 {
 		return false
 	}
+	if inst.StartTicks != 0 {
+		id, err := processex.Identity(inst.PID)
+		if err != nil || id.StartTime != inst.StartTicks {
+			return false
+		}
+	}
 	return findVerifiedProcess(inst.PID, inst.BinaryPath) != nil
 }
 
@@ -105,6 +113,9 @@ func stopInstance(ctx context.Context, inst *Instance, grace time.Duration, inFl
 	}
 	if inst.ContainerID != "" {
 		return stopByContainerID(ctx, inst.ContainerID, grace, inFlight)
+	}
+	if !instanceAliveViaRuntime(inst) {
+		return ShutdownReport{Exited: true, InFlight: inFlight}
 	}
 	return stopByPID(ctx, inst.PID, grace, inFlight, inst.BinaryPath)
 }

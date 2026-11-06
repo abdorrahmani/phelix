@@ -50,13 +50,17 @@ func KnownContainerIDs(state *DeployState) []string {
 // rule for the process world.
 //
 // known holds the full container ids every app's state still references.
-func ReconcileOrphanContainers(ctx context.Context, known map[string]bool) ([]string, error) {
-	return reconcileOrphanContainers(ctx, known, execDockerRunner)
+func ReconcileOrphanContainers(ctx context.Context, appName string, known map[string]bool) ([]string, error) {
+	if err := ValidateAppName(appName); err != nil {
+		return nil, err
+	}
+	return reconcileOrphanContainers(ctx, appName, known, execDockerRunner)
 }
 
-func reconcileOrphanContainers(ctx context.Context, known map[string]bool, run dockerRunner) ([]string, error) {
+func reconcileOrphanContainers(ctx context.Context, appName string, known map[string]bool, run dockerRunner) ([]string, error) {
 	out, err := run(ctx, "ps", "-a", "--no-trunc",
 		"--filter", "label="+DockerLabelManaged+"=true",
+		"--filter", "label="+DockerLabelApp+"="+appName,
 		"--format", "{{.ID}}")
 	if err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeDocker, err, "deploy: list phelix-managed containers")

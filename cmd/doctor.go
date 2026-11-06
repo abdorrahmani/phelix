@@ -342,7 +342,7 @@ func appendSecretsChecks(results []checkResult, cfg *project.Config) []checkResu
 		return results
 	}
 	results = append(results, checkResult{name: "Secrets permissions", pass: true, detail: "directory 0700, store and lock 0600"})
-	if _, err := env.GetMasterKey(); err != nil {
+	if _, err := env.ReadMasterKey(); err != nil {
 		results = append(results, checkResult{name: "Secrets master key", detail: "unreadable", message: err.Error()})
 	} else {
 		results = append(results, checkResult{name: "Secrets master key", pass: true, detail: "readable"})
@@ -368,7 +368,7 @@ func appendSecretsChecks(results []checkResult, cfg *project.Config) []checkResu
 		}
 		results = append(results, check)
 	}
-	err = deploy.RefreshSecretCoverage(app.AppListItem{ID: info.ID, Name: info.Name, PID: info.PID, Status: info.Status, SecretEnvs: info.SecretEnvs})
+	err = deploy.InspectSecretCoverage(app.AppListItem{ID: info.ID, Name: info.Name, PID: info.PID, StartTicks: info.StartTicks, Status: info.Status, SecretEnvs: info.SecretEnvs})
 	state, reason := secrets.SecurityOf(info.ID)
 	results = append(results, checkResult{name: "Secrets security", pass: err == nil, detail: string(state), message: reason})
 	return results

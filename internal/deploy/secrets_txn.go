@@ -19,6 +19,7 @@ import (
 // so that after any crash the store can derive its outcome from the journal
 // instead of deciding on its own.
 type SecretTxn struct {
+	Partial      bool
 	AppName      string
 	ID           string
 	DeploymentID string
@@ -76,8 +77,10 @@ func (t *SecretTxn) OverlayFor(envPath string) ([]string, error) {
 func (t *SecretTxn) Stamp(state *DeployState, retired ...*Instance) {
 	state.secretPreparing = false
 	state.SecretTxnID = ""
+	state.SecretCleanupPending = false
 	if t != nil {
 		state.SecretTxnID = t.ID
+		state.SecretCleanupPending = t.ID != ""
 		for _, inst := range retired {
 			if inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
 				state.Retiring = append(state.Retiring, cloneInstance(inst))
@@ -92,7 +95,14 @@ func FinishSecretTxn(appID string, txn *SecretTxn, deployErr error) error {
 		return nil
 	}
 	defer txn.Set.Close()
-	_, err := ReconcileSecretTxn(txn.AppName, appID)
+	outcome, err := ReconcileSecretTxn(txn.AppName, appID)
+	if err == nil && outcome == SecretTxnCommitted && deployErr == nil {
+		status := secrets.ApplyRestartSucceeded
+		if txn.Partial {
+			status = secrets.ApplyRestartPartial
+		}
+		return secrets.RecordApply(appID, &secrets.ApplyStatus{Restart: status})
+	}
 	return err
 }
 
@@ -128,6 +138,10 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		return SecretTxnRetained, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: read secret store of %s", appName)
 	}
 	if st.Pending == nil {
+		state, err := Load(appName)
+		if err == nil && (state.SecretTxnID != "" || state.SecretCleanupPending || len(state.Retiring) > 0) {
+			return SecretTxnNone, finishAcceptedSecretRecovery(state)
+		}
 		return SecretTxnNone, nil
 	}
 	state, err := Load(appName)
@@ -147,38 +161,27 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 		return SecretTxnRetained, phelixerr.New(phelixerr.CodeConfiguration, "deployment journal identity or strategy is invalid; pending secrets retained")
 	}
 	if state.SecretTxnID == st.Pending.TxnID {
-		if state.Canary != nil && state.Canary.Status == CanaryRunning {
-			socket, err := proxy.DefaultSocketPath()
-			if err != nil {
-				return SecretTxnRetained, err
-			}
-			if err := recoverAcceptedSecretCanary(state, proxy.NewClient(socket)); err != nil {
-				return SecretTxnRetained, err
-			}
-		}
-		if err := reclaimSecretLaunches(appName, st.Pending.TxnID, state.Runtime, state); err != nil {
-			return SecretTxnRetained, err
-		}
-		if err := drainSecretRetirements(state); err != nil {
-			return SecretTxnRetained, err
-		}
-		if state.WorkerRollout != nil && state.WorkerRollout.Status != WorkerRolloutDone {
-			state.WorkerRollout.Status = WorkerRolloutDone
-			state.WorkerRollout.Reason = "accepted secret deployment recovered; later restarts use committed bindings"
+		if !state.SecretCleanupPending {
+			state.SecretCleanupPending = true
 			if err := Store(state); err != nil {
 				return SecretTxnRetained, err
 			}
 		}
-		if cerr := secrets.CommitTxn(appID); cerr != nil {
-			return SecretTxnRetained, cerr
+
+		if err := secrets.CommitTxn(appID); err != nil {
+			return SecretTxnRetained, err
 		}
-		return SecretTxnCommitted, nil
+
+		return SecretTxnCommitted, finishAcceptedSecretRecovery(state)
 	}
 	runtime := st.Pending.Runtime
 	if runtime == "" {
 		runtime = state.Runtime
 	}
-	if err := reclaimSecretLaunches(appName, st.Pending.TxnID, runtime, nil); err != nil {
+	if err := reclaimSecretLaunches(appName, st.Pending.TxnID, runtime, state); err != nil {
+		return SecretTxnRetained, err
+	}
+	if err := drainSecretRetirements(state); err != nil {
 		return SecretTxnRetained, err
 	}
 	if derr := secrets.DiscardTxn(appID); derr != nil {
@@ -187,9 +190,44 @@ func ReconcileSecretTxn(appName, appID string) (SecretTxnOutcome, error) {
 	return SecretTxnDiscarded, nil
 }
 
+// finishAcceptedSecretRecovery retries runtime cleanup after bindings are committed.
+func finishAcceptedSecretRecovery(state *DeployState) error {
+	if state.SecretCleanupPending {
+		if state.SecretTxnID == "" {
+			return phelixerr.New(phelixerr.CodeConfiguration, "secret cleanup is missing its transaction identity")
+		}
+		if err := reclaimSecretLaunches(state.AppName, state.SecretTxnID, state.Runtime, state); err != nil {
+			return err
+		}
+		state.SecretCleanupPending = false
+		if err := Store(state); err != nil {
+			return err
+		}
+	}
+
+	if state.Canary != nil && state.Canary.Status == CanaryRunning {
+		socket, err := proxy.DefaultSocketPath()
+		if err != nil {
+			return err
+		}
+		if err := recoverAcceptedSecretCanary(state, proxy.NewClient(socket)); err != nil {
+			return err
+		}
+	}
+	if err := drainSecretRetirements(state); err != nil {
+		return err
+	}
+	if state.WorkerRollout != nil && state.WorkerRollout.Status != WorkerRolloutDone {
+		state.WorkerRollout.Status = WorkerRolloutDone
+		state.WorkerRollout.Reason = "accepted secret deployment recovered; later restarts use committed bindings"
+		return Store(state)
+	}
+	return nil
+}
+
 // drainSecretRetirements finishes stops recorded with the replacement acceptance.
 func drainSecretRetirements(state *DeployState) error {
-	if len(state.Retiring) == 0 {
+	if len(state.Retiring) == 0 || state.Mode == ModeBlueGreen && !InstanceAlive(state.ActiveInstance()) {
 		return nil
 	}
 	serving := state.Replicas
@@ -231,25 +269,37 @@ func recoverAcceptedSecretCanary(state *DeployState, client ProxyClient) error {
 	if candidate == nil {
 		return phelixerr.New(phelixerr.CodeConfiguration, "accepted secret rollout has no candidate record")
 	}
-	state.ActiveSlot, state.ActiveVersion = canary.Slot, candidate.Version
-	if err := Store(state); err != nil {
-		return err
+	if !InstanceAlive(candidate) {
+		for slot, inst := range state.Slots {
+			if slot != canary.Slot && inst != nil {
+				state.Retiring = append(state.Retiring, cloneInstance(inst))
+			}
+		}
+		state.ActiveSlot, state.ActiveVersion = canary.Slot, candidate.Version
+		canary.Status = CanaryPromoted
+		canary.Reason = "accepted secret rollout recovered; candidate needs restart"
+		canary.UpdatedAt = time.Now()
+		return Store(state)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if InstanceAlive(candidate) {
-		if err := RestoreProxyRoute(ctx, state, client, &nopLogger{}); err != nil {
-			return err
+	promoted := *state
+	promoted.ActiveSlot, promoted.ActiveVersion = canary.Slot, candidate.Version
+	if err := RestoreProxyRoute(ctx, &promoted, client, &nopLogger{}); err != nil {
+		return err
+	}
+	if err := Store(&promoted); err != nil {
+		return err
+	}
+	*state = promoted
+	for slot, inst := range state.Slots {
+		if slot == canary.Slot || inst == nil {
+			continue
 		}
-		for slot, inst := range state.Slots {
-			if slot == canary.Slot || inst == nil {
-				continue
-			}
-			if report := stopInstance(ctx, inst, 3*time.Second, 0); !report.Exited {
-				return phelixerr.New(phelixerr.CodeProcessFailed, "accepted secret rollout could not stop its retired instance")
-			}
-			inst.PID, inst.Status = 0, "stopped"
+		if report := stopInstance(ctx, inst, 3*time.Second, 0); !report.Exited {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "accepted secret rollout could not stop its retired instance")
 		}
+		inst.PID, inst.ContainerID, inst.Status = 0, "", "stopped"
 	}
 	canary.Status, canary.TrafficPercent = CanaryPromoted, 100
 	canary.Reason = "accepted secret rollout recovered from deployment journal"
@@ -261,9 +311,25 @@ func recoverAcceptedSecretCanary(state *DeployState, client ProxyClient) error {
 // launcher. With an execution context it renders the pinned candidate set;
 // without one it resolves the committed bindings as every non-deployment
 // launch always has.
-func launchOverlay(envPath, appID string, txn *SecretTxn) ([]string, error) {
+func launchOverlay(envPath, appID string, txn *SecretTxn) ([]string, func(), error) {
 	if txn != nil {
-		return txn.OverlayFor(envPath)
+		overlay, err := txn.OverlayFor(envPath)
+		return overlay, func() {}, err
 	}
 	return EnvOverlayFromSnapshot(envPath, appID)
+}
+
+// retireFailedCandidate records restored service before stopping a previously accepted candidate.
+func retireFailedCandidate(state *DeployState, candidate *Instance, persist func(*DeployState) error) error {
+	previous := cloneInstance(candidate)
+	retiring := state.Retiring
+	state.Retiring = append(append([]*Instance(nil), retiring...), previous)
+	candidate.PID, candidate.ContainerID, candidate.Status = 0, "", "failed"
+	state.secretPreparing = false
+	if err := persist(state); err != nil {
+		*candidate = *previous
+		state.Retiring = retiring
+		return err
+	}
+	return nil
 }

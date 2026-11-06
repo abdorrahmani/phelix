@@ -90,7 +90,7 @@ var StartCmd = &cobra.Command{
 				}
 
 				fmt.Printf("  %s Starting %s (ID: %s) on port %d...\n", color.BlueString("→"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), a.Port)
-				if err := app.Manager.StartApplication(a.ID, a.Port, a.Name); err != nil {
+				if err := startClassicApp(a.ID, a.Port, a.Name); err != nil {
 					fmt.Printf("    %s Failed to start %s (ID: %s): %v\n", color.RedString("✗"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), err)
 					failed = append(failed, fmt.Sprintf("%s: %v", a.Name, err))
 					continue
@@ -147,7 +147,7 @@ var StartCmd = &cobra.Command{
 
 		fmt.Printf("%s Starting application %s (ID: %s) on port %d\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), usePort)
 
-		if err := app.Manager.StartApplication(appInfo.ID, usePort, name); err != nil {
+		if err := startClassicApp(appInfo.ID, usePort, name); err != nil {
 			if !startEnsure {
 				return phelixerr.Wrap(
 					phelixerr.CodeProcessFailed,
@@ -174,7 +174,7 @@ var StartCmd = &cobra.Command{
 				return rerr
 			}
 
-			if err := app.Manager.StartApplication(appInfo.ID, usePort, name); err != nil {
+			if err := startClassicApp(appInfo.ID, usePort, name); err != nil {
 				return phelixerr.Wrap(
 					phelixerr.CodeProcessFailed,
 					fmt.Sprintf("failed to start rebuilt application %q (ID: %s)", name, appInfo.ID),
@@ -190,6 +190,19 @@ var StartCmd = &cobra.Command{
 		phelixgrpc.ReportEvent(appInfo.ID, name, "start", true, "", 0, "", "")
 		return nil
 	},
+}
+
+// startClassicApp keeps ordinary starts out of an active secret deployment.
+func startClassicApp(id string, port int, name string) error {
+	release, err := deploy.AcquireDeployLock(name, "start")
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := deploy.ReconcileSecretTxn(name, id); err != nil {
+		return err
+	}
+	return app.Manager.StartApplication(id, port, name)
 }
 
 func init() {

@@ -18,7 +18,11 @@ const txnTestAppID = "2f0e1d2c-3b4a-4958-8677-8899aabbccdd"
 
 func txnTestEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
+	secrets.MarkHealthy(txnTestAppID)
+	t.Cleanup(func() { secrets.MarkHealthy(txnTestAppID); secrets.ReleaseCoverage(txnTestAppID) })
 }
 
 func seedSecret(t *testing.T, name, value string) {
@@ -159,7 +163,7 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 		if err := Store(&DeployState{AppName: "reconcile-app", AppID: txnTestAppID, Mode: ModeRolling}); err != nil {
 			t.Fatalf("store: %v", err)
 		}
-		_ = txn
+		defer txn.Set.Close()
 		outcome, err := ReconcileSecretTxn("reconcile-app", txnTestAppID)
 		if err != nil || outcome != SecretTxnDiscarded {
 			t.Fatalf("outcome=%v err=%v", outcome, err)
@@ -176,6 +180,7 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
+		defer txn.Set.Close()
 		if err := Store(&DeployState{AppName: "reconcile-app", AppID: txnTestAppID, Mode: ModeRolling, SecretTxnID: txn.ID}); err != nil {
 			t.Fatalf("store: %v", err)
 		}
@@ -191,9 +196,11 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 	t.Run("missing journal discards", func(t *testing.T) {
 		txnTestEnv(t)
 		seedSecret(t, "db", "value")
-		if _, err := BeginSecretTxn(txnTestAppID, "nojournal-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative); err != nil {
+		txn, err := BeginSecretTxn(txnTestAppID, "nojournal-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative)
+		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
+		defer txn.Set.Close()
 		outcome, err := ReconcileSecretTxn("nojournal-app", txnTestAppID)
 		if err != nil || outcome != SecretTxnDiscarded {
 			t.Fatalf("outcome=%v err=%v", outcome, err)
@@ -202,9 +209,11 @@ func TestReconcileSecretTxnCrashMatrix(t *testing.T) {
 	t.Run("unreadable journal retains and fails closed", func(t *testing.T) {
 		txnTestEnv(t)
 		seedSecret(t, "db", "value")
-		if _, err := BeginSecretTxn(txnTestAppID, "corrupt-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative); err != nil {
+		txn, err := BeginSecretTxn(txnTestAppID, "corrupt-app", "dep-1", []secrets.Binding{{Secret: "db", Env: "DATABASE_URL"}}, RuntimeNative)
+		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
+		defer txn.Set.Close()
 		home := os.Getenv("HOME")
 		stateDir := filepath.Join(home, ".phelix", "apps", "corrupt-app")
 		if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -306,5 +315,24 @@ func TestRollingDeployUsesPinnedValuesUniformly(t *testing.T) {
 	st, _ = secrets.Open(txnTestAppID)
 	if len(st.Bindings) != 1 || st.Bindings[0].Env != "DATABASE_URL" {
 		t.Fatalf("bindings after finish = %+v", st.Bindings)
+	}
+}
+
+func TestLoadRejectsInvalidJournalIdentity(t *testing.T) {
+	txnTestEnv(t)
+	path, err := statePath("journal-validation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range []string{"null", "{}", `{"app_name":"other"}`, `{"app_name":"journal-validation","mode":"unknown"}`} {
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load("journal-validation"); err == nil {
+			t.Fatal("invalid journal accepted", data)
+		}
 	}
 }

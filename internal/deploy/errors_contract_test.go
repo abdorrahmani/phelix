@@ -272,7 +272,7 @@ func TestEnvSnapshot_DecodeCorrupt_CodeConfiguration(t *testing.T) {
 	if err := os.WriteFile(envPath, []byte("not-json"), 0o644); err != nil {
 		t.Fatalf("write corrupt env snapshot: %v", err)
 	}
-	_, err = EnvOverlayFromSnapshot(envPath, "appid")
+	_, _, err = EnvOverlayFromSnapshot(envPath, "appid")
 	if err == nil || !phelixerr.IsCode(err, phelixerr.CodeConfiguration) {
 		t.Fatalf("want CONFIGURATION_ERROR, got %v / %s", err, phelixerr.CodeOf(err))
 	}

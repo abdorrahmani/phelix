@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,9 +19,10 @@ import (
 
 // AppManager manages the lifecycle of applications
 type AppManager struct {
-	Apps   map[string]*AppInfo
-	Lock   sync.Mutex
-	NextID uint // Deprecated: retained for compatibility with existing state tests.
+	Apps       map[string]*AppInfo
+	Lock       sync.Mutex
+	NextID     uint
+	savedState map[string]map[string]json.RawMessage
 }
 
 // Manager is the global instance of AppManager that implements AppManagerInterface
@@ -83,8 +85,7 @@ func (m *AppManager) StartApplicationWithSecrets(id string, port int, name strin
 		return err
 	}
 	if err := m.SaveState(); err != nil {
-		m.stopNewlyStarted(m.Apps[id])
-		return err
+		return errors.Join(err, m.stopNewlyStarted(m.Apps[id]))
 	}
 	return nil
 }
@@ -104,7 +105,7 @@ func (m *AppManager) StopApplication(id string) error {
 	}
 
 	if app.Status != "running" {
-		if !m.isProcessRunning(app.PID) {
+		if !m.appProcessRunning(app) {
 			app.Status = "stopped"
 			app.PID = 0
 			app.Cmd = nil
@@ -140,7 +141,7 @@ func (m *AppManager) RestartApplication(id string) error {
 }
 
 // RestartApplicationWithSecrets records acceptance before returning a successful restart.
-func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.PinnedSet, accept func() error) error {
+func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.PinnedSet, persist func(*AppInfo, bool) error) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
@@ -167,7 +168,7 @@ func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.Pi
 			}
 			defer desired.Close()
 		}
-		if m.isProcessRunning(app.PID) {
+		if m.appProcessRunning(app) {
 			names := app.SecretEnvs
 			if names == nil {
 				for _, b := range bindings {
@@ -189,16 +190,26 @@ func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.Pi
 	if err == nil {
 		err = m.SaveState()
 	}
-	if err == nil && accept != nil {
-		err = accept()
+	if err == nil && persist != nil {
+		err = persist(app, true)
+		if err != nil {
+			if restoreErr := persist(nil, false); restoreErr != nil {
+				return errors.Join(err, restoreErr)
+			}
+		}
 	}
 	if err != nil {
-		if m.isProcessRunning(app.PID) {
-			m.stopNewlyStarted(app)
+		if m.appProcessRunning(app) {
+			if stopErr := m.stopNewlyStarted(app); stopErr != nil {
+				return errors.Join(err, stopErr)
+			}
 		}
 		if previous != nil {
 			if restoreErr := m.startApplicationProcessWithSecrets(id, app.Name, app.Port, logFile, previous); restoreErr != nil {
 				return errors.Join(err, phelixerr.Wrap(phelixerr.CodeProcessFailed, "restart and restoration both failed", restoreErr), m.SaveState())
+			}
+			if persist != nil {
+				err = errors.Join(err, persist(app, false))
 			}
 		}
 		return errors.Join(err, m.SaveState())
@@ -225,6 +236,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 
 		appList = append(appList, AppListItem{
 			SecretEnvs:  app.SecretEnvs,
+			StartTicks:  app.StartTicks,
 			ID:          id,
 			Name:        app.Name,
 			Directory:   app.Directory,

@@ -56,10 +56,11 @@ type Worker struct {
 	// Secrets carries the deployment's secret execution context. Nil means
 	// the deployment resolves committed bindings (or none) at launch as
 	// before.
-	Secrets         *SecretTxn
-	SecretImports   []secrets.Binding
-	previousSecrets map[string]*secrets.PinnedSet
-	Replicas        int
+	Secrets           *SecretTxn
+	SecretImports     []secrets.Binding
+	previousSecrets   map[string]*secrets.PinnedSet
+	previousInstances map[string]*Instance
+	Replicas          int
 	// Dir is the app project directory: the exec probe's working directory.
 	Dir string
 	// Signal and grace govern replica shutdown; DrainTimeout bounds the wait
@@ -174,6 +175,7 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 	if w.Secrets != nil {
 		state.secretPreparing = true
 		w.previousSecrets = map[string]*secrets.PinnedSet{}
+		w.previousInstances = map[string]*Instance{}
 		defer func() {
 			for _, set := range w.previousSecrets {
 				set.Close()
@@ -184,6 +186,7 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 			return err
 		}
 		for key, inst := range state.Replicas {
+			w.previousInstances[key] = cloneInstance(inst)
 			if inst != nil && WorkerInstanceAlive(inst) {
 				set, err := RuntimeSecrets(inst, bindings)
 				if err != nil {
@@ -226,7 +229,8 @@ func (w *Worker) Deploy(ctx context.Context) (errRet error) {
 		return wrapDeployStep(err, "persist worker rollout journal")
 	}
 
-	env, err := launchOverlay(envPath, state.AppID, w.Secrets)
+	env, releaseOverlay, err := launchOverlay(envPath, state.AppID, w.Secrets)
+	defer releaseOverlay()
 	if err != nil {
 		return wrapDeployStep(err, "decrypt worker env snapshot")
 	}
@@ -318,14 +322,19 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 	journal.UpdatedAt = time.Now()
 	w.Secrets.Stamp(state, old)
 	if err := Store(state); err != nil {
-		_, _, _ = GracefulStopWorker(inst, w.signal(), w.grace(), proc)
+		candidate := cloneInstance(inst)
 		restoreReplica(state, key, old)
 		state.SecretTxnID = oldStamp
+		state.Retiring = append(state.Retiring, candidate)
+		if restoreErr := Store(state); restoreErr != nil {
+			return errors.Join(err, restoreErr)
+		}
+		_, _, _ = GracefulStopWorker(candidate, w.signal(), w.grace(), proc)
 		return err
 	}
 	w.Telemetry.ReplicaHealthy(index, inst.PID, 0)
 
-	if oldAlive {
+	if oldAlive && w.Secrets == nil {
 		w.Telemetry.ReplicaDraining(index, old.PID)
 		report, _, _ := GracefulStopWorker(old, w.signal(), w.drain(), nil)
 		if report.ForceKilled {
@@ -340,6 +349,9 @@ func (w *Worker) replaceOne(ctx context.Context, state *DeployState, key, binary
 // deployClassic drains every replica first, then launches the new version on
 // all slots. Simpler than rolling, and the default worker strategy.
 func (w *Worker) deployClassic(ctx context.Context, state *DeployState, binaryPath, envPath string, env []string, targetVer int, journal *WorkerRollout) error {
+	if w.Secrets != nil {
+		return w.deploySecretFleet(ctx, state, binaryPath, envPath, env, targetVer, journal)
+	}
 	log := w.logger()
 	for _, key := range replicaIndices(state.Replicas) {
 		inst := state.Replicas[key]
@@ -442,6 +454,9 @@ func (w *Worker) waitForReady(ctx context.Context, state *DeployState, inst *Ins
 // propagates; the deploy never claims the fleet is back on the old version
 // when it is not.
 func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal *WorkerRollout) error {
+	if w.Secrets != nil {
+		return w.revertSecretRollout(ctx, state, journal)
+	}
 	log := w.logger()
 	if journal == nil || len(journal.ReplacedFrom) == 0 {
 		if journal != nil {
@@ -456,6 +471,7 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 	}
 	journal.Status = WorkerRolloutReverting
 	journal.UpdatedAt = time.Now()
+	state.secretPreparing = false
 	if err := Store(state); err != nil {
 		return err
 	}
@@ -507,7 +523,8 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 		if err != nil {
 			return w.recoveryRequired(state, journal, fmt.Sprintf("replica %s: relaunch v%d: %v", key, fromVer, err))
 		}
-		env, err := launchOverlay(envPath, state.AppID, previous)
+		env, releaseOverlay, err := launchOverlay(envPath, state.AppID, previous)
+		defer releaseOverlay()
 		if err != nil {
 			return err
 		}
@@ -523,7 +540,6 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 		inst.Status = "running"
 		inst.ReadyAt = time.Now()
 		journal.UpdatedAt = time.Now()
-		state.SecretTxnID = ""
 		if err := Store(state); err != nil {
 			return err
 		}
@@ -531,10 +547,73 @@ func (w *Worker) revertRollout(ctx context.Context, state *DeployState, journal 
 	}
 	journal.Status = WorkerRolloutDone
 	state.SecretTxnID = ""
+	state.SecretCleanupPending = false
 	journal.Reason = "reverted to the previous versions after a failed deploy"
 	journal.ReplacedFrom = nil
 	journal.UpdatedAt = time.Now()
 	return Store(state)
+}
+
+// revertSecretRollout accepts the restored fleet together so a crash keeps one clear outcome.
+func (w *Worker) revertSecretRollout(ctx context.Context, state *DeployState, journal *WorkerRollout) error {
+	restored := *state
+	restored.secretPreparing = false
+	restored.Replicas = make(map[string]*Instance, len(w.previousInstances))
+	var launched []Process
+	accepted := false
+	defer func() {
+		if !accepted {
+			for _, proc := range launched {
+				stopHeldProcess(context.Background(), proc, w.grace())
+			}
+		}
+	}()
+	for _, key := range sortedReplicaKeys(w.previousInstances) {
+		old := cloneInstance(w.previousInstances[key])
+		restored.Replicas[key] = old
+		if old == nil || WorkerInstanceAlive(old) || old.BinaryPath == "" {
+			continue
+		}
+		set := w.previousSecrets[key]
+		if set == nil {
+			continue
+		}
+		pinned := *set
+		pinned.LaunchTxnID = w.Secrets.ID
+		previous := &SecretTxn{Set: &pinned}
+		proc, err := launchWorkerReplica(w.AppName, &restored, key, previous)
+		if err != nil {
+			return err
+		}
+		launched = append(launched, proc)
+		env, err := previous.OverlayFor(old.EnvPath)
+		if err != nil {
+			return err
+		}
+		if err := w.waitForReady(ctx, &restored, old, env); err != nil {
+			return err
+		}
+		old.Status, old.ReadyAt = "running", time.Now()
+	}
+	for _, inst := range state.Replicas {
+		if inst != nil {
+			restored.Retiring = append(restored.Retiring, cloneInstance(inst))
+		}
+	}
+	restored.SecretTxnID = ""
+	restored.SecretCleanupPending = false
+	if journal != nil {
+		completed := *journal
+		completed.Status, completed.Reason = WorkerRolloutDone, "restored previous instances after failed deployment"
+		completed.ReplacedFrom, completed.UpdatedAt = nil, time.Now()
+		restored.WorkerRollout = &completed
+	}
+	if err := Store(&restored); err != nil {
+		return err
+	}
+	accepted = true
+	*state = restored
+	return drainSecretRetirements(state)
 }
 
 // recoveryRequired persists the honest terminal state for a rollout whose
@@ -642,4 +721,31 @@ func RecoverWorkerRollout(ctx context.Context, appName string) error {
 	}
 	w := &Worker{AppName: appName, AppID: state.AppID}
 	return w.revertRollout(ctx, state, state.WorkerRollout)
+}
+
+// deploySecretFleet proves the next fleet before accepting it and retiring previous credentials.
+func (w *Worker) deploySecretFleet(ctx context.Context, state *DeployState, binaryPath, envPath string, env []string, targetVer int, journal *WorkerRollout) error {
+	next := *state
+	next.Replicas = cloneInstanceMap(state.Replicas)
+	for _, key := range sortedReplicaKeys(next.Replicas) {
+		inst := next.Replicas[key]
+		journal.ReplacedFrom[key] = versionOf(inst)
+		inst.BinaryPath, inst.EnvPath, inst.Version = binaryPath, envPath, targetVer
+		if _, err := launchWorkerReplica(w.AppName, &next, key, w.Secrets); err != nil {
+			return err
+		}
+		if err := w.waitForReady(ctx, &next, inst, env); err != nil {
+			return err
+		}
+		inst.Status, inst.ReadyAt = "running", time.Now()
+	}
+	w.Secrets.Stamp(&next)
+	for _, inst := range state.Replicas {
+		next.Retiring = append(next.Retiring, cloneInstance(inst))
+	}
+	if err := Store(&next); err != nil {
+		return err
+	}
+	*state = next
+	return nil
 }

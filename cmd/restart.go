@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -58,6 +59,9 @@ func init() {
 // Every secrets command that needs to bring new values into a running
 // application uses the same helper, so restart behavior never diverges.
 func restartAppInfo(appInfo *app.AppInfo) error {
+	if !app.ValidAppID(appInfo.ID) {
+		return restartAppInfoLegacy(appInfo)
+	}
 	store, err := secrets.Open(appInfo.ID)
 	if err != nil {
 		return err
@@ -88,6 +92,9 @@ func restartAppInfo(appInfo *app.AppInfo) error {
 	defer release()
 	err = restartAppInfoLocked(appInfo)
 	status := secrets.ApplyRestartSucceeded
+	if restartReplica != "" {
+		status = secrets.ApplyRestartPartial
+	}
 	if err != nil {
 		status = secrets.ApplyRestartFailed
 	}
@@ -116,7 +123,11 @@ func restartAppInfoLocked(appInfo *app.AppInfo) error {
 			if err != nil {
 				return err
 			}
-			worker, err = buildWorkerEngine(appInfo, appInfo.Name, cfg, nil, len(state.Replicas), "", nil, &colorLogger{})
+			strategy := project.StrategyClassic
+			if cfg != nil && cfg.Deploy != nil {
+				strategy = cfg.Deploy.Strategy
+			}
+			worker, err = buildWorkerEngine(appInfo, appInfo.Name, cfg, nil, len(state.Replicas), strategy, nil, &colorLogger{})
 			if err != nil {
 				return err
 			}
@@ -142,12 +153,16 @@ func restartAppInfoLocked(appInfo *app.AppInfo) error {
 	if err != nil {
 		return err
 	}
-	restartErr := manager.RestartApplicationWithSecrets(appInfo.ID, txn.Set, func() error {
+	restartErr := manager.RestartApplicationWithSecrets(appInfo.ID, txn.Set, func(current *app.AppInfo, accepted bool) error {
 		version := 0
 		if state != nil {
 			version = state.ActiveVersion
 		}
-		return acceptClassicSecrets(appInfo, appInfo.Port, version, txn)
+		journal := classicSecretJournal(current, appInfo, appInfo.Port, version)
+		if accepted {
+			txn.Stamp(journal)
+		}
+		return deploy.Store(journal)
 	})
 	return errors.Join(restartErr, deploy.FinishSecretTxn(appInfo.ID, txn, restartErr))
 }

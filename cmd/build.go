@@ -361,7 +361,7 @@ var BuildCmd = &cobra.Command{
 		}
 
 		if err := acceptClassicSecrets(info, buildPort, buildVer, secretTxn); err != nil {
-			return errors.Join(err, app.Manager.StopApplication(id))
+			return err
 		}
 		tracker.InstanceStarted("", classicPID(id), buildPort)
 

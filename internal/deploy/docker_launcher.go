@@ -3,6 +3,8 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
 // dockerInternalPort is the port the managed app is told to bind (via PORT)
@@ -118,7 +122,43 @@ func redactDockerArgs(args []string) string {
 // attached to (so the app resolves compose backing services by DNS name); ""
 // keeps the default bridge (no --network).
 func DockerLauncherForApp(appName, network string) InstanceLauncher {
-	return newDockerLauncher(appName, "", network, execDockerRunner)
+	launch := newDockerLauncher(appName, "", network, execDockerRunner)
+	return func(ctx context.Context, imageRef string, env []string) (Process, int, error) {
+		proc, port, err := launch(ctx, imageRef, env)
+		if err != nil {
+			return nil, 0, err
+		}
+		values := phelixerr.SecretValuesInEnv(env)
+		if len(values) == 0 {
+			return proc, port, nil
+		}
+		if err := captureDockerOutput(proc, imageRef, port, env); err != nil {
+			stopHeldProcess(context.Background(), proc, 3*time.Second)
+			return nil, 0, err
+		}
+		release := phelixerr.AcquireSecretValues(values)
+		go func() {
+			defer release()
+			for {
+				var unknown *unconfirmedExit
+				if err := proc.Wait(); !errors.As(err, &unknown) {
+					return
+				}
+				time.Sleep(time.Second)
+			}
+		}()
+		return proc, port, nil
+	}
+}
+
+// captureDockerOutput sends container output through the same detached drain as native apps.
+func captureDockerOutput(proc Process, imageRef string, port int, env []string) error {
+	file, err := openInstanceLog(imageRef, port)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return logs.CaptureDockerLogs(containerIDOf(proc), env, file)
 }
 
 // newDockerLauncher is the test-injectable constructor. slot may be "" when the
@@ -202,7 +242,7 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 			return nil, 0, phelixerr.New(phelixerr.CodeInstanceStartFailed, "deploy: docker run returned no container id")
 		}
 
-		proc := &dockerProcess{id: containerID, run: run}
+		proc := &dockerProcess{id: containerID, run: run, secretEnvs: phelixerr.SecretEnvNames(env)}
 
 		hostPort, err := dockerPublishedPort(ctx, run, containerID, dockerInternalPort)
 		if err != nil {
@@ -303,8 +343,9 @@ func dockerPublishedPort(ctx context.Context, run dockerRunner, containerID stri
 // GracefulStop drives it exactly like a native process: Signal(SIGTERM) asks
 // politely, Wait blocks on `docker wait`, and Kill force-removes on timeout.
 type dockerProcess struct {
-	id  string
-	run dockerRunner
+	id         string
+	run        dockerRunner
+	secretEnvs []string
 }
 
 // PID returns the container's main process id on the host, resolved lazily via
@@ -335,6 +376,21 @@ func (p *dockerProcess) ContainerID() string { return p.id }
 func (p *dockerProcess) Logs(ctx context.Context, maxBytes int64) string {
 	if p.id == "" || p.run == nil {
 		return ""
+	}
+	if len(p.secretEnvs) > 0 {
+		out, err := p.run(ctx, "inspect", "--format", "{{json .Config.Env}}", p.id)
+		if err != nil {
+			return ""
+		}
+		var env []string
+		if json.Unmarshal([]byte(out), &env) != nil {
+			return ""
+		}
+		set, err := secrets.FromRuntime(env, p.secretEnvs)
+		if err != nil {
+			return ""
+		}
+		defer set.Close()
 	}
 	out, _ := p.run(ctx, "logs", "--tail", "200", p.id)
 	out = phelixerr.Redact(out)
@@ -446,11 +502,11 @@ func (p *dockerProcess) Wait() error {
 		if isDockerNotRunning(err) {
 			return nil
 		}
-		return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "deploy: docker wait %s", p.id)
+		return &unconfirmedExit{phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "deploy: docker wait %s", p.id)}
 	}
 	code, convErr := strconv.Atoi(strings.TrimSpace(out))
-	if convErr != nil {
-		return nil
+	if convErr != nil || code < 0 {
+		return &unconfirmedExit{phelixerr.New(phelixerr.CodeProcessFailed, "deploy: cannot confirm container exit")}
 	}
 	if code != 0 {
 		return phelixerr.Newf(phelixerr.CodeProcessFailed, "deploy: container %s exited with code %d", p.id, code)

@@ -90,9 +90,24 @@ func TestClassicAcceptanceFailureRestoresPreviousCredentials(t *testing.T) {
 	}
 	defer pinned.Close()
 	failure := errors.New("acceptance write failed")
-	err = m.RestartApplicationWithSecrets(id, pinned, func() error { return failure })
+	cleared := false
+	err = m.RestartApplicationWithSecrets(id, pinned, func(current *AppInfo, accepted bool) error {
+		if accepted {
+			return failure
+		}
+		if current == nil {
+			if !m.appProcessRunning(m.Apps[id]) {
+				t.Fatal("candidate stopped before journal restoration")
+			}
+			cleared = true
+		}
+		return nil
+	})
 	if !errors.Is(err, failure) {
 		t.Fatal("restart hid journal failure", err)
+	}
+	if !cleared {
+		t.Fatal("failed acceptance was not cleared before restoration")
 	}
 	runtime, err := secrets.RuntimeForPID(m.Apps[id].PID, []string{"DB"})
 	if err != nil {
@@ -136,4 +151,76 @@ func TestIsProcessRunningTreatsZombieAsStopped(t *testing.T) {
 	}
 
 	t.Fatal("child process did not become a zombie")
+}
+
+func TestLoadStateRetainsOwnershipAndFileOnCorruption(t *testing.T) {
+	isolateStateFile(t)
+	for _, data := range []string{"broken", "null"} {
+		info := &AppInfo{ID: "owned", Name: "owned", PID: os.Getpid(), Status: "running"}
+		m := &AppManager{Apps: map[string]*AppInfo{"owned": info}}
+		if err := os.WriteFile(stateFile, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.LoadState(); err == nil {
+			t.Fatal("invalid state accepted")
+		}
+		current, err := os.ReadFile(stateFile)
+		if err != nil || string(current) != data || m.Apps["owned"] != info {
+			t.Fatal("corruption erased state or ownership", err)
+		}
+	}
+}
+
+func TestRestoreSkipsOnlyAppWhoseGuardFails(t *testing.T) {
+	root := isolateStateFile(t)
+	previousGuard, previousSkipper := RestoreAppGuard, DeployedAppSkipper
+	defer func() { RestoreAppGuard, DeployedAppSkipper = previousGuard, previousSkipper }()
+	DeployedAppSkipper = nil
+	manager := &AppManager{Apps: map[string]*AppInfo{
+		"blocked": {ID: "blocked", Name: "blocked", AutoStart: true, Status: "stopped", Directory: root},
+		"ready":   {ID: "ready", Name: "ready", AutoStart: true, Status: "stopped", Directory: root},
+	}}
+	if err := manager.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	checked := map[string]bool{}
+	released := false
+	RestoreAppGuard = func(id, name string) (func(), error) {
+		checked[id] = true
+		if id == "blocked" {
+			return nil, errors.New("deployment in progress")
+		}
+		return func() { released = true }, nil
+	}
+	if _, err := manager.RestoreAutoStartApps(); err != nil {
+		t.Fatal(err)
+	}
+	if !checked["blocked"] || !checked["ready"] || !released {
+		t.Fatal("blocked app prevented independent restore or leaked its lock")
+	}
+}
+
+func TestClassicStateRejectsRecycledPID(t *testing.T) {
+	isolateStateFile(t)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	manager := &AppManager{Apps: map[string]*AppInfo{"stale": {ID: "stale", PID: cmd.Process.Pid, StartTicks: 1, Status: "running"}}}
+	if err := manager.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.LoadState(); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Apps["stale"].PID != 0 || manager.Apps["stale"].Status == "running" {
+		t.Fatal("recycled PID was adopted")
+	}
+	if err := manager.StopApplication("stale"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatal("unrelated process was stopped")
+	}
 }

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 )
@@ -21,6 +22,8 @@ var DeployedAppSkipper func(id string) bool
 // instance and then try to bind the proxy-owned public port, leaving the app
 // down. Wired by the cmd layer for the same import-cycle reason.
 var DeployedAppRestarter func(id string) error
+
+var RestoreAppGuard func(id, name string) (func(), error)
 
 // RestoreAutoStartApps restarts every application flagged for auto-start that
 // is not currently running. It is invoked at the start of the monitor daemon
@@ -59,20 +62,29 @@ func (m *AppManager) RestoreAutoStartApps() (int, error) {
 		if logFile == "" {
 			logFile = logs.AppLogPath(id)
 		}
-		if err := m.startApplicationProcess(id, a.Name, a.Port, logFile); err != nil {
+		release := func() {}
+		if RestoreAppGuard != nil {
+			var err error
+			release, err = RestoreAppGuard(id, a.Name)
+			if err != nil {
+				logs.Warning("app", "cannot restore app %s (ID: %s): %v", a.Name, id, err)
+				continue
+			}
+		}
+		err := m.startApplicationProcess(id, a.Name, a.Port, logFile)
+		if err == nil {
+			err = m.SaveState()
+			if err != nil {
+				err = errors.Join(err, m.stopNewlyStarted(a))
+			}
+		}
+		release()
+		if err != nil {
 			logs.Error("app", "failed to restore app %s (ID: %s): %v", a.Name, id, err)
 			continue
 		}
 		logs.Info("app", "restored app %s (ID: %s) on port %d", a.Name, id, a.Port)
 		restored++
-	}
-
-	if restored > 0 {
-		// startApplicationProcess updates each AppInfo in memory; persist so a
-		// crash right after restore still reflects the running PIDs.
-		if err := m.SaveState(); err != nil {
-			return restored, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to save state after restoring apps", err)
-		}
 	}
 
 	return restored, nil

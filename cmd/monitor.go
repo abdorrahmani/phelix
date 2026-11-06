@@ -82,13 +82,18 @@ func runMonitor() error {
 		if err != nil {
 			return err
 		}
-		if w, werr := workerAppState(info.Name); werr == nil && w != nil {
-			return runWorkerRestart(info, "")
+		return restartAppInfo(info)
+	}
+	app.RestoreAppGuard = func(id, name string) (func(), error) {
+		release, err := deploy.AcquireDeployLock(name, "restore-classic")
+		if err != nil {
+			return nil, err
 		}
-		if err := runDeployAwareStop(info); err != nil {
-			return err
+		if _, err := deploy.ReconcileSecretTxn(name, id); err != nil {
+			release()
+			return nil, err
 		}
-		return runDeployAwareStart(info)
+		return release, nil
 	}
 	startupSecretsRuntime()
 	restoreDeployedApps()
@@ -253,7 +258,7 @@ func restoreDeployedApps() {
 			continue
 		}
 		// Only restore apps that were serving before (auto-start intent).
-		if !info.AutoStart || info.Status == "running" {
+		if !info.AutoStart || deploy.DecideLifecycle(state).Status == "running" {
 			continue
 		}
 		if err := runDeployAwareStart(info); err != nil {
@@ -295,34 +300,33 @@ func restoreWorkerApps(am *app.AppManager) {
 // recorded, the allow-list is empty and the `docker ps` filter matches nothing
 // (or docker is absent and the listing errors — logged, not fatal).
 func reconcileOrphanContainers(am *app.AppManager) {
-	known := map[string]bool{}
-	anyDocker := false
 	for _, info := range am.Apps {
-		state, derr := loadDeployState(info.Name)
-		if derr != nil {
-			logs.Warning("monitor", "cannot read deployment state for %s, skipping orphan check: %v", info.Name, derr)
+		release, err := deploy.AcquireDeployLock(info.Name, "orphan-reconcile")
+		if err != nil {
 			continue
 		}
-		if state == nil {
+		state, err := loadDeployState(info.Name)
+		if err != nil {
+			release()
+			logs.Warning("monitor", "cannot read deployment state for %s, skipping orphan check: %v", info.Name, err)
 			continue
 		}
-		if state.Runtime == deploy.RuntimeDocker {
-			anyDocker = true
+		if state == nil || state.Runtime != deploy.RuntimeDocker {
+			release()
+			continue
 		}
+		known := map[string]bool{}
 		for _, id := range deploy.KnownContainerIDs(state) {
 			known[id] = true
 		}
-	}
-
-	if !anyDocker && len(known) == 0 {
-		return
-	}
-	removed, err := deploy.ReconcileOrphanContainers(context.Background(), known)
-	if err != nil {
-		logs.Warning("monitor", "orphan container reconcile skipped: %v", err)
-		return
-	}
-	if len(removed) > 0 {
-		logs.Info("monitor", "reclaimed %d orphaned phelix container(s) left by an interrupted deploy", len(removed))
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		removed, err := deploy.ReconcileOrphanContainers(ctx, info.Name, known)
+		cancel()
+		release()
+		if err != nil {
+			logs.Warning("monitor", "orphan container check for %s failed: %v", info.Name, err)
+		} else if len(removed) > 0 {
+			logs.Info("monitor", "reclaimed %d orphaned containers for %s", len(removed), info.Name)
+		}
 	}
 }

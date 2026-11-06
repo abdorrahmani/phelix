@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/port"
+	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 	"github.com/shirou/gopsutil/process"
@@ -35,7 +37,7 @@ func (m *AppManager) verifyProcessStatus(app *AppInfo) bool {
 		return false
 	}
 
-	return m.isProcessRunning(app.PID)
+	return m.appProcessRunning(app)
 }
 
 // startApplicationProcess starts the application process and updates the app info
@@ -90,7 +92,9 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	if pinned != nil {
 		secretEnvs = pinned.Overlay()
 	} else {
-		secretEnvs, err = secrets.ClassicEnvOverlay(context.Background(), id)
+		var releaseOverlay func()
+		secretEnvs, releaseOverlay, err = secrets.ClassicEnvOverlay(context.Background(), id)
+		defer releaseOverlay()
 	}
 	if err != nil {
 		f.Close()
@@ -128,6 +132,7 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	app.releaseSecrets = releaseSecrets
 	app.Cmd = cmd
 	app.PID = cmd.Process.Pid
+	app.StartTicks = 0
 	app.Status = "running"
 	app.Start = time.Now()
 	app.Port = portNum
@@ -137,6 +142,11 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 
 	app.AutoStart = true
 	app.logFileHandle = f
+	identity, err := processex.Identity(app.PID)
+	if err != nil {
+		return errors.Join(phelixerr.New(phelixerr.CodeProcessFailed, "cannot identify started application"), m.stopNewlyStarted(app))
+	}
+	app.StartTicks = identity.StartTime
 
 	addr := fmt.Sprintf("127.0.0.1:%d", portNum)
 	deadline := time.Now().Add(startupListenTimeout)
@@ -146,14 +156,14 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 			listening = true
 			break
 		}
-		if !m.isProcessRunning(app.PID) {
+		if !m.appProcessRunning(app) {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	if !listening {
-		if !m.isProcessRunning(app.PID) {
+		if !m.appProcessRunning(app) {
 			app.Status = "failed"
 			app.PID = 0
 
@@ -169,7 +179,9 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 			)
 		}
 
-		m.stopNewlyStarted(app)
+		if err := m.stopNewlyStarted(app); err != nil {
+			return err
+		}
 
 		return phelixerr.Newf(
 			phelixerr.CodePortUnavailable,
@@ -186,26 +198,13 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	return nil
 }
 
-// stopNewlyStarted terminates the process this method just spawned after a
-// failed startup validation. It touches only app.Cmd — the handle created by
-// the surrounding startApplicationProcess call — never an instance from a
-// previous invocation.
-func (m *AppManager) stopNewlyStarted(app *AppInfo) {
-	if app.Cmd == nil || app.Cmd.Process == nil {
-		return
+// stopNewlyStarted retains ownership if a failed launch cannot be stopped.
+func (m *AppManager) stopNewlyStarted(app *AppInfo) error {
+	if err := m.stopApplicationProcess(app); err != nil {
+		return err
 	}
-	_ = app.Cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan struct{})
-	go func() { _ = app.Cmd.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		_ = app.Cmd.Process.Kill()
-		<-done
-	}
-	app.Status = "failed"
-	app.PID = 0
-	m.waitAndCloseLog(app)
+	app.Status, app.PID = "failed", 0
+	return nil
 }
 
 // classifyResourceExit closes the app's resource tracking handle and reports
@@ -251,6 +250,9 @@ func (a *AppInfo) closeResourceInstance() {
 // lifetime.
 func (m *AppManager) waitAndCloseLog(app *AppInfo) {
 	if app.Cmd != nil && app.Cmd.Process != nil {
+		if m.isProcessRunning(app.Cmd.Process.Pid) {
+			return
+		}
 		_ = app.Cmd.Wait()
 	}
 
@@ -265,102 +267,43 @@ func (m *AppManager) waitAndCloseLog(app *AppInfo) {
 	}
 }
 
-// stopApplicationProcess stops the application process gracefully, falling back to force kill if necessary
+// stopApplicationProcess stops a verified process before releasing its resources.
 func (m *AppManager) stopApplicationProcess(app *AppInfo) error {
-	if app.PID <= 0 {
-		return nil
-	}
-
-	if !m.isProcessRunning(app.PID) {
+	if app.PID <= 0 || !m.appProcessRunning(app) {
 		m.waitAndCloseLog(app)
 		return nil
 	}
-
-	if app.Cmd != nil && app.Cmd.Process != nil {
-		// In-process handle available — use it directly.
-		if stdin, _ := app.Cmd.StdinPipe(); stdin != nil {
-			stdin.Close()
-		}
-
-		if err := app.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			fErr := phelixerr.Wrapf(
-				phelixerr.CodeProcessFailed,
-				err,
-				"failed to send SIGTERM to application '%s' (ID: %s)",
-				app.Name, app.ID,
-			)
-			m.waitAndCloseLog(app)
-			return fErr
-		}
-
-		done := make(chan error, 1)
-		go func() {
-			done <- app.Cmd.Wait()
-		}()
-
-		select {
-		case <-time.After(5 * time.Second):
-
-			_ = app.Cmd.Process.Kill()
-			<-done
-		case <-done:
-
-		}
-	} else {
-		proc, err := os.FindProcess(app.PID)
-		if err != nil {
-			return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "failed to find process %d", app.PID)
-		}
-
-		if err := proc.Signal(syscall.SIGTERM); err != nil {
-			return phelixerr.Wrapf(
-				phelixerr.CodeProcessFailed,
-				err,
-				"failed to send SIGTERM to application '%s' (ID: %s)",
-				app.Name, app.ID,
-			)
-		}
-
-		terminated := m.waitForProcessExit(app.PID, 5*time.Second)
-		if !terminated {
-
-			_ = proc.Kill()
-			time.Sleep(500 * time.Millisecond)
-		}
-
+	proc, err := os.FindProcess(app.PID)
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "cannot find application process", err)
 	}
-
-	if !m.waitForProcessExit(app.PID, time.Second) {
-		return phelixerr.Newf(
-			phelixerr.CodeProcessFailed,
-			"failed to stop application '%s' (ID: %s): process still running",
-			app.Name, app.ID,
-		)
+	defer proc.Release()
+	if err := proc.Signal(syscall.SIGTERM); err != nil && m.appProcessRunning(app) {
+		return phelixerr.Wrap(phelixerr.CodeProcessFailed, "cannot stop application process", err)
 	}
-
+	if !m.waitForProcessExit(app, 5*time.Second) {
+		if err := proc.Kill(); err != nil && m.appProcessRunning(app) {
+			return phelixerr.Wrap(phelixerr.CodeProcessFailed, "cannot kill application process", err)
+		}
+		if !m.waitForProcessExit(app, 5*time.Second) {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm application process stopped")
+		}
+	}
 	m.waitAndCloseLog(app)
 	app.Cmd = nil
-
 	return nil
 }
 
-// waitForProcessExit polls isProcessRunning until the process exits or the
-// timeout elapses. Returns true if the process exited within the timeout.
-func (m *AppManager) waitForProcessExit(pid int, timeout time.Duration) bool {
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-deadline:
+// waitForProcessExit checks the same process identity until it exits or time runs out.
+func (m *AppManager) waitForProcessExit(app *AppInfo, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for m.appProcessRunning(app) {
+		if time.Now().After(deadline) {
 			return false
-		case <-ticker.C:
-			if !m.isProcessRunning(pid) {
-				return true
-			}
 		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	return true
 }
 
 // getProcessMetrics retrieves RAM and CPU usage for the given process PID.
@@ -402,25 +345,9 @@ func ProcessUsage(pid int) (uint64, float64, error) {
 	return ramUsage, cpuUsage, nil
 }
 
-// isProcessRunning checks whether a PID represents a live process. A zombie
-// still has a PID and is reported as running by gopsutil, but has already
-// exited and cannot keep an application port open.
+// isProcessRunning checks live process state without wall-clock estimates.
 func (m *AppManager) isProcessRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-
-	p, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return false
-	}
-	running, err := p.IsRunning()
-	if err != nil || !running {
-		return false
-	}
-
-	status, err := p.Status()
-	return err != nil || status != "Z"
+	return processex.Alive(pid)
 }
 
 // ensureLogDirectory ensures the log directory exists
@@ -429,4 +356,16 @@ func (m *AppManager) ensureLogDirectory() error {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create log directory %s", logDir)
 	}
 	return nil
+}
+
+// appProcessRunning rejects recycled process IDs before adoption or termination.
+func (m *AppManager) appProcessRunning(info *AppInfo) bool {
+	if !m.isProcessRunning(info.PID) {
+		return false
+	}
+	if info.StartTicks != 0 {
+		id, err := processex.Identity(info.PID)
+		return err == nil && id.StartTime == info.StartTicks
+	}
+	return true
 }

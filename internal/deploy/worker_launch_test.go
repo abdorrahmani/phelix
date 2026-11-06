@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,6 +24,8 @@ func TestMain(m *testing.M) {
 }
 
 func TestLaunchWorkerInstance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PORT", "12345")
 	bin, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
@@ -60,5 +64,40 @@ func TestLaunchWorkerInstance(t *testing.T) {
 func TestWorkerLogTag(t *testing.T) {
 	if got := workerLogTag("3"); got != "replica-3" {
 		t.Errorf("workerLogTag = %q", got)
+	}
+}
+
+func TestWorkerStopRetainsUnconfirmedInstance(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	proc, id, err := launchWorkerInstance(bin, []string{"PHLIX_WORKER_HELPER=1"}, resources.Config{}, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = proc.Kill(); _ = proc.Wait() }()
+	state := &DeployState{AppName: "stop-uncertain", Mode: ModeWorker, Replicas: map[string]*Instance{
+		"0": {PID: id.PID, StartTicks: id.StartTime, BinaryPath: id.ExePath, Status: "running"},
+	}}
+	refused := newFakeProc(0)
+	refused.killErr = errors.New("kill denied")
+	defer close(refused.exitCh)
+	report, err := StopWorkerReplica(state, "0", nil, time.Millisecond, refused)
+	if err == nil || report.Exited || state.Replicas["0"].PID != id.PID || state.Replicas["0"].Status == "stopped" {
+		t.Fatal("unconfirmed stop lost process record", err)
+	}
+	stored, err := Load(state.AppName)
+	if err != nil || stored.Replicas["0"].PID != id.PID {
+		t.Fatal("unconfirmed stop lost durable record", err)
+	}
+}
+
+func TestGracefulStopWaitsOnce(t *testing.T) {
+	proc := newFakeProc(time.Millisecond)
+	report, err := GracefulStopSignal(nil, context.Background(), proc, time.Second, 0)
+	if err != nil || !report.Exited || report.waitErr != nil {
+		t.Fatal("stop lost wait result", err)
 	}
 }

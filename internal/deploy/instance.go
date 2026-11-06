@@ -17,6 +17,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/shirou/gopsutil/process"
 )
@@ -44,11 +45,12 @@ type Process interface {
 // observe the same final status safely (the previous implementation's
 // receive-and-repost channel trick could deadlock concurrent waiters).
 type osProcess struct {
-	cmd     *exec.Cmd
-	pid     int
-	doneCh  chan struct{}
-	mu      sync.Mutex
-	waitErr error
+	cmd        *exec.Cmd
+	pid        int
+	startTicks uint64
+	doneCh     chan struct{}
+	mu         sync.Mutex
+	waitErr    error
 }
 
 func (p *osProcess) PID() int { return p.pid }
@@ -169,9 +171,20 @@ func launchInstance(_ context.Context, binaryPath string, env []string, cfg reso
 	}
 	pid := cmd.Process.Pid
 	memoryLimit := cfg.Memory
+	identity, err := processex.Identity(pid)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		releaseSecrets()
+		_ = logFile.Close()
+		if inst != nil {
+			_ = inst.Close()
+		}
+		return nil, 0, phelixerr.New(phelixerr.CodeInstanceStartFailed, "cannot identify launched process")
+	}
 
 	errCh := make(chan struct{})
-	proc := &osProcess{cmd: cmd, pid: pid, doneCh: errCh}
+	proc := &osProcess{cmd: cmd, pid: pid, startTicks: identity.StartTime, doneCh: errCh}
 	go func() {
 		defer releaseSecrets()
 		waitErr := cmd.Wait()
@@ -228,6 +241,11 @@ func instanceLogPath(home, binaryPath string, port int) string {
 	return filepath.Join(home, ".phelix", "logs", name)
 }
 
+// InstanceLogFilePath returns the captured output path for one service instance.
+func InstanceLogFilePath(home, binaryPath string, port int) string {
+	return instanceLogPath(home, binaryPath, port)
+}
+
 // instanceLogTail returns the last maxBytes bytes of the instance's captured
 // output, redacted. Deploy health failures include it so a candidate that
 // dies at boot (bind conflict, panic, missing env) reports the actual panic
@@ -252,22 +270,9 @@ func instanceLogTail(binaryPath string, port int, maxBytes int64) string {
 	return strings.TrimSpace(tail)
 }
 
-// pidAlive reports whether the given PID is currently running, using the same
-// gopsutil library the rest of Phelix uses for process introspection.
+// pidAlive checks live process state without wall-clock estimates.
 func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	p, err := process.NewProcess(int32(pid))
-	if err != nil {
-		return false
-	}
-	running, err := p.IsRunning()
-	if err != nil || !running {
-		return false
-	}
-	status, err := p.Status()
-	return err != nil || status != "Z"
+	return processex.Alive(pid)
 }
 
 // GracefulStop sends SIGTERM to the process and waits up to grace for it to
@@ -282,7 +287,13 @@ type ShutdownReport struct {
 	Exited      bool
 	InFlight    int64
 	Elapsed     time.Duration
+	waitErr     error
 }
+
+type unconfirmedExit struct{ error }
+
+// Unwrap preserves the cause when an exit could not be confirmed.
+func (e *unconfirmedExit) Unwrap() error { return e.error }
 
 func GracefulStop(ctx context.Context, proc Process, grace time.Duration, inFlight int64) (ShutdownReport, error) {
 	return GracefulStopSignal(syscall.SIGTERM, ctx, proc, grace, inFlight)
@@ -318,7 +329,13 @@ func GracefulStopSignal(sig os.Signal, ctx context.Context, proc Process, grace 
 	defer timer.Stop()
 
 	select {
-	case <-waitCh:
+	case err := <-waitCh:
+		report.waitErr = err
+		var unknown *unconfirmedExit
+		if errors.As(err, &unknown) {
+			report.Elapsed = time.Since(start)
+			return report, err
+		}
 		report.Exited = true
 		report.Elapsed = time.Since(start)
 		return report, nil
@@ -332,9 +349,20 @@ func GracefulStopSignal(sig os.Signal, ctx context.Context, proc Process, grace 
 		report.Elapsed = time.Since(start)
 		return report, phelixerr.Wrapf(phelixerr.CodeProcessFailed, err, "deploy: SIGKILL failed")
 	}
-	<-waitCh // reap
 	report.ForceKilled = true
-	report.Exited = true
+	select {
+	case err := <-waitCh:
+		report.waitErr = err
+		var unknown *unconfirmedExit
+		if errors.As(err, &unknown) {
+			report.Elapsed = time.Since(start)
+			return report, err
+		}
+		report.Exited = true
+	case <-time.After(10 * time.Second):
+		report.Elapsed = time.Since(start)
+		return report, phelixerr.New(phelixerr.CodeProcessFailed, "cannot confirm process exit after SIGKILL")
+	}
 	report.Elapsed = time.Since(start)
 	return report, nil
 }
@@ -382,7 +410,7 @@ func (p *pidProcess) Wait() error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return phelixerr.New(phelixerr.CodeProcessFailed, "deploy: timed out waiting for pid to exit")
+	return &unconfirmedExit{phelixerr.New(phelixerr.CodeProcessFailed, "deploy: timed out waiting for pid to exit")}
 }
 
 // sameExecutable reports whether a running process's resolved executable path
@@ -459,4 +487,12 @@ func stopByPID(ctx context.Context, pid int, grace time.Duration, inFlight int64
 	}
 	report, _ := GracefulStop(ctx, proc, grace, inFlight)
 	return report
+}
+
+// startTicksOf returns the identity captured by the native launcher.
+func startTicksOf(proc Process) uint64 {
+	if p, ok := proc.(*osProcess); ok {
+		return p.startTicks
+	}
+	return 0
 }

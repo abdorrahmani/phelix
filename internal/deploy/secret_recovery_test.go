@@ -2,8 +2,15 @@ package deploy
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/processex"
+	"github.com/abdorrahmani/phelix/internal/resources"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -220,5 +227,439 @@ func TestSecretMigrationLeavesServingJournalUntilAcceptance(t *testing.T) {
 	}
 	if outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID); err != nil || outcome != SecretTxnDiscarded {
 		t.Fatal("unaccepted migration did not discard", outcome, err)
+	}
+}
+
+func TestAcceptedCanaryRecoveryRetainsJournalOnUnavailableTarget(t *testing.T) {
+	for _, dead := range []bool{false, true} {
+		t.Run(map[bool]string{false: "proxy", true: "candidate"}[dead], func(t *testing.T) {
+			txnTestEnv(t)
+			stable := startChildInstance(t, SlotBlue, 1)
+			candidate := startChildInstance(t, SlotGreen, 2)
+			if dead {
+				stopInstance(context.Background(), &candidate.Instance, time.Second, 0)
+			}
+			state := &DeployState{AppName: "retained-canary", AppID: txnTestAppID, Mode: ModeBlueGreen,
+				ActiveSlot: SlotBlue, Slots: map[string]*Instance{SlotBlue: &stable.Instance, SlotGreen: &candidate.Instance},
+				Canary: &CanaryState{Slot: SlotGreen, Status: CanaryRunning}}
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			client := &rolloutProxyClient{alive: true, enrolled: true, failSwitch: !dead}
+			err := recoverAcceptedSecretCanary(state, client)
+			if dead {
+				if err != nil || state.ActiveSlot != SlotGreen || state.Canary.Status != CanaryPromoted || len(state.Retiring) != 1 || !InstanceAlive(&stable.Instance) {
+					t.Fatal("accepted dead candidate lost recovery intent or retired stable process", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("unavailable proxy was ignored")
+			}
+			if got := mustLoad(t, state.AppName); got.ActiveSlot != SlotBlue || got.Canary.Status != CanaryRunning || !InstanceAlive(&stable.Instance) {
+				t.Fatal("failed recovery changed serving journal or stopped stable instance")
+			}
+		})
+	}
+}
+
+func TestWorkerCompensationAcceptsRestoredFleetTogether(t *testing.T) {
+	for _, fail := range []bool{true, false} {
+		t.Run(map[bool]string{true: "interrupted", false: "completed"}[fail], func(t *testing.T) {
+			txnTestEnv(t)
+			seedSecret(t, "old", "previous-compensation-value")
+			seedSecret(t, "next", "candidate-compensation-value")
+			oldBindings := []secrets.Binding{{Secret: "old", Env: "DB"}}
+			if err := secrets.ReplaceBindings(txnTestAppID, oldBindings); err != nil {
+				t.Fatal(err)
+			}
+			txn, err := BeginSecretTxn(txnTestAppID, "compensation", "dep", []secrets.Binding{{Secret: "next", Env: "DB"}}, RuntimeNative)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer txn.Set.Close()
+			oldSet, err := secrets.PinBindings(context.Background(), txnTestAppID, oldBindings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer oldSet.Close()
+			bin, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := &DeployState{AppName: txn.AppName, AppID: txnTestAppID, Mode: ModeWorker, Replicas: map[string]*Instance{}}
+			worker := &Worker{AppName: txn.AppName, AppID: txnTestAppID, Secrets: txn, Grace: time.Second,
+				previousSecrets: map[string]*secrets.PinnedSet{}, previousInstances: map[string]*Instance{}}
+			var processes []Process
+			t.Cleanup(func() {
+				for _, proc := range processes {
+					_ = proc.Kill()
+					_ = proc.Wait()
+				}
+			})
+			for _, key := range []string{"0", "1"} {
+				proc, id, err := launchWorkerInstance(bin, append(txn.Set.Overlay(), "PHLIX_WORKER_HELPER=1"), resources.Config{}, key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				processes = append(processes, proc)
+				state.Replicas[key] = &Instance{Slot: key, PID: id.PID, StartTicks: id.StartTime, BinaryPath: bin, Version: 2, Status: "running", SecretEnvs: []string{"DB"}}
+				worker.previousInstances[key] = &Instance{Slot: key, BinaryPath: bin, Version: 1, SecretEnvs: []string{"DB"}}
+				worker.previousSecrets[key] = oldSet
+			}
+			txn.Stamp(state)
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			previousFactory := workerLauncherFactory
+			t.Cleanup(func() { workerLauncherFactory = previousFactory })
+			workerLauncherFactory = func(string) WorkerLauncher {
+				return func(binary string, env []string, slot string) (Process, processex.ProcessIdentity, error) {
+					if mustLoad(t, state.AppName).SecretTxnID != txn.ID {
+						t.Fatal("compensation cleared acceptance before restoring whole fleet")
+					}
+					if fail && slot == "1" {
+						return nil, processex.ProcessIdentity{}, errors.New("injected compensation failure")
+					}
+					proc, id, err := launchWorkerInstance(binary, append(env, "PHLIX_WORKER_HELPER=1"), resources.Config{}, slot)
+					if err == nil {
+						processes = append(processes, proc)
+					}
+					return proc, id, err
+				}
+			}
+			err = worker.revertSecretRollout(context.Background(), state, &WorkerRollout{Status: WorkerRolloutReverting})
+			if (err != nil) != fail {
+				t.Fatal("unexpected compensation outcome", err)
+			}
+			outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "DB=previous-compensation-value"
+			if fail {
+				want = "DB=candidate-compensation-value"
+				if outcome != SecretTxnCommitted {
+					t.Fatal("interrupted compensation lost accepted candidates")
+				}
+			} else if outcome != SecretTxnDiscarded {
+				t.Fatal("completed compensation committed failed deployment")
+			}
+			for _, inst := range mustLoad(t, state.AppName).Replicas {
+				actual, err := RuntimeSecrets(inst, oldBindings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if actual.Overlay()[0] != want {
+					t.Fatal("recovered fleet has wrong credentials")
+				}
+				actual.Close()
+			}
+		})
+	}
+}
+
+func TestRollingSecretFailureRestoresPreviousFleet(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "old", "rolling-old-credential")
+	seedSecret(t, "next", "rolling-next-credential")
+	bindings := []secrets.Binding{{Secret: "old", Env: "DB"}}
+	if err := secrets.ReplaceBindings(txnTestAppID, bindings); err != nil {
+		t.Fatal(err)
+	}
+	state := &DeployState{AppName: "rolling-failure", AppID: txnTestAppID, Mode: ModeRolling, Replicas: map[string]*Instance{}}
+	for _, slot := range []string{"0", "1"} {
+		cmd := exec.Command("sleep", "30")
+		cmd.Env = append(os.Environ(), "DB=rolling-old-credential")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		id, err := processex.Identity(cmd.Process.Pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Replicas[slot] = &Instance{Slot: slot, PID: id.PID, StartTicks: id.StartTime, BinaryPath: id.ExePath, Port: 9000, Status: "running", SecretEnvs: []string{"DB"}}
+	}
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	txn, err := BeginSecretTxn(txnTestAppID, state.AppName, "dep", []secrets.Binding{{Secret: "next", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	calls := 0
+	r := &Rolling{AppName: state.AppName, AppID: txnTestAppID, Secrets: txn, Replicas: 2,
+		Builder: stubBuilder("/usr/bin/sleep"), ProxyClient: &rolloutProxyClient{alive: true, enrolled: true},
+		HealthProvider: func(string) *health.DeployTierConfig { return fastHealth() }, GracePeriod: time.Second,
+		Launcher: func(_ context.Context, _ string, env []string) (Process, int, error) {
+			calls++
+			if calls == 2 {
+				return nil, 0, errors.New("second candidate failed")
+			}
+			cmd := exec.Command("sleep", "30")
+			cmd.Env = append(os.Environ(), env...)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+			return &engineProc{cmd: cmd}, listener.Addr().(*net.TCPAddr).Port, nil
+		}}
+	if err := r.Deploy(context.Background()); err == nil {
+		t.Fatal("failed candidate was accepted")
+	}
+	if outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID); err != nil || outcome != SecretTxnDiscarded {
+		t.Fatal("failed rollout did not discard candidates", outcome, err)
+	}
+	for _, inst := range mustLoad(t, state.AppName).Replicas {
+		set, err := RuntimeSecrets(inst, bindings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if set.Overlay()[0] != "DB=rolling-old-credential" {
+			t.Fatal("failed rolling deployment changed runtime credentials")
+		}
+		set.Close()
+	}
+}
+
+func TestWorkerLifecycleSettlesPendingBeforeChanges(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "lifecycle-recovery-value")
+	state := &DeployState{AppName: "worker-lifecycle", AppID: txnTestAppID, Mode: ModeWorker}
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	txn, err := BeginSecretTxn(txnTestAppID, state.AppName, "dep", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	txn.Stamp(state)
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WorkerStart(context.Background(), state.AppName, nil, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	store, err := secrets.Open(txnTestAppID)
+	if err != nil || store.Pending != nil || len(store.Bindings) != 1 {
+		t.Fatal("worker start did not settle accepted transaction", err)
+	}
+}
+
+func TestSecretCompensationPersistsBeforeCandidateTermination(t *testing.T) {
+	for _, failedWrite := range []bool{false, true} {
+		t.Run(map[bool]string{false: "restored", true: "write_failed"}[failedWrite], func(t *testing.T) {
+			txnTestEnv(t)
+			stable := startChildInstance(t, SlotBlue, 1)
+			candidate := startChildInstance(t, SlotGreen, 2)
+			state := &DeployState{AppName: "compensation-order", AppID: txnTestAppID, Mode: ModeBlueGreen,
+				ActiveSlot: SlotGreen, SecretTxnID: secrets.NewTxnID(),
+				Slots: map[string]*Instance{SlotBlue: &stable.Instance, SlotGreen: &candidate.Instance}}
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			candidateRecord := cloneInstance(&candidate.Instance)
+			state.ActiveSlot, state.SecretTxnID = SlotBlue, ""
+			persist := func(s *DeployState) error {
+				if !InstanceAlive(candidateRecord) {
+					t.Fatal("candidate died before restored journal was saved")
+				}
+				if failedWrite {
+					return errors.New("injected write failure")
+				}
+				return Store(s)
+			}
+			err := retireFailedCandidate(state, &candidate.Instance, persist)
+			if (err != nil) != failedWrite {
+				t.Fatal("unexpected compensation outcome", err)
+			}
+			stored := mustLoad(t, state.AppName)
+			if failedWrite {
+				if stored.ActiveSlot != SlotGreen || stored.SecretTxnID == "" || !InstanceAlive(candidateRecord) {
+					t.Fatal("failed write destroyed accepted candidate")
+				}
+			} else {
+				if stored.ActiveSlot != SlotBlue || stored.SecretTxnID != "" || len(stored.Retiring) != 1 {
+					t.Fatal("restored journal lost retirement ownership")
+				}
+				if err := drainSecretRetirements(stored); err != nil {
+					t.Fatal(err)
+				}
+				if InstanceAlive(candidateRecord) || !InstanceAlive(&stable.Instance) {
+					t.Fatal("retirement stopped wrong instance")
+				}
+			}
+		})
+	}
+}
+
+func TestAcceptedBindingsCommitBeforeRuntimeCleanup(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "cleanup-independent-credential")
+	txn, err := BeginSecretTxn(txnTestAppID, "cleanup-authority", "dep", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	state := &DeployState{AppName: txn.AppName, AppID: txnTestAppID, Mode: ModeBlueGreen,
+		ActiveSlot: SlotBlue, Canary: &CanaryState{Slot: SlotGreen, Status: CanaryRunning}}
+	txn.Stamp(state)
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := ReconcileSecretTxn(state.AppName, txnTestAppID)
+	if outcome != SecretTxnCommitted || err == nil {
+		t.Fatal("runtime failure changed acceptance decision", outcome, err)
+	}
+	store, err := secrets.Open(txnTestAppID)
+	if err != nil || store.Pending != nil || len(store.Bindings) != 1 {
+		t.Fatal("accepted bindings retained behind runtime cleanup", err)
+	}
+	if _, err := ReconcileSecretTxn(state.AppName, txnTestAppID); err == nil {
+		t.Fatal("unfinished cleanup was not retried")
+	}
+}
+
+func TestAcceptedRecoveryRetriesOrphansAfterSecretCommit(t *testing.T) {
+	txnTestEnv(t)
+	seedSecret(t, "db", "accepted-retry-credential")
+	txn, err := BeginSecretTxn(txnTestAppID, "orphan-retry", "dep", []secrets.Binding{{Secret: "db", Env: "DB"}}, RuntimeNative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txn.Set.Close()
+	accepted := startChildInstance(t, "0", 1)
+	state := &DeployState{AppName: txn.AppName, AppID: txnTestAppID, Mode: ModeRolling, Replicas: map[string]*Instance{"0": &accepted.Instance}}
+	txn.Stamp(state)
+	if err := Store(state); err != nil {
+		t.Fatal(err)
+	}
+	orphan := exec.Command("sleep", "30")
+	orphan.Env = append(os.Environ(), txn.Set.Overlay()...)
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = orphan.Process.Kill(); _ = orphan.Wait() }()
+	if err := secrets.CommitTxn(txnTestAppID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReconcileSecretTxn(txn.AppName, txnTestAppID); err != nil {
+		t.Fatal(err)
+	}
+	if pidAlive(orphan.Process.Pid) || !InstanceAlive(&accepted.Instance) {
+		t.Fatalf("retry orphan_alive=%v accepted_alive=%v orphan_pid=%d accepted_pid=%d accepted_exe=%s want_exe=%s", pidAlive(orphan.Process.Pid), InstanceAlive(&accepted.Instance), orphan.Process.Pid, accepted.PID, processExecutable(accepted.PID), accepted.BinaryPath)
+	}
+	if mustLoad(t, txn.AppName).SecretCleanupPending {
+		t.Fatal("completed cleanup remained pending")
+	}
+}
+
+func TestAutomaticSecretRollbackAcceptsRestoredFleetTogether(t *testing.T) {
+	for _, failSecond := range []bool{false, true} {
+		t.Run(fmt.Sprint(failSecond), func(t *testing.T) {
+			txnTestEnv(t)
+			seedSecret(t, "old", "old-rollback-value")
+			seedSecret(t, "next", "candidate-rollback-value")
+			bindings := []secrets.Binding{{Secret: "old", Env: "DB"}}
+			if err := secrets.ReplaceBindings(txnTestAppID, bindings); err != nil {
+				t.Fatal(err)
+			}
+			name := "atomic-secret-rollback"
+			lgFixture(t, name, map[int]bool{2: true}, 2)
+			versionPath, err := versionDir(name, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := copyFile("/usr/bin/sleep", filepath.Join(versionPath, "binary"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			txn, err := BeginSecretTxn(txnTestAppID, name, "failed-deploy", []secrets.Binding{{Secret: "next", Env: "DB"}}, RuntimeNative)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer txn.Set.Close()
+			state := &DeployState{AppName: name, AppID: txnTestAppID, Mode: ModeRolling, Replicas: map[string]*Instance{}}
+			spawn := func(binary string, env []string) *exec.Cmd {
+				cmd := exec.Command(binary, "30")
+				cmd.Env = append(os.Environ(), env...)
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+				return cmd
+			}
+			for _, slot := range []string{"0", "1"} {
+				cmd := spawn("sleep", txn.Set.Overlay())
+				id, err := processex.Identity(cmd.Process.Pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state.Replicas[slot] = &Instance{Slot: slot, PID: id.PID, StartTicks: id.StartTime, BinaryPath: id.ExePath, Port: 9000, Version: 3, Status: "running", SecretEnvs: []string{"DB"}}
+			}
+			txn.Stamp(state)
+			if err := Store(state); err != nil {
+				t.Fatal(err)
+			}
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			calls := 0
+			result := RunAutoRollback(context.Background(), AutoRollbackOptions{
+				AppName: name, AppID: txnTestAppID, FailedVersion: 3,
+				ProxyClient:    &rolloutProxyClient{alive: true, enrolled: true},
+				HealthProvider: func(string) *health.DeployTierConfig { return fastHealth() },
+				Launcher: func(_ context.Context, binary string, env []string) (Process, int, error) {
+					calls++
+					journal := mustLoad(t, name)
+					if journal.SecretTxnID != txn.ID {
+						t.Fatal("rollback changed authority before its fleet was ready")
+					}
+					for _, inst := range journal.Replicas {
+						if inst.Version != 3 {
+							t.Fatal("rollback accepted an incomplete restored fleet")
+						}
+					}
+					if failSecond && calls == 2 {
+						return nil, 0, errors.New("second rollback launch failed")
+					}
+					cmd := spawn(binary, env)
+					return &engineProc{cmd: cmd}, listener.Addr().(*net.TCPAddr).Port, nil
+				},
+			})
+			if result.Restored == failSecond {
+				t.Fatal("unexpected rollback result", result.Err)
+			}
+			outcome, err := ReconcileSecretTxn(name, txnTestAppID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantOutcome, wantValue := SecretTxnDiscarded, "DB=old-rollback-value"
+			if failSecond {
+				wantOutcome, wantValue = SecretTxnCommitted, "DB=candidate-rollback-value"
+			}
+			if outcome != wantOutcome {
+				t.Fatal("rollback recovery chose inconsistent bindings", outcome)
+			}
+			for _, inst := range mustLoad(t, name).Replicas {
+				set, err := RuntimeSecrets(inst, bindings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer set.Close()
+				if len(set.Overlay()) != 1 || set.Overlay()[0] != wantValue {
+					t.Fatal("runtime disagrees with recovered bindings")
+				}
+			}
+		})
 	}
 }

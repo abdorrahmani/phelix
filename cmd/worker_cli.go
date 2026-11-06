@@ -63,6 +63,7 @@ func syncAppInfoWithWorker(info *app.AppInfo, state *deploy.DeployState) error {
 	}
 	summary := deploy.SummarizeWorker(state)
 	before := *info
+	info.StartTicks = 0
 	switch summary.Status {
 	case "running", "degraded":
 		info.Status = summary.Status
@@ -70,12 +71,13 @@ func syncAppInfoWithWorker(info *app.AppInfo, state *deploy.DeployState) error {
 		info.AutoStart = true
 		if inst := firstAliveWorkerInstance(state); inst != nil {
 			info.Start = inst.StartedAt
+			info.StartTicks = inst.StartTicks
 		}
 	default:
 		info.Status = "stopped"
 		info.PID = 0
 	}
-	if info.Status == before.Status && info.PID == before.PID {
+	if info.Status == before.Status && info.PID == before.PID && info.StartTicks == before.StartTicks {
 		return nil
 	}
 	info.UpdatedAt = time.Now()

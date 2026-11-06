@@ -86,9 +86,7 @@ var RebuildCmd = &cobra.Command{
 	},
 }
 
-// runClassicRebuild executes the classic stop -> build -> start -> promote
-// path for a resolved rebuild spec. It is the tail of the original rebuild
-// command body, unchanged except for taking the spec as its input.
+// runClassicRebuild builds before replacing the running application.
 func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	appInfo, name, portToUse, buildSource := spec.AppInfo, spec.Name, spec.Port, spec.SourceDir
 	buildMgr := spec.BuildMgr
@@ -116,9 +114,43 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	}
 	defer func() { errRet = errors.Join(errRet, deploy.FinishSecretTxn(appInfo.ID, secretTxn, errRet)) }()
 
-	if err := stopExistingApp(out, appInfo); err != nil {
-		tracker.Failed(err)
-		return err
+	if secretTxn != nil {
+		previous, err := classicRuntimeSecrets(appInfo)
+		if err != nil {
+			return err
+		}
+		defer previous.Close()
+		binary := filepath.Join(appInfo.Directory, fmt.Sprintf("app_%s", appInfo.ID))
+		backup, err := backupBinaryForRollback(binary)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if errRet == nil {
+				errRet = backup.Discard()
+				return
+			}
+			if _, err := deploy.ReconcileSecretTxn(name, appInfo.ID); err != nil {
+				errRet = errors.Join(errRet, err)
+				return
+			}
+			state, err := deploy.Load(name)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				errRet = errors.Join(errRet, err)
+				return
+			}
+			if state != nil && state.SecretTxnID == secretTxn.ID {
+				errRet = errors.Join(errRet, backup.Discard())
+				return
+			}
+			errRet = compensateClassicRollback(appInfo, name, appInfo.Port, backup, previous, currentVer, errRet)
+		}()
+	}
+
+	if secretTxn == nil {
+		if err := stopExistingApp(out, appInfo); err != nil {
+			return err
+		}
 	}
 
 	tracker.Building("classic rebuild")
@@ -146,6 +178,13 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 
 	emitBuildReportTo(out, name, rebuildReport, gitCommit, rec, verErr)
 
+	if secretTxn != nil {
+		if err := stopExistingApp(out, appInfo); err != nil {
+			tracker.Failed(err)
+			return err
+		}
+	}
+
 	fmt.Fprintf(out, "  %s Starting application on port %d...\n", color.BlueString("→"), portToUse)
 	if err := startClassicWithSecrets(appInfo.ID, portToUse, name, secretTxn); err != nil {
 
@@ -157,7 +196,7 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 			appInfo.ID,
 		)
 		tracker.Failed(startErr)
-		if rec != nil && spec.AutoRollback {
+		if rec != nil && spec.AutoRollback && secretTxn == nil {
 			runClassicAutoRollback(out, name, appInfo, rec.Version, portToUse, startErr)
 		}
 		return startErr
@@ -167,7 +206,7 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 		version = rec.Version
 	}
 	if err := acceptClassicSecrets(appInfo, portToUse, version, secretTxn); err != nil {
-		return errors.Join(err, app.Manager.StopApplication(appInfo.ID))
+		return err
 	}
 	tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
 
@@ -179,7 +218,6 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	if err := deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil); err != nil {
 		return err
 	}
-	secretTxn = nil
 	tracker.PromoteCurrentVersion()
 	tracker.Completed(fmt.Sprintf("running on port %d", portToUse))
 
@@ -718,6 +756,7 @@ func stopExistingApp(out io.Writer, appInfo *app.AppInfo) error {
 	if err := app.Manager.StopApplication(appInfo.ID); err != nil {
 
 		fmt.Fprintf(out, "  %s Could not stop old process: %v\n", color.YellowString("⚠"), err)
+		return err
 	}
 	return nil
 }

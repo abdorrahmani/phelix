@@ -2,13 +2,17 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
 // Worker lifecycle commands shared by the CLI: start, stop, restart, scale and
@@ -26,7 +30,7 @@ func WorkerStart(ctx context.Context, appName string, sig os.Signal, grace time.
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return 0, err
 	}
@@ -98,7 +102,7 @@ func WorkerStop(ctx context.Context, appName string, sig os.Signal, grace time.D
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return 0, err
 	}
@@ -115,10 +119,15 @@ func WorkerStop(ctx context.Context, appName string, sig os.Signal, grace time.D
 			}
 			continue
 		}
-		report, _, _ := GracefulStopWorker(inst, sig, grace, nil)
+		report, _, stopErr := GracefulStopWorker(inst, sig, grace, nil)
+		if stopErr != nil {
+			return stopped, stopErr
+		}
 		inst.PID = 0
 		inst.Status = "stopped"
-		_ = Store(state)
+		if err := Store(state); err != nil {
+			return stopped, err
+		}
 		stopped++
 		_ = report
 	}
@@ -134,7 +143,7 @@ func WorkerRestartReplica(ctx context.Context, appName, slot string, sig os.Sign
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return err
 	}
@@ -144,6 +153,16 @@ func WorkerRestartReplica(ctx context.Context, appName, slot string, sig os.Sign
 	inst, ok := state.Replicas[slot]
 	if !ok || inst == nil {
 		return phelixerr.Newf(phelixerr.CodeNotFound, "worker %s has no replica %s", appName, slot)
+	}
+	if len(inst.SecretEnvs) > 0 || hasInstanceSecrets(state) {
+		return restartWorkerSecrets(ctx, state, slot, sig, grace)
+	}
+	bindings, err := secrets.CommittedBindings(state.AppID)
+	if err != nil {
+		return err
+	}
+	if len(bindings) > 0 {
+		return restartWorkerSecrets(ctx, state, slot, sig, grace)
 	}
 	if WorkerInstanceAlive(inst) {
 		if _, _, err := GracefulStopWorker(inst, sig, grace, nil); err != nil {
@@ -171,12 +190,22 @@ func WorkerRestartAll(ctx context.Context, appName string, sig os.Signal, grace 
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return 0, err
 	}
 	if state.Mode != ModeWorker {
 		return 0, phelixerr.Newf(phelixerr.CodeConfiguration, "%s is not a worker app (mode %s)", appName, state.Mode)
+	}
+	bindings, err := secrets.CommittedBindings(state.AppID)
+	if err != nil {
+		return 0, err
+	}
+	if len(bindings) > 0 || hasInstanceSecrets(state) {
+		if err := restartWorkerSecrets(ctx, state, "", sig, grace); err != nil {
+			return 0, err
+		}
+		return len(state.Replicas), nil
 	}
 	count := 0
 	for _, key := range replicaIndices(state.Replicas) {
@@ -211,7 +240,7 @@ func WorkerScale(ctx context.Context, appName string, desired int, sig os.Signal
 	}
 	defer release()
 
-	state, err := Load(appName)
+	state, err := loadWorkerForMutation(appName)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -266,6 +295,20 @@ func WorkerScale(ctx context.Context, appName string, desired int, sig os.Signal
 		return from, desired, err
 	}
 	return from, desired, nil
+}
+
+// loadWorkerForMutation settles an interrupted deployment before changing replicas.
+func loadWorkerForMutation(appName string) (*DeployState, error) {
+	state, err := Load(appName)
+	if err != nil {
+		return nil, err
+	}
+	if outcome, err := ReconcileSecretTxn(appName, state.AppID); err != nil {
+		return nil, err
+	} else if outcome != SecretTxnNone {
+		return Load(appName)
+	}
+	return state, nil
 }
 
 // workerArtifact is the artifact triple a slot is launched from.
@@ -411,4 +454,41 @@ func WorkerAppNames() []string {
 		names = append(names, entry.Name())
 	}
 	return names
+}
+
+// restartWorkerSecrets shares credential-safe restart behavior across worker commands.
+func restartWorkerSecrets(ctx context.Context, state *DeployState, slot string, sig os.Signal, grace time.Duration) error {
+	bindings, err := secrets.CommittedBindings(state.AppID)
+	if err != nil {
+		return err
+	}
+	desired, err := secrets.PinBindings(ctx, state.AppID, bindings)
+	if err != nil {
+		return err
+	}
+	defer desired.Close()
+	dir := app.AppDirectories()[state.AppName]
+	if dir == "" {
+		return phelixerr.New(phelixerr.CodeConfiguration, "worker project directory is missing")
+	}
+	cfg, err := project.Load(dir)
+	if err != nil {
+		return err
+	}
+	ps, hs := cfg.Process.Resolve(), cfg.Health.ResolveWorker()
+	worker := &Worker{AppName: state.AppName, AppID: state.AppID, Dir: dir, Signal: sig, Grace: grace,
+		StartupTimeout: ps.StartupTimeout, Health: WorkerGate{Mode: hs.Mode, Command: hs.Command, Timeout: hs.Timeout}}
+	if cfg.Deploy != nil {
+		worker.Strategy = cfg.Deploy.Strategy
+		worker.DrainTimeout = cfg.Deploy.Rolling.Resolve().DrainTimeout
+	}
+	err = RestartSecretInstances(ctx, state, desired, worker, slot)
+	outcome := secrets.ApplyRestartSucceeded
+	if slot != "" {
+		outcome = secrets.ApplyRestartPartial
+	}
+	if err != nil {
+		outcome = secrets.ApplyRestartFailed
+	}
+	return errors.Join(err, secrets.RecordApply(state.AppID, &secrets.ApplyStatus{Restart: outcome}))
 }

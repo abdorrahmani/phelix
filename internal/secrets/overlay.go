@@ -17,6 +17,11 @@ var appCoverage = struct {
 
 // AcquireCoverage replaces app coverage only after registering every incoming value.
 func AcquireCoverage(appID string, values []string) {
+	replaceCoverage(appID, values)
+}
+
+// replaceCoverage updates one owner without releasing another owner's values.
+func replaceCoverage(owner string, values []string) {
 	appCoverage.mu.Lock()
 	defer appCoverage.mu.Unlock()
 	unique := make(map[string]bool, len(values))
@@ -30,13 +35,13 @@ func AcquireCoverage(appID string, values []string) {
 		phelixerr.RegisterSecretValue(value)
 		next = append(next, value)
 	}
-	for _, value := range appCoverage.apps[appID] {
+	for _, value := range appCoverage.apps[owner] {
 		phelixerr.UnregisterSecretValue(value)
 	}
 	if len(next) == 0 {
-		delete(appCoverage.apps, appID)
+		delete(appCoverage.apps, owner)
 	} else {
-		appCoverage.apps[appID] = next
+		appCoverage.apps[owner] = next
 	}
 }
 
@@ -75,29 +80,26 @@ func CommittedBindings(appID string) ([]Binding, error) {
 // runs as a plain host process rather than through the deploy engine. It is
 // the classic-path counterpart of the deploy overlay: empty for apps without
 // bindings, and a hard failure when a declared secret is missing.
-func ClassicEnvOverlay(ctx context.Context, appID string) ([]string, error) {
+func ClassicEnvOverlay(ctx context.Context, appID string) ([]string, func(), error) {
 	bindings, err := CommittedBindings(appID)
 	if err != nil {
 		MarkDegraded(appID, "cannot read secret bindings")
-		return nil, err
+		return nil, func() {}, err
 	}
 	return OverlayForLaunch(ctx, appID, bindings)
 }
 
-// OverlayForLaunch resolves every binding into KEY=value strings for a
-// launcher. Resolution is all-or-nothing: one missing secret fails the whole
-// overlay and nothing is registered or returned, so an application never
-// starts with only part of the credentials it declared. Resolved values are
-// masked for this process and retained for the application's coverage
-// lifetime. Success marks the application healthy; failure marks it
-// degraded, which halts its log transmission until it resolves again.
-func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]string, error) {
+// OverlayForLaunch holds resolved values until the caller releases its launch reference.
+func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]string, func(), error) {
+	if err := CheckRuntimeSecurity(appID); err != nil {
+		return nil, func() {}, err
+	}
 	if err := validateBindings(bindings); err != nil {
-		return nil, err
+		return nil, func() {}, err
 	}
 	if len(bindings) == 0 {
-		MarkHealthy(appID)
-		return nil, nil
+		markResolved(appID)
+		return nil, func() {}, nil
 	}
 	overlay := make([]string, 0, len(bindings))
 	values := make([]string, 0, len(bindings))
@@ -105,14 +107,14 @@ func OverlayForLaunch(ctx context.Context, appID string, bindings []Binding) ([]
 		resolved, err := Resolve(ctx, appID, b.Secret)
 		if err != nil {
 			MarkDegraded(appID, "cannot resolve secret for "+b.Env+": "+err.Error())
-			return nil, phelixerr.Wrapf(phelixerr.CodeOf(err), err, "secrets: cannot resolve %s (bound to %s)", b.Secret, b.Env)
+			return nil, func() {}, phelixerr.Wrapf(phelixerr.CodeOf(err), err, "secrets: cannot resolve %s (bound to %s)", b.Secret, b.Env)
 		}
 		overlay = append(overlay, b.Env+"="+resolved.Value)
 		values = append(values, resolved.Value)
 	}
-	AcquireCoverage(appID, values)
-	MarkHealthy(appID)
-	return overlay, nil
+	release := phelixerr.AcquireSecretValues(values)
+	markResolved(appID)
+	return overlay, release, nil
 }
 
 // MergeEnv applies the overlay and preserves the last value of each variable.

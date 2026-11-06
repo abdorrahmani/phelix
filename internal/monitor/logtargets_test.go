@@ -44,3 +44,17 @@ func TestAppLogTargets_ExpandsWorkerReplicas(t *testing.T) {
 		}
 	}
 }
+
+func TestAppLogTargetsFindsServiceInstanceOutput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	state := &deploy.DeployState{AppName: "service-output", Mode: deploy.ModeRolling,
+		Replicas: map[string]*deploy.Instance{"0": {Slot: "0", BinaryPath: "/app", Port: 9123, Version: 4}}}
+	if err := deploy.Store(state); err != nil {
+		t.Fatal(err)
+	}
+	targets := AppLogTargets(app.AppListItem{ID: "service", Name: state.AppName})
+	if len(targets) != 1 || targets[0].Path != deploy.InstanceLogFilePath(home, "/app", 9123) || targets[0].Version != "v4" {
+		t.Fatal("service output does not match launch destination", targets)
+	}
+}

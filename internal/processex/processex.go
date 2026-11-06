@@ -36,7 +36,13 @@ func sameExe(exe, want string) bool {
 	}
 	exe = strings.TrimSuffix(exe, " (deleted)")
 	want = strings.TrimSuffix(want, " (deleted)")
-	return filepath.Clean(exe) == filepath.Clean(want)
+	if filepath.Clean(exe) == filepath.Clean(want) {
+		return true
+	}
+	if resolved, err := filepath.EvalSymlinks(want); err == nil {
+		return filepath.Clean(exe) == filepath.Clean(resolved)
+	}
+	return false
 }
 
 // ErrNoStat reports a /proc stat line this package could not parse.

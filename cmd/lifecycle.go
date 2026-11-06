@@ -59,6 +59,7 @@ func syncAppInfoWithDeploy(info *app.AppInfo, state *deploy.DeployState) error {
 
 	d := deploy.DecideLifecycle(state)
 	before := *info
+	info.StartTicks = d.StartTicks
 	switch d.Status {
 	case "running":
 		info.Status = "running"
@@ -76,7 +77,7 @@ func syncAppInfoWithDeploy(info *app.AppInfo, state *deploy.DeployState) error {
 		info.Status = "stopped"
 		info.PID = 0
 	}
-	if info.Status == before.Status && info.PID == before.PID {
+	if info.Status == before.Status && info.PID == before.PID && info.StartTicks == before.StartTicks {
 		return nil // nothing drifted — no write, no timestamp churn
 	}
 	info.UpdatedAt = time.Now()
@@ -144,6 +145,9 @@ func runDeployAwareStop(appInfo *app.AppInfo) error {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lerr)
 	}
 	defer release()
+	if _, err := deploy.ReconcileSecretTxn(appInfo.Name, appInfo.ID); err != nil {
+		return err
+	}
 
 	state, err := loadDeployState(appInfo.Name)
 	if err != nil {
@@ -196,6 +200,9 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", lerr)
 	}
 	defer release()
+	if _, err := deploy.ReconcileSecretTxn(appInfo.Name, appInfo.ID); err != nil {
+		return err
+	}
 
 	state, err := loadDeployState(appInfo.Name)
 	if err != nil {
@@ -206,7 +213,7 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 	}
 
 	// Idempotent: an already-serving deployment is a no-op success.
-	if inst := servingDeployInstance(state); inst != nil && deploy.InstanceAlive(inst) {
+	if deploy.DecideLifecycle(state).Status == "running" {
 		if err := syncAppInfoWithDeploy(appInfo, state); err != nil {
 			return err
 		}
@@ -233,6 +240,9 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 		return phelixerr.New(phelixerr.CodeProxy, "could not connect to proxy control socket")
 	}
 	if err := deploy.RestoreProxyRoute(ctx, state, client, &colorLogger{}); err != nil {
+		return err
+	}
+	if _, err := deploy.ReconcileSecretTxn(appInfo.Name, appInfo.ID); err != nil {
 		return err
 	}
 

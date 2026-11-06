@@ -321,7 +321,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		state.Slots[SlotGreen] = &Instance{Slot: SlotGreen, Status: "stopped"}
 		state.ActiveSlot = SlotBlue
 		stable, stableSlot = adopted, SlotBlue
-		legacy = withoutPID(legacy, adopted.PID)
+		legacy = withoutInstance(legacy, adopted)
 		ro.storeState(state)
 	}
 
@@ -346,7 +346,9 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		ro.storeState(state)
 	}
 	ReapStaleInstances(state)
-	recoverStaleSlots(ctx, state, ro.AppName, grace, ro.inFlight(ro.AppName), log)
+	if err := recoverStaleSlots(ctx, state, ro.AppName, grace, ro.inFlight(ro.AppName), log); err != nil {
+		return err
+	}
 	ro.enrolled = ro.checkEnrolled(ctx)
 
 	canarySlot := state.InactiveSlot()
@@ -363,7 +365,8 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "rollout: prepare deploy artifact"))
 	}
 	log.Successf("artifact ready: %s", binaryPath)
-	envOverlay, err := launchOverlay(envPath, ro.AppID, ro.Secrets)
+	envOverlay, releaseOverlay, err := launchOverlay(envPath, ro.AppID, ro.Secrets)
+	defer releaseOverlay()
 	if err != nil {
 		ro.undoMigration(state, pre)
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeOf(err), err, "rollout: load env snapshot"))
@@ -384,6 +387,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		SecretEnvs:  phelixerr.SecretEnvNames(envOverlay),
 		Slot:        canarySlot,
 		PID:         proc.PID(),
+		StartTicks:  startTicksOf(proc),
 		Port:        port,
 		BinaryPath:  binaryPath,
 		EnvPath:     envPath,
@@ -467,11 +471,6 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		}
 		if !keepCanary {
 			state.SecretTxnID = oldStamp
-			stopHeldProcess(cleanupCtx, proc, grace)
-			if ci := state.Slots[canarySlot]; ci != nil {
-				ci.Status = "failed"
-				ci.PID = 0
-			}
 		} else {
 			log.Warnf("canary left running because the stable baseline cannot take the traffic back; manual intervention required")
 		}
@@ -481,7 +480,14 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		state.Canary.Status = status
 		state.Canary.Reason = truncateReason(reason.Error())
 		state.Canary.UpdatedAt = time.Now()
-		ro.storeState(state)
+		if !keepCanary {
+			if err := retireFailedCandidate(state, canaryInst, ro.persist); err != nil {
+				return ro.failf(errors.Join(reason, err))
+			}
+			stopHeldProcess(cleanupCtx, proc, grace)
+		} else if err := ro.persist(state); err != nil {
+			return ro.failf(errors.Join(reason, err))
+		}
 		if !switched {
 			ro.undoMigration(state, pre)
 		}
@@ -583,7 +589,9 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		// d. After the first successful switch the previous strategy's fleet
 		// is out of the serving path and may retire.
 		if i == 0 && len(legacy) > 0 {
-			stopRetiredInstances(ctx, legacy, grace, ro.inFlight(ro.AppName), log)
+			if err := stopRetiredInstances(ctx, legacy, grace, ro.inFlight(ro.AppName), log); err != nil {
+				return err
+			}
 			legacy = nil
 		}
 	}
@@ -614,12 +622,12 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 			return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 				"rollout: persist promotion failed and stable compensation failed: %v", compErr))
 		}
-		stopHeldProcess(compCtx, proc, grace)
-		canaryInst.Status = "failed"
-		canaryInst.PID = 0
 		state.Canary.Status = CanaryFailed
 		state.SecretTxnID = oldStamp
-		ro.storeState(state)
+		if restoreErr := retireFailedCandidate(state, canaryInst, ro.persist); restoreErr != nil {
+			return ro.failf(errors.Join(err, restoreErr))
+		}
+		stopHeldProcess(compCtx, proc, grace)
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 			"rollout: persist promotion failed; traffic restored to stable"))
 	}
@@ -634,15 +642,13 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 				compErr = ro.restoreStableRouting(compCtx, state, stable)
 			}
 			if compErr == nil {
-				stopHeldProcess(compCtx, proc, grace)
-				canaryInst.Status = "failed"
-				canaryInst.PID = 0
 				state.Canary.Status = CanaryFailed
 				state.SecretTxnID = oldStamp
-				if persistErr := ro.persist(state); persistErr != nil {
+				if persistErr := retireFailedCandidate(state, canaryInst, ro.persist); persistErr != nil {
 					return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 						"rollout: promote failed; traffic restored but state restore failed: %v", persistErr))
 				}
+				stopHeldProcess(compCtx, proc, grace)
 				return ro.failf(err)
 			}
 			// Traffic may still reach the canary; keep it alive and persist
@@ -810,7 +816,7 @@ func (ro *Rollout) undoMigration(state *DeployState, pre modeSnapshot) {
 // verifiable, or nil when the fleet has none.
 func firstLiveReplica(state *DeployState) *Instance {
 	for _, k := range sortedReplicaKeys(state.Replicas) {
-		if inst := state.Replicas[k]; inst != nil && inst.PID > 0 && InstanceAlive(inst) {
+		if inst := state.Replicas[k]; inst != nil && InstanceAlive(inst) {
 			return inst
 		}
 	}
@@ -819,10 +825,10 @@ func firstLiveReplica(state *DeployState) *Instance {
 
 // withoutPID filters keepPID out of the retired-instance list (used to keep an
 // adopted replica alive when a rolling fleet is consolidated).
-func withoutPID(in []*Instance, keepPID int) []*Instance {
+func withoutInstance(in []*Instance, keep *Instance) []*Instance {
 	out := make([]*Instance, 0, len(in))
 	for _, inst := range in {
-		if inst == nil || inst.PID == keepPID {
+		if inst == nil || (keep.ContainerID != "" && inst.ContainerID == keep.ContainerID) || (keep.ContainerID == "" && inst.ContainerID == "" && inst.PID == keep.PID) {
 			continue
 		}
 		out = append(out, inst)

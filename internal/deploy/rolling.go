@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -15,11 +16,12 @@ import (
 
 // Rolling holds the dependencies for a rolling deploy over N replicas.
 type Rolling struct {
-	AppName    string
-	AppID      string
-	PublicPort int
-	Replicas   int // desired replica count
-	ExtraArgs  []string
+	atomicSecretRecovery bool
+	AppName              string
+	AppID                string
+	PublicPort           int
+	Replicas             int // desired replica count
+	ExtraArgs            []string
 
 	Builder        Builder
 	Source         BuildSource
@@ -115,6 +117,17 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "failed to load deploy state")
 	}
 	state.AppID = r.AppID
+	if r.Secrets != nil {
+		previous := *state
+		previous.Slots = cloneInstanceMap(state.Slots)
+		previous.Replicas = cloneInstanceMap(state.Replicas)
+		previous.Retiring = append([]*Instance(nil), state.Retiring...)
+		defer func() {
+			if errRet != nil && (r.atomicSecretRecovery || state.SecretTxnID == r.Secrets.ID) {
+				errRet = errors.Join(errRet, r.restoreSecretFleet(context.WithoutCancel(ctx), state, &previous))
+			}
+		}()
+	}
 	state.secretPreparing = r.Secrets != nil
 	if r.Runtime != "" {
 		state.Runtime = r.Runtime
@@ -171,7 +184,8 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 		}
 		return phelixerr.Wrapf(phelixerr.CodeBuildFailed, err, "prepare deploy artifact")
 	}
-	envOverlay, err := launchOverlay(envPath, r.AppID, r.Secrets)
+	envOverlay, releaseOverlay, err := launchOverlay(envPath, r.AppID, r.Secrets)
+	defer releaseOverlay()
 	if err != nil {
 		if migrated {
 			r.undoMigration(state, pre, log)
@@ -211,6 +225,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 				// serve the previous version. Persist that mixed fleet explicitly;
 				// ActiveVersion must not falsely claim one homogeneous release.
 				state.ActiveVersion = 0
+				state.secretPreparing = r.atomicSecretRecovery
 				if persistErr := r.persist(state); persistErr != nil {
 					return phelixerr.Wrapf(phelixerr.CodeFilesystem, persistErr,
 						"persist mixed rolling fleet after replica %s failed: %v", key, err)
@@ -218,10 +233,12 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 			}
 			return wrapDeployStep(err, fmt.Sprintf("rolling deploy failed at replica %s", key))
 		}
-		if !progressed && migrated {
+		if !progressed && migrated && r.Secrets == nil {
 			// First replacement healthy and in rotation: the previous
 			// strategy's instances are out of the serving path. Drain them.
-			stopRetiredInstances(ctx, legacy, grace, r.inFlight(r.AppName), log)
+			if err := stopRetiredInstances(ctx, legacy, grace, r.inFlight(r.AppName), log); err != nil {
+				return err
+			}
 			legacy = nil
 		}
 		progressed = true
@@ -233,7 +250,11 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	// Every replica now runs the new binary. Surplus replicas were excluded
 	// from the backend set by the first membership update; retire them here so
 	// a --replicas shrink never leaves orphaned old processes behind.
-	r.stopSurplusReplicas(ctx, surplus, grace)
+	if r.Secrets == nil {
+		if err := r.stopSurplusReplicas(ctx, surplus, grace); err != nil {
+			return err
+		}
+	}
 
 	if state.Health == nil {
 		state.Health = &HealthSummary{}
@@ -243,12 +264,23 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	state.Health.HealthyAt = time.Now()
 	ver := targetVersionFromSource(src)
 	state.ActiveVersion = ver
+	if r.atomicSecretRecovery {
+		if err := RestoreProxyRoute(ctx, state, r.ProxyClient, log); err != nil {
+			return err
+		}
+		r.Secrets.Stamp(state)
+	}
 	if err := r.persist(state); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 			"persist completed rolling deploy state before promotion")
 	}
 	if ver > 0 {
 		if err := PromoteVersion(r.AppName, ver, string(ModeRolling)); err != nil {
+			return err
+		}
+	}
+	if r.Secrets != nil {
+		if err := drainSecretRetirements(state); err != nil {
 			return err
 		}
 	}
@@ -367,6 +399,19 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 			fmt.Sprintf("replica %s replacement exceeded its configured memory limit and was killed by the kernel OOM killer; previous instance still serving", key))
 	}
 
+	candidate := &Instance{
+		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
+		StartTicks: startTicksOf(proc),
+		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath, EnvPath: envPath,
+		ContainerID: containerIDOf(proc),
+		StartedAt:   time.Now(), Version: targetVer, Status: "running",
+	}
+	if r.atomicSecretRecovery {
+		state.Replicas[key] = candidate
+		state.Retiring = append(state.Retiring, old)
+		return nil
+	}
+
 	// 3. Membership swap FIRST: new instance in, old instance out.
 	r.Telemetry.ReplicaHealthy(index, newPID, port)
 	primary, backends := membershipAfterReplace(state.Replicas, key, port)
@@ -423,12 +468,6 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	// The proxy now routes to the candidate. Persist that reality before the old
 	// instance is drained. If persistence fails, switch the proxy back to the old
 	// membership and stop the candidate; only drain after a durable commit.
-	candidate := &Instance{
-		SecretEnvs: phelixerr.SecretEnvNames(envOverlay),
-		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath, EnvPath: envPath,
-		ContainerID: containerIDOf(proc),
-		StartedAt:   time.Now(), Version: targetVer, Status: "running",
-	}
 	state.Replicas[key] = candidate
 	previousStamp := state.SecretTxnID
 	r.Secrets.Stamp(state, old)
@@ -452,12 +491,15 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 			return phelixerr.Wrapf(phelixerr.CodeProxy, compErr,
 				"replica %s: state persistence failed and proxy compensation failed", key)
 		}
-		stopHeldProcess(ctx, proc, grace)
 		state.SecretTxnID = previousStamp
+		if r.Secrets != nil {
+			state.Retiring = append(state.Retiring, cloneInstance(candidate))
+		}
 		if restoreErr := r.persist(state); restoreErr != nil {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 				"replica %s: persist proxy-switched replacement failed; proxy restored but restoring old state also failed: %v", key, restoreErr)
 		}
+		stopHeldProcess(ctx, proc, grace)
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err,
 			"replica %s: persist proxy-switched replacement; proxy restored", key)
 	}
@@ -467,7 +509,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	r.Telemetry.SetProxy(r.PublicPort, primary.Label, port, upstreamHosts(primary, backends))
 	r.Telemetry.ReplicaReplaced(index, newPID, port,
 		fmt.Sprintf("proxy primary %s, %d upstream(s)", primary.Label, len(backends)+1))
-	if old != nil && (oldPID > 0 || old.ContainerID != "") {
+	if old != nil && (oldPID > 0 || old.ContainerID != "") && r.Secrets == nil {
 		r.Telemetry.ReplicaDraining(index, oldPID)
 		report := stopInstance(ctx, old, grace, r.inFlight(r.AppName))
 		if report.ForceKilled {
@@ -480,6 +522,43 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 
 	log.Successf("replica %s: healthy and in rotation (pid %d, port %d)", key, candidate.PID, candidate.Port)
 	return nil
+}
+
+// cloneInstanceMap keeps serving records unchanged while candidates are prepared.
+func cloneInstanceMap(instances map[string]*Instance) map[string]*Instance {
+	copy := make(map[string]*Instance, len(instances))
+	for key, inst := range instances {
+		copy[key] = cloneInstance(inst)
+	}
+	return copy
+}
+
+// restoreSecretFleet records the previous fleet before retiring accepted candidates.
+func (r *Rolling) restoreSecretFleet(ctx context.Context, current, previous *DeployState) error {
+	for _, inst := range instancesServing(previous) {
+		if !InstanceAlive(inst) {
+			return phelixerr.New(phelixerr.CodeProcessFailed, "previous secret instance is unavailable; accepted deployment retained")
+		}
+	}
+	if len(instancesServing(previous)) == 0 {
+		if r.ProxyClient == nil {
+			return phelixerr.New(phelixerr.CodeProxy, "cannot remove failed deployment route")
+		}
+		if err := r.ProxyClient.Remove(ctx, r.AppName); err != nil {
+			return err
+		}
+	} else if err := RestoreProxyRoute(ctx, previous, r.ProxyClient, r.logger()); err != nil {
+		return err
+	}
+	for _, inst := range current.Replicas {
+		previous.Retiring = append(previous.Retiring, cloneInstance(inst))
+	}
+	previous.secretPreparing = false
+	if err := r.persist(previous); err != nil {
+		return err
+	}
+	*current = *previous
+	return drainSecretRetirements(current)
 }
 
 func (r *Rolling) persist(state *DeployState) error {
@@ -548,7 +627,7 @@ func applyReplicaSet(existing map[string]*Instance, n int) []*Instance {
 	for k, inst := range existing {
 		idx, err := strconv.Atoi(k)
 		if err != nil || idx >= n {
-			if inst != nil && inst.PID > 0 {
+			if inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
 				surplus = append(surplus, inst)
 			}
 			delete(existing, k)
@@ -560,23 +639,8 @@ func applyReplicaSet(existing map[string]*Instance, n int) []*Instance {
 
 // stopSurplusReplicas drains instances removed by a --replicas shrink. By the
 // time this runs, a successful membership update has already excluded them.
-func (r *Rolling) stopSurplusReplicas(ctx context.Context, surplus []*Instance, grace time.Duration) {
-	if len(surplus) == 0 {
-		return
-	}
-	log := r.logger()
-	for _, inst := range surplus {
-		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
-			continue
-		}
-		log.Stepf("stopping surplus replica %s (pid %d) removed by shrink", inst.Slot, inst.PID)
-		report := stopInstance(ctx, inst, grace, 0)
-		if report.ForceKilled {
-			log.Warnf("surplus replica %s ignored SIGTERM; SIGKILL applied", inst.Slot)
-		}
-		inst.PID = 0
-		inst.Status = "stopped"
-	}
+func (r *Rolling) stopSurplusReplicas(ctx context.Context, surplus []*Instance, grace time.Duration) error {
+	return stopRetiredInstances(ctx, surplus, grace, 0, r.logger())
 }
 
 // checkEnrolled asks the daemon whether this app is already registered so the

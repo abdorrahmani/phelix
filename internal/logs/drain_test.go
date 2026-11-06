@@ -94,3 +94,50 @@ func TestDetachedDrainPreservesInvalidUTF8(t *testing.T) {
 	}
 	t.Fatal("drain did not flush")
 }
+
+func TestDockerDrainReconnectsAndMasksBothStreams(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PHELIX_DRAIN_TEST_DIR", dir)
+	fake := `#!/bin/sh
+if [ "$1" = logs ]; then
+    printf '%s\n' "$*" >> "$PHELIX_DRAIN_TEST_DIR/args"
+    if [ ! -f "$PHELIX_DRAIN_TEST_DIR/seen" ]; then
+        touch "$PHELIX_DRAIN_TEST_DIR/seen"
+        printf '%s\n' '2026-11-05T00:00:00.000000000Z first private-reconnect-value'
+        printf '%s\n' '2026-11-05T00:00:00.000000000Z warning private-reconnect-value' >&2
+        printf '%s' '2026-11-05T00:00:01.000000000Z private-reconnect-'
+        exit 1
+    fi
+    printf '%s\n' '2026-11-05T00:00:02.000000000Z second private-reconnect-value' >&2
+    touch "$PHELIX_DRAIN_TEST_DIR/done"
+    exit 0
+fi
+if [ ! -f "$PHELIX_DRAIN_TEST_DIR/done" ]; then
+    printf '%s\n' 'Cannot connect to the Docker daemon' >&2
+    exit 1
+fi
+printf '%s\n' false
+`
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(fake), 0700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(filepath.Join(dir, "app.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	release := phelixerr.AcquireSecretValues([]string{"private-reconnect-value"})
+	defer release()
+	if code := runDockerDrain("fixture-container", file, nil); code != 0 {
+		t.Fatal("container drain failed", code)
+	}
+	data, err := os.ReadFile(file.Name())
+	if err != nil || strings.Contains(string(data), "private-reconnect-") || !strings.Contains(string(data), "first ***") || !strings.Contains(string(data), "second ***") {
+		t.Fatal("reconnected output was missing or exposed credentials", err)
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args"))
+	if err != nil || !strings.Contains(string(args), "--since 2026-11-04T23:59:59Z") {
+		t.Fatal("reconnection did not resume from recorded output", err)
+	}
+}

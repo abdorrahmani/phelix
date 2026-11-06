@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -217,13 +217,7 @@ func runSecretsList(ref *appInfoRef) error {
 	if err != nil {
 		return err
 	}
-	secrets.MarkHealthy(ref.ID())
-	for _, binding := range st.Bindings {
-		if _, err := secrets.Resolve(context.Background(), ref.ID(), binding.Secret); err != nil {
-			secrets.MarkDegraded(ref.ID(), "cannot resolve committed bindings")
-			break
-		}
-	}
+	_ = deploy.InspectSecretCoverage(app.AppListItem{ID: ref.ID(), Name: ref.Name(), PID: ref.AppInfo.PID, StartTicks: ref.AppInfo.StartTicks, Status: ref.AppInfo.Status, SecretEnvs: ref.AppInfo.SecretEnvs})
 	security, reason := secrets.SecurityOf(ref.ID())
 	metas := st.List()
 	sortSecretMetas(metas)
@@ -331,7 +325,6 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 		return err
 	}
 	secrets.RegisterResolvedValue(value)
-	defer secrets.UnregisterResolvedValue(value)
 	release, err := deploy.AcquireDeployLock(ref.Name(), "secrets-set")
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeDeployLocked, "could not acquire deploy lock", err)
@@ -347,7 +340,7 @@ func runSecretsSet(ref *appInfoRef, name string) error {
 	}
 
 	fmt.Printf("✓ Stored '%s' version %d (fingerprint %s)\n", name, res.Version, res.Fingerprint)
-	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
+	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "", name)
 
 	bound, err := secretIsBound(ref.ID(), name)
 	if err != nil {
@@ -454,7 +447,7 @@ func runSecretsRemove(ref *appInfoRef, name string) error {
 		return err
 	}
 	fmt.Printf("✓ Removed '%s' and all retained versions\n", name)
-	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
+	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "", name)
 	if secretsJSON {
 		result := struct {
 			App     string `json:"app"`
@@ -499,11 +492,23 @@ func runSecretsApply(ref *appInfoRef) error {
 	if cfg.Secrets != nil {
 		bindings = cfg.Secrets.Imports
 	}
+	previous, err := secrets.CommittedBindings(ref.ID())
+	if err != nil {
+		return err
+	}
 	if err := secrets.ReplaceBindings(ref.ID(), bindings); err != nil {
 		return err
 	}
 	fmt.Printf("✓ Active bindings now come from phelix.yaml (%d imports)\n", len(bindings))
-	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "")
+	names := make([]string, 0, len(bindings))
+	seen := map[string]bool{}
+	for _, binding := range append(previous, bindings...) {
+		if !seen[binding.Secret] {
+			names = append(names, binding.Secret)
+			seen[binding.Secret] = true
+		}
+	}
+	phelixgrpc.ReportEvent(ref.ID(), ref.Name(), "secret_change", true, "", 0, "", "", names...)
 
 	if secretsNoRestart {
 		if err := recordApply(ref.ID(), secrets.ApplyRestartNotNeeded); err != nil {
@@ -554,12 +559,12 @@ func appIsRunning(ref *appInfoRef) (bool, error) {
 	}
 	if err == nil && state.Mode != "classic" {
 		for _, inst := range state.Slots {
-			if inst != nil && (inst.ContainerID != "" || deploy.InstanceAlive(inst)) {
+			if inst != nil && deploy.InstanceAlive(inst) {
 				return true, nil
 			}
 		}
 		for _, inst := range state.Replicas {
-			if inst != nil && (inst.ContainerID != "" || deploy.InstanceAlive(inst)) {
+			if inst != nil && deploy.InstanceAlive(inst) {
 				return true, nil
 			}
 		}
@@ -674,9 +679,42 @@ func acceptClassicSecrets(info *app.AppInfo, port, version int, txn *deploy.Secr
 	if txn == nil {
 		return nil
 	}
-	state := &deploy.DeployState{AppName: info.Name, AppID: info.ID, Mode: "classic", PublicPort: port, ActiveVersion: version}
-	state.Slots = map[string]*deploy.Instance{"classic": {PID: classicPID(info.ID), Status: "running"}}
-
+	current, err := GetAppInfo(info.ID)
+	if err != nil {
+		return err
+	}
+	state := classicSecretJournal(current, info, port, version)
 	txn.Stamp(state)
 	return deploy.Store(state)
+}
+
+// classicSecretJournal records the process accepted for a classic application.
+func classicSecretJournal(current, info *app.AppInfo, port, version int) *deploy.DeployState {
+	state := &deploy.DeployState{AppName: info.Name, AppID: info.ID, Mode: "classic", PublicPort: port, ActiveVersion: version}
+	if current != nil && current.PID > 0 {
+		state.Slots = map[string]*deploy.Instance{"classic": {
+			PID: current.PID, StartTicks: current.StartTicks, Port: current.Port, Version: version,
+			BinaryPath: filepath.Join(current.Directory, fmt.Sprintf("app_%s", current.ID)),
+			SecretEnvs: current.SecretEnvs, Status: "running", StartedAt: current.Start,
+		}}
+	}
+	return state
+}
+
+// classicRuntimeSecrets preserves the credentials of the process being replaced.
+func classicRuntimeSecrets(info *app.AppInfo) (*secrets.PinnedSet, error) {
+	if info.Status != "running" || !app.ValidAppID(info.ID) {
+		return nil, nil
+	}
+	names := info.SecretEnvs
+	if names == nil {
+		bindings, err := secrets.CommittedBindings(info.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, binding := range bindings {
+			names = append(names, binding.Env)
+		}
+	}
+	return secrets.RuntimeForPID(info.PID, names)
 }

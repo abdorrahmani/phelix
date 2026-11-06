@@ -14,6 +14,9 @@ import (
 
 // RuntimeSecrets captures credentials before an instance is replaced.
 func RuntimeSecrets(inst *Instance, fallback []secrets.Binding) (*secrets.PinnedSet, error) {
+	if inst == nil {
+		return secrets.FromRuntime(nil, nil)
+	}
 	names := inst.SecretEnvs
 	if names == nil {
 		for _, b := range fallback {
@@ -48,19 +51,50 @@ func RuntimeSecrets(inst *Instance, fallback []secrets.Binding) (*secrets.Pinned
 	return secrets.FromRuntime(container.Config.Env, names)
 }
 
+// RuntimeEnvOverlay gives probes the credentials of the instance they are checking.
+func RuntimeEnvOverlay(inst *Instance, appID string) ([]string, func(), error) {
+	base, err := snapshotOverlay(inst.EnvPath, appID)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	bindings, err := secrets.CommittedBindings(appID)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	set, err := RuntimeSecrets(inst, bindings)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return mergeByKey(base, set.Overlay()), set.Close, nil
+}
+
 // RefreshSecretCoverage refreshes one app without letting another app's failure stop it.
 func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
+	return inspectSecretCoverage(info, true)
+}
+
+// InspectSecretCoverage checks stored and running values without changing deployment state.
+func InspectSecretCoverage(info app.AppListItem) error {
+	return inspectSecretCoverage(info, false)
+}
+
+// inspectSecretCoverage keeps runtime inspection separate from deployment recovery.
+func inspectSecretCoverage(info app.AppListItem, reconcile bool) (errRet error) {
+	if !app.ValidAppID(info.ID) {
+		return nil
+	}
 	defer func() {
 		if errRet != nil {
-			secrets.MarkDegraded(info.ID, "cannot register stored or running credentials")
+			secrets.MarkRuntimeDegraded(info.ID, "cannot register stored or running credentials")
 		}
 	}()
-	bindings, err := secrets.CommittedBindings(info.ID)
+	store, err := secrets.Open(info.ID)
 	if err != nil {
 		return err
 	}
+	bindings := store.Bindings
 	state, err := Load(info.Name)
-	if len(bindings) == 0 && len(info.SecretEnvs) == 0 && !hasInstanceSecrets(state) {
+	if store.Pending == nil && len(bindings) == 0 && len(info.SecretEnvs) == 0 && !hasInstanceSecrets(state) {
 		secrets.ReleaseCoverage(info.ID)
 		secrets.MarkHealthy(info.ID)
 		return nil
@@ -68,11 +102,22 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	release, err := AcquireDeployLock(info.Name, "secrets-coverage")
-	if err != nil {
-		return err
+	if store.Pending != nil && state != nil && (state.AppName != info.Name || state.AppID != "" && state.AppID != info.ID || state.Mode != ModeRolling && state.Mode != ModeBlueGreen && state.Mode != ModeWorker && state.Mode != "classic") {
+		return phelixerr.New(phelixerr.CodeConfiguration, "pending secrets have an invalid deployment journal")
 	}
-	defer release()
+	if reconcile {
+		release, err := AcquireDeployLock(info.Name, "secrets-coverage")
+		if err != nil {
+			if phelixerr.IsCode(err, phelixerr.CodeDeployLocked) {
+				return nil
+			}
+			return err
+		}
+		defer release()
+		if _, err := ReconcileSecretTxn(info.Name, info.ID); err != nil {
+			return err
+		}
+	}
 	bindings, err = secrets.CommittedBindings(info.ID)
 	if err != nil {
 		return err
@@ -103,7 +148,7 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 			}
 		}
 	} else if info.PID > 0 && info.Status == "running" {
-		instances = append(instances, &Instance{PID: info.PID, SecretEnvs: info.SecretEnvs})
+		instances = append(instances, &Instance{PID: info.PID, StartTicks: info.StartTicks, SecretEnvs: info.SecretEnvs})
 	}
 	live := false
 	for _, inst := range instances {
@@ -119,9 +164,10 @@ func RefreshSecretCoverage(info app.AppListItem) (errRet error) {
 		values = append(values, set.Values()...)
 	}
 	if !live {
-		values = nil
+		secrets.ReleaseCoverage(info.ID)
+	} else {
+		secrets.AcquireCoverage(info.ID, values)
 	}
-	secrets.AcquireCoverage(info.ID, values)
 	secrets.MarkHealthy(info.ID)
 	return nil
 }

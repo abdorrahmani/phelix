@@ -241,7 +241,7 @@ func failedVersionServing(state *DeployState, failedVer int) bool {
 		return false
 	}
 	serving := func(inst *Instance) bool {
-		return inst != nil && inst.PID > 0 && inst.Version == failedVer
+		return inst != nil && (inst.PID > 0 || inst.ContainerID != "") && inst.Version == failedVer
 	}
 	for _, inst := range state.Slots {
 		if serving(inst) {

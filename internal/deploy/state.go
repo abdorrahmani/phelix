@@ -57,7 +57,7 @@ const (
 
 // Instance describes one running backend instance behind the proxy.
 type Instance struct {
-	SecretEnvs []string `json:"secret_envs,omitempty"`
+	SecretEnvs []string `json:"secret_envs,omitzero"`
 	// Slot is the blue-green slot name ("blue"/"green") or, for rolling, a
 	// replica index string ("0", "1", ...).
 	Slot string `json:"slot"`
@@ -224,9 +224,10 @@ type DeployState struct {
 	// every durable write inside a deployment's secret window; the secret
 	// store's recovery reads it as the only evidence that a pending binding
 	// transaction was accepted. Empty outside a deployment.
-	SecretTxnID     string      `json:"secret_txn_id,omitempty"`
-	Retiring        []*Instance `json:"retiring,omitempty"`
-	secretPreparing bool
+	SecretCleanupPending bool        `json:"secret_cleanup_pending,omitempty"`
+	SecretTxnID          string      `json:"secret_txn_id,omitempty"`
+	Retiring             []*Instance `json:"retiring,omitempty"`
+	secretPreparing      bool
 	// UpdatedAt is when the state was last written.
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -359,6 +360,9 @@ func Store(s *DeployState) error {
 	if s.secretPreparing {
 		return nil
 	}
+	if s.SecretTxnID == "" {
+		s.SecretCleanupPending = false
+	}
 
 	path, err := statePath(s.AppName)
 	if err != nil {
@@ -414,6 +418,9 @@ func Load(appName string) (*DeployState, error) {
 	var s DeployState
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "deploy: decode %s", path)
+	}
+	if s.AppName != appName || (s.Mode != "" && s.Mode != "classic" && s.Mode != ModeBlueGreen && s.Mode != ModeRolling && s.Mode != ModeWorker) {
+		return nil, phelixerr.New(phelixerr.CodeConfiguration, "deployment journal has an invalid app identity or strategy")
 	}
 	return &s, nil
 }
