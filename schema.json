@@ -481,6 +481,25 @@
       },
       "type": "object"
     },
+    "security": {
+      "properties": {
+        "vulnerability": {
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "fail_threshold": {
+              "type": "string"
+            },
+            "scan_interval": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "type": {
       "description": "Workload type: service (default, a port-listening app) or worker (a supervised background process with no public port).",
       "enum": [
