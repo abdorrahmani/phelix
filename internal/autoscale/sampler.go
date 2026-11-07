@@ -153,6 +153,14 @@ func defaultHostMemoryBytes() (uint64, error) {
 	return vm.Total, nil
 }
 
+// SetStatsSource swaps the traffic source, for controllers that resolve the
+// app mode per evaluation (rolling apps get the proxy, workers nil).
+func (s *Sampler) SetStatsSource(stats ProxyStatsSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stats = stats
+}
+
 // Collect takes one observation of the given live replicas and the app's
 // proxy counters. Replicas whose process could not be read are skipped and
 // flag the corresponding dimension missing at the app level: the engine

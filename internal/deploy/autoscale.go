@@ -111,6 +111,15 @@ func NewAutoscaler(s project.AutoscaleSettings) *Autoscaler {
 	return &Autoscaler{settings: s, now: time.Now}
 }
 
+// SetClock replaces the engine's time source. The controller injects its own
+// clock so engine freshness checks and controller scheduling share one time
+// source (and so tests can drive both with a fake clock).
+func (a *Autoscaler) SetClock(now func() time.Time) {
+	if now != nil {
+		a.now = now
+	}
+}
+
 // Evaluate folds one metrics sample into a decision for an app currently
 // running currentReplicas replicas. Rules:
 //
