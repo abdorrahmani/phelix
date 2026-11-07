@@ -295,8 +295,7 @@ phelix scale email-worker --replicas 1 --json
 ```
 
 The same operation is available remotely through the dashboard's
-`worker_scale` command (see
-[the worker remote contract](../../docs/worker-remote-contract.md)).
+`worker_scale` command.
 
 ## Encrypted environment variables
 
@@ -407,6 +406,28 @@ phelix matrix status
 phelix matrix retry mx_20260909_8f31 --failed
 phelix matrix init
 ```
+
+## Dependency vulnerability scanning
+
+Scan a Go or Rust project's dependencies against OSV.dev advisories. Scans
+are local and read-only: no toolchain runs, no dependency files change, and
+no data leaves the machine. Full behavior, confidence rules.
+
+```bash
+phelix security scan              # scan the project in the current directory
+phelix security scan myapp        # scan a registered application
+phelix security report myapp      # latest completed scan (add --previous to diff)
+phelix security show GHSA-...     # one advisory, from cache or OSV.dev
+phelix security config myapp      # effective settings and schedule
+```
+
+- `--json` emits one machine envelope with the scan record, the resolved
+  threshold, and `threshold_tripped`.
+- Exit codes: `0` below the configured `security.vulnerability.fail_threshold`,
+  `25` at or above it, `30` when OSV.dev is unreachable with no cached
+  advisories.
+- Scheduled scans run inside `phelix monitor` for apps with
+  `security.vulnerability.enabled: true` in their `phelix.yaml`.
 
 ## Other commands
 

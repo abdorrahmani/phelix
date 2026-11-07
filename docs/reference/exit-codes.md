@@ -19,11 +19,18 @@ code for a given outcome — the JSON error envelope carries the same code in
 | 22 | rollback | `ROLLBACK_FAILED` |
 | 23 | rollback verification failed/cancelled | `ROLLBACK_VERIFY_FAILED` |
 | 24 | deployment failed AND automatic rollback failed (state degraded — manual intervention required) | `AUTO_ROLLBACK_FAILED` |
+| 25 | security findings | `SECURITY_FINDINGS` |
 | 30 | network | `CONNECTION_ERROR`, `NETWORK_ERROR`, `GRPC_ERROR`, `PORT_UNAVAILABLE` |
 | 40 | configuration | `CONFIGURATION_ERROR` |
 | 50 | docker | `DOCKER_ERROR`, `DOCKER_DAEMON_UNAVAILABLE` |
 | 60 | timeout | `TIMEOUT` |
 | 70 | encryption | `ENCRYPTION_ERROR` |
+
+Exit **25** is the dependency vulnerability scan gate: the scan itself
+succeeded and its record is persisted, but open findings reached the
+configured `fail_threshold`. A scan that could not obtain advisory data at
+all exits **30** instead, so "findings found" and "could not check" never
+share an exit code.
 
 The 2/3 split keeps invocation failures distinguishable from execution
 results: `phelix status` (missing required argument) exits **2**, while

@@ -31,7 +31,8 @@ var SecurityCmd = &cobra.Command{
 Inventory the Go or Rust dependencies of a project, evaluate them against
 OSV.dev advisories, and review findings, history, and individual advisories.
 Scans are local: dependency files are parsed in place, no toolchain runs,
-nothing is built, and no dependency data leaves the machine.
+and nothing is built. The advisory query sends ecosystem and package names
+to OSV.dev; no dependency data reaches the Phelix backend.
 
 Scan dispositions are conservative. A finding is affected only when the
 dependency's resolved version is established (Cargo.lock, a pinned replace

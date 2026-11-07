@@ -18,6 +18,30 @@ and contracts that cover each area in depth.
   server binds to `127.0.0.1` unless you explicitly pass `--host`.
 - When not logged in, no app data, metrics, or events leave your machine.
 
+## Dependency vulnerability scanning
+
+`phelix security` inventories the Go and Rust dependencies of an
+application and evaluates them against OSV.dev advisories, fully locally:
+dependency files are parsed in place, no toolchain runs, and nothing is
+built. The advisory query sends ecosystem and package names to OSV.dev;
+no dependency data reaches the Phelix backend in Phase 1. Findings are deliberately
+conservative: a dependency is reported as `affected` only when its resolved
+version is established (Cargo.lock or a pinned replace directive); Go
+manifest minimums and go.sum evidence report `potentially_affected` with
+the reasoning attached, and reachability is always `unknown`. A scan
+exits **25** when findings reach the configured threshold, which makes the
+command usable as a CI gate.
+
+Scheduled scans run opt-in through the monitor daemon:
+
+```yaml
+security:
+  vulnerability:
+    enabled: true
+    scan_interval: 24h
+    fail_threshold: high
+```
+
 ## Secrets at rest
 
 Per-app environment variables and registry credentials are encrypted with
