@@ -30,6 +30,9 @@ type ScanOptions struct {
 	ScheduledFor *time.Time
 	// DataDir is the Phelix data directory holding the security store.
 	DataDir string
+	// GoResolver resolves the selected Go build list. Nil uses the
+	// production toolchain resolver (go list -m, proxy disabled).
+	GoResolver GoResolver
 	// HTTPClient and OSVBaseURL are injectable for tests.
 	HTTPClient *http.Client
 	OSVBaseURL string
@@ -98,7 +101,11 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	var inv *Inventory
 	switch eco {
 	case EcosystemGo:
-		inv, err = InventoryGo(opts.Dir)
+		resolver := opts.GoResolver
+		if resolver == nil {
+			resolver = &ToolchainGoResolver{}
+		}
+		inv, err = InventoryGoWithResolution(ctx, opts.Dir, resolver)
 	case EcosystemRust:
 		inv, err = InventoryRust(opts.Dir)
 	}

@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,8 @@ import (
 // toolchain, so the MVS build list is not resolved: requirements are
 // recorded as declared minimums, go.sum entries as observed evidence, and
 // version-pinned replace directives as the only fully resolved identities.
+// Prefer InventoryGoWithResolution, which establishes the selected build
+// list and never reports ghost versions from stale go.sum entries.
 func InventoryGo(dir string) (*Inventory, error) {
 	ws, err := loadGoWorkspace(dir)
 	if err != nil {
@@ -104,6 +107,145 @@ func InventoryGo(dir string) (*Inventory, error) {
 		inv.Notes = append(inv.Notes, "exclude directives are recorded but not applied offline")
 	}
 	return inv, nil
+}
+
+// inventoryGoFallbackNotes is appended when the selected build list could
+// not be established and manifest evidence is all a scan has.
+func inventoryGoFallbackNotes(cause error) []string {
+	return []string{
+		"selected module versions could not be resolved (" + sanitizeOutcome(cause) + "); findings use manifest evidence and are conservative",
+		"go.mod versions are build-list minimums; the selected version is not established",
+		"go.sum supplies observed versions as evidence; it is not proof of the selected build-list version",
+	}
+}
+
+// InventoryGoWithResolution inventories the Go dependencies of dir,
+// resolving the selected build list through the given resolver. A
+// resolution failure is not a scan failure: the inventory degrades to
+// manifest evidence, with the limitation stated in the inventory notes.
+// With resolution, every module carries the version the build actually
+// selects, and stale go.sum checksum entries can no longer produce
+// findings.
+func InventoryGoWithResolution(ctx context.Context, dir string, resolver GoResolver) (*Inventory, error) {
+	resolved, err := resolver.ResolveModules(ctx, dir)
+	if err != nil {
+		inv, invErr := InventoryGo(dir)
+		if invErr != nil {
+			return nil, invErr
+		}
+		inv.Notes = append(inventoryGoFallbackNotes(err), inv.Notes...)
+		return inv, nil
+	}
+	return inventoryGoFromResolution(dir, resolved)
+}
+
+// inventoryGoFromResolution builds the authoritative inventory: one entry
+// per selected module, keyed by the effective (post-replace) identity.
+// go.sum evidence is attached for diagnostics but never drives matching.
+func inventoryGoFromResolution(dir string, resolved []ResolvedModule) (*Inventory, error) {
+	ws, err := loadGoWorkspace(dir)
+	if err != nil {
+		return nil, err
+	}
+	direct, declaredBy, err := goManifestEvidence(ws)
+	if err != nil {
+		return nil, err
+	}
+	observed := map[string][]string{}
+	for _, member := range ws.members {
+		for path, versions := range goSumVersions(filepath.Join(member.dir, "go.sum")) {
+			observed[path] = append(observed[path], versions...)
+		}
+	}
+
+	modules := make([]Module, 0, len(resolved))
+	seen := map[string]bool{}
+	for _, mod := range resolved {
+		if mod.Path == "" {
+			continue
+		}
+		if seen[mod.Path] {
+			continue
+		}
+		seen[mod.Path] = true
+		entry := Module{
+			Name:       mod.Path,
+			Version:    mod.Version,
+			Matchable:  true,
+			Reachable:  true,
+			SourceKind: SourceGoModule,
+			Direct:     !mod.Indirect,
+		}
+		if who, ok := direct[mod.Path]; ok && who {
+			entry.Direct = true
+		}
+		entry.DeclaredBy = declaredBy[mod.Path]
+		if versions := dedupeSorted(observed[mod.ReplacedFrom]); len(versions) > 0 {
+			entry.ObservedVersions = versions
+		} else {
+			entry.ObservedVersions = dedupeSorted(observed[mod.Path])
+		}
+		switch {
+		case mod.LocalReplace:
+			entry.Version = ""
+			entry.ReplacedFrom = mod.ReplacedFrom
+			entry.Resolved = false
+			entry.Confidence = ConfidenceUnknown
+			entry.Matchable = false
+			entry.Notes = append(entry.Notes, "replaced by a local path; selected version not established")
+		case mod.ReplacedFrom != "":
+			entry.Version = mod.Version
+			entry.ReplacedFrom = mod.ReplacedFrom
+			entry.Resolved = true
+			entry.ResolvedFrom = "replace directive"
+			entry.Confidence = ConfidenceResolved
+			entry.SourceKind = SourceReplacePinned
+		default:
+			entry.Resolved = true
+			entry.ResolvedFrom = "go module graph"
+			entry.Confidence = ConfidenceResolved
+		}
+		modules = append(modules, entry)
+	}
+	sort.Slice(modules, func(i, j int) bool { return modules[i].Name < modules[j].Name })
+
+	return &Inventory{
+		Ecosystem: EcosystemGo,
+		Level:     InventoryResolved,
+		Modules:   modules,
+		Notes: []string{
+			"versions come from the Go module graph as the toolchain selects it (go list -m, proxy disabled)",
+			"go.sum checksums are recorded as evidence only; historical entries cannot produce findings",
+		},
+	}, nil
+}
+
+// goManifestEvidence collects direct/indirect declarations and the
+// declaring members per module path across the workspace, for annotation
+// of the resolved build list.
+func goManifestEvidence(ws *goWorkspace) (map[string]bool, map[string][]string, error) {
+	direct := map[string]bool{}
+	declaredBy := map[string][]string{}
+	for _, member := range ws.members {
+		raw, err := os.ReadFile(filepath.Join(member.dir, "go.mod"))
+		if err != nil {
+			return nil, nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", filepath.Join(member.rel, "go.mod"))
+		}
+		mod, err := modfile.Parse(filepath.Join(member.rel, "go.mod"), raw, nil)
+		if err != nil {
+			return nil, nil, phelixerr.Wrapf(phelixerr.CodeValidation, err, "%s is malformed", filepath.Join(member.rel, "go.mod"))
+		}
+		if mod.Module == nil || mod.Module.Mod.Path == "" {
+			return nil, nil, phelixerr.Newf(phelixerr.CodeValidation, "%s has no module directive", filepath.Join(member.rel, "go.mod"))
+		}
+		for _, req := range mod.Require {
+			if !req.Indirect {
+				direct[req.Mod.Path] = true
+			}
+			declaredBy[req.Mod.Path] = append(declaredBy[req.Mod.Path], mod.Module.Mod.Path)
+		}
+	}
+	return direct, declaredBy, nil
 }
 
 // goModuleFromAcc materializes one inventory module from its accumulated
