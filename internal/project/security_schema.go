@@ -1,6 +1,8 @@
 package project
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -155,4 +157,70 @@ func (s *SecurityConfig) validate() error {
 			"configuration error: security.vulnerability.fail_threshold %q is not one of low, medium, high, critical\nHint: findings with unknown severity never trip the threshold; reports always show them", string(v.FailThreshold))
 	}
 	return nil
+}
+
+// SaveSecurityConfig writes the security section into dir/phelix.yaml
+// while preserving every other key, comment, and the file's overall
+// formatting: the existing document is edited as a yaml.Node and only the
+// `security` mapping is replaced (or appended). A missing file is created
+// with just the security section; a malformed existing file is an error,
+// never overwritten. The configuration is validated before any write.
+func SaveSecurityConfig(dir string, sc *SecurityConfig) error {
+	if sc == nil {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "cannot save a nil security config")
+	}
+	if err := sc.Validate(); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, FileName)
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
+		}
+		body, merr := yaml.Marshal(map[string]*SecurityConfig{"security": sc})
+		if merr != nil {
+			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode security config", merr)
+		}
+		return writeProjectConfigAtomic(path, append([]byte(projectConfigHeader()), body...))
+	}
+
+	var doc yaml.Node
+	if uerr := yaml.Unmarshal(raw, &doc); uerr != nil {
+		return phelixerr.Wrapf(phelixerr.CodeConfiguration, uerr, "%s is malformed; not modifying it", path)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return phelixerr.Newf(phelixerr.CodeConfiguration, "%s is malformed: top level is not a mapping; not modifying it", path)
+	}
+	root := doc.Content[0]
+
+	newValue := &yaml.Node{}
+	if eerr := newValue.Encode(sc); eerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode security config", eerr)
+	}
+
+	replaced := false
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Kind == yaml.ScalarNode && root.Content[i].Value == "security" {
+			*root.Content[i+1] = *newValue
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "security"}
+		root.Content = append(root.Content, key, newValue)
+	}
+
+	var buf strings.Builder
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if eerr := enc.Encode(&doc); eerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", eerr)
+	}
+	if cerr := enc.Close(); cerr != nil {
+		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
+	}
+	return writeProjectConfigAtomic(path, []byte(buf.String()))
 }

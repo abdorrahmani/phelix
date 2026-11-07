@@ -431,6 +431,20 @@ func (s *ScanStore) TryAcquireScanLock(identityKey string) (*ScanLock, error) {
 	return &ScanLock{file: lock}, nil
 }
 
+// AcquireConfigLock serializes configuration edits for one identity
+// across Phelix processes. Manual file edits bypass this lock by nature;
+// the atomic write keeps readers safe either way.
+func (s *ScanStore) AcquireConfigLock(identityKey string) (*ScanLock, error) {
+	if err := s.ensureDirs(); err != nil {
+		return nil, err
+	}
+	lock, err := acquireLock(filepath.Join(s.locksDir(), "config-"+lockFileName(identityKey)), true)
+	if err != nil {
+		return nil, err
+	}
+	return &ScanLock{file: lock}, nil
+}
+
 // Release drops the scan lock.
 func (l *ScanLock) Release() {
 	if l == nil || l.file == nil {

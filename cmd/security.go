@@ -92,19 +92,37 @@ func init() {
 	}
 	securityConfig := &cobra.Command{
 		Use:           "config [AppName]",
-		Short:         "Show the effective vulnerability scan configuration",
+		Short:         "Show or edit the vulnerability scan configuration",
+		Long: `Show or edit the vulnerability scan configuration.
+
+Without update flags the effective settings and schedule are shown. With
+update flags the security section of the application's phelix.yaml is
+edited: unrelated configuration, comments, and formatting are preserved,
+and the new values are validated before anything is written.
+
+  phelix security config myapp
+  phelix security config myapp --enable --scan-interval 12h --fail-threshold medium
+  phelix security config myapp --disable`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          runSecurityConfig,
 	}
+	securityConfig.Flags().StringVar(&securitySetEnabled, "set-enabled", "", "enable or disable scheduled scanning: true or false")
+	securityConfig.Flags().StringVar(&securitySetInterval, "set-scan-interval", "", "scheduled scan cadence, e.g. 12h (minimum 15m)")
+	securityConfig.Flags().StringVar(&securitySetThreshold, "set-fail-threshold", "", "severity that trips the scan gate: low, medium, high, or critical")
 	for _, sub := range []*cobra.Command{securityScan, securityReport, securityShow, securityConfig, securityHistory} {
 		sub.Flags().BoolVar(&securityJSON, "json", false, "emit the machine envelope on stdout")
 		SecurityCmd.AddCommand(sub)
 	}
 }
 
-var securityReportPrevious bool
+var (
+	securityReportPrevious bool
+	securitySetEnabled     string
+	securitySetInterval    string
+	securitySetThreshold   string
+)
 
 // securityTarget is the resolved scan subject: a registered application or
 // the project in the working directory.
@@ -516,6 +534,95 @@ func renderReportHuman(record *security.ScanRecord, result securityReportResult)
 	}
 }
 
+// configUpdateRequested reports whether any update flag was provided.
+func configUpdateRequested() bool {
+	return securitySetEnabled != "" || securitySetInterval != "" || securitySetThreshold != ""
+}
+
+// runSecurityConfigUpdate applies flag-driven or interactive edits to the
+// application's phelix.yaml. The file is re-read under the config lock so
+// a concurrent Phelix edit is never clobbered, changes are validated
+// before writing, and the resulting configuration is shown afterwards.
+func runSecurityConfigUpdate(target *securityTarget) error {
+	if securitySetEnabled != "" && securitySetEnabled != "true" && securitySetEnabled != "false" {
+		return phelixerr.New(phelixerr.CodeInvalidArgument,
+			"--set-enabled accepts true or false")
+	}
+
+	if target.dir == "" {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "the target has no project directory")
+	}
+
+	store := security.NewScanStore(server.DataDir())
+	lock, err := store.AcquireConfigLock(target.identityKey)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	cfg, err := project.Load(target.dir)
+	if err != nil {
+		return err
+	}
+	vuln := project.VulnerabilityConfig{ScanInterval: project.ScanInterval(project.ScanIntervalDefault.String()), FailThreshold: project.ScanSeverityDefault}
+	if cfg.Security != nil && cfg.Security.Vulnerability != nil {
+		vuln = *cfg.Security.Vulnerability
+	}
+	if securitySetEnabled != "" {
+		vuln.Enabled = securitySetEnabled == "true"
+	}
+	if securitySetInterval != "" {
+		vuln.ScanInterval = project.ScanInterval(securitySetInterval)
+	}
+	if securitySetThreshold != "" {
+		vuln.FailThreshold = project.ScanSeverity(securitySetThreshold)
+	}
+
+	if IsInteractive() && !configUpdateRequested() && !securityJSON {
+		if err := promptSecurityConfigEdit(&vuln); err != nil {
+			return err
+		}
+	}
+
+	next := &project.SecurityConfig{Vulnerability: &vuln}
+	if err := project.SaveSecurityConfig(target.dir, next); err != nil {
+		return err
+	}
+
+	refreshed, err := project.Load(target.dir)
+	if err != nil {
+		return err
+	}
+	target.cfg = refreshed
+	return renderSecurityConfig(target, true)
+}
+
+// promptSecurityConfigEdit walks the user through the vulnerability scan
+// settings interactively. Existing values prefill every prompt.
+func promptSecurityConfigEdit(vuln *project.VulnerabilityConfig) error {
+	enabled, err := PromptConfirm("Enable scheduled vulnerability scanning?", vuln.Enabled)
+	if err != nil {
+		return err
+	}
+	vuln.Enabled = enabled
+	intervalDefault := string(vuln.ScanInterval)
+	if intervalDefault == "" {
+		intervalDefault = project.ScanIntervalDefault.String()
+	}
+	interval, err := PromptString("Scheduled scan cadence (minimum 15m):", intervalDefault)
+	if err != nil {
+		return err
+	}
+	vuln.ScanInterval = project.ScanInterval(interval)
+	threshold, err := PromptSelect("Severity that trips the scan gate:",
+		[]string{string(vuln.ResolvedFailThreshold()), "low", "medium", "high", "critical"})
+	if err != nil {
+		return err
+	}
+	vuln.FailThreshold = project.ScanSeverity(threshold)
+	return nil
+}
+
 type securityConfigResult struct {
 	AppName       string     `json:"app_name"`
 	AppID         string     `json:"app_id,omitempty"`
@@ -544,6 +651,46 @@ func runSecurityConfig(cmd *cobra.Command, args []string) error {
 			"%s has no phelix.yaml; there is no scan configuration to show", target.appName)
 	}
 
+	if configUpdateRequested() {
+		return runSecurityConfigUpdate(target)
+	}
+
+	enabled := false
+	interval := project.ScanIntervalDefault
+	threshold := project.ScanSeverityDefault
+	if target.cfg.Security != nil && target.cfg.Security.Vulnerability != nil {
+		v := target.cfg.Security.Vulnerability
+		enabled = v.Enabled
+		if resolved, err := v.ResolvedScanInterval(); err == nil {
+			interval = resolved
+		}
+		threshold = v.ResolvedFailThreshold()
+	}
+
+	result := securityConfigResult{
+		AppName:       target.appName,
+		AppID:         target.appID,
+		Enabled:       enabled,
+		ScanInterval:  interval.String(),
+		FailThreshold: string(threshold),
+	}
+	store := security.NewScanStore(server.DataDir())
+	if entry, err := store.Latest(target.identityKey); err == nil && entry != nil {
+		result.NextScanAt = entry.NextScanAt
+		result.LastScanID = entry.ScanID
+		result.LastScanAt = entry.FinishedAt
+	}
+
+	return renderSecurityConfig(target, false)
+}
+
+// renderSecurityConfig emits the effective configuration view, either as
+// a machine envelope or as the human table.
+func renderSecurityConfig(target *securityTarget, updated bool) error {
+	if target.cfg == nil {
+		return phelixerr.Newf(phelixerr.CodeNotFound,
+			"%s has no phelix.yaml; there is no scan configuration to show", target.appName)
+	}
 	enabled := false
 	interval := project.ScanIntervalDefault
 	threshold := project.ScanSeverityDefault
@@ -573,7 +720,11 @@ func runSecurityConfig(cmd *cobra.Command, args []string) error {
 	if securityJSON {
 		return machine.WriteEnvelope(machine.Success("security-config", result))
 	}
-	fmt.Printf("Vulnerability scanning for %s\n", target.appName)
+	fmt.Printf("Vulnerability scanning for %s", target.appName)
+	if updated {
+		fmt.Printf(" (updated)")
+	}
+	fmt.Println()
 	t := table.New(os.Stdout, false)
 	t.Header([]string{"Setting", "Value"})
 	t.Append([]string{"Enabled", strconv.FormatBool(result.Enabled)})

@@ -374,3 +374,65 @@ func TestCLISecurityBareCommand_NonInteractiveShowsHelp(t *testing.T) {
 		t.Fatalf("help must list the subcommands: %s", stdout)
 	}
 }
+
+func TestCLISecurityConfigUpdate(t *testing.T) {
+	home := t.TempDir()
+	project := writeSecurityProject(t, "cfgupdate")
+
+	code, stdout, stderr := runPhelixSecurity(t, home, project, "http://127.0.0.1:1",
+		"security", "config", "--set-enabled", "true", "--set-scan-interval", "12h", "--set-fail-threshold", "medium", "--json")
+	if code != 0 {
+		t.Fatalf("config update: exit=%d stderr=%s", code, stderr)
+	}
+	envelope := decodeSecurityEnvelope(t, stdout)
+	result := envelope["result"].(map[string]any)
+	if result["enabled"] != true || result["scan_interval"] != "12h0m0s" || result["fail_threshold"] != "medium" {
+		t.Fatalf("updated settings wrong: %v", result)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(project, "phelix.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "name: cfgupdate") || !strings.Contains(text, "enabled: true") {
+		t.Fatalf("phelix.yaml must keep the app name and gain the security section:\n%s", text)
+	}
+
+	// A subsequent view reflects the persisted values.
+	code, stdout, _ = runPhelixSecurity(t, home, project, "http://127.0.0.1:1", "security", "config", "--json")
+	if code != 0 {
+		t.Fatalf("config view: exit=%d", code)
+	}
+	envelope = decodeSecurityEnvelope(t, stdout)
+	result = envelope["result"].(map[string]any)
+	if result["enabled"] != true || result["fail_threshold"] != "medium" {
+		t.Fatalf("persisted settings must survive a reload: %v", result)
+	}
+}
+
+func TestCLISecurityConfigUpdate_RejectsInvalidAndKeepsFile(t *testing.T) {
+	home := t.TempDir()
+	project := writeSecurityProject(t, "cfgbad")
+
+	code, _, stderr := runPhelixSecurity(t, home, project, "http://127.0.0.1:1",
+		"security", "config", "--set-scan-interval", "1m")
+	if code != 40 {
+		t.Fatalf("invalid interval must be a configuration error: exit=%d stderr=%s", code, stderr)
+	}
+	raw, _ := os.ReadFile(filepath.Join(project, "phelix.yaml"))
+	if strings.Contains(string(raw), "security") {
+		t.Fatalf("a rejected update must not touch phelix.yaml:\n%s", raw)
+	}
+}
+
+func TestCLISecurityConfigUpdate_ConflictingFlags(t *testing.T) {
+	home := t.TempDir()
+	project := writeSecurityProject(t, "cfgconflict")
+
+	code, _, _ := runPhelixSecurity(t, home, project, "http://127.0.0.1:1",
+		"security", "config", "--set-enabled", "maybe")
+	if code != 2 {
+		t.Fatalf("a non-boolean --set-enabled is a usage error: exit=%d", code)
+	}
+}

@@ -63,7 +63,7 @@ func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
 		if merr != nil {
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode webhook config", merr)
 		}
-		return writeWebhookConfig(path, append([]byte(webhookConfigHeader()), body...))
+		return writeProjectConfigAtomic(path, append([]byte(projectConfigHeader()), body...))
 	}
 
 	var doc yaml.Node
@@ -105,11 +105,11 @@ func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
 	if cerr := enc.Close(); cerr != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
 	}
-	return writeWebhookConfig(path, []byte(buf.String()))
+	return writeProjectConfigAtomic(path, []byte(buf.String()))
 }
 
 // writeWebhookConfig keeps readers from seeing an incomplete configuration.
-func writeWebhookConfig(path string, data []byte) error {
+func writeProjectConfigAtomic(path string, data []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".phelix-config-*")
 	if err != nil {
 		return err
@@ -137,7 +137,7 @@ func writeWebhookConfig(path string, data []byte) error {
 	return os.Rename(f.Name(), path)
 }
 
-func webhookConfigHeader() string {
+func projectConfigHeader() string {
 	return fmt.Sprintf("# Phelix project configuration.\n# CLI flags override these values (e.g. --port).\n")
 }
 
