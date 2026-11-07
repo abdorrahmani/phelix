@@ -75,6 +75,49 @@ func runSecurityScheduler(ctx context.Context) {
 	scheduler.Run(ctx)
 }
 
+// securitySnapshotsForConsentingApps builds the latest completed scan
+// summary for every application that opted in to security reporting.
+func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
+	var out []*pb.SecurityScanSnapshot
+	for _, info := range app.Manager.ListApplications() {
+		cfg, err := project.Load(info.Directory)
+		if err != nil || cfg.Security == nil || cfg.Security.Vulnerability == nil || !cfg.Security.Vulnerability.ResolvedReporting() {
+			continue
+		}
+		store := security.NewScanStore(server.DataDir())
+		entry, err := store.Latest(info.ID)
+		if err != nil || entry == nil || entry.ScanID == "" {
+			continue
+		}
+		record, err := store.LoadScan(entry.ScanID)
+		if err != nil || record.Status != security.ScanCompleted {
+			continue
+		}
+		snapshot := &pb.SecurityScanSnapshot{
+			ScanId:    record.ScanID,
+			AppId:     info.ID,
+			AppName:   info.Name,
+			Status:    string(record.Status),
+			Freshness: record.Freshness,
+			Coverage:  record.Coverage,
+			Counts: &pb.SecurityScanCounts{
+				Modules:             int32(record.Counts.Modules),
+				Matchable:           int32(record.Counts.Matchable),
+				Evaluated:           int32(record.Counts.Evaluated),
+				Affected:            int32(record.Counts.Affected),
+				PotentiallyAffected: int32(record.Counts.PotentiallyAffected),
+				Unknown:             int32(record.Counts.Unknown),
+				NotAffected:         int32(record.Counts.NotAffected),
+			},
+		}
+		if record.FinishedAt != nil {
+			snapshot.FinishedAtMs = record.FinishedAt.UnixMilli()
+		}
+		out = append(out, snapshot)
+	}
+	return out
+}
+
 // listSecurityScheduledApps reports every registered application with its
 // scan settings. Apps whose phelix.yaml is missing or silent are reported
 // disabled rather than guessed.
@@ -218,6 +261,12 @@ func runMonitor() error {
 	phelixgrpc.SetMatrixAuthorizer(remoteMatrixAuthorize)
 
 	phelixgrpc.SetWebhookHandler(RemoteWebhookCommand)
+
+	if err := phelixgrpc.InitializeSecurityLedger(); err != nil {
+		logs.Warning("monitor", "remote security ledger unavailable; mutating security commands will fail closed: %v", err)
+	}
+	phelixgrpc.SetSecurityHandler(RemoteSecurityCommand)
+	phelixgrpc.SecuritySnapshotProvider = securitySnapshotsForConsentingApps
 
 	c.Start()
 

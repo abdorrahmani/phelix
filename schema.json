@@ -491,6 +491,9 @@
             "fail_threshold": {
               "type": "string"
             },
+            "reporting": {
+              "type": "boolean"
+            },
             "scan_interval": {
               "type": "string"
             }

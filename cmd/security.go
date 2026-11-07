@@ -91,8 +91,8 @@ func init() {
 		RunE:          runSecurityShow,
 	}
 	securityConfig := &cobra.Command{
-		Use:           "config [AppName]",
-		Short:         "Show or edit the vulnerability scan configuration",
+		Use:   "config [AppName]",
+		Short: "Show or edit the vulnerability scan configuration",
 		Long: `Show or edit the vulnerability scan configuration.
 
 Without update flags the effective settings and schedule are shown. With

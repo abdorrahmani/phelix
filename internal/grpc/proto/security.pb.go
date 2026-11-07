@@ -27,6 +27,8 @@ type SecurityCommandOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// security_scan_detail: which scan to fetch.
 	ScanId string `protobuf:"bytes,1,opt,name=scan_id,json=scanId,proto3" json:"scan_id,omitempty"`
+	// security_advisory: which advisory identifier to inspect.
+	AdvisoryId string `protobuf:"bytes,14,opt,name=advisory_id,json=advisoryId,proto3" json:"advisory_id,omitempty"`
 	// security_history: page size (default 20, max 100).
 	Limit int32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
 	// security_history: how many records to skip.
@@ -83,6 +85,13 @@ func (*SecurityCommandOptions) Descriptor() ([]byte, []int) {
 func (x *SecurityCommandOptions) GetScanId() string {
 	if x != nil {
 		return x.ScanId
+	}
+	return ""
+}
+
+func (x *SecurityCommandOptions) GetAdvisoryId() string {
+	if x != nil {
+		return x.AdvisoryId
 	}
 	return ""
 }
@@ -1309,9 +1318,11 @@ var File_internal_grpc_proto_security_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"\n" +
-	"\"internal/grpc/proto/security.proto\x12\x06phelix\"\xf5\x02\n" +
+	"\"internal/grpc/proto/security.proto\x12\x06phelix\"\x96\x03\n" +
 	"\x16SecurityCommandOptions\x12\x17\n" +
-	"\ascan_id\x18\x01 \x01(\tR\x06scanId\x12\x14\n" +
+	"\ascan_id\x18\x01 \x01(\tR\x06scanId\x12\x1f\n" +
+	"\vadvisory_id\x18\x0e \x01(\tR\n" +
+	"advisoryId\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x05R\x06offset\x12\x1a\n" +
 	"\bseverity\x18\x04 \x01(\tR\bseverity\x12\x1c\n" +

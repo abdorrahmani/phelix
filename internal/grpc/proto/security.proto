@@ -15,6 +15,8 @@ option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 message SecurityCommandOptions {
   // security_scan_detail: which scan to fetch.
   string scan_id = 1;
+  // security_advisory: which advisory identifier to inspect.
+  string advisory_id = 14;
   // security_history: page size (default 20, max 100).
   int32 limit = 2;
   // security_history: how many records to skip.

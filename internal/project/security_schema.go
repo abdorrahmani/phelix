@@ -29,6 +29,13 @@ type VulnerabilityConfig struct {
 	// FailThreshold is the severity a finding must reach for a scan to
 	// report the dedicated security findings exit code. Defaults to high.
 	FailThreshold ScanSeverity `yaml:"fail_threshold,omitempty"`
+	// Reporting opts this application in to transmitting security data
+	// (scan results, inventory, graphs) to the Phelix backend over the
+	// monitoring stream. It defaults to false: dependency names and
+	// versions are private, and nothing leaves the host until the user
+	// says so. Remote security operations against this app are refused
+	// with SECURITY_REPORTING_DISABLED while reporting is off.
+	Reporting bool `yaml:"reporting,omitempty"`
 }
 
 // ScanInterval is a duration written in Go duration syntax ("24h",
@@ -122,6 +129,12 @@ func (v *VulnerabilityConfig) ResolvedFailThreshold() ScanSeverity {
 		return ScanSeverityDefault
 	}
 	return v.FailThreshold
+}
+
+// ResolvedReporting returns whether the app consents to remote security
+// reporting.
+func (v *VulnerabilityConfig) ResolvedReporting() bool {
+	return v.Reporting
 }
 
 // validate checks the security section. Declared values are always
