@@ -36,6 +36,23 @@ func acquireLock(path string, exclusive bool) (*os.File, error) {
 	return f, nil
 }
 
+// acquireLockTry takes the exclusive flock without blocking. A held lock
+// reports ErrScanLockHeld so schedulers can skip instead of stall.
+func acquireLockTry(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "security: open lock %s", path)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if err == syscall.EWOULDBLOCK {
+			return nil, ErrScanLockHeld
+		}
+		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "security: lock %s", path)
+	}
+	return f, nil
+}
+
 // releaseLock releases the lock taken by acquireLock.
 func releaseLock(f *os.File) error {
 	return syscall.Flock(int(f.Fd()), syscall.LOCK_UN)

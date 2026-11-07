@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"time"
@@ -79,10 +80,20 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	if err := store.SaveScan(record); err != nil {
 		return nil, err
 	}
+	fail := func(cause error) (*ScanResult, error) {
+		stamp := now()
+		record.Status = ScanFailed
+		record.FinishedAt = &stamp
+		record.Outcome = sanitizeOutcome(cause)
+		if saveErr := store.SaveScan(record); saveErr != nil {
+			return nil, cause
+		}
+		return nil, cause
+	}
 
 	eco, err := DetectEcosystem(opts.Dir)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	var inv *Inventory
 	switch eco {
@@ -92,7 +103,7 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 		inv, err = InventoryRust(opts.Dir)
 	}
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	record.Inventory = inv
 	record.SourceFiles = FingerprintFiles(opts.Dir, fingerprintNames(eco))
@@ -100,16 +111,16 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	source := NewPrefetchSource(cache, client)
 	source.Now = now
 	if err := source.Prefetch(ctx, prefetchQueries(inv)); err != nil {
-		return nil, err
+		return fail(err)
 	}
 	if source.NetworkFailed() && !source.HasData() {
-		return nil, phelixerr.New(phelixerr.CodeConnection,
-			"OSV.dev is unreachable and no cached advisory data exists for this project")
+		return fail(phelixerr.New(phelixerr.CodeConnection,
+			"OSV.dev is unreachable and no cached advisory data exists for this project"))
 	}
 
 	findings, err := MatchInventory(ctx, inv, source)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 
 	freshness := FreshnessFresh
@@ -148,42 +159,16 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	return &ScanResult{Record: record, Open: open}, nil
 }
 
-// SaveFailedScan records a failed or cancelled execution. It never touches
-// the latest index, so the last successful report survives.
-func SaveFailedScan(opts ScanOptions, cause error, now func() time.Time) (*ScanRecord, error) {
-	if opts.IdentityKey == "" {
-		return nil, nil
-	}
-	if now == nil {
-		now = time.Now
-	}
-	store := NewScanStore(opts.DataDir)
-	stamp := now()
-	record := &ScanRecord{
-		ScanID:      NewScanID(),
-		AppID:       opts.AppID,
-		AppName:     opts.AppName,
-		IdentityKey: opts.IdentityKey,
-		Trigger:     opts.Trigger,
-		Status:      ScanFailed,
-		StartedAt:   stamp,
-		FinishedAt:  &stamp,
-		Freshness:   FreshnessStale,
-		Outcome:     sanitizeOutcome(cause),
-	}
-	if err := store.SaveScan(record); err != nil {
-		return nil, err
-	}
-	if err := store.Retain(opts.IdentityKey, DefaultScanRetention); err != nil {
-		return nil, err
-	}
-	return record, nil
-}
-
-// sanitizeOutcome bounds a failure message and strips local path detail.
+// sanitizeOutcome bounds a failure message, mapping cancellation and
+// deadlines to operator language and stripping local path detail.
 func sanitizeOutcome(cause error) string {
-	if cause == nil {
+	switch {
+	case cause == nil:
 		return "scan failed"
+	case errors.Is(cause, context.Canceled):
+		return "scan cancelled"
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "scan deadline exceeded"
 	}
 	message := cause.Error()
 	const maxOutcome = 300

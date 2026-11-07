@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -359,6 +360,11 @@ func (s *ScanStore) Latest(identityKey string) (*LatestEntry, error) {
 	return nil, nil
 }
 
+// ErrScanLockHeld reports that another process holds the per-app scan
+// lock. Callers implementing a scheduling policy treat it as "skip this
+// round", never as a failure.
+var ErrScanLockHeld = errors.New("scan lock is held by another process")
+
 // ScanLock exclusively locks one app identity for the duration of a scan.
 type ScanLock struct {
 	file *os.File
@@ -371,6 +377,19 @@ func (s *ScanStore) AcquireScanLock(identityKey string) (*ScanLock, error) {
 		return nil, err
 	}
 	lock, err := acquireLock(filepath.Join(s.locksDir(), lockFileName(identityKey)), true)
+	if err != nil {
+		return nil, err
+	}
+	return &ScanLock{file: lock}, nil
+}
+
+// TryAcquireScanLock takes the per-app scan lock without blocking. When a
+// manual scan holds the lock the call fails with ErrScanLockHeld.
+func (s *ScanStore) TryAcquireScanLock(identityKey string) (*ScanLock, error) {
+	if err := s.ensureDirs(); err != nil {
+		return nil, err
+	}
+	lock, err := acquireLockTry(filepath.Join(s.locksDir(), lockFileName(identityKey)))
 	if err != nil {
 		return nil, err
 	}

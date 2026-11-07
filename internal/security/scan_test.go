@@ -170,14 +170,10 @@ func TestRunScan_RunningRecordSurvivesAsInterrupted(t *testing.T) {
 	}
 }
 
-func TestSaveFailedScan_PreservesLatest(t *testing.T) {
+func TestRunScan_FailureRecordsFailedAndKeepsLatestEmpty(t *testing.T) {
 	dataDir := t.TempDir()
 	projectDir := t.TempDir()
 	writeGoProject(t, projectDir)
-
-	server := fakeOSV(t, EcosystemGo, "example.com/vuln", "GO-2024-2001",
-		[]OSVRange{{Type: "ECOSYSTEM", Events: events("introduced", "0", "fixed", "2.0.0")}})
-	defer server.Close()
 
 	opts := ScanOptions{
 		AppName:     "myapp",
@@ -185,29 +181,21 @@ func TestSaveFailedScan_PreservesLatest(t *testing.T) {
 		Dir:         projectDir,
 		Trigger:     TriggerManual,
 		DataDir:     dataDir,
-		OSVBaseURL:  server.URL,
+		OSVBaseURL:  "http://127.0.0.1:1",
 	}
-	result, err := RunScan(context.Background(), opts)
-	if err != nil {
-		t.Fatalf("RunScan: %v", err)
+	if _, err := RunScan(context.Background(), opts); err == nil {
+		t.Fatal("unreachable source with no cache must fail")
 	}
-
-	failed, err := SaveFailedScan(opts, context.DeadlineExceeded, nil)
-	if err != nil || failed == nil {
-		t.Fatalf("SaveFailedScan: %v", err)
+	store := NewScanStore(dataDir)
+	records, err := store.ListScans("name:myapp")
+	if err != nil || len(records) != 1 {
+		t.Fatalf("exactly one record expected: %v %v", records, err)
 	}
-	if failed.Status != ScanFailed || failed.Outcome == "" {
-		t.Fatalf("failed record must carry an outcome: %+v", failed)
+	if records[0].Status != ScanFailed || records[0].Outcome == "" {
+		t.Fatalf("the execution record must be failed with an outcome: %+v", records[0])
 	}
-	entry, _ := NewScanStore(dataDir).Latest("name:myapp")
-	if entry.ScanID != result.Record.ScanID {
-		t.Fatalf("a failed scan must not replace the latest success: %+v", entry)
-	}
-}
-
-func TestSaveFailedScan_WithoutIdentityStoresNothing(t *testing.T) {
-	record, err := SaveFailedScan(ScanOptions{IdentityKey: ""}, context.Canceled, nil)
-	if err != nil || record != nil {
-		t.Fatalf("unattributable failures must not be stored: %v %v", record, err)
+	entry, err := store.Latest("name:myapp")
+	if err != nil || entry != nil {
+		t.Fatalf("a failed scan must not become the latest success: %v %v", entry, err)
 	}
 }

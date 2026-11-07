@@ -190,7 +190,6 @@ func runSecurityScan(cmd *cobra.Command, args []string) error {
 	}
 	result, err := security.RunScan(context.Background(), opts)
 	if err != nil {
-		_, _ = security.SaveFailedScan(opts, err, nil)
 		return err
 	}
 
