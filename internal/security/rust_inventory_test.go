@@ -103,6 +103,38 @@ func TestInventoryRust_WorkspaceLock(t *testing.T) {
 			t.Fatalf("member crate %q must not appear as a dependency", mod.Name)
 		}
 	}
+
+	roots := map[string]bool{}
+	for _, root := range inv.Roots {
+		roots[root] = true
+	}
+	if !roots["alpha@0.1.0"] || !roots["beta@0.1.0"] {
+		t.Fatalf("member crates are the graph roots: %v", inv.Roots)
+	}
+	edges := map[GraphEdge]bool{}
+	for _, edge := range inv.Edges {
+		edges[edge] = true
+	}
+	for _, want := range []GraphEdge{
+		{From: "alpha@0.1.0", To: "serde@1.0.200"},
+		{From: "alpha@0.1.0", To: "shared@1.0.4"},
+		{From: "alpha@0.1.0", To: "actual-crate@0.4.1"},
+		{From: "alpha@0.1.0", To: "optdep@2.0.9"},
+		{From: "alpha@0.1.0", To: "gitdep@0.5.0"},
+		{From: "alpha@0.1.0", To: "localdep@0.2.0"},
+		{From: "alpha@0.1.0", To: "testkit@0.1.2"},
+		{From: "alpha@0.1.0", To: "unixonly@0.3.1"},
+		{From: "beta@0.1.0", To: "twovers@1.0.5"},
+		{From: "beta@0.1.0", To: "serde@1.0.200"},
+	} {
+		if !edges[want] {
+			t.Fatalf("expected edge missing: %+v (have %+v)", want, inv.Edges)
+		}
+		delete(edges, want)
+	}
+	if len(edges) != 0 {
+		t.Fatalf("unexpected edges remain: %+v", edges)
+	}
 }
 
 func TestInventoryRust_NoLock(t *testing.T) {

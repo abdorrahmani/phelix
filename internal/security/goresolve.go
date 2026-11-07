@@ -39,6 +39,21 @@ type ResolvedModule struct {
 // fakes.
 type GoResolver interface {
 	ResolveModules(ctx context.Context, dir string) ([]ResolvedModule, error)
+	// ModuleGraph returns the requirement edges of the module graph as
+	// (parent, child) name@version pairs, with requirement versions that
+	// callers map onto selected versions.
+	ModuleGraph(ctx context.Context, dir string) ([]ModuleGraphEdge, error)
+}
+
+// ModuleGraphEdge is one raw requirement edge from `go mod graph`:
+// Parent@ParentVersion requires Child@ChildVersion. Versions are the
+// requirement versions, not necessarily the selected ones.
+type ModuleGraphEdge struct {
+	ParentPath    string
+	ParentVersion string
+	ChildPath     string
+	ChildVersion  string
+	ParentIsMain  bool
 }
 
 // ToolchainGoResolver resolves modules with `go list -m -json all`. The
@@ -115,6 +130,57 @@ func (r *ToolchainGoResolver) command(ctx context.Context, name string, args ...
 		return r.CommandContext(ctx, name, args...)
 	}
 	return exec.CommandContext(ctx, name, args...)
+}
+
+// ModuleGraph returns the raw requirement edges of the module graph.
+func (r *ToolchainGoResolver) ModuleGraph(ctx context.Context, dir string) ([]ModuleGraphEdge, error) {
+	if _, err := r.lookPath("go"); err != nil {
+		return nil, phelixerr.New(phelixerr.CodeToolchainNotFound,
+			"the Go toolchain is required to resolve the module graph")
+	}
+	ctx, cancel := context.WithTimeout(ctx, GoResolveTimeout)
+	defer cancel()
+
+	cmd := r.command(ctx, "go", "mod", "graph")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOPROXY=off")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		const maxDetail = 400
+		if len(detail) > maxDetail {
+			detail = detail[:maxDetail]
+		}
+		return nil, phelixerr.Newf(phelixerr.CodeToolchainNotFound,
+			"go mod graph could not resolve the module graph (%s)", detail)
+	}
+
+	var edges []ModuleGraphEdge
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		parentPath, parentVersion := splitModuleVersion(fields[0])
+		childPath, childVersion := splitModuleVersion(fields[1])
+		edges = append(edges, ModuleGraphEdge{
+			ParentPath:    parentPath,
+			ParentVersion: parentVersion,
+			ChildPath:     childPath,
+			ChildVersion:  childVersion,
+		})
+	}
+	return edges, nil
+}
+
+// splitModuleVersion splits a "path@version" graph node into its parts.
+func splitModuleVersion(node string) (string, string) {
+	if i := strings.IndexByte(node, '@'); i >= 0 {
+		return node[:i], node[i+1:]
+	}
+	return node, ""
 }
 
 // goListModule mirrors one JSON object of `go list -m -json all`.

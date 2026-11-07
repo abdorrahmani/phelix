@@ -83,6 +83,8 @@ const (
 type Module struct {
 	// Name is the Go module path or Rust crate name.
 	Name string `json:"name"`
+	// Key is the stable graph node identity (name@version).
+	Key string `json:"key,omitempty"`
 	// Version is the strongest single version evidence: the resolved
 	// version, the declared minimum, the only observed version, or empty.
 	Version string `json:"version,omitempty"`
@@ -125,6 +127,14 @@ type Module struct {
 	Notes []string `json:"notes,omitempty"`
 }
 
+// GraphEdge is one dependency relationship: the From node depends on the
+// To node. Both endpoints are module keys (name@version) that appear in
+// Roots or in Modules.
+type GraphEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 // Inventory is the dependency inventory of one project directory.
 type Inventory struct {
 	// Ecosystem of the scanned project.
@@ -134,8 +144,23 @@ type Inventory struct {
 	// Modules holds one entry per distinct dependency identity, sorted by
 	// name.
 	Modules []Module `json:"modules"`
+	// Roots lists the graph keys of the scanned project's own modules or
+	// crates: the nodes every dependency is reachable from.
+	Roots []string `json:"roots,omitempty"`
+	// Edges is the dependency graph: deduplicated parent-to-child
+	// relationships between roots and modules.
+	Edges []GraphEdge `json:"edges,omitempty"`
 	// Notes records inventory-wide caveats and limitations.
 	Notes []string `json:"notes,omitempty"`
+}
+
+// ModuleKey builds the stable graph node identity for a module or crate:
+// the name and, when known, the selected version.
+func ModuleKey(name, version string) string {
+	if version == "" {
+		return name
+	}
+	return name + "@" + version
 }
 
 // DetectEcosystem reports the dependency ecosystem of dir. A directory

@@ -13,12 +13,18 @@ import (
 
 // fakeResolver is a scripted GoResolver.
 type fakeResolver struct {
-	modules []ResolvedModule
-	err     error
+	modules  []ResolvedModule
+	err      error
+	graph    []ModuleGraphEdge
+	graphErr error
 }
 
 func (f fakeResolver) ResolveModules(ctx context.Context, dir string) ([]ResolvedModule, error) {
 	return f.modules, f.err
+}
+
+func (f fakeResolver) ModuleGraph(ctx context.Context, dir string) ([]ModuleGraphEdge, error) {
+	return f.graph, f.graphErr
 }
 
 func writeGoFixture(t *testing.T, goMod, goSum string) string {
@@ -210,5 +216,69 @@ func TestToolchainGoResolver_RealToolchain(t *testing.T) {
 		if mod.Path == "golang.org/x/mod" && mod.Version == "" && !mod.LocalReplace {
 			t.Fatalf("resolved modules carry selected versions: %+v", mod)
 		}
+	}
+}
+
+// TestInventoryGoWithResolution_GraphProjection pins the graph contract:
+// requirement edges are projected onto the selected versions, the roots
+// are the project's own modules, and duplicates collapse.
+func TestInventoryGoWithResolution_GraphProjection(t *testing.T) {
+	dir := writeGoFixture(t,
+		"module example.com/app\n\ngo 1.24\n\nrequire example.com/a v1.0.0\n", "")
+	resolver := fakeResolver{
+		modules: []ResolvedModule{
+			{Path: "example.com/a", Version: "v1.2.0", Indirect: false},
+			{Path: "example.com/b", Version: "v2.0.1", Indirect: true},
+		},
+		graph: []ModuleGraphEdge{
+			{ParentPath: "example.com/app", ChildPath: "example.com/a", ChildVersion: "v1.0.0"},
+			{ParentPath: "example.com/app", ChildPath: "example.com/a", ChildVersion: "v1.0.0"},
+			{ParentPath: "example.com/a", ParentVersion: "v1.0.0", ChildPath: "example.com/b", ChildVersion: "v2.0.0"},
+		},
+	}
+	inv, err := InventoryGoWithResolution(context.Background(), dir, resolver)
+	if err != nil {
+		t.Fatalf("InventoryGoWithResolution: %v", err)
+	}
+	if len(inv.Roots) != 1 || inv.Roots[0] != "example.com/app" {
+		t.Fatalf("the main module is the graph root: %v", inv.Roots)
+	}
+	want := map[GraphEdge]bool{
+		{From: "example.com/app", To: "example.com/a@v1.2.0"}:      true,
+		{From: "example.com/a@v1.2.0", To: "example.com/b@v2.0.1"}: true,
+	}
+	if len(inv.Edges) != len(want) {
+		t.Fatalf("edges must be deduplicated and projected onto selected versions: %+v", inv.Edges)
+	}
+	for _, edge := range inv.Edges {
+		if !want[edge] {
+			t.Fatalf("unexpected edge %+v", edge)
+		}
+	}
+}
+
+// TestInventoryGoWithResolution_GraphUnavailable degrades gracefully: a
+// module-graph failure keeps the resolved inventory and says the graph is
+// missing.
+func TestInventoryGoWithResolution_GraphUnavailable(t *testing.T) {
+	dir := writeGoFixture(t,
+		"module example.com/app\n\ngo 1.24\n\nrequire example.com/a v1.0.0\n", "")
+	resolver := fakeResolver{
+		modules:  []ResolvedModule{{Path: "example.com/a", Version: "v1.2.0", Indirect: false}},
+		graphErr: errors.New("go mod graph failed"),
+	}
+	inv, err := InventoryGoWithResolution(context.Background(), dir, resolver)
+	if err != nil {
+		t.Fatalf("a graph failure must not fail the scan: %v", err)
+	}
+	if len(inv.Edges) != 0 {
+		t.Fatalf("no edges without a graph: %+v", inv.Edges)
+	}
+	joined := ""
+	for _, note := range inv.Notes {
+		joined += note + "\n"
+	}
+	if !strings.Contains(joined, "dependency edges could not be resolved") {
+		t.Fatalf("the limitation must be stated: %v", inv.Notes)
 	}
 }

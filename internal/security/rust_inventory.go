@@ -131,7 +131,8 @@ func loadCargoLock(dir string) (*cargoLockFile, error) {
 	return &lock, nil
 }
 
-// rustLockInventory builds the inventory from a parsed Cargo.lock.
+// rustLockInventory builds the inventory from a parsed Cargo.lock,
+// including the full dependency graph the lockfile records.
 func rustLockInventory(direct map[string]*cargoDirectInfo, memberCrateNames map[string]bool, lock *cargoLockFile) (*Inventory, error) {
 	locked := map[string][]int{}
 	for i, pkg := range lock.Package {
@@ -139,6 +140,7 @@ func rustLockInventory(direct map[string]*cargoDirectInfo, memberCrateNames map[
 	}
 
 	reachable := cargoLockReachable(lock, locked, memberCrateNames)
+	roots := cargoLockRoots(lock, memberCrateNames)
 
 	modules := []Module{}
 	for i, pkg := range lock.Package {
@@ -148,6 +150,7 @@ func rustLockInventory(direct map[string]*cargoDirectInfo, memberCrateNames map[
 		kind, matchable := cargoSourceKind(pkg.Source)
 		mod := Module{
 			Name:         pkg.Name,
+			Key:          ModuleKey(pkg.Name, pkg.Version),
 			Version:      pkg.Version,
 			Resolved:     true,
 			ResolvedFrom: "cargo.lock",
@@ -203,9 +206,55 @@ func rustLockInventory(direct map[string]*cargoDirectInfo, memberCrateNames map[
 		Ecosystem: EcosystemRust,
 		Level:     InventoryResolved,
 		Modules:   modules,
+		Roots:     roots,
+		Edges:     cargoLockEdges(lock, locked, roots),
 	}
 	inv.Notes = append(inv.Notes, "versions come from Cargo.lock, the resolved record of what a build compiles")
 	return inv, nil
+}
+
+// cargoLockRoots lists the graph keys of the workspace's own crates.
+func cargoLockRoots(lock *cargoLockFile, memberCrateNames map[string]bool) []string {
+	var roots []string
+	for _, pkg := range lock.Package {
+		if pkg.Source == "" && memberCrateNames[pkg.Name] {
+			roots = append(roots, ModuleKey(pkg.Name, pkg.Version))
+		}
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+// cargoLockEdges projects the lockfile's recorded dependency relationships
+// onto resolved package keys, seeded at the workspace roots.
+func cargoLockEdges(lock *cargoLockFile, locked map[string][]int, roots []string) []GraphEdge {
+	keyByIndex := map[int]string{}
+	for i, pkg := range lock.Package {
+		keyByIndex[i] = ModuleKey(pkg.Name, pkg.Version)
+	}
+	rootSet := map[string]bool{}
+	for _, root := range roots {
+		rootSet[root] = true
+	}
+	seen := map[GraphEdge]bool{}
+	var edges []GraphEdge
+	for i, pkg := range lock.Package {
+		from := keyByIndex[i]
+		if !rootSet[from] {
+			continue
+		}
+		for _, edge := range pkg.Dependencies {
+			for _, target := range cargoEdgeTargets(edge, lock, locked) {
+				pair := GraphEdge{From: from, To: keyByIndex[target]}
+				if seen[pair] || pair.From == pair.To {
+					continue
+				}
+				seen[pair] = true
+				edges = append(edges, pair)
+			}
+		}
+	}
+	return edges
 }
 
 // rustManifestOnlyInventory builds the degraded inventory used when

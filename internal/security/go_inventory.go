@@ -125,7 +125,8 @@ func inventoryGoFallbackNotes(cause error) []string {
 // manifest evidence, with the limitation stated in the inventory notes.
 // With resolution, every module carries the version the build actually
 // selects, and stale go.sum checksum entries can no longer produce
-// findings.
+// findings. The dependency graph is persisted when the module graph is
+// available.
 func InventoryGoWithResolution(ctx context.Context, dir string, resolver GoResolver) (*Inventory, error) {
 	resolved, err := resolver.ResolveModules(ctx, dir)
 	if err != nil {
@@ -134,15 +135,50 @@ func InventoryGoWithResolution(ctx context.Context, dir string, resolver GoResol
 			return nil, invErr
 		}
 		inv.Notes = append(inventoryGoFallbackNotes(err), inv.Notes...)
+		markUnresolvedGraph(inv, dir)
 		return inv, nil
 	}
-	return inventoryGoFromResolution(dir, resolved)
+	graphEdges, graphErr := resolver.ModuleGraph(ctx, dir)
+	return inventoryGoFromResolution(dir, resolved, graphEdges, graphErr)
+}
+
+// markUnresolvedGraph states plainly that a fallback inventory carries no
+// dependency graph.
+func markUnresolvedGraph(inv *Inventory, dir string) {
+	for i := range inv.Modules {
+		inv.Modules[i].Key = ModuleKey(inv.Modules[i].Name, inv.Modules[i].Version)
+	}
+	inv.Roots = goRootsFromDisk(dir)
+	inv.Notes = append(inv.Notes, "dependency edges require module resolution; the graph is not recorded in this inventory")
+}
+
+// goRootsFromDisk lists the scanned project's own module paths.
+func goRootsFromDisk(dir string) []string {
+	ws, err := loadGoWorkspace(dir)
+	if err != nil {
+		return nil
+	}
+	var roots []string
+	for _, member := range ws.members {
+		raw, err := os.ReadFile(filepath.Join(member.dir, "go.mod"))
+		if err != nil {
+			continue
+		}
+		mod, err := modfile.Parse(filepath.Join(member.rel, "go.mod"), raw, nil)
+		if err != nil || mod.Module == nil {
+			continue
+		}
+		roots = append(roots, mod.Module.Mod.Path)
+	}
+	return roots
 }
 
 // inventoryGoFromResolution builds the authoritative inventory: one entry
 // per selected module, keyed by the effective (post-replace) identity.
 // go.sum evidence is attached for diagnostics but never drives matching.
-func inventoryGoFromResolution(dir string, resolved []ResolvedModule) (*Inventory, error) {
+// When the module graph is available the requirement edges are projected
+// onto the selected versions and persisted.
+func inventoryGoFromResolution(dir string, resolved []ResolvedModule, graphEdges []ModuleGraphEdge, graphErr error) (*Inventory, error) {
 	ws, err := loadGoWorkspace(dir)
 	if err != nil {
 		return nil, err
@@ -170,6 +206,7 @@ func inventoryGoFromResolution(dir string, resolved []ResolvedModule) (*Inventor
 		seen[mod.Path] = true
 		entry := Module{
 			Name:       mod.Path,
+			Key:        ModuleKey(mod.Path, mod.Version),
 			Version:    mod.Version,
 			Matchable:  true,
 			Reachable:  true,
@@ -209,15 +246,59 @@ func inventoryGoFromResolution(dir string, resolved []ResolvedModule) (*Inventor
 	}
 	sort.Slice(modules, func(i, j int) bool { return modules[i].Name < modules[j].Name })
 
-	return &Inventory{
+	inv := &Inventory{
 		Ecosystem: EcosystemGo,
 		Level:     InventoryResolved,
 		Modules:   modules,
+		Roots:     goRootsFromDisk(dir),
 		Notes: []string{
 			"versions come from the Go module graph as the toolchain selects it (go list -m, proxy disabled)",
 			"go.sum checksums are recorded as evidence only; historical entries cannot produce findings",
 		},
-	}, nil
+	}
+	if graphErr != nil {
+		inv.Notes = append(inv.Notes, "dependency edges could not be resolved: "+sanitizeOutcome(graphErr))
+		return inv, nil
+	}
+	inv.Edges = projectGoGraphEdges(inv.Roots, modules, graphEdges)
+	return inv, nil
+}
+
+// projectGoGraphEdges maps raw requirement edges onto selected versions:
+// a requirement edge names the version a parent requires, while the graph
+// persists the version the build actually selects for the child.
+func projectGoGraphEdges(roots []string, modules []Module, raw []ModuleGraphEdge) []GraphEdge {
+	selected := map[string]string{}
+	for _, mod := range modules {
+		selected[mod.Name] = mod.Key
+	}
+	rootSet := map[string]bool{}
+	for _, root := range roots {
+		rootSet[root] = true
+	}
+	seen := map[GraphEdge]bool{}
+	var edges []GraphEdge
+	for _, edge := range raw {
+		from, ok := selected[edge.ParentPath]
+		switch {
+		case ok:
+		case rootSet[edge.ParentPath]:
+			from = edge.ParentPath
+		default:
+			continue
+		}
+		to, ok := selected[edge.ChildPath]
+		if !ok {
+			continue
+		}
+		pair := GraphEdge{From: from, To: to}
+		if seen[pair] {
+			continue
+		}
+		seen[pair] = true
+		edges = append(edges, pair)
+	}
+	return edges
 }
 
 // goManifestEvidence collects direct/indirect declarations and the
