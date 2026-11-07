@@ -49,6 +49,7 @@ const (
 	ExitRollback       = 22 // rollback failure
 	ExitRollbackVerify = 23 // rollback executed, verification failed/cancelled
 	ExitAutoRollback   = 24 // deployment failed AND automatic rollback failed (state degraded)
+	ExitSecurity       = 25 // dependency vulnerability scan found findings at or above the threshold
 	ExitNetwork        = 30 // network / connection failure
 	ExitConfig         = 40 // configuration failure
 	ExitDocker         = 50 // docker failure
@@ -152,6 +153,8 @@ func ExitCodeFor(err error) int {
 		return ExitConfig
 	case phelixerr.CodeDocker, phelixerr.CodeDockerDaemonUnavailable:
 		return ExitDocker
+	case phelixerr.CodeSecurityFindings:
+		return ExitSecurity
 	case phelixerr.CodeTimeout:
 		return ExitTimeout
 	case phelixerr.CodeEncryption:
@@ -184,6 +187,8 @@ func hintFor(err error) string {
 		return "Re-run:\n  phelix update\nOr reinstall with the one-line installer:\n  curl -fsSL https://phelix.anophel.com/install.sh | bash"
 	case phelixerr.CodeDocker, phelixerr.CodeDockerDaemonUnavailable:
 		return "Make sure Docker is installed and running, then try again."
+	case phelixerr.CodeSecurityFindings:
+		return "Review the findings:\n  phelix security report\nThe gate threshold is security.vulnerability.fail_threshold in phelix.yaml"
 	// Authorization hints point at the authorization boundary, never at
 	// `phelix auth login`: the backend session has nothing to do with whether
 	// this host permits an execution.

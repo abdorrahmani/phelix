@@ -830,3 +830,19 @@ func TestListDecisions_SkipsCorruptLines(t *testing.T) {
 		t.Fatalf("recs=%d skipped=%d, want 1 and 1", len(recs), skipped)
 	}
 }
+
+func TestValidateAcceptsSecurityAction(t *testing.T) {
+	req := Request{
+		Actor:  Actor{Type: CallerCLI, Authenticated: false},
+		Action: ActionSecurity,
+		Target: Target{App: "myapp", AppID: "11111111-1111-4111-8111-111111111111"},
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("the security action must be authorizable: %v", err)
+	}
+	bad := req
+	bad.Action = "security_scan"
+	if err := bad.Validate(); err == nil {
+		t.Fatal("only the named actions are authorizable")
+	}
+}

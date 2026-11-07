@@ -8,12 +8,15 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
+	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/security"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/abdorrahmani/phelix/internal/supervisor"
 	"github.com/spf13/cobra"
@@ -42,6 +45,115 @@ or run this command directly to keep it attached to a terminal.`,
 	RunE: func(cobraCmd *cobra.Command, args []string) error {
 		return runMonitor()
 	},
+}
+
+// runSecurityScheduler drives scheduled dependency vulnerability scans for
+// apps whose phelix.yaml enables them. Errors and completions are logged
+// without ever emitting dependency inventory details.
+func runSecurityScheduler(ctx context.Context) {
+	scheduler := security.NewScheduler(security.NewScanStore(server.DataDir()))
+	scheduler.ListApps = listSecurityScheduledApps
+	scheduler.Scan = func(scanCtx context.Context, sched security.ScheduledApp) error {
+		opts := security.ScanOptions{
+			AppID:       sched.AppID,
+			AppName:     sched.AppName,
+			IdentityKey: sched.IdentityKey,
+			Dir:         sched.Dir,
+			Trigger:     security.TriggerScheduled,
+			DataDir:     server.DataDir(),
+			OSVBaseURL:  security.OSVBaseURL(),
+		}
+		_, err := security.RunScan(scanCtx, opts)
+		return err
+	}
+	scheduler.Log = func(level, format string, args ...any) {
+		if level == "warning" {
+			logs.Warning("security", format, args...)
+			return
+		}
+		logs.Info("security", format, args...)
+	}
+	scheduler.Run(ctx)
+}
+
+// remoteSecurityAuthorize gates remote security mutations through the
+// host authorization boundary. The application identifier resolves to its
+// stable id before the decision so policies can target apps precisely.
+func remoteSecurityAuthorize(req *pb.MonitorCommandRequest) error {
+	info, err := GetAppInfo(req.GetAppName())
+	if err != nil {
+		return err
+	}
+	return authorizeDirectExecution(authz.ActionSecurity, info.Name, info.ID)
+}
+
+// securitySnapshotsForConsentingApps builds the latest completed scan
+// summary for every application that opted in to security reporting.
+func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
+	var out []*pb.SecurityScanSnapshot
+	for _, info := range app.Manager.ListApplications() {
+		cfg, err := project.Load(info.Directory)
+		if err != nil || cfg.Security == nil || cfg.Security.Vulnerability == nil || !cfg.Security.Vulnerability.ResolvedReporting() {
+			continue
+		}
+		store := security.NewScanStore(server.DataDir())
+		entry, err := store.Latest(info.ID)
+		if err != nil || entry == nil || entry.ScanID == "" {
+			continue
+		}
+		record, err := store.LoadScan(entry.ScanID)
+		if err != nil || record.Status != security.ScanCompleted {
+			continue
+		}
+		snapshot := &pb.SecurityScanSnapshot{
+			ScanId:    record.ScanID,
+			AppId:     info.ID,
+			AppName:   info.Name,
+			Status:    string(record.Status),
+			Freshness: record.Freshness,
+			Coverage:  record.Coverage,
+			Counts: &pb.SecurityScanCounts{
+				Modules:             int32(record.Counts.Modules),
+				Matchable:           int32(record.Counts.Matchable),
+				Evaluated:           int32(record.Counts.Evaluated),
+				Affected:            int32(record.Counts.Affected),
+				PotentiallyAffected: int32(record.Counts.PotentiallyAffected),
+				Unknown:             int32(record.Counts.Unknown),
+				NotAffected:         int32(record.Counts.NotAffected),
+			},
+		}
+		if record.FinishedAt != nil {
+			snapshot.FinishedAtMs = record.FinishedAt.UnixMilli()
+		}
+		out = append(out, snapshot)
+	}
+	return out
+}
+
+// listSecurityScheduledApps reports every registered application with its
+// scan settings. Apps whose phelix.yaml is missing or silent are reported
+// disabled rather than guessed.
+func listSecurityScheduledApps() []security.ScheduledApp {
+	apps := app.Manager.ListApplications()
+	out := make([]security.ScheduledApp, 0, len(apps))
+	for _, info := range apps {
+		entry := security.ScheduledApp{
+			AppID:       info.ID,
+			AppName:     info.Name,
+			IdentityKey: info.ID,
+			Dir:         info.Directory,
+			Interval:    project.ScanIntervalDefault,
+		}
+		if cfg, err := project.Load(info.Directory); err == nil && cfg.Security != nil && cfg.Security.Vulnerability != nil {
+			v := cfg.Security.Vulnerability
+			entry.Enabled = v.Enabled
+			if interval, err := v.ResolvedScanInterval(); err == nil {
+				entry.Interval = interval
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // runMonitor is the daemon entry point. It never returns on its own — it blocks
@@ -140,6 +252,14 @@ func runMonitor() error {
 		supervisor.New().Run(supervisorCtx)
 	}()
 
+	securityCtx, cancelSecurity := context.WithCancel(context.Background())
+	defer cancelSecurity()
+	securityDone := make(chan struct{})
+	go func() {
+		defer close(securityDone)
+		runSecurityScheduler(securityCtx)
+	}()
+
 	monitor.SetRollbackHandler(func(payload monitor.CommandPayload) error {
 		return RemoteRollback(payload)
 	})
@@ -153,6 +273,13 @@ func runMonitor() error {
 	phelixgrpc.SetMatrixAuthorizer(remoteMatrixAuthorize)
 
 	phelixgrpc.SetWebhookHandler(RemoteWebhookCommand)
+
+	if err := phelixgrpc.InitializeSecurityLedger(); err != nil {
+		logs.Warning("monitor", "remote security ledger unavailable; mutating security commands will fail closed: %v", err)
+	}
+	phelixgrpc.SetSecurityHandler(RemoteSecurityCommand)
+	phelixgrpc.SetSecurityAuthorizer(remoteSecurityAuthorize)
+	phelixgrpc.SecuritySnapshotProvider = securitySnapshotsForConsentingApps
 
 	c.Start()
 
@@ -219,6 +346,13 @@ func runMonitor() error {
 	<-sigChan
 
 	logs.Info("monitor", "shutdown signal received, stopping...")
+
+	cancelSecurity()
+	select {
+	case <-securityDone:
+	case <-time.After(10 * time.Second):
+		logs.Warning("security", "scheduler did not settle within the shutdown window")
+	}
 
 	cancelMatrixSessions()
 	phelixgrpc.WaitPendingMatrixCommands(phelixgrpc.MatrixCommandSettleTimeout())

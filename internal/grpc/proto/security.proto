@@ -1,0 +1,187 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// Security remote-management contract. All payloads carry data the local
+// scanner already persists; nothing here invents state. Reporting consent
+// (security.vulnerability.reporting.enabled) gates every security
+// command: a disabled app answers SECURITY_REPORTING_DISABLED instead of
+// disclosing inventory.
+
+// SecurityCommandOptions carries the parameters of one security command
+// (MonitorCommandRequest.security = 15).
+message SecurityCommandOptions {
+  // security_scan_detail: which scan to fetch.
+  string scan_id = 1;
+  // security_advisory: which advisory identifier to inspect.
+  string advisory_id = 14;
+  // security_history: page size (default 20, max 100).
+  int32 limit = 2;
+  // security_history: how many records to skip.
+  int32 offset = 3;
+  // Finding filters shared by report/history/detail; empty means no
+  // filtering. severity: low|medium|high|critical. ecosystem: go|rust.
+  // state: affected|potentially_affected|unknown. package: name prefix.
+  string severity = 4;
+  string ecosystem = 5;
+  string state = 6;
+  string package = 7;
+  // security_report / security_scan_detail: include the dependency graph.
+  bool include_graph = 8;
+  // security_config_set: the fields to write. set_enabled switches on the
+  // enabled field; an unset interval or threshold keeps the current value.
+  bool set_enabled = 10;
+  bool enabled = 11;
+  string scan_interval = 12;
+  string fail_threshold = 13;
+  // security_scan_run: idempotency is provided by the request-key ledger
+  // (request_id on the command request); no extra field is required.
+}
+
+// SecurityModule is one dependency node of a scan's inventory.
+message SecurityModule {
+  string name = 1;
+  string key = 2;
+  string version = 3;
+  string requirement = 4;
+  bool direct = 5;
+  bool resolved = 6;
+  string resolved_from = 7;
+  string confidence = 8;
+  string source_kind = 9;
+  string source_detail = 10;
+  bool matchable = 11;
+  bool reachable = 12;
+  repeated string observed_versions = 13;
+  string replaced_from = 14;
+  bool dev = 15;
+  bool optional = 16;
+}
+
+// SecurityGraphEdge is one dependency relationship: from depends on to.
+message SecurityGraphEdge {
+  string from = 1;
+  string to = 2;
+}
+
+// SecurityGraph is a scan's dependency graph: the project's own crates or
+// modules as roots, every dependency node, and the edges between them.
+message SecurityGraph {
+  repeated string roots = 1;
+  repeated SecurityModule nodes = 2;
+  repeated SecurityGraphEdge edges = 3;
+}
+
+// SecurityFinding is one advisory evaluated against one dependency, with
+// the provenance needed to audit the disposition.
+message SecurityFinding {
+  string advisory_id = 1;
+  repeated string aliases = 2;
+  string package = 3;
+  string ecosystem = 4;
+  string version = 5;
+  bool version_resolved = 6;
+  bool direct = 7;
+  bool dev = 8;
+  bool optional = 9;
+  string state = 10;
+  string reason = 11;
+  string fixed_version = 12;
+  repeated string ranges = 13;
+  string severity = 14;
+  string severity_source = 15;
+  repeated string cvss_vectors = 16;
+  string summary = 17;
+  string url = 18;
+  string reachability = 19;
+  string confidence = 20;
+}
+
+// SecurityScanCounts summarizes one scan's evaluation coverage.
+message SecurityScanCounts {
+  int32 modules = 1;
+  int32 matchable = 2;
+  int32 evaluated = 3;
+  int32 affected = 4;
+  int32 potentially_affected = 5;
+  int32 unknown = 6;
+  int32 not_affected = 7;
+}
+
+// SecurityScanRecord is one persisted scan. Findings are capped at 200
+// per message with findings_truncated set beyond that; the full record
+// stays in the local store. The graph rides only when the command asked
+// for it.
+message SecurityScanRecord {
+  string scan_id = 1;
+  string app_id = 2;
+  string app_name = 3;
+  string status = 4;
+  string trigger = 5;
+  int64 started_at_ms = 6;
+  int64 finished_at_ms = 7;
+  string freshness = 8;
+  string coverage = 9;
+  string outcome = 10;
+  string phelix_version = 11;
+  repeated string warnings = 12;
+  SecurityScanCounts counts = 13;
+  repeated SecurityFinding findings = 14;
+  bool findings_truncated = 15;
+  SecurityGraph graph = 16;
+}
+
+// SecurityScanList is a page of scan history, newest first.
+message SecurityScanList {
+  repeated SecurityScanRecord scans = 1;
+  int32 total = 2;
+  int32 offset = 3;
+  bool has_more = 4;
+}
+
+// SecurityAdvisory is a bounded advisory detail view. The backend fetches
+// full advisory detail from OSV.dev by id; the agent relays only what it
+// already caches.
+message SecurityAdvisory {
+  string id = 1;
+  repeated string aliases = 2;
+  string summary = 3;
+  string severity = 4;
+  repeated string cvss_vectors = 5;
+  repeated string affected_packages = 6;
+  repeated string references = 7;
+  string modified = 8;
+  bool from_cache = 9;
+}
+
+// SecurityConfigState is the effective configuration plus scheduler
+// status for one application.
+message SecurityConfigState {
+  string app_id = 1;
+  string app_name = 2;
+  bool enabled = 3;
+  string scan_interval = 4;
+  string fail_threshold = 5;
+  string reporting = 6;
+  string last_scan_id = 7;
+  int64 last_scan_at_ms = 8;
+  int64 next_scan_at_ms = 9;
+  bool has_next_scan = 10;
+}
+
+// SecurityScanSnapshot rides MonitorStream as an idempotent statement of
+// an app's latest completed scan (MonitorEvent.security_scan = 23). It is
+// summary-level by design: findings and graphs travel through explicit
+// queries, and only when reporting consent is enabled.
+message SecurityScanSnapshot {
+  string scan_id = 1;
+  string app_id = 2;
+  string app_name = 3;
+  string status = 4;
+  int64 finished_at_ms = 5;
+  string freshness = 6;
+  string coverage = 7;
+  SecurityScanCounts counts = 8;
+}

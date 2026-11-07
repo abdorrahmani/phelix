@@ -390,6 +390,7 @@ func (c *Client) runMonitorStream() error {
 	ledger := rollbackResults
 	matrixLedger := matrixResults
 	webhookLedger := webhookResults
+	securityLedger := securityResults
 	executor := monitorStream.commandExecutor
 	if err := ledger.initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote rollback ledger unavailable; rollback commands will fail closed: %v", err)
@@ -405,6 +406,11 @@ func (c *Client) runMonitorStream() error {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote webhook ledger unavailable; mutating webhook commands will fail closed: %v", err)
 	} else {
 		c.replayPendingWebhookResults(webhookLedger)
+	}
+	if err := securityLedger.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote security ledger unavailable; mutating security commands will fail closed: %v", err)
+	} else {
+		c.replayPendingSecurityResults(securityLedger)
 	}
 	if err := workerResults.initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote worker ledger unavailable; worker commands will fail closed: %v", err)
@@ -424,9 +430,11 @@ func (c *Client) runMonitorStream() error {
 
 	c.sendVersionSyncs()
 
+	c.sendSecuritySnapshots()
+
 	recvErrCh := make(chan error, 1)
 	go func() {
-		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger, matrixLedger, webhookLedger)
+		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger, matrixLedger, webhookLedger, securityLedger)
 	}()
 
 	ticker := time.NewTicker(monitorMetricsInterval)
@@ -459,6 +467,7 @@ func (c *Client) runMonitorStream() error {
 			c.sendDeploymentSnapshots()
 			c.sendMatrixSnapshots()
 			c.sendVersionSyncs()
+			c.sendSecuritySnapshots()
 		case <-serverTicker.C:
 			if monitorStream.isPaused() {
 				continue
@@ -475,7 +484,7 @@ func (c *Client) runMonitorStream() error {
 
 // monitorRecvLoop reads MonitorControl messages pushed by the backend
 // (remote commands, keepalive pings) until the stream ends.
-func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger, matrixLedger *rollbackLedger, webhookLedger *rollbackLedger) error {
+func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger, matrixLedger *rollbackLedger, webhookLedger *rollbackLedger, securityLedger *rollbackLedger) error {
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -495,6 +504,11 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 			if isWebhookCommand(p.Command.GetType()) {
 				c.handleWebhookCommand(p.Command, webhookLedger)
+				continue
+			}
+
+			if isSecurityCommand(p.Command.GetType()) {
+				c.handleSecurityCommand(p.Command, securityLedger)
 				continue
 			}
 

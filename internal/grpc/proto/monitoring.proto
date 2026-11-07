@@ -4,6 +4,7 @@ package phelix;
 
 option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 
+import "internal/grpc/proto/security.proto";
 import "internal/grpc/proto/ping.proto";
 import "internal/grpc/proto/deployment.proto";
 import "internal/grpc/proto/health.proto";
@@ -425,6 +426,9 @@ message MonitorCommandRequest {
   // MonitorLogEntry.replica use. Empty on commands that target the whole app,
   // and rejected when set on one.
   string replica = 14;
+  // Security remote-management commands (security_*). Present for every
+  // security_* command type; ignored otherwise.
+  SecurityCommandOptions security = 15;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -485,6 +489,11 @@ message MonitorCommandResult {
   // replica is the worker replica slot a worker_restart_replica result
   // operated on. Empty on every other command.
   string replica = 18;
+  // Security command payloads. Exactly one is populated per command.
+  SecurityScanRecord security_scan_record = 19;
+  SecurityScanList security_scan_list = 20;
+  SecurityConfigState security_config = 21;
+  SecurityAdvisory security_advisory = 22;
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the
@@ -544,6 +553,9 @@ message MonitorEvent {
     // per-line log_entry events, which the agent keeps sending until the
     // backend declares support for batching.
     MonitorLogBatch log_batch = 22;
+    // Idempotent statement of an app's latest completed scan; pushed
+    // only when the app has reporting consent enabled.
+    SecurityScanSnapshot security_scan = 23;
   }
 }
 

@@ -23,6 +23,7 @@ import (
 //	build_report       → build_reporter.go
 //	webhook_management → webhook_command.go
 //	worker_lifecycle   → worker_command.go
+//	security_scan      → security_command.go
 //
 // Adding a remote feature means adding its RegisterCapability call AND its
 // entry here — this list is the contract the backend gates on.
@@ -33,6 +34,7 @@ var expectedBuildCapabilities = []string{
 	CapabilityLogBatch,
 	CapabilityMonitoring,
 	CapabilityRollback,
+	CapabilitySecurityScan,
 	CapabilityWebhookManagement,
 	CapabilityWorkerLifecycle,
 }

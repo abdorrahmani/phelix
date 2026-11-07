@@ -60,6 +60,14 @@ const (
 	// own terms. Only the backend-issued (in-daemon) matrix path gates on it;
 	// the local CLI matrix build stays ungated like `build`.
 	ActionMatrix = "matrix"
+	// ActionSecurity authorizes a remote security mutation (a scan run or
+	// a configuration change arriving over the monitoring stream). It is
+	// distinct from rebuild/rollback because a scan does not deploy: it
+	// produces evidence. Policies may allow or deny it on its own terms,
+	// and the gate follows the same planless rule as the other direct
+	// mutations: in legacy local mode it is ungated, under enforced
+	// authorization it is denied.
+	ActionSecurity = "security"
 )
 
 // Decision effects. This is the complete vocabulary; there is no fourth
@@ -188,7 +196,7 @@ func (r Request) Validate() error {
 		return err
 	}
 	switch r.Action {
-	case ActionRebuild, ActionRollback, ActionMatrix:
+	case ActionRebuild, ActionRollback, ActionMatrix, ActionSecurity:
 	default:
 		return invalidf("unknown authorizable action %q", r.Action)
 	}

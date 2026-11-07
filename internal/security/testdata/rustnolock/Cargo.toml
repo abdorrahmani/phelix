@@ -1,0 +1,7 @@
+[package]
+name = "solo"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+gitdep = { git = "https://example.com/x" }

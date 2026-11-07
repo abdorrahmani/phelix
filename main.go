@@ -29,9 +29,9 @@ func main() {
 	healthDaemon = health.InitGlobalDaemon()
 
 	rootCmd := &cobra.Command{
-		Use:     "phelix",
-		Short:   "Phelix - Go/Rust Application Manager",
-		Version: version.Version,
+		Use:           "phelix",
+		Short:         "Phelix - Go/Rust Application Manager",
+		Version:       version.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -66,6 +66,7 @@ func main() {
 	rootCmd.AddCommand(cmd.RemoveCmd)
 	rootCmd.AddCommand(cmd.EnvCmd)
 	rootCmd.AddCommand(cmd.SecretsCmd)
+	rootCmd.AddCommand(cmd.SecurityCmd)
 	rootCmd.AddCommand(cmd.HealthCmd)
 	rootCmd.AddCommand(cmd.ProxyCmd)
 	rootCmd.AddCommand(cmd.DockerizeCmd)
@@ -86,7 +87,6 @@ func main() {
 	rootCmd.AddCommand(cmd.WizardCmd)
 	rootCmd.AddCommand(cmd.BuildReportCmd)
 	rootCmd.SetVersionTemplate("Phelix CLI {{.Version}}\n")
-
 
 	rootCmd.PersistentFlags().BoolVar(&cmd.Debug, "debug", false, "Show verbose error details and debug output")
 

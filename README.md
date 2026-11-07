@@ -47,6 +47,10 @@ retries, per-artifact SHA-256, and release manifests.
   or restart (never baked into builds), changed without a rebuild, applied by
   a strategy-aware restart, and never printed. See
   [Secrets](docs/guides/secrets.md).
+- **Dependency vulnerability scanning**: local, offline-capable scanning of
+  Go and Rust dependencies against OSV.dev, with conservative findings,
+  scan history, an advisory cache, opt-in scheduled scans, and a dedicated
+  CI exit code. See [Security](docs/guides/security.md).
 - **Per-instance resource limits**: CPU/memory via cgroups v2 (Linux).
 - **Git webhook deploys**: HMAC-authenticated push webhooks deploy the exact
 pushed commit through the normal rebuild pipeline.

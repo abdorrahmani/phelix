@@ -18,6 +18,85 @@ and contracts that cover each area in depth.
   server binds to `127.0.0.1` unless you explicitly pass `--host`.
 - When not logged in, no app data, metrics, or events leave your machine.
 
+## Dependency vulnerability scanning
+
+`phelix security` inventories the Go and Rust dependencies of an
+application and evaluates them against OSV.dev advisories, fully locally:
+dependency files are parsed in place, nothing is built, and nothing is
+downloaded. Go dependency versions are resolved authoritatively with
+`go list -m` (proxy disabled: resolution uses the local module cache only,
+so a warm cache from normal builds answers offline); without a usable
+toolchain the scan degrades to manifest evidence and says so. The advisory
+query sends ecosystem and package names to OSV.dev; dependency data
+reaches the Phelix backend only after you opt in (below).
+
+Findings carry their evidence class: a dependency is `affected` when its
+resolved version is established (Cargo.lock, a pinned replace directive,
+or the resolved Go module graph) and lies inside the affected range;
+manifest minimums report `potentially_affected` with the reasoning
+attached; anything that cannot be decided reports `unknown` rather than
+silently clearing. Reachability is always `unknown`. A scan exits **25**
+when findings reach the configured threshold, which makes the command a
+usable CI gate; an offline scan that could not check every package reports
+`advisory_coverage: partial` and never presents itself as clean.
+
+Commands:
+
+```bash
+phelix security scan [app]      # scan; progress renders on stderr, --json stays pure
+phelix security report [app]    # latest completed scan, --previous for the diff
+phelix security history [app]   # recorded scans with status and counts
+phelix security show <ID>       # one advisory, cache first
+phelix security config [app]    # show; --set-* flags edit phelix.yaml safely
+```
+
+Run without arguments in a terminal, the commands guide you: `phelix
+security` opens a menu, and `scan`, `report`, `history`, `show`, and
+`config` ask for a target application. Scripts and CI keep the exact
+non-interactive behavior.
+
+Configuration edits preserve unrelated YAML, comments, and formatting,
+validate before writing, and serialize concurrent Phelix edits through a
+lock:
+
+```bash
+phelix security config myapp --enable --scan-interval 12h --fail-threshold medium
+phelix security config myapp --disable
+```
+
+Scheduled scans run opt-in through the monitor daemon:
+
+```yaml
+security:
+  vulnerability:
+    enabled: true
+    scan_interval: 24h
+    fail_threshold: high
+```
+
+### Remote access and reporting consent
+
+The dashboard can view reports, dependency graphs, scan history, and
+advisory details, and can trigger scans or change settings, over the same
+authenticated gRPC channel as every other remote operation. Because
+dependency names and versions are private, every application opts in
+explicitly:
+
+```yaml
+security:
+  vulnerability:
+    reporting: true
+```
+
+With `reporting` disabled (the default), remote security operations
+against the application answer `SECURITY_REPORTING_DISABLED` and the
+monitor pushes nothing. With it enabled, the monitor pushes a summary of
+the latest completed scan on every stream sync, and the full reports,
+graphs, and configuration travel only on explicit backend queries. Remote
+mutations (running a scan, changing settings) additionally pass through
+the host authorization boundary (`security` action) and carry persistent
+idempotency, so a retried request never duplicates work.
+
 ## Secrets at rest
 
 Per-app environment variables and registry credentials are encrypted with

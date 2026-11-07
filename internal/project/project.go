@@ -49,6 +49,10 @@ type Config struct {
 	// variable names they are exposed under. Optional; values live only in
 	// the encrypted secret store, never in this file.
 	Secrets *SecretsConfig `yaml:"secrets,omitempty"`
+	// Security configures application security scanning. Optional; an app
+	// without the section is never scheduled and manual scans decide their
+	// own defaults.
+	Security *SecurityConfig `yaml:"security,omitempty"`
 }
 
 // Load reads and validates phelix.yaml from dir. A missing file is reported as
@@ -103,6 +107,9 @@ func load(dir string, strict bool) (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Secrets.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Security.validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil

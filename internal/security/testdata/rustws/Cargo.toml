@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/a", "crates/b"]
+resolver = "2"
+
+[workspace.dependencies]
+shared = "1.0"

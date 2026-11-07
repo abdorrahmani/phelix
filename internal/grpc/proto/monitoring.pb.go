@@ -2070,7 +2070,10 @@ type MonitorCommandRequest struct {
 	// ("0", "1", ...), the same value DeploymentReplica.index and
 	// MonitorLogEntry.replica use. Empty on commands that target the whole app,
 	// and rejected when set on one.
-	Replica       string `protobuf:"bytes,14,opt,name=replica,proto3" json:"replica,omitempty"`
+	Replica string `protobuf:"bytes,14,opt,name=replica,proto3" json:"replica,omitempty"`
+	// Security remote-management commands (security_*). Present for every
+	// security_* command type; ignored otherwise.
+	Security      *SecurityCommandOptions `protobuf:"bytes,15,opt,name=security,proto3" json:"security,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2203,6 +2206,13 @@ func (x *MonitorCommandRequest) GetReplica() string {
 	return ""
 }
 
+func (x *MonitorCommandRequest) GetSecurity() *SecurityCommandOptions {
+	if x != nil {
+		return x.Security
+	}
+	return nil
+}
+
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
 // sent back to the backend after a command finishes executing.
 type MonitorCommandResult struct {
@@ -2259,9 +2269,14 @@ type MonitorCommandResult struct {
 	ToReplicas   int32 `protobuf:"varint,17,opt,name=to_replicas,json=toReplicas,proto3" json:"to_replicas,omitempty"`
 	// replica is the worker replica slot a worker_restart_replica result
 	// operated on. Empty on every other command.
-	Replica       string `protobuf:"bytes,18,opt,name=replica,proto3" json:"replica,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Replica string `protobuf:"bytes,18,opt,name=replica,proto3" json:"replica,omitempty"`
+	// Security command payloads. Exactly one is populated per command.
+	SecurityScanRecord *SecurityScanRecord  `protobuf:"bytes,19,opt,name=security_scan_record,json=securityScanRecord,proto3" json:"security_scan_record,omitempty"`
+	SecurityScanList   *SecurityScanList    `protobuf:"bytes,20,opt,name=security_scan_list,json=securityScanList,proto3" json:"security_scan_list,omitempty"`
+	SecurityConfig     *SecurityConfigState `protobuf:"bytes,21,opt,name=security_config,json=securityConfig,proto3" json:"security_config,omitempty"`
+	SecurityAdvisory   *SecurityAdvisory    `protobuf:"bytes,22,opt,name=security_advisory,json=securityAdvisory,proto3" json:"security_advisory,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *MonitorCommandResult) Reset() {
@@ -2420,6 +2435,34 @@ func (x *MonitorCommandResult) GetReplica() string {
 	return ""
 }
 
+func (x *MonitorCommandResult) GetSecurityScanRecord() *SecurityScanRecord {
+	if x != nil {
+		return x.SecurityScanRecord
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetSecurityScanList() *SecurityScanList {
+	if x != nil {
+		return x.SecurityScanList
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetSecurityConfig() *SecurityConfigState {
+	if x != nil {
+		return x.SecurityConfig
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetSecurityAdvisory() *SecurityAdvisory {
+	if x != nil {
+		return x.SecurityAdvisory
+	}
+	return nil
+}
+
 // MonitorEvent is a single message sent from the CLI monitor daemon to the
 // backend over the long-lived MonitorStream. Exactly one payload is set per
 // event, mirroring the "type"/"payload" envelope used by the old WebSocket
@@ -2447,6 +2490,7 @@ type MonitorEvent struct {
 	//	*MonitorEvent_MatrixRun
 	//	*MonitorEvent_VersionSync
 	//	*MonitorEvent_LogBatch
+	//	*MonitorEvent_SecurityScan
 	Payload       isMonitorEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2620,6 +2664,15 @@ func (x *MonitorEvent) GetLogBatch() *MonitorLogBatch {
 	return nil
 }
 
+func (x *MonitorEvent) GetSecurityScan() *SecurityScanSnapshot {
+	if x != nil {
+		if x, ok := x.Payload.(*MonitorEvent_SecurityScan); ok {
+			return x.SecurityScan
+		}
+	}
+	return nil
+}
+
 type isMonitorEvent_Payload interface {
 	isMonitorEvent_Payload()
 }
@@ -2707,6 +2760,12 @@ type MonitorEvent_LogBatch struct {
 	LogBatch *MonitorLogBatch `protobuf:"bytes,22,opt,name=log_batch,json=logBatch,proto3,oneof"`
 }
 
+type MonitorEvent_SecurityScan struct {
+	// Idempotent statement of an app's latest completed scan; pushed
+	// only when the app has reporting consent enabled.
+	SecurityScan *SecurityScanSnapshot `protobuf:"bytes,23,opt,name=security_scan,json=securityScan,proto3,oneof"`
+}
+
 func (*MonitorEvent_ServerInfo) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_ServerMetrics) isMonitorEvent_Payload() {}
@@ -2732,6 +2791,8 @@ func (*MonitorEvent_MatrixRun) isMonitorEvent_Payload() {}
 func (*MonitorEvent_VersionSync) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_LogBatch) isMonitorEvent_Payload() {}
+
+func (*MonitorEvent_SecurityScan) isMonitorEvent_Payload() {}
 
 // MonitorControl is a single message sent from the backend to the CLI
 // monitor daemon over the same long-lived MonitorStream. It mirrors the old
@@ -3014,7 +3075,7 @@ var File_internal_grpc_proto_monitoring_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
-	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\x1a internal/grpc/proto/matrix.proto\x1a!internal/grpc/proto/webhook.proto\x1a%internal/grpc/proto/buildreport.proto\"\xd1\x05\n" +
+	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\"internal/grpc/proto/security.proto\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\x1a internal/grpc/proto/matrix.proto\x1a!internal/grpc/proto/webhook.proto\x1a%internal/grpc/proto/buildreport.proto\"\xd1\x05\n" +
 	"\n" +
 	"ServerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
@@ -3223,7 +3284,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
 	"\x0fMonitorLogBatch\x121\n" +
 	"\aentries\x18\x01 \x03(\v2\x17.phelix.MonitorLogEntryR\aentries\x12\x18\n" +
-	"\adropped\x18\x02 \x01(\x03R\adropped\"\xcc\x03\n" +
+	"\adropped\x18\x02 \x01(\x03R\adropped\"\x88\x04\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -3240,7 +3301,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	" \x01(\v2\x15.phelix.MatrixOptionsR\x06matrix\x120\n" +
 	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\x12\x14\n" +
 	"\x05limit\x18\r \x01(\x05R\x05limit\x12\x18\n" +
-	"\areplica\x18\x0e \x01(\tR\areplica\"\x90\x06\n" +
+	"\areplica\x18\x0e \x01(\tR\areplica\x12:\n" +
+	"\bsecurity\x18\x0f \x01(\v2\x1e.phelix.SecurityCommandOptionsR\bsecurity\"\xb3\b\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -3265,7 +3327,11 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\rfrom_replicas\x18\x10 \x01(\x05R\ffromReplicas\x12\x1f\n" +
 	"\vto_replicas\x18\x11 \x01(\x05R\n" +
 	"toReplicas\x12\x18\n" +
-	"\areplica\x18\x12 \x01(\tR\areplica\"\xd4\x06\n" +
+	"\areplica\x18\x12 \x01(\tR\areplica\x12L\n" +
+	"\x14security_scan_record\x18\x13 \x01(\v2\x1a.phelix.SecurityScanRecordR\x12securityScanRecord\x12F\n" +
+	"\x12security_scan_list\x18\x14 \x01(\v2\x18.phelix.SecurityScanListR\x10securityScanList\x12D\n" +
+	"\x0fsecurity_config\x18\x15 \x01(\v2\x1b.phelix.SecurityConfigStateR\x0esecurityConfig\x12E\n" +
+	"\x11security_advisory\x18\x16 \x01(\v2\x18.phelix.SecurityAdvisoryR\x10securityAdvisory\"\x99\a\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
@@ -3287,7 +3353,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
 	"matrix_run\x18\x13 \x01(\v2\x16.phelix.MatrixRunStateH\x00R\tmatrixRun\x128\n" +
 	"\fversion_sync\x18\x14 \x01(\v2\x13.phelix.VersionSyncH\x00R\vversionSync\x126\n" +
-	"\tlog_batch\x18\x16 \x01(\v2\x17.phelix.MonitorLogBatchH\x00R\blogBatchB\t\n" +
+	"\tlog_batch\x18\x16 \x01(\v2\x17.phelix.MonitorLogBatchH\x00R\blogBatch\x12C\n" +
+	"\rsecurity_scan\x18\x17 \x01(\v2\x1c.phelix.SecurityScanSnapshotH\x00R\fsecurityScanB\t\n" +
 	"\apayload\"z\n" +
 	"\x0eMonitorControl\x129\n" +
 	"\acommand\x18\x01 \x01(\v2\x1d.phelix.MonitorCommandRequestH\x00R\acommand\x12\"\n" +
@@ -3341,44 +3408,50 @@ func file_internal_grpc_proto_monitoring_proto_rawDescGZIP() []byte {
 var file_internal_grpc_proto_monitoring_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
-	(LogSource)(0),                // 0: phelix.LogSource
-	(LogStream)(0),                // 1: phelix.LogStream
-	(*ServerInfo)(nil),            // 2: phelix.ServerInfo
-	(*ServerConnection)(nil),      // 3: phelix.ServerConnection
-	(*ServerAlert)(nil),           // 4: phelix.ServerAlert
-	(*ServerSecurity)(nil),        // 5: phelix.ServerSecurity
-	(*ServerMetrics)(nil),         // 6: phelix.ServerMetrics
-	(*AppResourceMetrics)(nil),    // 7: phelix.AppResourceMetrics
-	(*AppTrafficStat)(nil),        // 8: phelix.AppTrafficStat
-	(*AppTrafficBackend)(nil),     // 9: phelix.AppTrafficBackend
-	(*ApplicationInfo)(nil),       // 10: phelix.ApplicationInfo
-	(*AppProcess)(nil),            // 11: phelix.AppProcess
-	(*AppNetworking)(nil),         // 12: phelix.AppNetworking
-	(*AppLogging)(nil),            // 13: phelix.AppLogging
-	(*AppStorage)(nil),            // 14: phelix.AppStorage
-	(*MonitorLogEntry)(nil),       // 15: phelix.MonitorLogEntry
-	(*MonitorLogBatch)(nil),       // 16: phelix.MonitorLogBatch
-	(*MonitorCommandRequest)(nil), // 17: phelix.MonitorCommandRequest
-	(*MonitorCommandResult)(nil),  // 18: phelix.MonitorCommandResult
-	(*MonitorEvent)(nil),          // 19: phelix.MonitorEvent
-	(*MonitorControl)(nil),        // 20: phelix.MonitorControl
-	(*VersionSync)(nil),           // 21: phelix.VersionSync
-	(*VersionEntry)(nil),          // 22: phelix.VersionEntry
-	nil,                           // 23: phelix.MonitorLogEntry.FieldsEntry
-	(*MatrixOptions)(nil),         // 24: phelix.MatrixOptions
-	(*WebhookOptions)(nil),        // 25: phelix.WebhookOptions
-	(*MatrixRunState)(nil),        // 26: phelix.MatrixRunState
-	(*MatrixRunSummary)(nil),      // 27: phelix.MatrixRunSummary
-	(*MatrixPlanPreview)(nil),     // 28: phelix.MatrixPlanPreview
-	(*MatrixDockerResult)(nil),    // 29: phelix.MatrixDockerResult
-	(*WebhookJob)(nil),            // 30: phelix.WebhookJob
-	(*WebhookConfigState)(nil),    // 31: phelix.WebhookConfigState
-	(*WebhookDelivery)(nil),       // 32: phelix.WebhookDelivery
-	(*Pong)(nil),                  // 33: phelix.Pong
-	(*DeploymentSnapshot)(nil),    // 34: phelix.DeploymentSnapshot
-	(*AppHealthSnapshot)(nil),     // 35: phelix.AppHealthSnapshot
-	(*Ping)(nil),                  // 36: phelix.Ping
-	(*BuildReport)(nil),           // 37: phelix.BuildReport
+	(LogSource)(0),                 // 0: phelix.LogSource
+	(LogStream)(0),                 // 1: phelix.LogStream
+	(*ServerInfo)(nil),             // 2: phelix.ServerInfo
+	(*ServerConnection)(nil),       // 3: phelix.ServerConnection
+	(*ServerAlert)(nil),            // 4: phelix.ServerAlert
+	(*ServerSecurity)(nil),         // 5: phelix.ServerSecurity
+	(*ServerMetrics)(nil),          // 6: phelix.ServerMetrics
+	(*AppResourceMetrics)(nil),     // 7: phelix.AppResourceMetrics
+	(*AppTrafficStat)(nil),         // 8: phelix.AppTrafficStat
+	(*AppTrafficBackend)(nil),      // 9: phelix.AppTrafficBackend
+	(*ApplicationInfo)(nil),        // 10: phelix.ApplicationInfo
+	(*AppProcess)(nil),             // 11: phelix.AppProcess
+	(*AppNetworking)(nil),          // 12: phelix.AppNetworking
+	(*AppLogging)(nil),             // 13: phelix.AppLogging
+	(*AppStorage)(nil),             // 14: phelix.AppStorage
+	(*MonitorLogEntry)(nil),        // 15: phelix.MonitorLogEntry
+	(*MonitorLogBatch)(nil),        // 16: phelix.MonitorLogBatch
+	(*MonitorCommandRequest)(nil),  // 17: phelix.MonitorCommandRequest
+	(*MonitorCommandResult)(nil),   // 18: phelix.MonitorCommandResult
+	(*MonitorEvent)(nil),           // 19: phelix.MonitorEvent
+	(*MonitorControl)(nil),         // 20: phelix.MonitorControl
+	(*VersionSync)(nil),            // 21: phelix.VersionSync
+	(*VersionEntry)(nil),           // 22: phelix.VersionEntry
+	nil,                            // 23: phelix.MonitorLogEntry.FieldsEntry
+	(*MatrixOptions)(nil),          // 24: phelix.MatrixOptions
+	(*WebhookOptions)(nil),         // 25: phelix.WebhookOptions
+	(*SecurityCommandOptions)(nil), // 26: phelix.SecurityCommandOptions
+	(*MatrixRunState)(nil),         // 27: phelix.MatrixRunState
+	(*MatrixRunSummary)(nil),       // 28: phelix.MatrixRunSummary
+	(*MatrixPlanPreview)(nil),      // 29: phelix.MatrixPlanPreview
+	(*MatrixDockerResult)(nil),     // 30: phelix.MatrixDockerResult
+	(*WebhookJob)(nil),             // 31: phelix.WebhookJob
+	(*WebhookConfigState)(nil),     // 32: phelix.WebhookConfigState
+	(*WebhookDelivery)(nil),        // 33: phelix.WebhookDelivery
+	(*SecurityScanRecord)(nil),     // 34: phelix.SecurityScanRecord
+	(*SecurityScanList)(nil),       // 35: phelix.SecurityScanList
+	(*SecurityConfigState)(nil),    // 36: phelix.SecurityConfigState
+	(*SecurityAdvisory)(nil),       // 37: phelix.SecurityAdvisory
+	(*Pong)(nil),                   // 38: phelix.Pong
+	(*DeploymentSnapshot)(nil),     // 39: phelix.DeploymentSnapshot
+	(*AppHealthSnapshot)(nil),      // 40: phelix.AppHealthSnapshot
+	(*SecurityScanSnapshot)(nil),   // 41: phelix.SecurityScanSnapshot
+	(*Ping)(nil),                   // 42: phelix.Ping
+	(*BuildReport)(nil),            // 43: phelix.BuildReport
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	3,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -3395,35 +3468,41 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	15, // 11: phelix.MonitorLogBatch.entries:type_name -> phelix.MonitorLogEntry
 	24, // 12: phelix.MonitorCommandRequest.matrix:type_name -> phelix.MatrixOptions
 	25, // 13: phelix.MonitorCommandRequest.webhook:type_name -> phelix.WebhookOptions
-	26, // 14: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
-	27, // 15: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
-	28, // 16: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
-	29, // 17: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
-	30, // 18: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
-	31, // 19: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
-	32, // 20: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
-	2,  // 21: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	6,  // 22: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	7,  // 23: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	8,  // 24: phelix.MonitorEvent.app_traffic:type_name -> phelix.AppTrafficStat
-	10, // 25: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	15, // 26: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	18, // 27: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	33, // 28: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	34, // 29: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
-	35, // 30: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
-	26, // 31: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
-	21, // 32: phelix.MonitorEvent.version_sync:type_name -> phelix.VersionSync
-	16, // 33: phelix.MonitorEvent.log_batch:type_name -> phelix.MonitorLogBatch
-	17, // 34: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	36, // 35: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	22, // 36: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
-	37, // 37: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
-	38, // [38:38] is the sub-list for method output_type
-	38, // [38:38] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	26, // 14: phelix.MonitorCommandRequest.security:type_name -> phelix.SecurityCommandOptions
+	27, // 15: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
+	28, // 16: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
+	29, // 17: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
+	30, // 18: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
+	31, // 19: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
+	32, // 20: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
+	33, // 21: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
+	34, // 22: phelix.MonitorCommandResult.security_scan_record:type_name -> phelix.SecurityScanRecord
+	35, // 23: phelix.MonitorCommandResult.security_scan_list:type_name -> phelix.SecurityScanList
+	36, // 24: phelix.MonitorCommandResult.security_config:type_name -> phelix.SecurityConfigState
+	37, // 25: phelix.MonitorCommandResult.security_advisory:type_name -> phelix.SecurityAdvisory
+	2,  // 26: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	6,  // 27: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	7,  // 28: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	8,  // 29: phelix.MonitorEvent.app_traffic:type_name -> phelix.AppTrafficStat
+	10, // 30: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	15, // 31: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	18, // 32: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	38, // 33: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	39, // 34: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
+	40, // 35: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
+	27, // 36: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
+	21, // 37: phelix.MonitorEvent.version_sync:type_name -> phelix.VersionSync
+	16, // 38: phelix.MonitorEvent.log_batch:type_name -> phelix.MonitorLogBatch
+	41, // 39: phelix.MonitorEvent.security_scan:type_name -> phelix.SecurityScanSnapshot
+	17, // 40: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	42, // 41: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	22, // 42: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
+	43, // 43: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
+	44, // [44:44] is the sub-list for method output_type
+	44, // [44:44] is the sub-list for method input_type
+	44, // [44:44] is the sub-list for extension type_name
+	44, // [44:44] is the sub-list for extension extendee
+	0,  // [0:44] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -3431,6 +3510,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 	if File_internal_grpc_proto_monitoring_proto != nil {
 		return
 	}
+	file_internal_grpc_proto_security_proto_init()
 	file_internal_grpc_proto_ping_proto_init()
 	file_internal_grpc_proto_deployment_proto_init()
 	file_internal_grpc_proto_health_proto_init()
@@ -3451,6 +3531,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_MatrixRun)(nil),
 		(*MonitorEvent_VersionSync)(nil),
 		(*MonitorEvent_LogBatch)(nil),
+		(*MonitorEvent_SecurityScan)(nil),
 	}
 	file_internal_grpc_proto_monitoring_proto_msgTypes[18].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),

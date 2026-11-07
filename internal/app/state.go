@@ -338,3 +338,12 @@ func AppDirectories() map[string]string {
 	}
 	return out
 }
+
+// SetStateDirForTesting points the package state file at dir/apps.json
+// and reloads it. It exists for tests in other packages that exercise the
+// in-process application registry without a subprocess; production code
+// must never call it.
+func SetStateDirForTesting(dir string) error {
+	stateFile = filepath.Join(dir, "apps.json")
+	return Manager.LoadState()
+}
