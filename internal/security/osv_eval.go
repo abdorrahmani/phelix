@@ -110,28 +110,43 @@ func hasEventKey(event map[string]string, key string) bool {
 	return ok && value != ""
 }
 
-// evaluateOSVRange decides where one range places the candidate version.
-// comparer must match the range's ecosystem semantics.
-func evaluateOSVRange(rng OSVRange, candidate string, compare compareVersion) (rangeVerdict, string, error) {
+// rangeFlags aggregates the dispositions of every segment of one advisory
+// range against one candidate version. The flags are kept apart so each
+// evidence class can interpret them: a candidate between two segments of
+// a multi-segment range is genuinely unaffected for resolved evidence but
+// uncertain for a Go declared minimum, whose selected version may be
+// higher.
+type rangeFlags struct {
+	in        bool
+	below     bool
+	above     bool
+	uncertain bool
+}
+
+// evaluateOSVRangeFlags places one candidate against every segment of one
+// range and reports all dispositions. Results are order-independent by
+// construction: nothing folds, every segment contributes its flag.
+func evaluateOSVRangeFlags(rng OSVRange, candidate string, compare compareVersion) (rangeFlags, error) {
 	segments, ok := parseOSVRangeEvents(rng.Events)
 	if !ok {
-		return verdictUnevaluable, "", fmt.Errorf("range carries no introduced event")
+		return rangeFlags{uncertain: true}, fmt.Errorf("range carries no introduced event")
 	}
-
-	verdicts := make([]rangeVerdict, 0, len(segments))
+	var flags rangeFlags
 	for _, segment := range segments {
-		verdict, err := evaluateSegment(segment, candidate, compare)
-		if err != nil {
-			return verdictUnevaluable, "", err
+		switch verdict, err := evaluateSegment(segment, candidate, compare); {
+		case err != nil:
+			flags.uncertain = true
+		case verdict == verdictIn:
+			flags.in = true
+		case verdict == verdictOutBelow:
+			flags.below = true
+		case verdict == verdictOutAbove:
+			flags.above = true
+		default:
+			flags.uncertain = true
 		}
-		verdicts = append(verdicts, verdict)
 	}
-
-	final := verdicts[0]
-	for _, v := range verdicts[1:] {
-		final = combineVerdicts(final, v)
-	}
-	return final, osvRangeSummary(rng.Type, segments), nil
+	return flags, nil
 }
 
 // evaluateSegment places the candidate against one introduced..upper
@@ -176,27 +191,6 @@ func evaluateSegment(segment osvSegment, candidate string, compare compareVersio
 	default:
 		return verdictIn, nil
 	}
-}
-
-// combineVerdicts merges the verdicts of multiple segments of one range:
-// any confident membership wins, then uncertainty, then the confident
-// exclusions.
-func combineVerdicts(a, b rangeVerdict) rangeVerdict {
-	rank := func(v rangeVerdict) int {
-		switch v {
-		case verdictIn:
-			return 0
-		case verdictBeyondLimit, verdictUnevaluable:
-			return 1
-		case verdictOutBelow, verdictOutAbove:
-			return 2
-		}
-		return 3
-	}
-	if rank(a) <= rank(b) {
-		return a
-	}
-	return b
 }
 
 // osvRangeSummary renders one range in a stable human-readable form.

@@ -164,7 +164,7 @@ func evaluateModuleAdvisory(eco Ecosystem, mod Module, entry AdvisoryEntry) *Fin
 	}
 
 	compare := ecosystemCompare(eco)
-	var inRanges, aboveRanges, belowRanges, uncertainRanges []string
+	var inRanges, aboveRanges, uncertainRanges []string
 	explicitHit := false
 	fixed := osvFixedVersion(adv, eco, mod.Name)
 
@@ -178,21 +178,22 @@ func evaluateModuleAdvisory(eco Ecosystem, mod Module, entry AdvisoryEntry) *Fin
 			}
 		}
 		for _, rng := range affected.Ranges {
-			verdict, summary := evaluateModuleRange(mod, rng, compare)
+			flags, summary := evaluateModuleRange(mod, rng, compare)
+			in, out, uncertain := classifyRangeEvidence(mod, flags)
 			switch {
-			case verdict == verdictIn:
+			case in:
 				inRanges = append(inRanges, summary)
-			case verdict == verdictOutAbove:
+			case uncertain:
+				uncertainRanges = append(uncertainRanges, summary)
+			case out:
 				aboveRanges = append(aboveRanges, summary)
-			case verdict == verdictOutBelow:
-				belowRanges = append(belowRanges, summary)
 			default:
 				uncertainRanges = append(uncertainRanges, summary)
 			}
 		}
 	}
 
-	decision := decideState(mod, inRanges, aboveRanges, belowRanges, uncertainRanges, explicitHit)
+	decision := decideState(mod, inRanges, aboveRanges, uncertainRanges, explicitHit)
 	if decision == nil {
 		return nil
 	}
@@ -200,7 +201,7 @@ func evaluateModuleAdvisory(eco Ecosystem, mod Module, entry AdvisoryEntry) *Fin
 	decision.Package = mod.Name
 	decision.Ecosystem = eco
 	decision.FixedVersion = fixed
-	decision.Ranges = append(inRanges, append(aboveRanges, append(belowRanges, uncertainRanges...)...)...)
+	decision.Ranges = append(inRanges, append(aboveRanges, uncertainRanges...)...)
 	decision.AdvisoryModified = adv.Modified
 	decision.RetrievedAt = entry.FetchedAt
 	decision.Source = FindingSourceOSV
@@ -229,14 +230,16 @@ func evaluateModuleAdvisory(eco Ecosystem, mod Module, entry AdvisoryEntry) *Fin
 	return decision
 }
 
-// evaluateModuleRange evaluates one range against the module's evidence,
-// choosing the comparison path that matches the confidence level.
-func evaluateModuleRange(mod Module, rng OSVRange, compare compareVersion) (rangeVerdict, string) {
+// evaluateModuleRange evaluates one range against the module's evidence
+// and reports the raw disposition flags. Every candidate contributes its
+// flags; nothing folds, so results never depend on segment or candidate
+// ordering.
+func evaluateModuleRange(mod Module, rng OSVRange, compare compareVersion) (rangeFlags, string) {
 	if rng.Type == "GIT" {
-		return verdictUnevaluable, "(git range; not evaluable from dependency files)"
+		return rangeFlags{uncertain: true}, "(git range; not evaluable from dependency files)"
 	}
 	if rng.Type != "SEMVER" && rng.Type != "ECOSYSTEM" {
-		return verdictUnevaluable, "(unsupported range type " + rng.Type + ")"
+		return rangeFlags{uncertain: true}, "(unsupported range type " + rng.Type + ")"
 	}
 
 	if mod.Confidence == ConfidenceRequirement {
@@ -248,61 +251,79 @@ func evaluateModuleRange(mod Module, rng OSVRange, compare compareVersion) (rang
 		candidates = mod.ObservedVersions
 	}
 	if len(candidates) == 0 {
-		return verdictUnevaluable, "(no version evidence)"
+		return rangeFlags{uncertain: true}, "(no version evidence)"
 	}
 
-	summary := ""
-	verdict := verdictOutAbove
-	for i, candidate := range candidates {
-		v, s, err := evaluateOSVRange(rng, candidate, compare)
+	var combined rangeFlags
+	for _, candidate := range candidates {
+		flags, err := evaluateOSVRangeFlags(rng, candidate, compare)
 		if err != nil {
-			return verdictUnevaluable, "(unevaluable version evidence)"
+			combined.uncertain = true
+			continue
 		}
-		summary = s
-		if i == 0 || rankVerdict(v) < rankVerdict(verdict) {
-			verdict = v
-		}
+		combined.in = combined.in || flags.in
+		combined.below = combined.below || flags.below
+		combined.above = combined.above || flags.above
+		combined.uncertain = combined.uncertain || flags.uncertain
 	}
-	return verdict, summary
+	return combined, osvRangeTypeSummary(mod, rng)
+}
+
+// osvRangeTypeSummary renders the range once per range, regardless of how
+// many candidates were evaluated.
+func osvRangeTypeSummary(mod Module, rng OSVRange) string {
+	segments, ok := parseOSVRangeEvents(rng.Events)
+	if !ok {
+		return "(unevaluable range events)"
+	}
+	return osvRangeSummary(rng.Type, segments)
 }
 
 // evaluateRequirementRange intersects a manifest requirement interval with
 // an advisory range. A disjoint intersection is a confident exclusion: the
 // selected version always lies inside the requirement interval.
-func evaluateRequirementRange(mod Module, rng OSVRange, compare compareVersion) (rangeVerdict, string) {
+func evaluateRequirementRange(mod Module, rng OSVRange, compare compareVersion) (rangeFlags, string) {
 	req, err := parseCargoRequirement(mod.Requirement)
 	if err != nil {
-		return verdictUnevaluable, "(requirement " + mod.Requirement + " cannot be evaluated)"
+		return rangeFlags{uncertain: true}, "(requirement " + mod.Requirement + " cannot be evaluated)"
 	}
 	segments, ok := parseOSVRangeEvents(rng.Events)
 	if !ok {
-		return verdictUnevaluable, "(range carries no introduced event)"
+		return rangeFlags{uncertain: true}, "(range carries no introduced event)"
 	}
 	summary := osvRangeSummary(rng.Type, segments)
 
-	overlap := false
-	uncertain := false
+	var flags rangeFlags
 	for _, segment := range segments {
 		segmentIv, err := segmentInterval(segment)
 		if err != nil {
-			return verdictUnevaluable, "(range boundaries cannot be evaluated)"
+			flags.uncertain = true
+			continue
 		}
-		if cargoOverlaps(segmentIv, req) {
-			if segment.limit != "" {
-				uncertain = true
-				continue
-			}
-			overlap = true
+		if !cargoOverlaps(segmentIv, req) {
+			continue
 		}
+		if segment.limit != "" {
+			flags.uncertain = true
+			continue
+		}
+		flags.in = true
 	}
-	switch {
-	case overlap:
-		return verdictIn, summary
-	case uncertain:
-		return verdictBeyondLimit, summary
-	default:
-		return verdictOutAbove, summary
+	return flags, summary
+}
+
+// classifyRangeEvidence interprets one range's disposition flags for the
+// module's evidence class. The split matters at range boundaries: a
+// concrete resolved version sitting in the gap between two segments of a
+// multi-segment range is genuinely unaffected, while a Go declared minimum
+// in the same gap leaves the selected version undetermined.
+func classifyRangeEvidence(mod Module, flags rangeFlags) (in, out, uncertain bool) {
+	if mod.Confidence == ConfidenceDeclaredMinimum {
+		uncertain := flags.uncertain || flags.below || (flags.below && flags.above)
+		out := !flags.in && !uncertain && flags.above && !flags.below
+		return flags.in, out, uncertain || (!flags.in && !out)
 	}
+	return flags.in, !flags.in && !flags.uncertain, flags.uncertain
 }
 
 // segmentInterval converts one introduced..upper segment into a version
@@ -364,8 +385,11 @@ func evidenceMentions(mod Module, version string, compare compareVersion) bool {
 	return false
 }
 
-// decideState applies the confidence-specific decision matrix.
-func decideState(mod Module, in, above, below, uncertain []string, explicitHit bool) *Finding {
+// decideState applies the confidence-specific decision matrix. Ranges are
+// pre-classified per evidence class: in means confident membership, out
+// means confident exclusion for that evidence class, uncertain means the
+// decision cannot be made.
+func decideState(mod Module, in, above, uncertain []string, explicitHit bool) *Finding {
 	switch mod.Confidence {
 	case ConfidenceResolved:
 		switch {
@@ -380,7 +404,7 @@ func decideState(mod Module, in, above, below, uncertain []string, explicitHit b
 		switch {
 		case len(in) > 0:
 			return &Finding{State: StatePotentiallyAffected, Reason: fmt.Sprintf("declared minimum %s lies inside the affected range; the selected version is at least %s", mod.Version, mod.Version)}
-		case len(uncertain) > 0 || len(below) > 0:
+		case len(uncertain) > 0:
 			return &Finding{State: StateUnknown, Reason: "the selected build version is not established offline and may lie inside the affected range"}
 		default:
 			return &Finding{State: StateNotAffected, Reason: fmt.Sprintf("declared minimum %s is at or above every fixed boundary, so the selected version cannot be inside the ranges", mod.Version)}
@@ -398,7 +422,7 @@ func decideState(mod Module, in, above, below, uncertain []string, explicitHit b
 		switch {
 		case len(in) > 0 || explicitHit:
 			return &Finding{State: StatePotentiallyAffected, Reason: fmt.Sprintf("requirement %s overlaps the affected range; the selected version is unknown", mod.Requirement)}
-		case len(uncertain) > 0 || len(below) > 0:
+		case len(uncertain) > 0:
 			return &Finding{State: StateUnknown, Reason: "the requirement cannot be evaluated against every affected range"}
 		default:
 			return &Finding{State: StateNotAffected, Reason: fmt.Sprintf("requirement %s is disjoint from every affected range, so no version it admits can be affected", mod.Requirement)}
@@ -406,20 +430,6 @@ func decideState(mod Module, in, above, below, uncertain []string, explicitHit b
 	default:
 		return nil
 	}
-}
-
-// rankVerdict orders verdicts for multi-candidate reduction: membership
-// wins over uncertainty, uncertainty over exclusion.
-func rankVerdict(v rangeVerdict) int {
-	switch v {
-	case verdictIn:
-		return 0
-	case verdictBeyondLimit, verdictUnevaluable:
-		return 1
-	case verdictOutAbove, verdictOutBelow:
-		return 2
-	}
-	return 3
 }
 
 // mergeDrafts collapses findings that share an alias for the same package:
@@ -503,8 +513,8 @@ func mergeGroup(group []Finding) Finding {
 		if stateRank[draft.State] < stateRank[merged.State] {
 			merged.State, merged.Reason, merged.FixedVersion = draft.State, draft.Reason, draft.FixedVersion
 		}
-		if draft.FixedVersion != "" && (merged.FixedVersion == "" || draft.FixedVersion > merged.FixedVersion) {
-			merged.FixedVersion = draft.FixedVersion
+		if draft.FixedVersion != "" {
+			merged.FixedVersion = maxFixedVersion(merged.Ecosystem, merged.FixedVersion, draft.FixedVersion)
 		}
 		if SeverityRank(draft.Severity) > SeverityRank(merged.Severity) {
 			merged.Severity, merged.SeveritySource = draft.Severity, draft.SeveritySource
@@ -516,6 +526,30 @@ func mergeGroup(group []Finding) Finding {
 	merged.Aliases = sortStrings(merged.Aliases)
 	merged.CVSSVectors = sortStrings(merged.CVSSVectors)
 	return merged
+}
+
+// maxFixedVersion keeps the semantically highest fixed boundary across
+// merged duplicate records, comparing with the ecosystem's own version
+// ordering and falling back to a stable string choice when versions are
+// incomparable.
+func maxFixedVersion(eco Ecosystem, a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	compare := ecosystemCompare(eco)
+	if cmp, err := compare(a, b); err == nil {
+		if cmp >= 0 {
+			return a
+		}
+		return b
+	}
+	if a >= b {
+		return a
+	}
+	return b
 }
 
 // nativeIDRank prefers ecosystem-native advisory ids as primary identity.
