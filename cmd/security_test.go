@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
@@ -307,5 +308,69 @@ func TestHintForSecurityFindings(t *testing.T) {
 	hint := hintFor(phelixerr.New(phelixerr.CodeSecurityFindings, "findings"))
 	if !strings.Contains(hint, "phelix security report") || !strings.Contains(hint, "fail_threshold") {
 		t.Fatalf("the findings hint must point at the report and the threshold: %q", hint)
+	}
+}
+
+func TestBuildSecurityTargetChoices(t *testing.T) {
+	apps := []app.AppListItem{
+		{ID: "11111111-1111-4111-8111-111111111111", Name: "alpha"},
+		{ID: "22222222-2222-4222-8222-222222222222", Name: "beta"},
+	}
+	choices := buildSecurityTargetChoices(apps, "cwdproj")
+	if len(choices) != 3 {
+		t.Fatalf("current directory plus two apps: %d", len(choices))
+	}
+	if choices[0].label != "Current directory (cwdproj)" || choices[0].arg != "" {
+		t.Fatalf("the current directory option scans the project without an argument: %+v", choices[0])
+	}
+	if choices[1].arg != "alpha" {
+		t.Fatalf("app choices feed the existing resolver: %+v", choices[1])
+	}
+	withoutCwd := buildSecurityTargetChoices(apps, "")
+	if len(withoutCwd) != 2 {
+		t.Fatalf("no project in the working directory means no current-directory option: %d", len(withoutCwd))
+	}
+}
+
+func TestCLISecurityHistory(t *testing.T) {
+	server := securityOSV(t, "low")
+	defer server.Close()
+	home := t.TempDir()
+	project := writeSecurityProject(t, "histapp")
+
+	if code, _, stderr := runPhelixSecurity(t, home, project, server.URL, "security", "scan"); code != 0 {
+		t.Fatalf("scan: exit=%d stderr=%s", code, stderr)
+	}
+	if code, _, stderr := runPhelixSecurity(t, home, project, server.URL, "security", "scan"); code != 0 {
+		t.Fatalf("second scan: exit=%d stderr=%s", code, stderr)
+	}
+
+	code, stdout, stderr := runPhelixSecurity(t, home, project, server.URL, "security", "history", "--json")
+	if code != 0 {
+		t.Fatalf("history: exit=%d stderr=%s", code, stderr)
+	}
+	envelope := decodeSecurityEnvelope(t, stdout)
+	result := envelope["result"].(map[string]any)
+	scans := result["scans"].([]any)
+	if len(scans) != 2 {
+		t.Fatalf("two scans recorded: %v", scans)
+	}
+
+	code, stdout, _ = runPhelixSecurity(t, home, project, server.URL, "security", "history")
+	if code != 0 || !strings.Contains(stdout, "scn_") {
+		t.Fatalf("human history renders a table with scan ids: exit=%d stdout=%s", code, stdout)
+	}
+}
+
+func TestCLISecurityBareCommand_NonInteractiveShowsHelp(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+
+	code, stdout, _ := runPhelixSecurity(t, home, project, "http://127.0.0.1:1", "security")
+	if code != 0 {
+		t.Fatalf("bare security help: exit=%d", code)
+	}
+	if !strings.Contains(stdout, "scan") || !strings.Contains(stdout, "report") {
+		t.Fatalf("help must list the subcommands: %s", stdout)
 	}
 }

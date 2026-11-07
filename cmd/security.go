@@ -52,9 +52,19 @@ Examples:
   phelix security show GHSA-...     inspect one advisory
   phelix security config myapp      show effective scan settings`,
 	Args: cobra.NoArgs,
+	RunE: runSecurityMenu,
 }
 
 func init() {
+	securityHistory := &cobra.Command{
+		Use:           "history [AppName]",
+		Short:         "List recorded vulnerability scans",
+		Args:          cobra.MaximumNArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          runSecurityHistory,
+	}
+	securityHistory.Flags().IntVar(&securityHistoryLimit, "limit", 0, "maximum number of scans to list (default: all retained)")
 	securityScan := &cobra.Command{
 		Use:           "scan [AppName]",
 		Short:         "Scan application dependencies for known vulnerabilities",
@@ -73,9 +83,9 @@ func init() {
 	}
 	securityReport.Flags().BoolVar(&securityReportPrevious, "previous", false, "compare with the previous completed scan")
 	securityShow := &cobra.Command{
-		Use:           "show <ADVISORY-ID>",
+		Use:           "show [ADVISORY-ID]",
 		Short:         "Show one advisory from the local cache or OSV.dev",
-		Args:          cobra.ExactArgs(1),
+		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          runSecurityShow,
@@ -88,7 +98,7 @@ func init() {
 		SilenceErrors: true,
 		RunE:          runSecurityConfig,
 	}
-	for _, sub := range []*cobra.Command{securityScan, securityReport, securityShow, securityConfig} {
+	for _, sub := range []*cobra.Command{securityScan, securityReport, securityShow, securityConfig, securityHistory} {
 		sub.Flags().BoolVar(&securityJSON, "json", false, "emit the machine envelope on stdout")
 		SecurityCmd.AddCommand(sub)
 	}
@@ -166,6 +176,17 @@ func projectIdentityKey(name, dir string) string {
 	return "name:" + name + ":" + hex.EncodeToString(sum[:4])
 }
 
+// promptArgsWhenInteractive asks for a target application when a command
+// was invoked without arguments in a terminal. Non-interactive callers
+// keep their existing behavior: the current directory project or a
+// precise usage error.
+func promptArgsWhenInteractive(args []string, verb string) ([]string, error) {
+	if len(args) > 0 || !IsInteractive() {
+		return args, nil
+	}
+	return promptSecurityTarget(verb)
+}
+
 // effectiveThreshold resolves the configured fail threshold for a target,
 // falling back to the default when no project config is available.
 func effectiveThreshold(target *securityTarget) project.ScanSeverity {
@@ -186,6 +207,10 @@ func runSecurityScan(cmd *cobra.Command, args []string) error {
 	restore := enterSecurityJSON()
 	defer restore()
 
+	args, err := promptArgsWhenInteractive(args, "scan")
+	if err != nil {
+		return err
+	}
 	target, err := resolveSecurityTarget(args)
 	if err != nil {
 		return err
@@ -367,6 +392,10 @@ func runSecurityReport(cmd *cobra.Command, args []string) error {
 	restore := enterSecurityJSON()
 	defer restore()
 
+	args, err := promptArgsWhenInteractive(args, "view the report for")
+	if err != nil {
+		return err
+	}
 	target, err := resolveSecurityTarget(args)
 	if err != nil {
 		return err
@@ -502,6 +531,10 @@ func runSecurityConfig(cmd *cobra.Command, args []string) error {
 	restore := enterSecurityJSON()
 	defer restore()
 
+	args, err := promptArgsWhenInteractive(args, "configure")
+	if err != nil {
+		return err
+	}
 	target, err := resolveSecurityTarget(args)
 	if err != nil {
 		return err
@@ -565,6 +598,20 @@ func runSecurityShow(cmd *cobra.Command, args []string) error {
 	restore := enterSecurityJSON()
 	defer restore()
 
+	if len(args) == 0 {
+		if !IsInteractive() {
+			return phelixerr.New(phelixerr.CodeInvalidArgument,
+				"missing required <ADVISORY-ID>; usage: phelix security show <ADVISORY-ID>")
+		}
+		id, err := PromptString("Advisory identifier (e.g. GHSA-xxxx-xxxx-xxxx):", "")
+		if err != nil {
+			return err
+		}
+		if id == "" {
+			return phelixerr.New(phelixerr.CodeInvalidArgument, "an advisory identifier is required")
+		}
+		args = []string{id}
+	}
 	id := strings.TrimSpace(args[0])
 	store := security.NewScanStore(server.DataDir())
 	cache := security.NewAdvisoryCache(store.AdvisoryCacheDir())
