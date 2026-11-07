@@ -43,22 +43,19 @@ func NewPrefetchSource(cache *AdvisoryCache, client *OSVClient) *PrefetchSource 
 func (s *PrefetchSource) Prefetch(ctx context.Context, queries []OSVQuery) error {
 	if len(queries) > 0 {
 		ids, err := s.client.QueryIDs(ctx, queries)
-		if err == nil {
-			for i, query := range queries {
-				s.setIDs(query, ids[i])
-				s.mu.Lock()
-				s.attempted[queryKey(query.Ecosystem, query.Name)] = true
-				s.mu.Unlock()
+		s.mu.Lock()
+		s.networkFailure = s.networkFailure || err != nil
+		for i, query := range queries {
+			s.attempted[queryKey(query.Ecosystem, query.Name)] = true
+			if i < len(ids) && ids[i] != nil {
+				s.byQuery[queryKey(query.Ecosystem, query.Name)] = ids[i]
 			}
+		}
+		s.mu.Unlock()
+		if err == nil {
 			s.refreshDetails(ctx)
 			return nil
 		}
-		s.mu.Lock()
-		s.networkFailure = true
-		for _, query := range queries {
-			s.attempted[queryKey(query.Ecosystem, query.Name)] = true
-		}
-		s.mu.Unlock()
 	}
 	s.indexCacheFallback()
 	return nil

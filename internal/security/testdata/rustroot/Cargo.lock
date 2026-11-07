@@ -1,0 +1,21 @@
+version = 3
+
+[[package]]
+name = "rootcrate"
+version = "0.1.0"
+dependencies = [
+ "depofroot",
+ "leafcrate",
+]
+
+[[package]]
+name = "leafcrate"
+version = "0.1.0"
+dependencies = [
+ "depofroot",
+]
+
+[[package]]
+name = "depofroot"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"

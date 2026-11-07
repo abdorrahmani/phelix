@@ -57,7 +57,10 @@ func InventoryRust(dir string) (*Inventory, error) {
 }
 
 // cargoMemberDirs returns the workspace member directories relative to
-// dir. A manifest without a [workspace] table scans as a single crate.
+// dir. A manifest without a [workspace] table scans as a single crate. A
+// workspace root that also carries a [package] is an implicit member of
+// its own workspace under Cargo semantics, and its dependencies count as
+// direct.
 func cargoMemberDirs(dir string, root *cargoManifestFile) ([]string, error) {
 	if root.Workspace == nil {
 		return []string{"."}, nil
@@ -70,7 +73,19 @@ func cargoMemberDirs(dir string, root *cargoManifestFile) ([]string, error) {
 		return nil, phelixerr.New(phelixerr.CodeUnsupportedProject,
 			"workspace discovery resolved a Go workspace; scan the Rust workspace directory directly")
 	}
-	return discovery.Members, nil
+	members := discovery.Members
+	if root.Package != nil && root.Package.Name != "" {
+		hasRoot := false
+		for _, member := range members {
+			if member == "." {
+				hasRoot = true
+			}
+		}
+		if !hasRoot {
+			members = append([]string{"."}, members...)
+		}
+	}
+	return members, nil
 }
 
 func workspaceDeps(root *cargoManifestFile) map[string]*cargoDepRaw {

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
 // runPhelixSecurity runs the binary in an isolated HOME with an OSV
@@ -144,6 +146,9 @@ func TestCLISecurityScan_AtThreshold_Exit25(t *testing.T) {
 	if strings.Contains(stdout, "\nScan ") {
 		t.Fatal("human output must not leak into machine stdout")
 	}
+	if !strings.Contains(stderr, "phelix security report") {
+		t.Fatalf("the failure block must carry the findings hint: %s", stderr)
+	}
 }
 
 func TestCLISecurityScan_ConnectionFailure_Exit30(t *testing.T) {
@@ -270,5 +275,29 @@ func TestCLISecurityShow_FetchesAndCaches(t *testing.T) {
 	code, _, stderr = runPhelixSecurity(t, home, project, "http://127.0.0.1:1", "security", "show", "GO-2024-3001", "--json")
 	if code != 0 {
 		t.Fatalf("cached show must survive an unreachable endpoint: exit=%d stderr=%s", code, stderr)
+	}
+}
+
+func TestProjectIdentityKey(t *testing.T) {
+	first := projectIdentityKey("myapp", t.TempDir())
+	second := projectIdentityKey("myapp", t.TempDir())
+	same := projectIdentityKey("myapp", first[0:0]+"")
+	_ = same
+	if first == second {
+		t.Fatal("two same-named projects in different directories must not share an identity")
+	}
+	dir := t.TempDir()
+	if projectIdentityKey("myapp", dir) != projectIdentityKey("myapp", dir) {
+		t.Fatal("one project must map to one identity")
+	}
+	if !strings.HasPrefix(first, "name:myapp:") {
+		t.Fatalf("identity keeps the declared name: %s", first)
+	}
+}
+
+func TestHintForSecurityFindings(t *testing.T) {
+	hint := hintFor(phelixerr.New(phelixerr.CodeSecurityFindings, "findings"))
+	if !strings.Contains(hint, "phelix security report") || !strings.Contains(hint, "fail_threshold") {
+		t.Fatalf("the findings hint must point at the report and the threshold: %q", hint)
 	}
 }

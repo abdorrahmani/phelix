@@ -69,6 +69,8 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	cache.Now = now
 	client := &OSVClient{BaseURL: opts.OSVBaseURL, HTTP: opts.HTTPClient}
 
+	_ = store.ReclaimStaleRunning(opts.IdentityKey, StaleRunningAge)
+
 	started := now()
 	record := &ScanRecord{
 		ScanID:      NewScanID(),

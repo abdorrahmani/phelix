@@ -16,6 +16,11 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 )
 
+// osvBatchSize bounds how many package queries ride one requestbatch. It
+// is a variable so tests can exercise multi-batch behavior with tiny
+// batches.
+var osvBatchSize = 500
+
 // DefaultOSVBaseURL is the public OSV.dev API endpoint.
 const DefaultOSVBaseURL = "https://api.osv.dev"
 
@@ -38,7 +43,6 @@ func OSVBaseURL() string {
 const (
 	osvRequestTimeout    = 10 * time.Second
 	osvMaxResponseBytes  = 4 << 20
-	osvBatchSize         = 500
 	osvMaxAttempts       = 3
 	osvMaxRetryAfter     = 30 * time.Second
 	osvDetailConcurrency = 8
@@ -143,9 +147,46 @@ func (c *OSVClient) checkRedirect(redirect *http.Request, via []*http.Request) e
 	return nil
 }
 
-// do performs one request with the shared transport policy and returns the
-// decoded body capped at the response limit.
+// rateLimitedError marks one 429 response with its announced retry delay.
+type rateLimitedError struct {
+	delay time.Duration
+}
+
+func (e *rateLimitedError) Error() string {
+	return "the OSV.dev advisory service is rate limiting requests"
+}
+
+// do performs one rate-limit-aware request: at most osvMaxAttempts HTTP
+// attempts, each a fresh request, never nested. Transport policy and body
+// caps are identical for every attempt.
 func (c *OSVClient) do(ctx context.Context, method, path string, body any, out any) error {
+	var lastErr error
+	delay := time.Second
+	for attempt := 0; attempt < osvMaxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return phelixerr.Wrap(phelixerr.CodeTimeout, "OSV.dev request cancelled while rate limited", ctx.Err())
+			case <-time.After(delay):
+			}
+		}
+		limited, err := c.doAttempt(ctx, method, path, body, out)
+		if err == nil {
+			return nil
+		}
+		if !limited {
+			return err
+		}
+		lastErr = err
+		delay = minDuration(2*delay, osvMaxRetryAfter)
+	}
+	return lastErr
+}
+
+// doAttempt performs exactly one HTTP exchange. It reports whether a 429
+// response was the outcome so the retry loop can schedule the next
+// attempt with the announced delay.
+func (c *OSVClient) doAttempt(ctx context.Context, method, path string, body any, out any) (bool, error) {
 	cl := *c.httpClient()
 	cl.CheckRedirect = c.checkRedirect
 
@@ -153,13 +194,13 @@ func (c *OSVClient) do(ctx context.Context, method, path string, body any, out a
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "could not encode OSV request", err)
+			return false, phelixerr.Wrap(phelixerr.CodeInvalidArgument, "could not encode OSV request", err)
 		}
 		reader = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.baseURL(), "/")+path, reader)
 	if err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "invalid OSV request to %s", path)
+		return false, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "invalid OSV request to %s", path)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -167,50 +208,25 @@ func (c *OSVClient) do(ctx context.Context, method, path string, body any, out a
 
 	resp, err := cl.Do(req)
 	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeConnection, "could not reach the OSV.dev advisory service", err)
+		return false, phelixerr.Wrap(phelixerr.CodeConnection, "could not reach the OSV.dev advisory service", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return c.retryAfterTooManyRequests(ctx, method, path, body, out, resp)
+		return true, &rateLimitedError{delay: osvRetryDelay(resp.Header.Get("Retry-After"))}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return phelixerr.Newf(phelixerr.CodeConnection,
+		return false, phelixerr.Newf(phelixerr.CodeConnection,
 			"the OSV.dev advisory service returned HTTP %d for %s", resp.StatusCode, path)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, osvMaxResponseBytes))
 	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeConnection, "could not read the OSV.dev response", err)
+		return false, phelixerr.Wrap(phelixerr.CodeConnection, "could not read the OSV.dev response", err)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
-		return phelixerr.Wrapf(phelixerr.CodeConnection, err, "the OSV.dev response for %s is not valid advisory data", path)
+		return false, phelixerr.Wrapf(phelixerr.CodeConnection, err, "the OSV.dev response for %s is not valid advisory data", path)
 	}
-	return nil
-}
-
-// retryAfterTooManyRequests retries a rate-limited request a bounded
-// number of times, honoring a server Retry-After capped at the retry
-// ceiling.
-func (c *OSVClient) retryAfterTooManyRequests(ctx context.Context, method, path string, body any, out any, resp *http.Response) error {
-	delay := osvRetryDelay(resp.Header.Get("Retry-After"))
-	var lastErr error
-	for attempt := 1; attempt <= osvMaxAttempts; attempt++ {
-		select {
-		case <-ctx.Done():
-			return phelixerr.Wrap(phelixerr.CodeTimeout, "OSV.dev request cancelled while rate limited", ctx.Err())
-		case <-time.After(delay):
-		}
-		err := c.do(ctx, method, path, body, out)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		if !phelixerr.IsCode(err, phelixerr.CodeConnection) || !strings.Contains(err.Error(), "HTTP 429") {
-			return err
-		}
-		delay = minDuration(2*delay, osvMaxRetryAfter)
-	}
-	return lastErr
+	return false, nil
 }
 
 func osvRetryDelay(header string) time.Duration {
@@ -261,10 +277,18 @@ type osvBatchResult struct {
 // QueryIDs asks OSV for the advisory IDs touching each package. Results
 // are aligned with the input queries. Package-name queries intentionally
 // omit a version so the matcher can give every advisory a disposition.
+// When a later batch fails, the results gathered so far are returned
+// alongside the error so callers can keep the partial coverage they paid
+// for.
 func (c *OSVClient) QueryIDs(ctx context.Context, queries []OSVQuery) ([][]string, error) {
 	out := make([][]string, len(queries))
-	for start := 0; start < len(queries); start += osvBatchSize {
-		end := start + osvBatchSize
+	batchSize := osvBatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	var firstErr error
+	for start := 0; start < len(queries); start += batchSize {
+		end := start + batchSize
 		if end > len(queries) {
 			end = len(queries)
 		}
@@ -272,17 +296,23 @@ func (c *OSVClient) QueryIDs(ctx context.Context, queries []OSVQuery) ([][]strin
 		for _, q := range queries[start:end] {
 			eco, err := osvEcosystemName(q.Ecosystem)
 			if err != nil {
-				return nil, err
+				return out, err
 			}
 			batch = append(batch, osvBatchQuery{Package: osvPackageName{Ecosystem: eco, Name: q.Name}})
 		}
 		var resp osvBatchResponse
 		if err := c.do(ctx, http.MethodPost, "/v1/querybatch", osvBatchRequest{Queries: batch}, &resp); err != nil {
-			return nil, err
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
 		}
 		if len(resp.Results) != end-start {
-			return nil, phelixerr.Newf(phelixerr.CodeConnection,
-				"the OSV.dev batch response returned %d results for %d queries", len(resp.Results), end-start)
+			if firstErr == nil {
+				firstErr = phelixerr.Newf(phelixerr.CodeConnection,
+					"the OSV.dev batch response returned %d results for %d queries", len(resp.Results), end-start)
+			}
+			break
 		}
 		for i, result := range resp.Results {
 			ids := make([]string, 0, len(result.Vulns))
@@ -294,7 +324,7 @@ func (c *OSVClient) QueryIDs(ctx context.Context, queries []OSVQuery) ([][]strin
 			out[start+i] = ids
 		}
 	}
-	return out, nil
+	return out, firstErr
 }
 
 // FetchAdvisory retrieves one advisory by OSV ID.

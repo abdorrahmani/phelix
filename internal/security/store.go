@@ -250,6 +250,32 @@ func (s *ScanStore) Retain(identityKey string, keep int) error {
 	return nil
 }
 
+// ReclaimStaleRunning marks running scan records of one identity that
+// were abandoned before the given age as interrupted. The scheduler runs
+// the same recovery across every identity at daemon startup; this
+// identity-scoped form lets a CLI scan clean up after crashed runs even
+// on machines where no daemon ever runs.
+func (s *ScanStore) ReclaimStaleRunning(identityKey string, olderThan time.Duration) error {
+	records, err := s.ListScans(identityKey)
+	if err != nil {
+		return err
+	}
+	cutoff := s.Now().Add(-olderThan)
+	for _, record := range records {
+		if record.Status != ScanRunning || record.StartedAt.After(cutoff) {
+			continue
+		}
+		stamp := s.Now()
+		record.Status = ScanInterrupted
+		record.FinishedAt = &stamp
+		record.Outcome = "interrupted by a process restart"
+		if err := s.SaveScan(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // LatestEntry is one app's row in the latest index: the newest completed
 // scan and the next scheduled scan time.
 type LatestEntry struct {

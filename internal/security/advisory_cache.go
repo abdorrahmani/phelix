@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -59,15 +60,11 @@ func (c *AdvisoryCache) Get(id string) (*OSVAdvisory, bool, error) {
 	}
 	var entry advisoryCacheEntry
 	if err := json.Unmarshal(raw, &entry); err != nil {
-		if qerr := quarantineCacheEntry(path); qerr != nil {
-			return nil, false, qerr
-		}
+		_ = quarantineCacheEntry(path)
 		return nil, false, nil
 	}
 	if entry.SchemaVersion != cacheEntrySchemaVersion || entry.Advisory == nil || entry.Advisory.ID != id || entry.FetchedAt.IsZero() {
-		if qerr := quarantineCacheEntry(path); qerr != nil {
-			return nil, false, qerr
-		}
+		_ = quarantineCacheEntry(path)
 		return nil, false, nil
 	}
 	return entry.Advisory, c.Now().Sub(entry.FetchedAt) > AdvisoryCacheTTL, nil
@@ -106,7 +103,10 @@ func (c *AdvisoryCache) Prune(maxAge time.Duration) {
 	}
 	cutoff := c.Now().Add(-maxAge)
 	for _, entry := range entries {
-		if entry.IsDir() || !stringsHasSuffix(entry.Name(), ".json") {
+		if entry.IsDir() {
+			continue
+		}
+		if !stringsHasSuffix(entry.Name(), ".json") && !strings.Contains(entry.Name(), ".corrupt.") {
 			continue
 		}
 		info, err := entry.Info()

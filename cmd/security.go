@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -138,14 +141,27 @@ func resolveSecurityTarget(args []string) (*securityTarget, error) {
 		return nil, err
 	}
 	if err := app.Manager.LoadState(); err == nil {
-		for _, info := range app.Manager.(*app.AppManager).Apps {
+		for _, info := range app.Manager.ListApplications() {
 			if info.Directory == dir {
 				target := &securityTarget{appID: info.ID, appName: info.Name, identityKey: info.ID, dir: dir, cfg: cfg}
 				return target, nil
 			}
 		}
 	}
-	return &securityTarget{appName: cfg.Name, identityKey: "name:" + cfg.Name, dir: dir, cfg: cfg}, nil
+	return &securityTarget{appName: cfg.Name, identityKey: projectIdentityKey(cfg.Name, dir), dir: dir, cfg: cfg}, nil
+}
+
+// projectIdentityKey builds the store identity for an unregistered
+// project: the declared name plus a short digest of the absolute project
+// directory, so two same-named projects never share scan history or a
+// scan lock.
+func projectIdentityKey(name, dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return "name:" + name + ":" + hex.EncodeToString(sum[:4])
 }
 
 // effectiveThreshold resolves the configured fail threshold for a target,

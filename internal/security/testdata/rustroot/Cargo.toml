@@ -1,0 +1,9 @@
+[package]
+name = "rootcrate"
+version = "0.1.0"
+
+[workspace]
+members = ["crates/b"]
+
+[dependencies]
+depofroot = "1.0"
