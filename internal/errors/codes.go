@@ -191,6 +191,16 @@ const (
 	// conflating them with invalid configuration (CONFIGURATION_ERROR) or
 	// generic failure.
 	CodeSecurityFindings Code = "SECURITY_FINDINGS"
+	// CodeScanNotFound: the application exists and has security history,
+	// or no security history at all, but the requested scan record does
+	// not. Distinct from NOT_FOUND (an unknown application) so automation
+	// can tell "wrong app" from "run a scan first".
+	CodeScanNotFound Code = "SCAN_NOT_FOUND"
+	// CodeSecurityReportingDisabled: the application has not opted in to
+	// transmitting security data, so the remote operation was refused.
+	// Local CLI behavior is unchanged; this code only ever leaves through
+	// the remote command channel.
+	CodeSecurityReportingDisabled Code = "SECURITY_REPORTING_DISABLED"
 
 	// Remote command channel (MonitorStream). CodeUnimplemented marks a
 	// command type the agent cannot execute (e.g. rollback before a handler
