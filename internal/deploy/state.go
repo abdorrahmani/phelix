@@ -219,6 +219,12 @@ type DeployState struct {
 	// worker). Status "running" is the interrupted-rollout marker the monitor
 	// reconciles after a daemon restart.
 	WorkerRollout *WorkerRollout `json:"worker_rollout,omitempty"`
+	// ScaleProgress is the marker of an automatic scaling operation in
+	// flight (rolling mode only). It is written before the replica fleet is
+	// mutated and cleared after the final durable write, so a monitor crash
+	// mid-scale leaves enough evidence to converge state, proxy membership
+	// and processes on restart (RecoverInterruptedScale).
+	ScaleProgress *ScaleProgress `json:"scale_progress,omitempty"`
 	// SecretTxnID is the secret transaction whose binding set the instances
 	// recorded in this state were launched with. The engine stamps it on
 	// every durable write inside a deployment's secret window; the secret
