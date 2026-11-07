@@ -60,10 +60,18 @@ const (
 	TriggerScheduled ScanTrigger = "scheduled"
 )
 
-// Advisory freshness values reported by a scan.
+// Advisory freshness and coverage values reported by a scan.
 const (
 	FreshnessFresh = "fresh"
 	FreshnessStale = "stale"
+
+	// CoverageComplete: every queried package was checked against
+	// advisory data.
+	CoverageComplete = "complete"
+	// CoveragePartial: some packages could not be checked because no
+	// advisory data was reachable for them. A partial scan is never a
+	// clean bill of health.
+	CoveragePartial = "partial"
 )
 
 // ScanRecord is one scan execution and its results. The record stores file
@@ -84,6 +92,7 @@ type ScanRecord struct {
 	Findings      []Finding         `json:"findings,omitempty"`
 	Counts        ScanCounts        `json:"counts"`
 	Freshness     string            `json:"advisory_freshness"`
+	Coverage      string            `json:"advisory_coverage,omitempty"`
 	Warnings      []string          `json:"warnings,omitempty"`
 	Outcome       string            `json:"outcome,omitempty"`
 	PhelixVersion string            `json:"phelix_version,omitempty"`

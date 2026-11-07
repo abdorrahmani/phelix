@@ -21,6 +21,7 @@ type PrefetchSource struct {
 
 	mu             sync.Mutex
 	byQuery        map[string][]string
+	attempted      map[string]bool
 	fetchFailures  int
 	staleUsed      bool
 	networkFailure bool
@@ -29,10 +30,11 @@ type PrefetchSource struct {
 // NewPrefetchSource builds the advisory source over a cache and client.
 func NewPrefetchSource(cache *AdvisoryCache, client *OSVClient) *PrefetchSource {
 	return &PrefetchSource{
-		cache:   cache,
-		client:  client,
-		Now:     time.Now,
-		byQuery: map[string][]string{},
+		cache:     cache,
+		client:    client,
+		Now:       time.Now,
+		byQuery:   map[string][]string{},
+		attempted: map[string]bool{},
 	}
 }
 
@@ -44,12 +46,18 @@ func (s *PrefetchSource) Prefetch(ctx context.Context, queries []OSVQuery) error
 		if err == nil {
 			for i, query := range queries {
 				s.setIDs(query, ids[i])
+				s.mu.Lock()
+				s.attempted[queryKey(query.Ecosystem, query.Name)] = true
+				s.mu.Unlock()
 			}
 			s.refreshDetails(ctx)
 			return nil
 		}
 		s.mu.Lock()
 		s.networkFailure = true
+		for _, query := range queries {
+			s.attempted[queryKey(query.Ecosystem, query.Name)] = true
+		}
 		s.mu.Unlock()
 	}
 	s.indexCacheFallback()
@@ -178,6 +186,17 @@ func (s *PrefetchSource) HasData() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.byQuery) > 0
+}
+
+// Coverage reports how many of the queried package identities have
+// advisory data behind them. A live batch query resolves every query,
+// including those that return no advisories; the cache fallback resolves
+// only identities the cache happens to hold, so an offline scan can have
+// partial coverage and must never present itself as a complete check.
+func (s *PrefetchSource) Coverage() (resolved int, total int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.byQuery), len(s.attempted)
 }
 
 func (s *PrefetchSource) ids(query OSVQuery) []string {

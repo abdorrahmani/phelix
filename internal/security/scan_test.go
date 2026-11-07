@@ -18,8 +18,20 @@ func fakeOSV(t *testing.T, eco Ecosystem, pkg, advisoryID string, ranges []OSVRa
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/querybatch":
+			var body struct {
+				Queries []json.RawMessage `json:"queries"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			results := "{\"results\":["
+			for i := range body.Queries {
+				if i > 0 {
+					results += ","
+				}
+				results += "{\"vulns\":[{\"id\":\"" + advisoryID + "\"}]}"
+			}
+			results += "]}"
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"results":[{"vulns":[{"id":"` + advisoryID + `"}]}]}`))
+			_, _ = w.Write([]byte(results))
 		case strings.HasPrefix(r.URL.Path, "/v1/vulns/"):
 			adv := mkAdv(advisoryID, eco, pkg, ranges, nil, "HIGH")
 			w.Header().Set("Content-Type", "application/json")
@@ -131,6 +143,54 @@ func TestRunScan_OfflineFallsBackToCache(t *testing.T) {
 	}
 	if len(result.Open) != 1 || result.Open[0].State != StatePotentiallyAffected {
 		t.Fatalf("cached advisories must still match: %+v", result.Open)
+	}
+	if result.Record.Coverage != CoverageComplete {
+		t.Fatalf("a fully covered offline scan is complete: %s", result.Record.Coverage)
+	}
+}
+
+// TestRunScan_OfflinePartialCoverage pins the false-clean fix: an offline
+// scan whose cache only covers some of the project's packages reports
+// partial coverage and says which limitation applies.
+func TestRunScan_OfflinePartialCoverage(t *testing.T) {
+	dataDir := t.TempDir()
+	projectDir := t.TempDir()
+	writeGoProject(t, projectDir)
+	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"),
+		[]byte("module example.com/app\n\ngo 1.24\n\nrequire (\n\texample.com/vuln v1.0.0\n\texample.com/uncached v1.0.0\n)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := fakeOSV(t, EcosystemGo, "example.com/vuln", "GO-2024-2001",
+		[]OSVRange{{Type: "ECOSYSTEM", Events: events("introduced", "0", "fixed", "2.0.0")}})
+	defer server.Close()
+
+	opts := ScanOptions{
+		AppName:     "myapp",
+		IdentityKey: "name:myapp",
+		Dir:         projectDir,
+		Trigger:     TriggerManual,
+		DataDir:     dataDir,
+		OSVBaseURL:  server.URL,
+	}
+	if _, err := RunScan(context.Background(), opts); err != nil {
+		t.Fatalf("online scan: %v", err)
+	}
+	server.Close()
+
+	result, err := RunScan(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("offline scan: %v", err)
+	}
+	if result.Record.Coverage != CoveragePartial {
+		t.Fatalf("offline scan with an uncovered package must be partial: %s", result.Record.Coverage)
+	}
+	joined := ""
+	for _, warning := range result.Record.Warnings {
+		joined += warning + "\n"
+	}
+	if !strings.Contains(joined, "1 of 2 packages") {
+		t.Fatalf("coverage warning must quantify the gap: %v", result.Record.Warnings)
 	}
 }
 

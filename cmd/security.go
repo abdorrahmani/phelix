@@ -198,6 +198,7 @@ func runSecurityScan(cmd *cobra.Command, args []string) error {
 	threshold := effectiveThreshold(target)
 	tripped, atThreshold := record.Counts.AtOrAbove(string(threshold))
 
+	partial := record.Coverage == security.CoveragePartial
 	if securityJSON {
 		if writeErr := machine.WriteEnvelope(machine.Success(record.ScanID, securityScanResult{
 			ScanRecord:          record,
@@ -207,18 +208,32 @@ func runSecurityScan(cmd *cobra.Command, args []string) error {
 		})); writeErr != nil {
 			return writeErr
 		}
-		if tripped {
+		if err := incompleteScanResult(tripped, partial, record, atThreshold, threshold); err != nil {
 			machine.LeaveJSON()
-			return phelixerr.Newf(phelixerr.CodeSecurityFindings,
-				"%d finding(s) at or above the %s threshold; scan record %s", atThreshold, threshold, record.ScanID)
+			return err
 		}
 		return nil
 	}
 
 	renderScanHuman(record, threshold, tripped, atThreshold)
+	if err := incompleteScanResult(tripped, partial, record, atThreshold, threshold); err != nil {
+		return err
+	}
+	return nil
+}
+
+// incompleteScanResult decides the exit semantics of a scan that executed
+// but cannot present itself as a complete clean check. Findings at the
+// threshold dominate (exit 25); otherwise partial advisory coverage fails
+// closed (exit 30) so a CI gate can never pass on an unchecked project.
+func incompleteScanResult(tripped, partial bool, record *security.ScanRecord, atThreshold int, threshold project.ScanSeverity) error {
 	if tripped {
 		return phelixerr.Newf(phelixerr.CodeSecurityFindings,
 			"%d finding(s) at or above the %s threshold; scan record %s", atThreshold, threshold, record.ScanID)
+	}
+	if partial {
+		return phelixerr.Newf(phelixerr.CodeConnection,
+			"advisory coverage is incomplete and no findings were reported; rerun with network access to check every package (scan record %s)", record.ScanID)
 	}
 	return nil
 }

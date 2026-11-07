@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -124,6 +125,11 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 		return fail(phelixerr.New(phelixerr.CodeConnection,
 			"OSV.dev is unreachable and no cached advisory data exists for this project"))
 	}
+	resolvedQueries, totalQueries := source.Coverage()
+	coverage := CoverageComplete
+	if source.NetworkFailed() && resolvedQueries < totalQueries {
+		coverage = CoveragePartial
+	}
 
 	findings, err := MatchInventory(ctx, inv, source)
 	if err != nil {
@@ -146,10 +152,18 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	if failures := source.FetchFailures(); failures > 0 {
 		warnings = append(warnings, "some advisories could not be retrieved")
 	}
+	if coverage == CoveragePartial {
+		warnings = append(warnings, "advisory coverage is incomplete: "+itoa(totalQueries-resolvedQueries)+" of "+itoa(totalQueries)+" packages could not be checked offline")
+	}
 
 	finished := now()
 	record.Status = ScanCompleted
 	record.FinishedAt = &finished
+	record.Coverage = coverage
+	if coverage == CoveragePartial {
+		record.Warnings = append(record.Warnings,
+			"advisory coverage is incomplete: "+itoa(totalQueries-resolvedQueries)+" of "+itoa(totalQueries)+" packages could not be checked offline")
+	}
 	record.Findings = open
 	record.Counts = counts
 	record.Freshness = freshness
@@ -164,6 +178,11 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 		return nil, err
 	}
 	return &ScanResult{Record: record, Open: open}, nil
+}
+
+// itoa is a tiny convenience for warning text.
+func itoa(n int) string {
+	return strconv.Itoa(n)
 }
 
 // sanitizeOutcome bounds a failure message, mapping cancellation and

@@ -169,6 +169,37 @@ func TestCLISecurityScan_NonTTYAmbiguous_Exit2(t *testing.T) {
 	}
 }
 
+func TestCLISecurityScan_PartialCoverage_Exit30(t *testing.T) {
+	server := securityOSV(t, "low")
+	defer server.Close()
+	home := t.TempDir()
+	project := writeSecurityProject(t, "coverageapp")
+
+	if code, _, stderr := runPhelixSecurity(t, home, project, server.URL, "security", "scan"); code != 0 {
+		t.Fatalf("fully covered online scan: exit=%d stderr=%s", code, stderr)
+	}
+	// A second dependency the cache knows nothing about, scanned offline.
+	content, err := os.ReadFile(filepath.Join(project, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grown := strings.Replace(string(content), "require example.com/vuln v1.0.0",
+		"require (\n\texample.com/vuln v1.0.0\n\texample.com/uncached v1.0.0\n)", 1)
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(grown), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runPhelixSecurity(t, home, project, "http://127.0.0.1:1", "security", "scan", "--json")
+	if code != 30 {
+		t.Fatalf("partial offline coverage with no findings must fail closed: exit=%d stderr=%s", code, stderr)
+	}
+	envelope := decodeSecurityEnvelope(t, stdout)
+	result := envelope["result"].(map[string]any)
+	if result["advisory_coverage"] != "partial" {
+		t.Fatalf("coverage must be explicit in JSON: %v", result["advisory_coverage"])
+	}
+}
+
 func TestCLISecurityReport_RequiresCompletedScan_Exit12(t *testing.T) {
 	home := t.TempDir()
 	project := writeSecurityProject(t, "reportapp")
