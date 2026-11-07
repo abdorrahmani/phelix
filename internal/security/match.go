@@ -664,3 +664,42 @@ func advisoryReferences(adv *OSVAdvisory) []string {
 	}
 	return out
 }
+
+// FindingFilter narrows finding lists for query responses. Empty fields
+// match everything; Package is a name-prefix match, the others compare
+// case-insensitively against the finding's values.
+type FindingFilter struct {
+	Severity  string
+	Ecosystem string
+	State     string
+	Package   string
+}
+
+// Matches reports whether the finding passes the filter.
+func (f FindingFilter) Matches(finding Finding) bool {
+	if f.Severity != "" && !strings.EqualFold(f.Severity, finding.Severity) {
+		return false
+	}
+	if f.Ecosystem != "" && !strings.EqualFold(f.Ecosystem, string(finding.Ecosystem)) {
+		return false
+	}
+	if f.State != "" && !strings.EqualFold(f.State, finding.State) {
+		return false
+	}
+	if f.Package != "" && !strings.HasPrefix(strings.ToLower(finding.Package), strings.ToLower(f.Package)) {
+		return false
+	}
+	return true
+}
+
+// FilterFindings returns the findings that pass the filter, preserving
+// order.
+func FilterFindings(findings []Finding, filter FindingFilter) []Finding {
+	out := make([]Finding, 0, len(findings))
+	for _, finding := range findings {
+		if filter.Matches(finding) {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
