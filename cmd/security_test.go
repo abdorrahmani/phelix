@@ -105,6 +105,14 @@ func TestCLISecurityScan_BelowThreshold_Exit0(t *testing.T) {
 	if envelope["status"] != "succeeded" {
 		t.Fatalf("scan below threshold must succeed: %v", envelope["status"])
 	}
+	for _, stage := range []string{"Inventorying dependencies", "Querying OSV.dev", "Saving scan"} {
+		if !strings.Contains(stderr, stage) {
+			t.Fatalf("non-interactive progress must report stage %q on stderr: %s", stage, stderr)
+		}
+	}
+	if strings.Contains(stdout, "Inventorying") {
+		t.Fatal("progress must never leak into stdout")
+	}
 	result := envelope["result"].(map[string]any)
 	if result["threshold_tripped"] != false {
 		t.Fatalf("threshold_tripped must be false: %v", result)

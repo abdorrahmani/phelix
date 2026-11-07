@@ -19,6 +19,10 @@ type PrefetchSource struct {
 	client *OSVClient
 	Now    func() time.Time
 
+	// FetchProgress receives (done, total) as detail fetches settle. It
+	// is optional and only ever receives counts.
+	FetchProgress func(done int, total int)
+
 	mu             sync.Mutex
 	byQuery        map[string][]string
 	attempted      map[string]bool
@@ -85,6 +89,8 @@ func (s *PrefetchSource) refreshDetails(ctx context.Context) {
 	if len(missing) == 0 {
 		return
 	}
+	counter := &fetchProgressCounter{}
+	counter.add(len(missing))
 	sem := make(chan struct{}, osvDetailConcurrency)
 	var wg sync.WaitGroup
 	for _, id := range missing {
@@ -98,9 +104,13 @@ func (s *PrefetchSource) refreshDetails(ctx context.Context) {
 				s.mu.Lock()
 				s.fetchFailures++
 				s.mu.Unlock()
-				return
+			} else {
+				s.cache.Put(adv, s.Now())
 			}
-			s.cache.Put(adv, s.Now())
+			counter.one()
+			if s.FetchProgress != nil {
+				s.FetchProgress(int(counter.done.Load()), int(counter.total.Load()))
+			}
 		}(id)
 	}
 	wg.Wait()

@@ -39,6 +39,9 @@ type ScanOptions struct {
 	OSVBaseURL string
 	// Now makes the clock injectable for tests.
 	Now func() time.Time
+	// Progress receives stage updates during the scan. Nil disables
+	// reporting; callbacks only ever carry stage names and counts.
+	Progress Progress
 }
 
 // ScanResult couples the persisted record with its open findings.
@@ -97,6 +100,9 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 		return nil, cause
 	}
 
+	progress := progressSafe(opts.Progress)
+
+	progress("inventory", "detecting the project ecosystem")
 	eco, err := DetectEcosystem(opts.Dir)
 	if err != nil {
 		return fail(err)
@@ -120,7 +126,12 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 
 	source := NewPrefetchSource(cache, client)
 	source.Now = now
-	if err := source.Prefetch(ctx, prefetchQueries(inv)); err != nil {
+	queries := prefetchQueries(inv)
+	progress("query", strconv.Itoa(len(queries))+" packages")
+	source.FetchProgress = func(done, total int) {
+		progress("fetch", strconv.Itoa(done)+"/"+strconv.Itoa(total)+" advisories")
+	}
+	if err := source.Prefetch(ctx, queries); err != nil {
 		return fail(err)
 	}
 	if source.NetworkFailed() && !source.HasData() {
@@ -137,6 +148,7 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	if err != nil {
 		return fail(err)
 	}
+	progress("match", strconv.Itoa(len(findings))+" advisories evaluated")
 
 	freshness := FreshnessFresh
 	if source.StaleUsed() || source.NetworkFailed() {
@@ -158,6 +170,7 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 		warnings = append(warnings, "advisory coverage is incomplete: "+itoa(totalQueries-resolvedQueries)+" of "+itoa(totalQueries)+" packages could not be checked offline")
 	}
 
+	progress("persist", record.ScanID)
 	finished := now()
 	record.Status = ScanCompleted
 	record.FinishedAt = &finished

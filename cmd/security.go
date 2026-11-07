@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/security"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -204,8 +206,10 @@ func runSecurityScan(cmd *cobra.Command, args []string) error {
 		Trigger:     security.TriggerManual,
 		DataDir:     server.DataDir(),
 		OSVBaseURL:  security.OSVBaseURL(),
+		Progress:    newSecurityProgress(),
 	}
 	result, err := security.RunScan(context.Background(), opts)
+	finishSecurityProgress()
 	if err != nil {
 		return err
 	}
@@ -261,6 +265,9 @@ func renderScanHuman(record *security.ScanRecord, threshold project.ScanSeverity
 	if record.Inventory != nil {
 		fmt.Printf("Modules: %d inventoried, %d matchable\n", record.Counts.Modules, record.Counts.Matchable)
 	}
+	if !record.StartedAt.IsZero() && record.FinishedAt != nil {
+		fmt.Printf("Completed in %s\n", record.FinishedAt.Sub(record.StartedAt).Round(time.Millisecond))
+	}
 	for _, warning := range record.Warnings {
 		fmt.Printf("%s %s\n", color.YellowString("⚠"), warning)
 	}
@@ -273,12 +280,11 @@ func renderScanHuman(record *security.ScanRecord, threshold project.ScanSeverity
 			color.GreenString("✓"), record.Counts.NotAffected)
 	} else {
 		fmt.Println()
+		printFindingsTable(record.Findings)
+		fmt.Println()
 		for _, finding := range record.Findings {
-			fmt.Printf("%s %-24s %-40s %-12s %-8s %s\n",
-				stateSymbol(finding.State), finding.AdvisoryID, finding.Package,
-				strings.TrimPrefix(finding.Version, "v"), finding.Severity, finding.State)
 			if finding.Summary != "" {
-				fmt.Printf("  %s\n", finding.Summary)
+				fmt.Printf("%s %s: %s\n", stateSymbol(finding.State), finding.AdvisoryID, finding.Summary)
 			}
 		}
 	}
@@ -287,6 +293,37 @@ func renderScanHuman(record *security.ScanRecord, threshold project.ScanSeverity
 		fmt.Printf("\n%s %d finding(s) at or above the %s threshold\n",
 			color.RedString("✗"), atThreshold, threshold)
 	}
+}
+
+// printFindingsTable renders the shared findings table. Long package
+// identities truncate; the full value stays available in JSON and in
+// report output.
+func printFindingsTable(findings []security.Finding) {
+	t := table.New(os.Stdout, false)
+	t.Header([]string{"Severity", "Advisory", "Package", "Version", "State"})
+	for _, finding := range findings {
+		t.Append([]string{
+			finding.Severity,
+			finding.AdvisoryID,
+			truncateCell(finding.Package, 44),
+			truncateCell(strings.TrimPrefix(finding.Version, "v"), 20),
+			finding.State,
+		})
+	}
+	_ = t.Render()
+}
+
+// truncateCell bounds a cell value and marks the cut so wide identities
+// cannot stretch a table past readability.
+func truncateCell(value string, max int) string {
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	if max <= 1 {
+		return "..."
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 func inventoryLevel(record *security.ScanRecord) string {
@@ -426,7 +463,11 @@ func diffFindings(previous, current *security.ScanRecord) (newly, persistent []s
 
 func renderReportHuman(record *security.ScanRecord, result securityReportResult) {
 	fmt.Printf("Latest scan %s of %s (%s)\n", record.ScanID, record.AppName, record.Status)
-	fmt.Printf("Advisory data: %s\n", record.Freshness)
+	fmt.Printf("Advisory data: %s", record.Freshness)
+	if record.Coverage != "" {
+		fmt.Printf(", coverage: %s", record.Coverage)
+	}
+	fmt.Println()
 	for _, warning := range record.Warnings {
 		fmt.Printf("%s %s\n", color.YellowString("⚠"), warning)
 	}
@@ -435,11 +476,7 @@ func renderReportHuman(record *security.ScanRecord, result securityReportResult)
 			color.GreenString("✓"), record.Counts.NotAffected)
 	} else {
 		fmt.Println()
-		for _, finding := range record.Findings {
-			fmt.Printf("%s %-24s %-40s %-12s %-8s %s\n",
-				stateSymbol(finding.State), finding.AdvisoryID, finding.Package,
-				strings.TrimPrefix(finding.Version, "v"), finding.Severity, finding.State)
-		}
+		printFindingsTable(record.Findings)
 	}
 	if result.PreviousScanID != "" {
 		fmt.Printf("\nCompared with %s: %d newly detected, %d persistent, %d resolved\n",
@@ -504,15 +541,18 @@ func runSecurityConfig(cmd *cobra.Command, args []string) error {
 		return machine.WriteEnvelope(machine.Success("security-config", result))
 	}
 	fmt.Printf("Vulnerability scanning for %s\n", target.appName)
-	fmt.Printf("  Enabled: %t\n", result.Enabled)
-	fmt.Printf("  Scan interval: %s\n", result.ScanInterval)
-	fmt.Printf("  Fail threshold: %s\n", result.FailThreshold)
+	t := table.New(os.Stdout, false)
+	t.Header([]string{"Setting", "Value"})
+	t.Append([]string{"Enabled", strconv.FormatBool(result.Enabled)})
+	t.Append([]string{"Scan interval", result.ScanInterval})
+	t.Append([]string{"Fail threshold", result.FailThreshold})
 	if result.LastScanID != "" {
-		fmt.Printf("  Last completed scan: %s\n", result.LastScanID)
+		t.Append([]string{"Last completed scan", result.LastScanID})
 	}
 	if result.NextScanAt != nil {
-		fmt.Printf("  Next scheduled scan: %s\n", result.NextScanAt.Format(time.RFC3339))
+		t.Append([]string{"Next scheduled scan", result.NextScanAt.Format(time.RFC3339)})
 	}
+	_ = t.Render()
 	return nil
 }
 
