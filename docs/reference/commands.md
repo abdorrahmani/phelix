@@ -417,17 +417,25 @@ no data leaves the machine. Full behavior, confidence rules.
 phelix security scan              # scan the project in the current directory
 phelix security scan myapp        # scan a registered application
 phelix security report myapp      # latest completed scan (add --previous to diff)
+phelix security history myapp     # recorded scans (add --limit N)
 phelix security show GHSA-...     # one advisory, from cache or OSV.dev
-phelix security config myapp      # effective settings and schedule
+phelix security config myapp      # effective settings; --set-* flags edit phelix.yaml
+phelix security                   # interactive menu (in a terminal; help otherwise)
 ```
 
 - `--json` emits one machine envelope with the scan record, the resolved
-  threshold, and `threshold_tripped`.
+  threshold, the advisory coverage, and `threshold_tripped`.
 - Exit codes: `0` below the configured `security.vulnerability.fail_threshold`,
-  `25` at or above it, `30` when OSV.dev is unreachable with no cached
-  advisories.
+  `25` at or above it, `30` when OSV.dev is unreachable (including
+  partial offline coverage with no findings, so a gate never passes on an
+  unchecked project).
+- `--set-enabled`, `--set-scan-interval`, and `--set-fail-threshold` edit
+  the application's `phelix.yaml` in place; unrelated configuration and
+  comments are preserved and invalid values are rejected before writing.
 - Scheduled scans run inside `phelix monitor` for apps with
-  `security.vulnerability.enabled: true` in their `phelix.yaml`.
+  `security.vulnerability.enabled: true` in their `phelix.yaml`; the
+  dashboard reaches the same operations remotely after the app opts in
+  with `security.vulnerability.reporting: true`.
 
 ## Other commands
 
