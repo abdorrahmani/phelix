@@ -126,7 +126,6 @@ func TestWorkerRejections(t *testing.T) {
 		{"canary", "type: worker\nname: w\ndeploy:\n  strategy: canary\n", "not valid for type: worker"},
 		{"docker", "type: worker\nname: w\ndeploy:\n  runtime: docker\n  strategy: rolling\n", "not supported for type: worker"},
 		{"rollout", "type: worker\nname: w\ndeploy:\n  rollout:\n    canary: 10\n", "deploy.rollout is not valid"},
-		{"autoscaling", "type: worker\nname: w\ndeploy:\n  autoscaling:\n    enabled: true\n", "deploy.autoscaling is not valid"},
 		{"endpoints", "type: worker\nname: w\nhealth:\n  endpoints:\n    - name: d\n      path: /h\n", "health.endpoints is not valid"},
 		{"exec without mode", "type: worker\nname: w\nhealth:\n  exec:\n    command: [\"./hc\"]\n", "health.exec requires health.mode: exec"},
 		{"exec without command", "type: worker\nname: w\nhealth:\n  mode: exec\n", "requires a health.exec block"},

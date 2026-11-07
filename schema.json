@@ -6,10 +6,10 @@
       "description": "Deployment strategy and runtime.",
       "properties": {
         "autoscaling": {
-          "description": "Replica autoscaling. Parsed, validated and resolved, but no component executes scaling decisions yet.",
+          "description": "Replica autoscaling for rolling services and workers. The monitor controller evaluates metrics and scales via the existing scaling paths.",
           "properties": {
             "cooldown": {
-              "description": "Wait between scaling decisions as a duration. Defaults to 60s.",
+              "description": "Wait between scaling decisions as a duration. Defaults to 60s. Shorthand for both directions.",
               "type": "string"
             },
             "cpu": {
@@ -29,7 +29,7 @@
               "type": "boolean"
             },
             "evaluation_windows": {
-              "description": "Consecutive samples a condition must hold. Defaults to 1.",
+              "description": "Consecutive samples a condition must hold. Defaults to 1. Shorthand for both directions.",
               "type": "integer"
             },
             "interval": {
@@ -42,8 +42,14 @@
                   "description": "Proxy p95 latency that triggers a scale down. Defaults to 150ms.",
                   "type": "string"
                 },
+                "scale_down_p99": {
+                  "type": "string"
+                },
                 "scale_up_p95": {
                   "description": "Proxy p95 latency that triggers a scale up. Defaults to 500ms.",
+                  "type": "string"
+                },
+                "scale_up_p99": {
                   "type": "string"
                 }
               },
@@ -53,9 +59,108 @@
               "description": "Upper replica bound. Defaults to deploy.replicas.",
               "type": "integer"
             },
+            "metrics": {
+              "description": "Per-metric thresholds. Overrides the legacy top-level cpu/latency fields when declared.",
+              "properties": {
+                "cpu": {
+                  "description": "CPU percent thresholds (scale_up/scale_down).",
+                  "properties": {
+                    "scale_down": {
+                      "type": "number"
+                    },
+                    "scale_up": {
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                },
+                "latency": {
+                  "description": "Proxy latency thresholds; p95 and optional p99.",
+                  "properties": {
+                    "scale_down_p95": {
+                      "description": "Proxy p95 latency that triggers a scale down.",
+                      "type": "string"
+                    },
+                    "scale_down_p99": {
+                      "description": "Proxy p99 latency that triggers a scale down. Optional.",
+                      "type": "string"
+                    },
+                    "scale_up_p95": {
+                      "description": "Proxy p95 latency that triggers a scale up.",
+                      "type": "string"
+                    },
+                    "scale_up_p99": {
+                      "description": "Proxy p99 latency that triggers a scale up. Optional.",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                "memory": {
+                  "description": "Memory percent thresholds (scale_up/scale_down) relative to host memory.",
+                  "properties": {
+                    "scale_down": {
+                      "type": "number"
+                    },
+                    "scale_up": {
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                },
+                "requests_per_second": {
+                  "description": "Proxy request-rate thresholds (scale_up/scale_down).",
+                  "properties": {
+                    "scale_down": {
+                      "type": "number"
+                    },
+                    "scale_up": {
+                      "type": "number"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
             "min_replicas": {
               "description": "Lower replica bound. Defaults to 1.",
               "type": "integer"
+            },
+            "scale_down": {
+              "description": "Scale-down cadence overrides: evaluation_windows, cooldown, stabilization_window.",
+              "properties": {
+                "cooldown": {
+                  "description": "Wait between scale-down decisions as a duration. Defaults to the top-level cooldown.",
+                  "type": "string"
+                },
+                "evaluation_windows": {
+                  "description": "Consecutive samples the down condition must hold. Defaults to the top-level value.",
+                  "type": "integer"
+                },
+                "stabilization_window": {
+                  "description": "How long the down condition must have held continuously before a scale-down decision, as a duration. Defaults to 0 (off).",
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "scale_up": {
+              "description": "Scale-up cadence overrides: evaluation_windows and cooldown.",
+              "properties": {
+                "cooldown": {
+                  "description": "Wait between scale-up decisions as a duration. Defaults to the top-level cooldown.",
+                  "type": "string"
+                },
+                "evaluation_windows": {
+                  "description": "Consecutive samples the up condition must hold. Defaults to the top-level value.",
+                  "type": "integer"
+                },
+                "stabilization_window": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
             }
           },
           "type": "object"
