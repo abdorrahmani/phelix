@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
@@ -73,6 +74,17 @@ func runSecurityScheduler(ctx context.Context) {
 		logs.Info("security", format, args...)
 	}
 	scheduler.Run(ctx)
+}
+
+// remoteSecurityAuthorize gates remote security mutations through the
+// host authorization boundary. The application identifier resolves to its
+// stable id before the decision so policies can target apps precisely.
+func remoteSecurityAuthorize(req *pb.MonitorCommandRequest) error {
+	info, err := GetAppInfo(req.GetAppName())
+	if err != nil {
+		return err
+	}
+	return authorizeDirectExecution(authz.ActionSecurity, info.Name, info.ID)
 }
 
 // securitySnapshotsForConsentingApps builds the latest completed scan
@@ -266,6 +278,7 @@ func runMonitor() error {
 		logs.Warning("monitor", "remote security ledger unavailable; mutating security commands will fail closed: %v", err)
 	}
 	phelixgrpc.SetSecurityHandler(RemoteSecurityCommand)
+	phelixgrpc.SetSecurityAuthorizer(remoteSecurityAuthorize)
 	phelixgrpc.SecuritySnapshotProvider = securitySnapshotsForConsentingApps
 
 	c.Start()
