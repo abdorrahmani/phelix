@@ -130,6 +130,10 @@ func TestRemoteSecurity_UnknownApp(t *testing.T) {
 	if result.GetErrorCode() != "NOT_FOUND" {
 		t.Fatalf("an unknown application is NOT_FOUND: %s", result.GetErrorCode())
 	}
+	missing := RemoteSecurityCommand(securityRequest("r2", phelixgrpc.SecurityCommandReport, "remoteapp", nil))
+	if missing.GetErrorCode() != "SCAN_NOT_FOUND" {
+		t.Fatalf("a registered app without scans is SCAN_NOT_FOUND: %s", missing.GetErrorCode())
+	}
 }
 
 func TestRemoteSecurity_ReportAndHistory(t *testing.T) {

@@ -122,7 +122,8 @@ func ExitCodeFor(err error) int {
 		phelixerr.CodeApprovalRequired, phelixerr.CodeApprovalStale, phelixerr.CodeApprovalInvalid:
 		return ExitPermission
 	case phelixerr.CodeNotFound, phelixerr.CodeVersionNotFound,
-		phelixerr.CodeRollbackTargetNotFound, phelixerr.CodeSecretNotFound:
+		phelixerr.CodeRollbackTargetNotFound, phelixerr.CodeSecretNotFound,
+		phelixerr.CodeScanNotFound:
 		return ExitNotFound
 	case phelixerr.CodeBuildFailed, phelixerr.CodeToolchainNotFound,
 		phelixerr.CodeBuildTimeout, phelixerr.CodeUnsupportedProject,
@@ -187,6 +188,8 @@ func hintFor(err error) string {
 		return "Re-run:\n  phelix update\nOr reinstall with the one-line installer:\n  curl -fsSL https://phelix.anophel.com/install.sh | bash"
 	case phelixerr.CodeDocker, phelixerr.CodeDockerDaemonUnavailable:
 		return "Make sure Docker is installed and running, then try again."
+	case phelixerr.CodeScanNotFound:
+		return "Run:\n  phelix security scan <app-name>"
 	case phelixerr.CodeSecurityFindings:
 		return "Review the findings:\n  phelix security report\nThe gate threshold is security.vulnerability.fail_threshold in phelix.yaml"
 	// Authorization hints point at the authorization boundary, never at

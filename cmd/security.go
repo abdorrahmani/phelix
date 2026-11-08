@@ -424,8 +424,8 @@ func runSecurityReport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if entry == nil || entry.ScanID == "" {
-		return phelixerr.Newf(phelixerr.CodeNotFound,
-			"no completed scan found for %s; run phelix security scan first", target.appName)
+		return phelixerr.Newf(phelixerr.CodeScanNotFound,
+			"no completed scan found for %s", target.appName)
 	}
 	record, err := store.LoadScan(entry.ScanID)
 	if err != nil {
