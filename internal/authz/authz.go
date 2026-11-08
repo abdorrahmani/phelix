@@ -68,6 +68,13 @@ const (
 	// mutations: in legacy local mode it is ungated, under enforced
 	// authorization it is denied.
 	ActionSecurity = "security"
+	// ActionScale authorizes a replica-count mutation that is not a rebuild:
+	// the automatic autoscaling controller's executions and the remote
+	// autoscale_* commands. It is distinct from ActionRebuild because scaling
+	// changes no version and builds nothing; a policy should be able to allow
+	// scaling while keeping rebuilds manual. The gate follows the same
+	// planless rule as the other direct mutations.
+	ActionScale = "scale"
 )
 
 // Decision effects. This is the complete vocabulary; there is no fourth
@@ -196,7 +203,7 @@ func (r Request) Validate() error {
 		return err
 	}
 	switch r.Action {
-	case ActionRebuild, ActionRollback, ActionMatrix, ActionSecurity:
+	case ActionRebuild, ActionRollback, ActionMatrix, ActionSecurity, ActionScale:
 	default:
 		return invalidf("unknown authorizable action %q", r.Action)
 	}

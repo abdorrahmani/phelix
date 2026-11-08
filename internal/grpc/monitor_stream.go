@@ -429,6 +429,12 @@ func (c *Client) runMonitorStream() error {
 		c.replayPendingWorkerResults(workerResults)
 	}
 
+	if err := autoscaleResults.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote autoscale ledger unavailable; autoscale mutations will fail closed: %v", err)
+	} else {
+		c.replayPendingAutoscaleResults()
+	}
+
 	if err := c.sendMonitorServerInfo(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
@@ -525,6 +531,11 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 			if isWorkerCommand(p.Command.GetType()) {
 				c.handleWorkerCommand(p.Command, workerResults)
+				continue
+			}
+
+			if isAutoscaleCommand(p.Command.GetType()) {
+				c.handleAutoscaleCommand(p.Command)
 				continue
 			}
 
