@@ -307,10 +307,6 @@ func (c *Config) validateWorker() error {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.rollout is not valid for type: worker\nHint: canary/progressive rollouts route proxy traffic; workers have none")
 		}
-		if c.Deploy.Autoscaling != nil {
-			return phelixerr.Newf(phelixerr.CodeConfiguration,
-				"configuration error: deploy.autoscaling is not valid for type: worker\nHint: worker scaling is manual via 'phelix scale'")
-		}
 		if err := c.Deploy.Rolling.validate(); err != nil {
 			return err
 		}

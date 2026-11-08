@@ -102,7 +102,7 @@ webhook:
 | `health.exec.interval` | no (worker) | Probe cadence (e.g. `10s`). Default `10s`. |
 | `health.exec.timeout` | no (worker) | Per-probe timeout (e.g. `5s`); enforced with a process-group kill. Default `5s`. |
 | `health.exec.retries` | no (worker) | Consecutive probe failures that cause ONE health-driven restart. Default `3`. |
-| `deploy.autoscaling` | no | Replica autoscaling block. **Parsed, validated, and resolved, but not yet executed** — see note below. |
+| `deploy.autoscaling` | no | Replica autoscaling block for rolling services and workers. The monitor controller evaluates metrics and scales via the existing scaling paths (see [Autoscaling block](#autoscaling-block)). |
 | `webhook.enabled` | no | Turns the Git push webhook trigger on for this app. Default `false`; apps without a `webhook` section never accept deliveries (see [Webhooks](../guides/webhooks.md)). |
 | `webhook.branch` | yes (with `enabled`) | Bare branch name whose pushes trigger a rebuild (e.g. `main`, `release/2.x` — not `refs/heads/main`). |
 | `webhook.secret_env` | yes (with `enabled`) | Name of the environment variable holding the HMAC-SHA256 shared secret (e.g. `PHELIX_WEBHOOK_SECRET`). The secret itself is never stored in phelix.yaml. |
@@ -277,13 +277,15 @@ matrix:
 Full expansion, precedence, and validation rules are in
 [Matrix builds](../guides/matrix-builds.md).
 
-## Autoscaling block (parsed but not yet executed)
+## Autoscaling block
 
-The `deploy.autoscaling` block is accepted, validated, and resolved by the project
-config layer (`internal/project/schema.go`), but **no component executes scaling
-decisions yet** (the decision engine is observe-only). It is documented here for
-completeness; do not expect it to change replica counts. See
-[deployment architecture](../architecture/deployment.md#autoscaling-decision-engine-current-status).
+The `deploy.autoscaling` block configures automatic replica scaling. The
+monitor daemon runs a per-app controller (`internal/autoscale`) that samples
+per-replica CPU and memory plus windowed proxy traffic, feeds the decision
+engine (`internal/deploy/autoscale.go`), and executes decisions through the
+existing scaling paths: `deploy.WorkerScale` for worker apps and the rolling
+scale executor for rolling services. Every replica mutation runs under the
+same per-app deploy lock as deploys, rollbacks and manual scaling.
 
 ```yaml
 deploy:
@@ -291,24 +293,61 @@ deploy:
     enabled: true
     min_replicas: 1
     max_replicas: 5          # defaults to deploy.replicas when unset
-    interval: 15s            # default 15s
-    cooldown: 60s            # default 60s
-    evaluation_windows: 1    # consecutive samples a condition must hold; default 1
+    interval: 15s            # evaluation cadence; default 15s
+
+    # Legacy top-level thresholds remain valid; the metrics block overrides
+    # per metric when declared.
     cpu:
       scale_up: 70           # percent; default 70
       scale_down: 30         # percent; default 30
     latency:
       scale_up_p95: 500ms    # default 500ms
       scale_down_p95: 150ms  # default 150ms
+
+    # Extended metrics block. A metric without a threshold for a direction
+    # does not participate in that direction.
+    metrics:
+      cpu:
+        scale_up: 65
+        scale_down: 30
+      memory:                  # percent of host memory
+        scale_up: 80
+        scale_down: 40
+      requests_per_second:     # proxy request rate
+        scale_up: 500
+        scale_down: 50
+      latency:
+        scale_up_p95: 200ms
+        scale_down_p95: 80ms
+        scale_up_p99: 500ms    # optional
+        scale_down_p99: 200ms
+
+    # Per-direction cadence. The top-level cooldown/evaluation_windows are
+    # shorthand for both directions.
+    scale_up:
+      evaluation_windows: 3
+      cooldown: 60s
+    scale_down:
+      evaluation_windows: 5
+      cooldown: 180s
+      stabilization_window: 300s  # the down condition must hold this long
 ```
 
-> **Source vs README discrepancy (recorded for the report):** the `deploy.runtime`,
-> `resources`, `matrix`, and `deploy.autoscaling` blocks all exist in the code and
-> are validated on load. The README documented `resources`, `matrix`, and
-> `deploy.runtime` in prose but **not** `deploy.autoscaling` (it was code-only).
-> The autoscaling fields above are transcribed from the schema and its defaults
-> (`internal/project/schema.go`, `internal/deploy/autoscale.go`) — the
-> implementation is the source of truth here.
+Decision policy: scale up when ANY enabled metric breaches its upper
+threshold; scale down only when EVERY enabled metric is at or below its lower
+threshold; scale up wins conflicts. Missing metrics never trigger a scale-up
+and block scale-down. Traffic metrics apply only when a proxy is enrolled.
+Stale samples (older than twice the interval) produce no decision. Every
+decision and outcome lands in the app's `autoscale_history.jsonl` and in an
+`ops` record.
+
+Manage it with `phelix autoscale status|enable|disable|pause|resume|evaluate|history`.
+The runtime pause survives monitor restarts; enable/disable edits phelix.yaml.
+Remote management goes through the `autoscale_*` MonitorStream commands,
+gated by the `scale` authorization action.
+
+Workers and rolling services both accept the block. See
+[deployment architecture](../architecture/deployment.md#autoscaling-decision-engine-current-status).
 
 ## Validation
 

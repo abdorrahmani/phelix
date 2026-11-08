@@ -53,6 +53,10 @@ const (
 	// management (worker_scale MonitorStream commands mutating the existing
 	// worker replica set through the shared replica coordinator).
 	CapabilityWorkerLifecycle = "worker_lifecycle"
+	// CapabilityAutoscaling: the agent implements the remote autoscaling
+	// surface: status/history queries plus the pause/resume/enable/disable
+	// and one-shot evaluation commands (backend may gate autoscale_* on it).
+	CapabilityAutoscaling = "autoscaling"
 	// CapabilityLogBatch: the agent batches monitor log entries into
 	// MonitorLogBatch events (log_batch oneof case) alongside the legacy
 	// per-line log_entry events, with bounded queueing and a dropped-lines

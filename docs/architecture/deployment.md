@@ -71,46 +71,51 @@ per slot/replica) ≠ the `PORT` env var Phelix injects to tell each instance wh
 internal port to bind. Managed apps must read `PORT`; `phelix doctor` catches
 hardcoded ports. See [The PORT Contract](../getting-started/the-port-contract.md).
 
-## Autoscaling decision engine (current status)
+## Autoscaling architecture
 
-> **Architecture-only, not yet user-facing.** The Phase 1 audit flagged
-> autoscaling as shipped code with no user documentation. Inspection of the source
-> confirms it is a **decision engine only** — there is no CLI surface and no
-> executor, so no user guide is provided. This section documents its current state
-> for engineers.
+The autoscaling engine is now fully wired: the monitor daemon runs a per-app
+controller (`internal/autoscale`) that samples metrics, evaluates decisions and
+executes them through the existing scaling paths. The decision engine itself
+remains a pure metrics-in / decision-out function in
+`internal/deploy/autoscale.go`.
 
-`internal/deploy/autoscale.go` states its own scope in a header comment:
+- **Sampler** (`internal/autoscale/sampler.go`): per-replica CPU (interval
+  deltas over gopsutil process times), per-replica memory (RSS over host
+  memory), and windowed proxy traffic (RPS, error rate, P95, P99) by diffing
+  the cumulative `BackendStat` counters with negative clamping after proxy
+  restarts. Missing replicas flag their dimension missing; the first traffic
+  window only seeds the baseline.
+- **Decision engine**: scale up when ANY enabled metric breaches its upper
+  threshold, scale down when EVERY enabled metric is at or below its lower
+  threshold; up wins conflicts. Per-direction evaluation windows and cooldowns,
+  a scale-down stabilization window, freshness rejection (a sample older than
+  twice the interval decides nothing), and `ConfirmExecution`/`AbortDecision`
+  so a failed execution never consumes its cooldown. Every decision moves the
+  desired count by exactly one replica; min/max clamp.
+- **Execution**: worker decisions dispatch to `deploy.WorkerScale` (which takes
+  the app deploy lock itself); rolling decisions go through the rolling scale
+  executor (`internal/deploy/scale_exec.go`), which takes the same lock, loads
+  state, rejects stale decisions and rollouts in flight, launches the active
+  version's artifact (no rebuild, no new version), health-gates the new
+  replica, updates proxy membership, commits `deploy.json`, and drains victims
+  membership-first. A `ScaleProgress` marker plus `RecoverInterruptedScale`
+  converge an interrupted scale on daemon restart.
+- **Controller** (`internal/autoscale/controller.go`): per-app single-flight
+  evaluation loop at the configured interval, pause state (`autoscale.json`,
+  survives restarts), append-only decision history
+  (`autoscale_history.jsonl`), and an `ops` record per execution.
+- **Surfaces**: `phelix autoscale status|enable|disable|pause|resume|evaluate|history`
+  locally, and `autoscale_*` MonitorStream commands remotely, gated by the
+  `scale` authorization action.
 
-> Phase 1 autoscaling: the decision engine only observes metrics and decides
-> whether the desired replica count of a rolling deployment should change. It
-> starts/stops nothing, touches no proxy state, no `deploy.json` and no rebuild
-> pipeline; Phase 2 wires a metrics collector (per-replica CPU, proxy p95) and a
-> decision executor on top.
-
-- `Autoscaler` (`NewAutoscaler`) is a pure metrics-in / decision-out function:
-  `Evaluate(AutoscaleMetrics{CPUPercent, P95Latency}, currentReplicas)` returns a
-  `ScaleDecision` (`ScaleNone` / `ScaleUp` / `ScaleDown`, plus current/desired
-  replica counts and a human reason). `NewAutoscaler`/`Evaluate` are **not
-  constructed anywhere outside tests** — nothing applies the decision yet.
-- Rules: scale up when `cpu >= scale_up` **OR** `p95 >= scale_up_p95`; scale down
-  when `cpu <= scale_down` **AND** `p95 <= scale_down_p95`. A condition must hold
-  for `EvaluationWindows` consecutive samples before a decision; every decision
-  moves the desired count by exactly one replica; no further decision until
-  `Cooldown` elapses (cooldown clears partial windows to break up→down→up
-  oscillation). Zero metrics count as "idle": they satisfy scale-down, never
-  scale-up. `MaxReplicas`/`MinReplicas` clamp the decision.
-- Config is the `deploy.autoscaling` block in `phelix.yaml`
-  (`internal/project/schema.go`: `AutoscalingConfig` → resolved to
-  `AutoscaleSettings` via `Resolve(replicas)`). Phase 1 only **loads, validates and
-  resolves** it. An unset `max_replicas` defaults to `deploy.replicas` so enabling
-  autoscaling alone never widens the replica set beyond what the user declared.
-  Defaults: interval 15s, cooldown 60s, CPU up/down 70%/30%, p95 up/down
-  500ms/150ms, evaluation windows 1.
-
-Because nothing executes these decisions, `deploy.autoscaling` is intentionally
-**not** promoted as a user-facing feature. When an executor and metrics collector
-are wired up, a user guide (`guides/autoscaling.md`) and full config documentation
-become appropriate.
+Config is the `deploy.autoscaling` block in `phelix.yaml`
+(`internal/project/schema.go`: `AutoscalingConfig` → resolved to
+`AutoscaleSettings` via `Resolve(replicas)`). An unset `max_replicas` defaults
+to `deploy.replicas` so enabling autoscaling alone never widens the replica set
+beyond what the user declared. Defaults: interval 15s, cooldown 60s (both
+directions unless overridden), CPU up/down 70%/30%, p95 up/down 500ms/150ms,
+evaluation windows 1, stabilization off. See the
+[configuration reference](../reference/configuration.md#autoscaling-block).
 
 ## Related
 

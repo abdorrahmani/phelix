@@ -27,12 +27,19 @@ import (
 var monitorMetricsInterval = 2 * time.Second
 
 // serverMetricsInterval is the cadence for the host-wide metrics slice of the
-// monitor snapshot (sendServerTick). Host memory, disk, load and process
-// counts do not change meaningfully within the app tick interval, and
-// collecting them blocks for a full second because the CPU sampler measures
-// across its interval. A var (not a const) so tests can shorten it, like
-// monitorMetricsInterval.
-var serverMetricsInterval = 30 * time.Second
+// monitor snapshot (sendServerTick). It matches the app tick: the blocking
+// one-second CPU measurement that used to force this to 30s moved into the
+// background sampler (server.StartMetricsSampler), so sending the snapshot is
+// just a read of the latest cached sample. The extra ~0.5 msg/s is far inside
+// the backend's per-stream budget (20 msgs/s sustained). A var (not a const)
+// so tests can shorten it, like monitorMetricsInterval.
+var serverMetricsInterval = 2 * time.Second
+
+// serverMetricsSampleInterval is how often the background host-metrics
+// sampler refreshes its snapshot. Matching serverMetricsInterval means every
+// server tick carries a sample at most one interval old, with CPU averaged
+// over the preceding window. A var (not a const) so tests can shorten it.
+var serverMetricsSampleInterval = 2 * time.Second
 
 const monitorCommandSettleDelay = 2 * time.Second
 
@@ -368,6 +375,10 @@ func (c *Client) runMonitorStream() error {
 		return phelixerr.Wrap(phelixerr.CodeConnection, "open monitor stream", err)
 	}
 
+	// Keep a fresh host-metrics snapshot ready so sendServerTick never
+	// measures the host on the send loop (idempotent across reconnects).
+	server.StartMetricsSampler(serverMetricsSampleInterval)
+
 	monitorStream.mu.Lock()
 	monitorStream.stream = stream
 	monitorStream.cancel = cancel
@@ -416,6 +427,12 @@ func (c *Client) runMonitorStream() error {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote worker ledger unavailable; worker commands will fail closed: %v", err)
 	} else {
 		c.replayPendingWorkerResults(workerResults)
+	}
+
+	if err := autoscaleResults.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote autoscale ledger unavailable; autoscale mutations will fail closed: %v", err)
+	} else {
+		c.replayPendingAutoscaleResults()
 	}
 
 	if err := c.sendMonitorServerInfo(); err != nil {
@@ -514,6 +531,11 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 			if isWorkerCommand(p.Command.GetType()) {
 				c.handleWorkerCommand(p.Command, workerResults)
+				continue
+			}
+
+			if isAutoscaleCommand(p.Command.GetType()) {
+				c.handleAutoscaleCommand(p.Command)
 				continue
 			}
 
@@ -753,9 +775,9 @@ func (s *monitorStreamManager) markServerInfoSent() {
 // monitorMetricsInterval. It also retries the deferred ServerInfo snapshot:
 // a stream that opened while nothing was watched delivers it on the first
 // tick after a watch opt-in, and sendMonitorServerInfo is a no-op once the
-// identity has been delivered on this stream. Server-level metrics and self
-// logs ride the slower sendServerTick. Per-app payloads are filtered by
-// watching at the collection boundary (monitor.MetricsCollector).
+// identity has been delivered on this stream. Server-level metrics ride
+// sendServerTick, at the same cadence as this tick. Per-app payloads are
+// filtered by watching at the collection boundary (monitor.MetricsCollector).
 func (c *Client) sendMonitorTick() {
 	serverID := server.GetServerID()
 

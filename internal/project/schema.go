@@ -147,9 +147,9 @@ type RolloutVerificationConfig struct {
 }
 
 // AutoscalingConfig is the phelix.yaml shape of deploy.autoscaling, the
-// rolling-deploy replica autoscaling block. Phase 1 only loads, validates and
-// resolves it: the decision engine (internal/deploy/autoscale.go) consumes the
-// resolved AutoscaleSettings, and nothing executes scaling decisions yet.
+// replica autoscaling block for rolling services and workers. The controller
+// in internal/autoscale consumes the resolved AutoscaleSettings and executes
+// decisions through the existing scaling paths.
 type AutoscalingConfig struct {
 	Enabled           bool                    `yaml:"enabled,omitempty"`
 	MinReplicas       int                     `yaml:"min_replicas,omitempty"`
@@ -159,19 +159,52 @@ type AutoscalingConfig struct {
 	CPU               *AutoscaleCPUConfig     `yaml:"cpu,omitempty"`
 	Latency           *AutoscaleLatencyConfig `yaml:"latency,omitempty"`
 	EvaluationWindows int                     `yaml:"evaluation_windows,omitempty"`
+	// Metrics is the extended metric block. When a metric is declared here it
+	// takes precedence over the legacy top-level cpu/latency fields, which
+	// remain valid for backward compatibility.
+	Metrics *AutoscaleMetricsConfig `yaml:"metrics,omitempty"`
+	// ScaleUp and ScaleDown override the evaluation cadence per direction.
+	// The legacy top-level cooldown/evaluation_windows fields remain valid
+	// shorthand that populates both directions.
+	ScaleUp   *AutoscaleDirectionConfig `yaml:"scale_up,omitempty"`
+	ScaleDown *AutoscaleDirectionConfig `yaml:"scale_down,omitempty"`
 }
 
-// AutoscaleCPUConfig holds the CPU thresholds in percent. Zero means unset.
+// AutoscaleCPUConfig holds a scale_up/scale_down threshold pair. Threshold
+// semantics differ per metric (CPU and memory are percents, RPS is requests
+// per second), but the pair shape is shared. Zero means unset: a metric with
+// no scale_up threshold never contributes a scale-up signal, and one with no
+// scale_down threshold never participates in the scale-down conjunction.
 type AutoscaleCPUConfig struct {
 	ScaleUp   float64 `yaml:"scale_up,omitempty"`
 	ScaleDown float64 `yaml:"scale_down,omitempty"`
 }
 
-// AutoscaleLatencyConfig holds the proxy p95 latency thresholds. Empty means
-// unset.
+// AutoscaleLatencyConfig holds the proxy latency thresholds. Empty means
+// unset. P99 is optional; when unset only P95 participates.
 type AutoscaleLatencyConfig struct {
 	ScaleUpP95   string `yaml:"scale_up_p95,omitempty"`
 	ScaleDownP95 string `yaml:"scale_down_p95,omitempty"`
+	ScaleUpP99   string `yaml:"scale_up_p99,omitempty"`
+	ScaleDownP99 string `yaml:"scale_down_p99,omitempty"`
+}
+
+// AutoscaleMetricsConfig groups the per-metric thresholds under
+// deploy.autoscaling.metrics.
+type AutoscaleMetricsConfig struct {
+	CPU               *AutoscaleCPUConfig     `yaml:"cpu,omitempty"`
+	Memory            *AutoscaleCPUConfig     `yaml:"memory,omitempty"`
+	RequestsPerSecond *AutoscaleCPUConfig     `yaml:"requests_per_second,omitempty"`
+	Latency           *AutoscaleLatencyConfig `yaml:"latency,omitempty"`
+}
+
+// AutoscaleDirectionConfig holds the per-direction cadence overrides under
+// deploy.autoscaling.scale_up and deploy.autoscaling.scale_down.
+// StabilizationWindow is only consumed by the scale-down direction.
+type AutoscaleDirectionConfig struct {
+	EvaluationWindows   int    `yaml:"evaluation_windows,omitempty"`
+	Cooldown            string `yaml:"cooldown,omitempty"`
+	StabilizationWindow string `yaml:"stabilization_window,omitempty"`
 }
 
 // Defaults applied by AutoscalingConfig.Resolve for fields left unset (0 or
@@ -191,16 +224,39 @@ const (
 // durations parsed. It is the input to the deploy package's decision engine
 // (deploy.NewAutoscaler).
 type AutoscaleSettings struct {
-	Enabled           bool
-	MinReplicas       int
-	MaxReplicas       int
-	Interval          time.Duration
+	Enabled     bool
+	MinReplicas int
+	MaxReplicas int
+	Interval    time.Duration
+	// Cooldown and EvaluationWindows are the legacy top-level values, kept
+	// populated for compatibility; the per-direction fields below take
+	// precedence in the engine.
 	Cooldown          time.Duration
 	ScaleUpCPU        float64
 	ScaleDownCPU      float64
 	ScaleUpP95        time.Duration
 	ScaleDownP95      time.Duration
 	EvaluationWindows int
+
+	// Memory thresholds in percent of the memory baseline. Zero means the
+	// metric does not participate in that direction.
+	ScaleUpMemory   float64
+	ScaleDownMemory float64
+	// Requests-per-second thresholds. Zero means the metric does not
+	// participate in that direction.
+	ScaleUpRPS   float64
+	ScaleDownRPS float64
+	// P99 latency thresholds. Zero means P99 does not participate.
+	ScaleUpP99   time.Duration
+	ScaleDownP99 time.Duration
+
+	// Per-direction cadence. The engine uses these; the legacy fields above
+	// mirror them for callers that predate the split.
+	ScaleUpWindows      int
+	ScaleDownWindows    int
+	ScaleUpCooldown     time.Duration
+	ScaleDownCooldown   time.Duration
+	StabilizationWindow time.Duration
 }
 
 // Resolve applies the documented defaults. replicas is deploy.replicas; an
@@ -228,29 +284,91 @@ func (a *AutoscalingConfig) Resolve(replicas int) AutoscaleSettings {
 	s.Cooldown = nonNegativeDurationOrDefault(a.Cooldown, DefaultAutoscaleCooldown)
 	s.ScaleUpCPU = DefaultAutoscaleCPUUpPercent
 	s.ScaleDownCPU = DefaultAutoscaleCPUDownPercent
-	if a.CPU != nil {
-		if a.CPU.ScaleUp > 0 {
-			s.ScaleUpCPU = a.CPU.ScaleUp
-		}
-		// ponytail: a literal 0 reads as "unset" and becomes the 30% default;
-		// switch to a pointer field if an "idle-only" scale_down of 0 is ever needed.
-		if a.CPU.ScaleDown > 0 {
-			s.ScaleDownCPU = a.CPU.ScaleDown
-		}
-	}
 	s.ScaleUpP95 = DefaultAutoscaleP95Up
 	s.ScaleDownP95 = DefaultAutoscaleP95Down
-	if a.Latency != nil {
-		if d, err := time.ParseDuration(a.Latency.ScaleUpP95); err == nil && d > 0 {
-			s.ScaleUpP95 = d
-		}
-		if d, err := time.ParseDuration(a.Latency.ScaleDownP95); err == nil && d > 0 {
-			s.ScaleDownP95 = d
-		}
-	}
 	s.EvaluationWindows = DefaultAutoscaleEvaluationWindow
 	if a.EvaluationWindows > 0 {
 		s.EvaluationWindows = a.EvaluationWindows
+	}
+
+	// The legacy top-level cpu/latency fields remain the baseline; the metrics
+	// block overrides per metric when present. A literal 0 threshold reads as
+	// "unset" (the metric does not participate), never as a zero target.
+	cpu := a.CPU
+	mem := (*AutoscaleCPUConfig)(nil)
+	rps := (*AutoscaleCPUConfig)(nil)
+	lat := a.Latency
+	if a.Metrics != nil {
+		if a.Metrics.CPU != nil {
+			cpu = a.Metrics.CPU
+		}
+		mem = a.Metrics.Memory
+		rps = a.Metrics.RequestsPerSecond
+		if a.Metrics.Latency != nil {
+			lat = a.Metrics.Latency
+		}
+	}
+	if cpu != nil {
+		if cpu.ScaleUp > 0 {
+			s.ScaleUpCPU = cpu.ScaleUp
+		}
+		if cpu.ScaleDown > 0 {
+			s.ScaleDownCPU = cpu.ScaleDown
+		}
+	}
+	if mem != nil {
+		if mem.ScaleUp > 0 {
+			s.ScaleUpMemory = mem.ScaleUp
+		}
+		if mem.ScaleDown > 0 {
+			s.ScaleDownMemory = mem.ScaleDown
+		}
+	}
+	if rps != nil {
+		if rps.ScaleUp > 0 {
+			s.ScaleUpRPS = rps.ScaleUp
+		}
+		if rps.ScaleDown > 0 {
+			s.ScaleDownRPS = rps.ScaleDown
+		}
+	}
+	if lat != nil {
+		if d, err := time.ParseDuration(lat.ScaleUpP95); err == nil && d > 0 {
+			s.ScaleUpP95 = d
+		}
+		if d, err := time.ParseDuration(lat.ScaleDownP95); err == nil && d > 0 {
+			s.ScaleDownP95 = d
+		}
+		if d, err := time.ParseDuration(lat.ScaleUpP99); err == nil && d > 0 {
+			s.ScaleUpP99 = d
+		}
+		if d, err := time.ParseDuration(lat.ScaleDownP99); err == nil && d > 0 {
+			s.ScaleDownP99 = d
+		}
+	}
+
+	s.ScaleUpWindows = s.EvaluationWindows
+	s.ScaleDownWindows = s.EvaluationWindows
+	s.ScaleUpCooldown = s.Cooldown
+	s.ScaleDownCooldown = s.Cooldown
+	if a.ScaleUp != nil {
+		if a.ScaleUp.EvaluationWindows > 0 {
+			s.ScaleUpWindows = a.ScaleUp.EvaluationWindows
+		}
+		if d, err := time.ParseDuration(a.ScaleUp.Cooldown); err == nil && d >= 0 {
+			s.ScaleUpCooldown = d
+		}
+	}
+	if a.ScaleDown != nil {
+		if a.ScaleDown.EvaluationWindows > 0 {
+			s.ScaleDownWindows = a.ScaleDown.EvaluationWindows
+		}
+		if d, err := time.ParseDuration(a.ScaleDown.Cooldown); err == nil && d >= 0 {
+			s.ScaleDownCooldown = d
+		}
+		if d, err := time.ParseDuration(a.ScaleDown.StabilizationWindow); err == nil && d > 0 {
+			s.StabilizationWindow = d
+		}
 	}
 	return s
 }
@@ -623,7 +741,7 @@ func (c *Config) validate() error {
 				"configuration error: deploy.strategy: progressive requires a deploy.rollout.steps section\nHint: define at least one canary step and the final 100%% step")
 		}
 		if c.Deploy.Autoscaling != nil {
-			if err := c.Deploy.Autoscaling.validate(s); err != nil {
+			if err := c.Deploy.Autoscaling.validate(s, c.IsWorker()); err != nil {
 				return err
 			}
 		}
@@ -790,11 +908,15 @@ func validateStepDuration(path, value string) error {
 // even when the block is disabled so typos surface immediately; the strategy
 // requirement applies only when autoscaling is enabled (a disabled block on a
 // classic deploy is inert, not an error).
-func (a *AutoscalingConfig) validate(strategy string) error {
+func (a *AutoscalingConfig) validate(strategy string, isWorker bool) error {
 	if a == nil {
 		return nil
 	}
-	if a.Enabled && strategy != StrategyRolling {
+	// Rolling services scale their proxy-routed replicas; workers scale their
+	// supervised replica set. Both run the same decision policy. A worker on
+	// the classic strategy is allowed: scaling a worker's replica set is
+	// independent of its deploy strategy.
+	if a.Enabled && strategy != StrategyRolling && !isWorker {
 		return phelixerr.Newf(phelixerr.CodeConfiguration,
 			"configuration error: deploy.autoscaling requires deploy.strategy: rolling, got %q\nHint: autoscaling manages rolling replicas", strategy)
 	}
@@ -846,6 +968,119 @@ func (a *AutoscalingConfig) validate(strategy string) error {
 		if up > 0 && down > 0 && down >= up {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
 				"configuration error: deploy.autoscaling.latency.scale_down_p95 (%s) must be below latency.scale_up_p95 (%s)", a.Latency.ScaleDownP95, a.Latency.ScaleUpP95)
+		}
+		if a.Latency.ScaleUpP99 != "" || a.Latency.ScaleDownP99 != "" {
+			up99, err := parseAutoscaleP95("deploy.autoscaling.latency.scale_up_p99", a.Latency.ScaleUpP99)
+			if err != nil {
+				return err
+			}
+			down99, err := parseAutoscaleP95("deploy.autoscaling.latency.scale_down_p99", a.Latency.ScaleDownP99)
+			if err != nil {
+				return err
+			}
+			if up99 > 0 && down99 > 0 && down99 >= up99 {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: deploy.autoscaling.latency.scale_down_p99 (%s) must be below latency.scale_up_p99 (%s)", a.Latency.ScaleDownP99, a.Latency.ScaleUpP99)
+			}
+		}
+	}
+	if a.Metrics != nil {
+		if err := a.Metrics.validate(); err != nil {
+			return err
+		}
+	}
+	for _, d := range []struct {
+		path string
+		cfg  *AutoscaleDirectionConfig
+	}{
+		{"deploy.autoscaling.scale_up", a.ScaleUp},
+		{"deploy.autoscaling.scale_down", a.ScaleDown},
+	} {
+		if d.cfg == nil {
+			continue
+		}
+		if d.cfg.EvaluationWindows < 0 {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: invalid %s.evaluation_windows %d\nHint: evaluation_windows must be >= 1", d.path, d.cfg.EvaluationWindows)
+		}
+		if err := validateStepDuration(d.path+".cooldown", d.cfg.Cooldown); err != nil {
+			return err
+		}
+		if err := validateStepDuration(d.path+".stabilization_window", d.cfg.StabilizationWindow); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validate checks the metrics block thresholds. CPU and memory are percents
+// bounded to 0..100 with down strictly below up; RPS is a non-negative pair
+// with down below up; latency bounds reuse the p95 parser.
+func (m *AutoscaleMetricsConfig) validate() error {
+	if m == nil {
+		return nil
+	}
+	pairs := []struct {
+		path string
+		cfg  *AutoscaleCPUConfig
+	}{
+		{"deploy.autoscaling.metrics.cpu", m.CPU},
+		{"deploy.autoscaling.metrics.memory", m.Memory},
+	}
+	for _, p := range pairs {
+		if p.cfg == nil {
+			continue
+		}
+		if p.cfg.ScaleUp < 0 || p.cfg.ScaleUp > 100 {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: %s.scale_up must be between 0 and 100, got %v", p.path, p.cfg.ScaleUp)
+		}
+		if p.cfg.ScaleDown < 0 || p.cfg.ScaleDown > 100 {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: %s.scale_down must be between 0 and 100, got %v", p.path, p.cfg.ScaleDown)
+		}
+		if p.cfg.ScaleUp > 0 && p.cfg.ScaleDown > 0 && p.cfg.ScaleDown >= p.cfg.ScaleUp {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: %s.scale_down (%v) must be below %s.scale_up (%v)", p.path, p.cfg.ScaleDown, p.path, p.cfg.ScaleUp)
+		}
+	}
+	if m.RequestsPerSecond != nil {
+		rps := m.RequestsPerSecond
+		if rps.ScaleUp < 0 || rps.ScaleDown < 0 {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.metrics.requests_per_second thresholds must not be negative")
+		}
+		if rps.ScaleUp > 0 && rps.ScaleDown > 0 && rps.ScaleDown >= rps.ScaleUp {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.metrics.requests_per_second.scale_down (%v) must be below scale_up (%v)", rps.ScaleDown, rps.ScaleUp)
+		}
+	}
+	if m.Latency != nil {
+		up, err := parseAutoscaleP95("deploy.autoscaling.metrics.latency.scale_up_p95", m.Latency.ScaleUpP95)
+		if err != nil {
+			return err
+		}
+		down, err := parseAutoscaleP95("deploy.autoscaling.metrics.latency.scale_down_p95", m.Latency.ScaleDownP95)
+		if err != nil {
+			return err
+		}
+		if up > 0 && down > 0 && down >= up {
+			return phelixerr.Newf(phelixerr.CodeConfiguration,
+				"configuration error: deploy.autoscaling.metrics.latency.scale_down_p95 (%s) must be below scale_up_p95 (%s)", m.Latency.ScaleDownP95, m.Latency.ScaleUpP95)
+		}
+		if m.Latency.ScaleUpP99 != "" || m.Latency.ScaleDownP99 != "" {
+			up99, err := parseAutoscaleP95("deploy.autoscaling.metrics.latency.scale_up_p99", m.Latency.ScaleUpP99)
+			if err != nil {
+				return err
+			}
+			down99, err := parseAutoscaleP95("deploy.autoscaling.metrics.latency.scale_down_p99", m.Latency.ScaleDownP99)
+			if err != nil {
+				return err
+			}
+			if up99 > 0 && down99 > 0 && down99 >= up99 {
+				return phelixerr.Newf(phelixerr.CodeConfiguration,
+					"configuration error: deploy.autoscaling.metrics.latency.scale_down_p99 (%s) must be below scale_up_p99 (%s)", m.Latency.ScaleDownP99, m.Latency.ScaleUpP99)
+			}
 		}
 	}
 	return nil

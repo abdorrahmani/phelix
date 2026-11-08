@@ -326,3 +326,208 @@ func TestAutoscalerFromResolvedConfig(t *testing.T) {
 	}
 	assertDecision(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 75}, 2), ScaleUp, 2, 3)
 }
+
+// 19. Memory scale-up and scale-down, only when thresholds are configured.
+func TestAutoscaleMemory(t *testing.T) {
+	s := specSettings()
+	s.ScaleUpMemory, s.ScaleDownMemory = 80, 40
+
+	a, _ := newTestAutoscaler(s)
+	for range 2 {
+		assertNone(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 50, MemoryPercent: 85}, 4), "")
+	}
+	assertDecision(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 50, MemoryPercent: 85}, 4), ScaleUp, 4, 5)
+
+	b, _ := newTestAutoscaler(s)
+	for range 2 {
+		assertNone(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 20, MemoryPercent: 30}, 4), "")
+	}
+	assertDecision(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 20, MemoryPercent: 30}, 4), ScaleDown, 4, 3)
+
+	// Without configured thresholds memory never participates.
+	c, _ := newTestAutoscaler(specSettings())
+	d := mustDecide(t, c, AutoscaleMetrics{CPUPercent: 50, MemoryPercent: 99}, 4)
+	if d.Direction == ScaleUp {
+		t.Fatalf("unconfigured memory decided ScaleUp: %+v", d)
+	}
+	assertNone(t, d, "")
+}
+
+// 20. RPS scale-up requires traffic applicability; a configured RPS threshold
+// also joins the scale-down conjunction.
+func TestAutoscaleRPS(t *testing.T) {
+	s := specSettings()
+	s.ScaleUpRPS, s.ScaleDownRPS = 500, 50
+
+	hot, _ := newTestAutoscaler(s)
+	for range 2 {
+		assertNone(t, mustDecide(t, hot, AutoscaleMetrics{CPUPercent: 50, RPS: 600, TrafficApplicable: true}, 4), "")
+	}
+	assertDecision(t, mustDecide(t, hot, AutoscaleMetrics{CPUPercent: 50, RPS: 600, TrafficApplicable: true}, 4), ScaleUp, 4, 5)
+
+	// The same RPS without an enrolled proxy contributes nothing.
+	notraffic, _ := newTestAutoscaler(s)
+	assertNone(t, mustDecide(t, notraffic, AutoscaleMetrics{CPUPercent: 50, RPS: 600}, 4), "")
+
+	idle, _ := newTestAutoscaler(s)
+	for range 2 {
+		assertNone(t, mustDecide(t, idle, AutoscaleMetrics{CPUPercent: 20, RPS: 10, TrafficApplicable: true}, 4), "")
+	}
+	assertDecision(t, mustDecide(t, idle, AutoscaleMetrics{CPUPercent: 20, RPS: 10, TrafficApplicable: true}, 4), ScaleDown, 4, 3)
+
+	// High RPS with an enrolled proxy blocks the scale-down conjunction.
+	busy, _ := newTestAutoscaler(s)
+	for range 3 {
+		assertNone(t, mustDecide(t, busy, AutoscaleMetrics{CPUPercent: 20, RPS: 400, TrafficApplicable: true}, 4), "within thresholds")
+	}
+}
+
+// 21. P99 scale-up when configured; P99 above its down threshold blocks the
+// scale-down conjunction.
+func TestAutoscaleP99(t *testing.T) {
+	s := specSettings()
+	s.ScaleUpP99, s.ScaleDownP99 = 500*time.Millisecond, 200*time.Millisecond
+
+	hot, _ := newTestAutoscaler(s)
+	for range 2 {
+		assertNone(t, mustDecide(t, hot, AutoscaleMetrics{CPUPercent: 50, P95Latency: 100 * time.Millisecond, P99Latency: 600 * time.Millisecond}, 4), "")
+	}
+	assertDecision(t, mustDecide(t, hot, AutoscaleMetrics{CPUPercent: 50, P95Latency: 100 * time.Millisecond, P99Latency: 600 * time.Millisecond}, 4), ScaleUp, 4, 5)
+
+	tail, _ := newTestAutoscaler(s)
+	for range 3 {
+		assertNone(t, mustDecide(t, tail, AutoscaleMetrics{CPUPercent: 20, P95Latency: 100 * time.Millisecond, P99Latency: 300 * time.Millisecond}, 4), "within thresholds")
+	}
+}
+
+// 22. Simultaneous multi-metric breach: one sample starts the window and the
+// reason names every firing metric.
+func TestAutoscaleMultiMetricScaleUp(t *testing.T) {
+	s := specSettings()
+	s.ScaleUpMemory = 80
+	a, _ := newTestAutoscaler(s)
+	for range 2 {
+		assertNone(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90, MemoryPercent: 90}, 4), "")
+	}
+	d := mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90, MemoryPercent: 90}, 4)
+	assertDecision(t, d, ScaleUp, 4, 5)
+	if !strings.Contains(d.Reason, "cpu") || !strings.Contains(d.Reason, "memory") {
+		t.Errorf("reason = %q, want both metrics named", d.Reason)
+	}
+}
+
+// 23. Conflicting signals on one sample: scale up takes precedence.
+func TestAutoscaleConflictUpWins(t *testing.T) {
+	s := specSettings()
+	s.EvaluationWindows = 1
+	s.ScaleUpMemory, s.ScaleDownMemory = 80, 40
+	a, _ := newTestAutoscaler(s)
+	d := mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90, MemoryPercent: 10}, 4)
+	assertDecision(t, d, ScaleUp, 4, 5)
+}
+
+// 24. Missing metrics: excluded from scale-up, blocking scale-down.
+func TestAutoscaleMissingMetrics(t *testing.T) {
+	s := specSettings()
+	s.ScaleUpMemory, s.ScaleDownMemory = 80, 40
+
+	hotCPUButMissingMemory, _ := newTestAutoscaler(s)
+	for range 2 {
+		assertNone(t, mustDecide(t, hotCPUButMissingMemory, AutoscaleMetrics{CPUPercent: 90, Missing: MissingMemory}, 4), "")
+	}
+	assertDecision(t, mustDecide(t, hotCPUButMissingMemory, AutoscaleMetrics{CPUPercent: 90, Missing: MissingMemory}, 4), ScaleUp, 4, 5)
+
+	idleButMissingCPU, _ := newTestAutoscaler(s)
+	for range 5 {
+		assertNone(t, mustDecide(t, idleButMissingCPU, AutoscaleMetrics{CPUPercent: 10, MemoryPercent: 10, Missing: MissingCPU}, 4), "")
+	}
+
+	idleButMissingMemory, _ := newTestAutoscaler(s)
+	for range 5 {
+		assertNone(t, mustDecide(t, idleButMissingMemory, AutoscaleMetrics{CPUPercent: 10, MemoryPercent: 10, Missing: MissingMemory}, 4), "")
+	}
+}
+
+// 25. Stale samples: no decision and both windows reset.
+func TestAutoscaleStaleMetrics(t *testing.T) {
+	s := specSettings()
+	s.Interval = 15 * time.Second
+	s.EvaluationWindows = 1
+	a, clk := newTestAutoscaler(s)
+	clk.advance(10 * time.Minute)
+
+	assertNone(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90, At: clk.t.Add(-time.Minute)}, 4), "stale")
+	assertNone(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90, At: clk.t.Add(-time.Minute)}, 4), "stale")
+	fresh := AutoscaleMetrics{CPUPercent: 90, At: clk.t}
+	assertDecision(t, mustDecide(t, a, fresh, 4), ScaleUp, 4, 5)
+}
+
+// 26. Stabilization window: the down condition must have held continuously for
+// the window before the decision fires.
+func TestAutoscaleStabilizationWindow(t *testing.T) {
+	s := specSettings()
+	s.EvaluationWindows = 1
+	s.StabilizationWindow = 300 * time.Second
+	a, clk := newTestAutoscaler(s)
+
+	for range 10 {
+		assertNone(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 10, P95Latency: 100 * time.Millisecond, At: clk.t}, 4), "stabilization")
+		clk.advance(30 * time.Second)
+	}
+	d := mustDecide(t, a, AutoscaleMetrics{CPUPercent: 10, P95Latency: 100 * time.Millisecond, At: clk.t}, 4)
+	assertDecision(t, d, ScaleDown, 4, 3)
+
+	// A broken condition restarts both the window and the stabilization clock.
+	b, bclk := newTestAutoscaler(s)
+	for range 3 {
+		assertNone(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 10, P95Latency: 100 * time.Millisecond, At: bclk.t}, 4), "stabilization")
+		bclk.advance(100 * time.Second)
+	}
+	assertNone(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 50, P95Latency: 100 * time.Millisecond, At: bclk.t}, 4), "")
+	bclk.advance(100 * time.Second)
+	assertNone(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 10, P95Latency: 100 * time.Millisecond, At: bclk.t}, 4), "stabilization")
+	bclk.advance(301 * time.Second)
+	assertDecision(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 10, P95Latency: 100 * time.Millisecond, At: bclk.t}, 4), ScaleDown, 4, 3)
+}
+
+// 27. Per-direction cooldowns: a scale-up decision blocks the up direction
+// for the up cooldown while the down direction stays governed by its own.
+func TestAutoscalePerDirectionCooldowns(t *testing.T) {
+	s := specSettings()
+	s.EvaluationWindows = 1
+	s.ScaleUpCooldown = 60 * time.Second
+	s.ScaleDownCooldown = 180 * time.Second
+
+	a, clk := newTestAutoscaler(s)
+	assertDecision(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90}, 4), ScaleUp, 4, 5)
+
+	clk.advance(61 * time.Second)
+	// Up cooldown elapsed: another up decision fires.
+	assertDecision(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90}, 5), ScaleUp, 5, 6)
+
+	b, bclk := newTestAutoscaler(s)
+	assertDecision(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 90}, 4), ScaleUp, 4, 5)
+	bclk.advance(61 * time.Second)
+	// Down cooldown has not elapsed: idle samples cannot produce a decision.
+	for range 3 {
+		assertNone(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 10, P95Latency: 100 * time.Millisecond}, 5), "cooldown")
+	}
+	bclk.advance(120 * time.Second)
+	assertDecision(t, mustDecide(t, b, AutoscaleMetrics{CPUPercent: 10, P95Latency: 100 * time.Millisecond}, 5), ScaleDown, 5, 4)
+}
+
+// 28. AbortDecision restores the pre-decision cooldown state so a failed
+// execution does not consume its cooldown; ConfirmExecution re-anchors it.
+func TestAutoscaleConfirmAndAbort(t *testing.T) {
+	s := specSettings()
+	s.EvaluationWindows = 1
+
+	a, clk := newTestAutoscaler(s)
+	assertDecision(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90}, 4), ScaleUp, 4, 5)
+	a.AbortDecision()
+	assertDecision(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90}, 4), ScaleUp, 4, 5)
+	a.ConfirmExecution(clk.t.Add(30 * time.Second))
+	assertNone(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90}, 5), "cooldown")
+	clk.advance(91 * time.Second)
+	assertDecision(t, mustDecide(t, a, AutoscaleMetrics{CPUPercent: 90}, 5), ScaleUp, 5, 6)
+}

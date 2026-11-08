@@ -39,6 +39,12 @@ func (s BackendStat) P95() time.Duration {
 	return Quantile(s.Buckets, 0.95)
 }
 
+// P99 returns this backend's p99 request latency over its cumulative
+// histogram.
+func (s BackendStat) P99() time.Duration {
+	return Quantile(s.Buckets, 0.99)
+}
+
 // ErrorRate returns the share of this backend's requests that failed, in
 // percent.
 func (s BackendStat) ErrorRate() float64 {
@@ -59,6 +65,7 @@ type TrafficSummary struct {
 	Requests int64
 	Errors   int64
 	P95      time.Duration
+	P99      time.Duration
 }
 
 // ErrorRate returns the share of the app's requests that failed, in percent.
@@ -92,5 +99,6 @@ func Summarize(stats []BackendStat) TrafficSummary {
 		}
 	}
 	sum.P95 = Quantile(merged, 0.95)
+	sum.P99 = Quantile(merged, 0.99)
 	return sum
 }

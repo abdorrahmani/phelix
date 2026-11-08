@@ -494,6 +494,63 @@ message MonitorCommandResult {
   SecurityScanList security_scan_list = 20;
   SecurityConfigState security_config = 21;
   SecurityAdvisory security_advisory = 22;
+  // Remote autoscaling fields (additive; set on autoscale_* command results,
+  // empty/absent otherwise — older backends ignore them).
+  //
+  // autoscale_status is the answer of autoscale_status: the effective
+  // configuration, runtime pause state and current replica count.
+  AutoscaleStatusState autoscale_status = 23;
+  // autoscale_history is the answer of autoscale_history (recent scaling
+  // decisions and outcomes, oldest first, bounded by the request's limit).
+  repeated AutoscaleHistoryEntry autoscale_history = 24;
+  // paused is the resulting runtime pause state of autoscale_pause /
+  // autoscale_resume / autoscale_enable / autoscale_disable, and the
+  // enablement after autoscale_status.
+  bool paused = 25;
+  // enabled is the configuration-level autoscaling switch carried by
+  // autoscale_status and the toggling commands.
+  bool enabled = 26;
+}
+
+// AutoscaleStatusState is the autoscale_status answer: what the agent's
+// controller resolves for the app right now.
+message AutoscaleStatusState {
+  string app = 1;
+  string mode = 2;
+  int32 replicas = 3;
+  bool enabled = 4;
+  bool paused = 5;
+  string paused_at = 6;
+  string paused_by = 7;
+  int32 min_replicas = 8;
+  int32 max_replicas = 9;
+  string interval = 10;
+  double cpu_scale_up = 11;
+  double cpu_scale_down = 12;
+  double memory_scale_up = 13;
+  double memory_scale_down = 14;
+  double rps_scale_up = 15;
+  double rps_scale_down = 16;
+  string p95_scale_up = 17;
+  string p95_scale_down = 18;
+  string p99_scale_up = 19;
+  string p99_scale_down = 20;
+  int32 windows_up = 21;
+  int32 windows_down = 22;
+  string cooldown_up = 23;
+  string cooldown_down = 24;
+  string stabilization_window = 25;
+}
+
+// AutoscaleHistoryEntry is one record of an app's scaling history.
+message AutoscaleHistoryEntry {
+  string time = 1;
+  string kind = 2;
+  string direction = 3;
+  int32 from = 4;
+  int32 to = 5;
+  string reason = 6;
+  string error = 7;
 }
 
 // MonitorEvent is a single message sent from the CLI monitor daemon to the

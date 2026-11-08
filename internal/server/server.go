@@ -13,6 +13,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/network"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
@@ -337,14 +338,84 @@ func GetServerID() string {
 	return GetAgentID()
 }
 
-// CollectMetrics collects current server metrics
+// metricsCache holds the latest host-wide metrics snapshot produced by the
+// background sampler (StartMetricsSampler). Readers get a copy of it instead
+// of measuring the host themselves, so reading metrics never blocks.
+var (
+	metricsCacheMu sync.RWMutex
+	metricsCache   *Metrics
+)
+
+var startMetricsSamplerOnce sync.Once
+
+// StartMetricsSampler starts the background goroutine that refreshes the
+// host-wide metrics snapshot every interval. It is idempotent: later calls
+// (every monitor stream (re)connection) are no-ops.
+//
+// This exists because the only expensive read in the snapshot is CPU:
+// cpu.Percent with a positive interval blocks for that interval while it
+// measures, and the monitor stream used to pay that second on its send loop
+// for every server tick — which is why server metrics were slowed to a 30s
+// cadence. With the sampler the measurement happens continuously on its own
+// goroutine and sendServerTick reads a ready snapshot, so the cadence is
+// free to match the app-metrics tick.
+func StartMetricsSampler(interval time.Duration) {
+	startMetricsSamplerOnce.Do(func() {
+		go runMetricsSampler(interval)
+	})
+}
+
+// runMetricsSampler refreshes the cached snapshot once per interval. The
+// previous sample is kept on a failed read: a transient syscall error should
+// not blank the dashboard, and the next tick overwrites it anyway.
+func runMetricsSampler(interval time.Duration) {
+	// Prime gopsutil's counter baseline: the first cpu.Percent(0) call
+	// reports usage since process start, which is not a meaningful sample.
+	// Discarding it makes the first cached sample the delta across the first
+	// real interval instead.
+	_, _ = cpu.Percent(0, false)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		m, err := collectMetricsOnce()
+		if err != nil {
+			logs.Warning("server", "metrics sampler read failed, keeping previous sample: %v", err)
+			continue
+		}
+		metricsCacheMu.Lock()
+		metricsCache = m
+		metricsCacheMu.Unlock()
+	}
+}
+
+// CollectMetrics returns the current server metrics. The fast path is the
+// background sampler's latest snapshot (see StartMetricsSampler); when the
+// sampler has not been started, or its first sample has not landed yet, the
+// read happens synchronously so a caller never gets nil. That synchronous
+// path is non-blocking too: cpu.Percent(0) reports the delta since the
+// previous call rather than measuring for a fixed interval.
 func CollectMetrics() (*Metrics, error) {
+	metricsCacheMu.RLock()
+	cached := metricsCache
+	metricsCacheMu.RUnlock()
+	if cached != nil {
+		m := *cached
+		return &m, nil
+	}
+	return collectMetricsOnce()
+}
+
+// collectMetricsOnce samples the host once. CPU is read incrementally
+// (cpu.Percent(0)): the caller — the sampler loop, or a fallback read —
+// provides the elapsed window, so this never blocks.
+func collectMetricsOnce() (*Metrics, error) {
 	memInfo, err := mem.VirtualMemory()
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get memory info", err)
 	}
 
-	cpuPercent, err := cpu.Percent(time.Second, false)
+	cpuPercent, err := cpu.Percent(0, false)
 	if err != nil {
 		return nil, phelixerr.Wrap(phelixerr.CodeServer, "failed to get CPU usage", err)
 	}

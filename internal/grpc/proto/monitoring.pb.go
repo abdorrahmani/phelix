@@ -2275,8 +2275,24 @@ type MonitorCommandResult struct {
 	SecurityScanList   *SecurityScanList    `protobuf:"bytes,20,opt,name=security_scan_list,json=securityScanList,proto3" json:"security_scan_list,omitempty"`
 	SecurityConfig     *SecurityConfigState `protobuf:"bytes,21,opt,name=security_config,json=securityConfig,proto3" json:"security_config,omitempty"`
 	SecurityAdvisory   *SecurityAdvisory    `protobuf:"bytes,22,opt,name=security_advisory,json=securityAdvisory,proto3" json:"security_advisory,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Remote autoscaling fields (additive; set on autoscale_* command results,
+	// empty/absent otherwise — older backends ignore them).
+	//
+	// autoscale_status is the answer of autoscale_status: the effective
+	// configuration, runtime pause state and current replica count.
+	AutoscaleStatus *AutoscaleStatusState `protobuf:"bytes,23,opt,name=autoscale_status,json=autoscaleStatus,proto3" json:"autoscale_status,omitempty"`
+	// autoscale_history is the answer of autoscale_history (recent scaling
+	// decisions and outcomes, oldest first, bounded by the request's limit).
+	AutoscaleHistory []*AutoscaleHistoryEntry `protobuf:"bytes,24,rep,name=autoscale_history,json=autoscaleHistory,proto3" json:"autoscale_history,omitempty"`
+	// paused is the resulting runtime pause state of autoscale_pause /
+	// autoscale_resume / autoscale_enable / autoscale_disable, and the
+	// enablement after autoscale_status.
+	Paused bool `protobuf:"varint,25,opt,name=paused,proto3" json:"paused,omitempty"`
+	// enabled is the configuration-level autoscaling switch carried by
+	// autoscale_status and the toggling commands.
+	Enabled       bool `protobuf:"varint,26,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MonitorCommandResult) Reset() {
@@ -2463,6 +2479,365 @@ func (x *MonitorCommandResult) GetSecurityAdvisory() *SecurityAdvisory {
 	return nil
 }
 
+func (x *MonitorCommandResult) GetAutoscaleStatus() *AutoscaleStatusState {
+	if x != nil {
+		return x.AutoscaleStatus
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetAutoscaleHistory() []*AutoscaleHistoryEntry {
+	if x != nil {
+		return x.AutoscaleHistory
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetPaused() bool {
+	if x != nil {
+		return x.Paused
+	}
+	return false
+}
+
+func (x *MonitorCommandResult) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+// AutoscaleStatusState is the autoscale_status answer: what the agent's
+// controller resolves for the app right now.
+type AutoscaleStatusState struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	App                 string                 `protobuf:"bytes,1,opt,name=app,proto3" json:"app,omitempty"`
+	Mode                string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	Replicas            int32                  `protobuf:"varint,3,opt,name=replicas,proto3" json:"replicas,omitempty"`
+	Enabled             bool                   `protobuf:"varint,4,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Paused              bool                   `protobuf:"varint,5,opt,name=paused,proto3" json:"paused,omitempty"`
+	PausedAt            string                 `protobuf:"bytes,6,opt,name=paused_at,json=pausedAt,proto3" json:"paused_at,omitempty"`
+	PausedBy            string                 `protobuf:"bytes,7,opt,name=paused_by,json=pausedBy,proto3" json:"paused_by,omitempty"`
+	MinReplicas         int32                  `protobuf:"varint,8,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
+	MaxReplicas         int32                  `protobuf:"varint,9,opt,name=max_replicas,json=maxReplicas,proto3" json:"max_replicas,omitempty"`
+	Interval            string                 `protobuf:"bytes,10,opt,name=interval,proto3" json:"interval,omitempty"`
+	CpuScaleUp          float64                `protobuf:"fixed64,11,opt,name=cpu_scale_up,json=cpuScaleUp,proto3" json:"cpu_scale_up,omitempty"`
+	CpuScaleDown        float64                `protobuf:"fixed64,12,opt,name=cpu_scale_down,json=cpuScaleDown,proto3" json:"cpu_scale_down,omitempty"`
+	MemoryScaleUp       float64                `protobuf:"fixed64,13,opt,name=memory_scale_up,json=memoryScaleUp,proto3" json:"memory_scale_up,omitempty"`
+	MemoryScaleDown     float64                `protobuf:"fixed64,14,opt,name=memory_scale_down,json=memoryScaleDown,proto3" json:"memory_scale_down,omitempty"`
+	RpsScaleUp          float64                `protobuf:"fixed64,15,opt,name=rps_scale_up,json=rpsScaleUp,proto3" json:"rps_scale_up,omitempty"`
+	RpsScaleDown        float64                `protobuf:"fixed64,16,opt,name=rps_scale_down,json=rpsScaleDown,proto3" json:"rps_scale_down,omitempty"`
+	P95ScaleUp          string                 `protobuf:"bytes,17,opt,name=p95_scale_up,json=p95ScaleUp,proto3" json:"p95_scale_up,omitempty"`
+	P95ScaleDown        string                 `protobuf:"bytes,18,opt,name=p95_scale_down,json=p95ScaleDown,proto3" json:"p95_scale_down,omitempty"`
+	P99ScaleUp          string                 `protobuf:"bytes,19,opt,name=p99_scale_up,json=p99ScaleUp,proto3" json:"p99_scale_up,omitempty"`
+	P99ScaleDown        string                 `protobuf:"bytes,20,opt,name=p99_scale_down,json=p99ScaleDown,proto3" json:"p99_scale_down,omitempty"`
+	WindowsUp           int32                  `protobuf:"varint,21,opt,name=windows_up,json=windowsUp,proto3" json:"windows_up,omitempty"`
+	WindowsDown         int32                  `protobuf:"varint,22,opt,name=windows_down,json=windowsDown,proto3" json:"windows_down,omitempty"`
+	CooldownUp          string                 `protobuf:"bytes,23,opt,name=cooldown_up,json=cooldownUp,proto3" json:"cooldown_up,omitempty"`
+	CooldownDown        string                 `protobuf:"bytes,24,opt,name=cooldown_down,json=cooldownDown,proto3" json:"cooldown_down,omitempty"`
+	StabilizationWindow string                 `protobuf:"bytes,25,opt,name=stabilization_window,json=stabilizationWindow,proto3" json:"stabilization_window,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *AutoscaleStatusState) Reset() {
+	*x = AutoscaleStatusState{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AutoscaleStatusState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AutoscaleStatusState) ProtoMessage() {}
+
+func (x *AutoscaleStatusState) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AutoscaleStatusState.ProtoReflect.Descriptor instead.
+func (*AutoscaleStatusState) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *AutoscaleStatusState) GetApp() string {
+	if x != nil {
+		return x.App
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetReplicas() int32 {
+	if x != nil {
+		return x.Replicas
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *AutoscaleStatusState) GetPaused() bool {
+	if x != nil {
+		return x.Paused
+	}
+	return false
+}
+
+func (x *AutoscaleStatusState) GetPausedAt() string {
+	if x != nil {
+		return x.PausedAt
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetPausedBy() string {
+	if x != nil {
+		return x.PausedBy
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetMinReplicas() int32 {
+	if x != nil {
+		return x.MinReplicas
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetMaxReplicas() int32 {
+	if x != nil {
+		return x.MaxReplicas
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetInterval() string {
+	if x != nil {
+		return x.Interval
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetCpuScaleUp() float64 {
+	if x != nil {
+		return x.CpuScaleUp
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetCpuScaleDown() float64 {
+	if x != nil {
+		return x.CpuScaleDown
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetMemoryScaleUp() float64 {
+	if x != nil {
+		return x.MemoryScaleUp
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetMemoryScaleDown() float64 {
+	if x != nil {
+		return x.MemoryScaleDown
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetRpsScaleUp() float64 {
+	if x != nil {
+		return x.RpsScaleUp
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetRpsScaleDown() float64 {
+	if x != nil {
+		return x.RpsScaleDown
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetP95ScaleUp() string {
+	if x != nil {
+		return x.P95ScaleUp
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetP95ScaleDown() string {
+	if x != nil {
+		return x.P95ScaleDown
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetP99ScaleUp() string {
+	if x != nil {
+		return x.P99ScaleUp
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetP99ScaleDown() string {
+	if x != nil {
+		return x.P99ScaleDown
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetWindowsUp() int32 {
+	if x != nil {
+		return x.WindowsUp
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetWindowsDown() int32 {
+	if x != nil {
+		return x.WindowsDown
+	}
+	return 0
+}
+
+func (x *AutoscaleStatusState) GetCooldownUp() string {
+	if x != nil {
+		return x.CooldownUp
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetCooldownDown() string {
+	if x != nil {
+		return x.CooldownDown
+	}
+	return ""
+}
+
+func (x *AutoscaleStatusState) GetStabilizationWindow() string {
+	if x != nil {
+		return x.StabilizationWindow
+	}
+	return ""
+}
+
+// AutoscaleHistoryEntry is one record of an app's scaling history.
+type AutoscaleHistoryEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Time          string                 `protobuf:"bytes,1,opt,name=time,proto3" json:"time,omitempty"`
+	Kind          string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Direction     string                 `protobuf:"bytes,3,opt,name=direction,proto3" json:"direction,omitempty"`
+	From          int32                  `protobuf:"varint,4,opt,name=from,proto3" json:"from,omitempty"`
+	To            int32                  `protobuf:"varint,5,opt,name=to,proto3" json:"to,omitempty"`
+	Reason        string                 `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
+	Error         string                 `protobuf:"bytes,7,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AutoscaleHistoryEntry) Reset() {
+	*x = AutoscaleHistoryEntry{}
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AutoscaleHistoryEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AutoscaleHistoryEntry) ProtoMessage() {}
+
+func (x *AutoscaleHistoryEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AutoscaleHistoryEntry.ProtoReflect.Descriptor instead.
+func (*AutoscaleHistoryEntry) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *AutoscaleHistoryEntry) GetTime() string {
+	if x != nil {
+		return x.Time
+	}
+	return ""
+}
+
+func (x *AutoscaleHistoryEntry) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *AutoscaleHistoryEntry) GetDirection() string {
+	if x != nil {
+		return x.Direction
+	}
+	return ""
+}
+
+func (x *AutoscaleHistoryEntry) GetFrom() int32 {
+	if x != nil {
+		return x.From
+	}
+	return 0
+}
+
+func (x *AutoscaleHistoryEntry) GetTo() int32 {
+	if x != nil {
+		return x.To
+	}
+	return 0
+}
+
+func (x *AutoscaleHistoryEntry) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *AutoscaleHistoryEntry) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 // MonitorEvent is a single message sent from the CLI monitor daemon to the
 // backend over the long-lived MonitorStream. Exactly one payload is set per
 // event, mirroring the "type"/"payload" envelope used by the old WebSocket
@@ -2498,7 +2873,7 @@ type MonitorEvent struct {
 
 func (x *MonitorEvent) Reset() {
 	*x = MonitorEvent{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[17]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2510,7 +2885,7 @@ func (x *MonitorEvent) String() string {
 func (*MonitorEvent) ProtoMessage() {}
 
 func (x *MonitorEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[17]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2523,7 +2898,7 @@ func (x *MonitorEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorEvent.ProtoReflect.Descriptor instead.
 func (*MonitorEvent) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{17}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *MonitorEvent) GetServerId() string {
@@ -2810,7 +3185,7 @@ type MonitorControl struct {
 
 func (x *MonitorControl) Reset() {
 	*x = MonitorControl{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[18]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2822,7 +3197,7 @@ func (x *MonitorControl) String() string {
 func (*MonitorControl) ProtoMessage() {}
 
 func (x *MonitorControl) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[18]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2835,7 +3210,7 @@ func (x *MonitorControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MonitorControl.ProtoReflect.Descriptor instead.
 func (*MonitorControl) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{18}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *MonitorControl) GetPayload() isMonitorControl_Payload {
@@ -2895,7 +3270,7 @@ type VersionSync struct {
 
 func (x *VersionSync) Reset() {
 	*x = VersionSync{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[19]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2907,7 +3282,7 @@ func (x *VersionSync) String() string {
 func (*VersionSync) ProtoMessage() {}
 
 func (x *VersionSync) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[19]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2920,7 +3295,7 @@ func (x *VersionSync) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VersionSync.ProtoReflect.Descriptor instead.
 func (*VersionSync) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{19}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *VersionSync) GetAppId() string {
@@ -2966,7 +3341,7 @@ type VersionEntry struct {
 
 func (x *VersionEntry) Reset() {
 	*x = VersionEntry{}
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[20]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2978,7 +3353,7 @@ func (x *VersionEntry) String() string {
 func (*VersionEntry) ProtoMessage() {}
 
 func (x *VersionEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[20]
+	mi := &file_internal_grpc_proto_monitoring_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2991,7 +3366,7 @@ func (x *VersionEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VersionEntry.ProtoReflect.Descriptor instead.
 func (*VersionEntry) Descriptor() ([]byte, []int) {
-	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{20}
+	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *VersionEntry) GetVersion() int32 {
@@ -3302,7 +3677,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\x12\x14\n" +
 	"\x05limit\x18\r \x01(\x05R\x05limit\x12\x18\n" +
 	"\areplica\x18\x0e \x01(\tR\areplica\x12:\n" +
-	"\bsecurity\x18\x0f \x01(\v2\x1e.phelix.SecurityCommandOptionsR\bsecurity\"\xb3\b\n" +
+	"\bsecurity\x18\x0f \x01(\v2\x1e.phelix.SecurityCommandOptionsR\bsecurity\"\xfa\t\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -3331,7 +3706,52 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x14security_scan_record\x18\x13 \x01(\v2\x1a.phelix.SecurityScanRecordR\x12securityScanRecord\x12F\n" +
 	"\x12security_scan_list\x18\x14 \x01(\v2\x18.phelix.SecurityScanListR\x10securityScanList\x12D\n" +
 	"\x0fsecurity_config\x18\x15 \x01(\v2\x1b.phelix.SecurityConfigStateR\x0esecurityConfig\x12E\n" +
-	"\x11security_advisory\x18\x16 \x01(\v2\x18.phelix.SecurityAdvisoryR\x10securityAdvisory\"\x99\a\n" +
+	"\x11security_advisory\x18\x16 \x01(\v2\x18.phelix.SecurityAdvisoryR\x10securityAdvisory\x12G\n" +
+	"\x10autoscale_status\x18\x17 \x01(\v2\x1c.phelix.AutoscaleStatusStateR\x0fautoscaleStatus\x12J\n" +
+	"\x11autoscale_history\x18\x18 \x03(\v2\x1d.phelix.AutoscaleHistoryEntryR\x10autoscaleHistory\x12\x16\n" +
+	"\x06paused\x18\x19 \x01(\bR\x06paused\x12\x18\n" +
+	"\aenabled\x18\x1a \x01(\bR\aenabled\"\xd5\x06\n" +
+	"\x14AutoscaleStatusState\x12\x10\n" +
+	"\x03app\x18\x01 \x01(\tR\x03app\x12\x12\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1a\n" +
+	"\breplicas\x18\x03 \x01(\x05R\breplicas\x12\x18\n" +
+	"\aenabled\x18\x04 \x01(\bR\aenabled\x12\x16\n" +
+	"\x06paused\x18\x05 \x01(\bR\x06paused\x12\x1b\n" +
+	"\tpaused_at\x18\x06 \x01(\tR\bpausedAt\x12\x1b\n" +
+	"\tpaused_by\x18\a \x01(\tR\bpausedBy\x12!\n" +
+	"\fmin_replicas\x18\b \x01(\x05R\vminReplicas\x12!\n" +
+	"\fmax_replicas\x18\t \x01(\x05R\vmaxReplicas\x12\x1a\n" +
+	"\binterval\x18\n" +
+	" \x01(\tR\binterval\x12 \n" +
+	"\fcpu_scale_up\x18\v \x01(\x01R\n" +
+	"cpuScaleUp\x12$\n" +
+	"\x0ecpu_scale_down\x18\f \x01(\x01R\fcpuScaleDown\x12&\n" +
+	"\x0fmemory_scale_up\x18\r \x01(\x01R\rmemoryScaleUp\x12*\n" +
+	"\x11memory_scale_down\x18\x0e \x01(\x01R\x0fmemoryScaleDown\x12 \n" +
+	"\frps_scale_up\x18\x0f \x01(\x01R\n" +
+	"rpsScaleUp\x12$\n" +
+	"\x0erps_scale_down\x18\x10 \x01(\x01R\frpsScaleDown\x12 \n" +
+	"\fp95_scale_up\x18\x11 \x01(\tR\n" +
+	"p95ScaleUp\x12$\n" +
+	"\x0ep95_scale_down\x18\x12 \x01(\tR\fp95ScaleDown\x12 \n" +
+	"\fp99_scale_up\x18\x13 \x01(\tR\n" +
+	"p99ScaleUp\x12$\n" +
+	"\x0ep99_scale_down\x18\x14 \x01(\tR\fp99ScaleDown\x12\x1d\n" +
+	"\n" +
+	"windows_up\x18\x15 \x01(\x05R\twindowsUp\x12!\n" +
+	"\fwindows_down\x18\x16 \x01(\x05R\vwindowsDown\x12\x1f\n" +
+	"\vcooldown_up\x18\x17 \x01(\tR\n" +
+	"cooldownUp\x12#\n" +
+	"\rcooldown_down\x18\x18 \x01(\tR\fcooldownDown\x121\n" +
+	"\x14stabilization_window\x18\x19 \x01(\tR\x13stabilizationWindow\"\xaf\x01\n" +
+	"\x15AutoscaleHistoryEntry\x12\x12\n" +
+	"\x04time\x18\x01 \x01(\tR\x04time\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1c\n" +
+	"\tdirection\x18\x03 \x01(\tR\tdirection\x12\x12\n" +
+	"\x04from\x18\x04 \x01(\x05R\x04from\x12\x0e\n" +
+	"\x02to\x18\x05 \x01(\x05R\x02to\x12\x16\n" +
+	"\x06reason\x18\x06 \x01(\tR\x06reason\x12\x14\n" +
+	"\x05error\x18\a \x01(\tR\x05error\"\x99\a\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
@@ -3406,7 +3826,7 @@ func file_internal_grpc_proto_monitoring_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_grpc_proto_monitoring_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_internal_grpc_proto_monitoring_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(LogSource)(0),                 // 0: phelix.LogSource
 	(LogStream)(0),                 // 1: phelix.LogStream
@@ -3427,31 +3847,33 @@ var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(*MonitorLogBatch)(nil),        // 16: phelix.MonitorLogBatch
 	(*MonitorCommandRequest)(nil),  // 17: phelix.MonitorCommandRequest
 	(*MonitorCommandResult)(nil),   // 18: phelix.MonitorCommandResult
-	(*MonitorEvent)(nil),           // 19: phelix.MonitorEvent
-	(*MonitorControl)(nil),         // 20: phelix.MonitorControl
-	(*VersionSync)(nil),            // 21: phelix.VersionSync
-	(*VersionEntry)(nil),           // 22: phelix.VersionEntry
-	nil,                            // 23: phelix.MonitorLogEntry.FieldsEntry
-	(*MatrixOptions)(nil),          // 24: phelix.MatrixOptions
-	(*WebhookOptions)(nil),         // 25: phelix.WebhookOptions
-	(*SecurityCommandOptions)(nil), // 26: phelix.SecurityCommandOptions
-	(*MatrixRunState)(nil),         // 27: phelix.MatrixRunState
-	(*MatrixRunSummary)(nil),       // 28: phelix.MatrixRunSummary
-	(*MatrixPlanPreview)(nil),      // 29: phelix.MatrixPlanPreview
-	(*MatrixDockerResult)(nil),     // 30: phelix.MatrixDockerResult
-	(*WebhookJob)(nil),             // 31: phelix.WebhookJob
-	(*WebhookConfigState)(nil),     // 32: phelix.WebhookConfigState
-	(*WebhookDelivery)(nil),        // 33: phelix.WebhookDelivery
-	(*SecurityScanRecord)(nil),     // 34: phelix.SecurityScanRecord
-	(*SecurityScanList)(nil),       // 35: phelix.SecurityScanList
-	(*SecurityConfigState)(nil),    // 36: phelix.SecurityConfigState
-	(*SecurityAdvisory)(nil),       // 37: phelix.SecurityAdvisory
-	(*Pong)(nil),                   // 38: phelix.Pong
-	(*DeploymentSnapshot)(nil),     // 39: phelix.DeploymentSnapshot
-	(*AppHealthSnapshot)(nil),      // 40: phelix.AppHealthSnapshot
-	(*SecurityScanSnapshot)(nil),   // 41: phelix.SecurityScanSnapshot
-	(*Ping)(nil),                   // 42: phelix.Ping
-	(*BuildReport)(nil),            // 43: phelix.BuildReport
+	(*AutoscaleStatusState)(nil),   // 19: phelix.AutoscaleStatusState
+	(*AutoscaleHistoryEntry)(nil),  // 20: phelix.AutoscaleHistoryEntry
+	(*MonitorEvent)(nil),           // 21: phelix.MonitorEvent
+	(*MonitorControl)(nil),         // 22: phelix.MonitorControl
+	(*VersionSync)(nil),            // 23: phelix.VersionSync
+	(*VersionEntry)(nil),           // 24: phelix.VersionEntry
+	nil,                            // 25: phelix.MonitorLogEntry.FieldsEntry
+	(*MatrixOptions)(nil),          // 26: phelix.MatrixOptions
+	(*WebhookOptions)(nil),         // 27: phelix.WebhookOptions
+	(*SecurityCommandOptions)(nil), // 28: phelix.SecurityCommandOptions
+	(*MatrixRunState)(nil),         // 29: phelix.MatrixRunState
+	(*MatrixRunSummary)(nil),       // 30: phelix.MatrixRunSummary
+	(*MatrixPlanPreview)(nil),      // 31: phelix.MatrixPlanPreview
+	(*MatrixDockerResult)(nil),     // 32: phelix.MatrixDockerResult
+	(*WebhookJob)(nil),             // 33: phelix.WebhookJob
+	(*WebhookConfigState)(nil),     // 34: phelix.WebhookConfigState
+	(*WebhookDelivery)(nil),        // 35: phelix.WebhookDelivery
+	(*SecurityScanRecord)(nil),     // 36: phelix.SecurityScanRecord
+	(*SecurityScanList)(nil),       // 37: phelix.SecurityScanList
+	(*SecurityConfigState)(nil),    // 38: phelix.SecurityConfigState
+	(*SecurityAdvisory)(nil),       // 39: phelix.SecurityAdvisory
+	(*Pong)(nil),                   // 40: phelix.Pong
+	(*DeploymentSnapshot)(nil),     // 41: phelix.DeploymentSnapshot
+	(*AppHealthSnapshot)(nil),      // 42: phelix.AppHealthSnapshot
+	(*SecurityScanSnapshot)(nil),   // 43: phelix.SecurityScanSnapshot
+	(*Ping)(nil),                   // 44: phelix.Ping
+	(*BuildReport)(nil),            // 45: phelix.BuildReport
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	3,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -3464,45 +3886,47 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	14, // 7: phelix.ApplicationInfo.storage:type_name -> phelix.AppStorage
 	0,  // 8: phelix.MonitorLogEntry.source:type_name -> phelix.LogSource
 	1,  // 9: phelix.MonitorLogEntry.stream:type_name -> phelix.LogStream
-	23, // 10: phelix.MonitorLogEntry.fields:type_name -> phelix.MonitorLogEntry.FieldsEntry
+	25, // 10: phelix.MonitorLogEntry.fields:type_name -> phelix.MonitorLogEntry.FieldsEntry
 	15, // 11: phelix.MonitorLogBatch.entries:type_name -> phelix.MonitorLogEntry
-	24, // 12: phelix.MonitorCommandRequest.matrix:type_name -> phelix.MatrixOptions
-	25, // 13: phelix.MonitorCommandRequest.webhook:type_name -> phelix.WebhookOptions
-	26, // 14: phelix.MonitorCommandRequest.security:type_name -> phelix.SecurityCommandOptions
-	27, // 15: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
-	28, // 16: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
-	29, // 17: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
-	30, // 18: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
-	31, // 19: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
-	32, // 20: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
-	33, // 21: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
-	34, // 22: phelix.MonitorCommandResult.security_scan_record:type_name -> phelix.SecurityScanRecord
-	35, // 23: phelix.MonitorCommandResult.security_scan_list:type_name -> phelix.SecurityScanList
-	36, // 24: phelix.MonitorCommandResult.security_config:type_name -> phelix.SecurityConfigState
-	37, // 25: phelix.MonitorCommandResult.security_advisory:type_name -> phelix.SecurityAdvisory
-	2,  // 26: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	6,  // 27: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	7,  // 28: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	8,  // 29: phelix.MonitorEvent.app_traffic:type_name -> phelix.AppTrafficStat
-	10, // 30: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	15, // 31: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	18, // 32: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	38, // 33: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	39, // 34: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
-	40, // 35: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
-	27, // 36: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
-	21, // 37: phelix.MonitorEvent.version_sync:type_name -> phelix.VersionSync
-	16, // 38: phelix.MonitorEvent.log_batch:type_name -> phelix.MonitorLogBatch
-	41, // 39: phelix.MonitorEvent.security_scan:type_name -> phelix.SecurityScanSnapshot
-	17, // 40: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	42, // 41: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	22, // 42: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
-	43, // 43: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
-	44, // [44:44] is the sub-list for method output_type
-	44, // [44:44] is the sub-list for method input_type
-	44, // [44:44] is the sub-list for extension type_name
-	44, // [44:44] is the sub-list for extension extendee
-	0,  // [0:44] is the sub-list for field type_name
+	26, // 12: phelix.MonitorCommandRequest.matrix:type_name -> phelix.MatrixOptions
+	27, // 13: phelix.MonitorCommandRequest.webhook:type_name -> phelix.WebhookOptions
+	28, // 14: phelix.MonitorCommandRequest.security:type_name -> phelix.SecurityCommandOptions
+	29, // 15: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
+	30, // 16: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
+	31, // 17: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
+	32, // 18: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
+	33, // 19: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
+	34, // 20: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
+	35, // 21: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
+	36, // 22: phelix.MonitorCommandResult.security_scan_record:type_name -> phelix.SecurityScanRecord
+	37, // 23: phelix.MonitorCommandResult.security_scan_list:type_name -> phelix.SecurityScanList
+	38, // 24: phelix.MonitorCommandResult.security_config:type_name -> phelix.SecurityConfigState
+	39, // 25: phelix.MonitorCommandResult.security_advisory:type_name -> phelix.SecurityAdvisory
+	19, // 26: phelix.MonitorCommandResult.autoscale_status:type_name -> phelix.AutoscaleStatusState
+	20, // 27: phelix.MonitorCommandResult.autoscale_history:type_name -> phelix.AutoscaleHistoryEntry
+	2,  // 28: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	6,  // 29: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	7,  // 30: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	8,  // 31: phelix.MonitorEvent.app_traffic:type_name -> phelix.AppTrafficStat
+	10, // 32: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	15, // 33: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	18, // 34: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	40, // 35: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	41, // 36: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
+	42, // 37: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
+	29, // 38: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
+	23, // 39: phelix.MonitorEvent.version_sync:type_name -> phelix.VersionSync
+	16, // 40: phelix.MonitorEvent.log_batch:type_name -> phelix.MonitorLogBatch
+	43, // 41: phelix.MonitorEvent.security_scan:type_name -> phelix.SecurityScanSnapshot
+	17, // 42: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	44, // 43: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	24, // 44: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
+	45, // 45: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
+	46, // [46:46] is the sub-list for method output_type
+	46, // [46:46] is the sub-list for method input_type
+	46, // [46:46] is the sub-list for extension type_name
+	46, // [46:46] is the sub-list for extension extendee
+	0,  // [0:46] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -3517,7 +3941,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 	file_internal_grpc_proto_matrix_proto_init()
 	file_internal_grpc_proto_webhook_proto_init()
 	file_internal_grpc_proto_buildreport_proto_init()
-	file_internal_grpc_proto_monitoring_proto_msgTypes[17].OneofWrappers = []any{
+	file_internal_grpc_proto_monitoring_proto_msgTypes[19].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
 		(*MonitorEvent_AppMetrics)(nil),
@@ -3533,7 +3957,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_LogBatch)(nil),
 		(*MonitorEvent_SecurityScan)(nil),
 	}
-	file_internal_grpc_proto_monitoring_proto_msgTypes[18].OneofWrappers = []any{
+	file_internal_grpc_proto_monitoring_proto_msgTypes[20].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),
 		(*MonitorControl_Ping)(nil),
 	}
@@ -3543,7 +3967,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_monitoring_proto_rawDesc), len(file_internal_grpc_proto_monitoring_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   22,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
