@@ -380,10 +380,16 @@ func (c *Client) runMonitorStream() error {
 	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream connected (agent_id=%s)", server.GetAgentID())
 
 	if err := c.sendMonitorServerInfo(); err != nil {
+		if errors.Is(err, io.EOF) {
+			_, err = stream.Recv()
+		}
 		return err
 	}
 	agentStatus := newAgentStatus()
 	if err := sendAgentStatus(agentStatus); err != nil {
+		if errors.Is(err, io.EOF) {
+			_, err = stream.Recv()
+		}
 		return err
 	}
 
