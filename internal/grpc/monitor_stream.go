@@ -59,16 +59,6 @@ const monitorStreamRetryDelay = 2 * time.Second
 // shorten it.
 var monitorStreamNoSessionDelay = 15 * time.Second
 
-// monitorStreamNoWatchDelay is how long the stream loop parks between checks
-// when no application is watched. Server-level stream payloads — ServerInfo
-// first, which binds the stream to this server's identity — flow only while
-// at least one app is watched (app.AnyWatched); with none, an open stream
-// would stay unbound and be reaped by the backend's 2-minute pre-bind window
-// (E5), so the loop parks instead of churning connections. The first
-// `phelix watch` opt-in re-opens the stream within one delay. It is a var
-// (not a const) so tests can shorten it.
-var monitorStreamNoWatchDelay = 5 * time.Second
-
 // maxRemoteVerifyDurationMS is the wire representation (milliseconds) of the
 // single shared verify-window cap, deploy.MaxRollbackVerifyDuration. This is
 // the one authoritative range check for a remote rollback's verify window:
@@ -306,15 +296,6 @@ func (c *Client) monitorStreamLoop() {
 			continue
 		}
 
-		if !app.AnyWatched() {
-			select {
-			case <-c.done:
-				return
-			case <-time.After(monitorStreamNoWatchDelay):
-			}
-			continue
-		}
-
 		if err := c.runMonitorStream(); err != nil {
 			if isAuthRejection(err) {
 				logs.ErrorFile("grpc", "[gRPC Monitor] backend rejected credentials on monitor stream: %v", err)
@@ -370,7 +351,7 @@ func (c *Client) runMonitorStream() error {
 		return phelixerr.Wrap(phelixerr.CodeConnection, "attach auth metadata for monitor stream", err)
 	}
 
-	stream, err := c.serviceClient.MonitorStream(authCtx)
+	stream, err := c.GetServiceClient().MonitorStream(authCtx)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeConnection, "open monitor stream", err)
 	}
@@ -397,6 +378,14 @@ func (c *Client) runMonitorStream() error {
 	}()
 
 	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream connected (agent_id=%s)", server.GetAgentID())
+
+	if err := c.sendMonitorServerInfo(); err != nil {
+		return err
+	}
+	agentStatus := newAgentStatus()
+	if err := sendAgentStatus(agentStatus); err != nil {
+		return err
+	}
 
 	ledger := rollbackResults
 	matrixLedger := matrixResults
@@ -435,10 +424,6 @@ func (c *Client) runMonitorStream() error {
 		c.replayPendingAutoscaleResults()
 	}
 
-	if err := c.sendMonitorServerInfo(); err != nil {
-		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
-	}
-
 	c.sendDeploymentSnapshots()
 
 	c.sendHealthSnapshots()
@@ -448,6 +433,9 @@ func (c *Client) runMonitorStream() error {
 	c.sendVersionSyncs()
 
 	c.sendSecuritySnapshots()
+
+	heartbeat := time.NewTicker(agentHeartbeatInterval)
+	defer heartbeat.Stop()
 
 	recvErrCh := make(chan error, 1)
 	go func() {
@@ -472,6 +460,10 @@ func (c *Client) runMonitorStream() error {
 			return nil
 		case err := <-recvErrCh:
 			return err
+		case <-heartbeat.C:
+			if err := sendAgentStatus(agentStatus); err != nil {
+				return err
+			}
 		case <-ticker.C:
 			if monitorStream.isPaused() {
 				continue
@@ -780,7 +772,6 @@ func (s *monitorStreamManager) markServerInfoSent() {
 // filtered by watching at the collection boundary (monitor.MetricsCollector).
 func (c *Client) sendMonitorTick() {
 	serverID := server.GetServerID()
-
 	if err := c.sendMonitorServerInfo(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}

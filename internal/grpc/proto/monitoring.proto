@@ -613,6 +613,7 @@ message MonitorEvent {
     // Idempotent statement of an app's latest completed scan; pushed
     // only when the app has reporting consent enabled.
     SecurityScanSnapshot security_scan = 23;
+    AgentStatus agent_status = 24;
   }
 }
 
@@ -623,6 +624,7 @@ message MonitorControl {
   oneof payload {
     MonitorCommandRequest command = 1;
     Ping ping = 2;
+    SecurityResultAck security_result_ack = 3;
   }
 }
 
@@ -652,4 +654,19 @@ message VersionEntry {
   string deploy_mode = 9;    // strategy that promoted it; empty = never promoted
   string docker_image = 10;  // image ref for a dockerized version; empty = native
   BuildReport build_report = 11; // the build's metrics; absent on pre-report versions
+}
+
+message AgentStatus {
+  string connection_id = 1;
+  uint32 security_protocol_version = 2;
+  repeated string capabilities = 3;
+  string agent_version = 4;
+  string session_scope = 5;
+  int64 heartbeat_interval_ms = 6;
+}
+
+message SecurityResultAck {
+  string request_id = 1;
+  string command = 2;
+  string app_name = 3;
 }

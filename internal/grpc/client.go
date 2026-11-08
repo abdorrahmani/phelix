@@ -153,7 +153,6 @@ func (c *Client) Connect() error {
 	}
 
 	logs.InfoFile("grpc", "[gRPC] Connected to %s", cfg.App.GRPCUrl)
-	connstate.MarkConnected()
 	return nil
 }
 
@@ -350,7 +349,7 @@ func (c *Client) sendMetadataOnce() {
 		return
 	}
 
-	resp, err := c.serviceClient.SyncMetadata(authCtx, md)
+	resp, err := c.GetServiceClient().SyncMetadata(authCtx, md)
 	if err != nil {
 		if authBudgetError(err) {
 			c.authParkMu.Lock()
@@ -373,7 +372,9 @@ func (c *Client) sendMetadataOnce() {
 
 	if !resp.Accepted {
 		logs.ErrorFile("grpc", "[gRPC] Metadata rejected: %s", resp.Message)
+		return
 	}
+	connstate.MarkConnected()
 }
 
 // startVersionSync periodically sends version lists for all managed apps.
