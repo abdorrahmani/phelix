@@ -12,6 +12,8 @@ import (
 // GetAppInfo retrieves application information by ID or AppName
 func GetAppInfo(identifier string) (*app.AppInfo, error) {
 	manager := app.Manager.(*app.AppManager)
+	manager.Lock.Lock()
+	defer manager.Lock.Unlock()
 	if appInfo, exists := manager.Apps[identifier]; exists {
 		return appInfo, nil
 	}

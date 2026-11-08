@@ -39,7 +39,7 @@ func (m *AppManager) RestoreAutoStartApps() (int, error) {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if err := m.LoadState(); err != nil {
+	if err := m.loadStateLocked(); err != nil {
 		return 0, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 

@@ -59,7 +59,7 @@ func (m *AppManager) StartApplicationWithSecrets(id string, port int, name strin
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if err := m.LoadState(); err != nil {
+	if err := m.loadStateLocked(); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
@@ -95,7 +95,7 @@ func (m *AppManager) StopApplication(id string) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if err := m.LoadState(); err != nil {
+	if err := m.loadStateLocked(); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
@@ -145,7 +145,7 @@ func (m *AppManager) RestartApplicationWithSecrets(id string, pinned *secrets.Pi
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if err := m.LoadState(); err != nil {
+	if err := m.loadStateLocked(); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
@@ -223,7 +223,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if err := m.LoadState(); err != nil {
+	if err := m.loadStateLocked(); err != nil {
 		logs.Warning("app", "failed to load state: %v", err)
 		return nil
 	}
@@ -263,7 +263,7 @@ func (m *AppManager) StatusApplication(identifier string) (AppStatus, error) {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if err := m.LoadState(); err != nil {
+	if err := m.loadStateLocked(); err != nil {
 		return AppStatus{}, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 
@@ -317,7 +317,7 @@ func (m *AppManager) RemoveApplication(id string) error {
 	m.Lock.Lock()
 	defer m.Lock.Unlock()
 
-	if err := m.LoadState(); err != nil {
+	if err := m.loadStateLocked(); err != nil {
 		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
 

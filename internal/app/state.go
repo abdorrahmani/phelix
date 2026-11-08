@@ -213,8 +213,20 @@ func writeAppState(data []byte) error {
 	return dir.Sync()
 }
 
-// LoadState loads the state from disk
+// LoadState reads apps.json into the in-memory registry, clamping dead PIDs
+// to stopped. It takes the manager lock: concurrent callers (the monitor's
+// metrics tick, remote commands, lifecycle paths) serialize on the lock
+// instead of racing on the shared app map.
 func (m *AppManager) LoadState() error {
+	m.Lock.Lock()
+	defer m.Lock.Unlock()
+	return m.loadStateLocked()
+}
+
+// loadStateLocked is LoadState's body for callers that already hold m.Lock.
+// Calling LoadState while holding the lock would deadlock (a sync.Mutex is
+// not reentrant), so locked readers use this variant directly.
+func (m *AppManager) loadStateLocked() error {
 	fileMutex.Lock()
 	data, err := os.ReadFile(stateFile)
 	fileMutex.Unlock()
