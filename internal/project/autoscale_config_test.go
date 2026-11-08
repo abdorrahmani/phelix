@@ -61,7 +61,7 @@ func TestLoadAutoscalingValid(t *testing.T) {
 		ScaleUpCPU: 70, ScaleDownCPU: 30,
 		ScaleUpP95: 500 * time.Millisecond, ScaleDownP95: 150 * time.Millisecond,
 		EvaluationWindows: 3,
-		ScaleUpWindows: 3, ScaleDownWindows: 3,
+		ScaleUpWindows:    3, ScaleDownWindows: 3,
 		ScaleUpCooldown: 60 * time.Second, ScaleDownCooldown: 60 * time.Second,
 	}
 	if s != want {
@@ -81,7 +81,7 @@ func TestAutoscalingResolveDefaults(t *testing.T) {
 		ScaleUpCPU: 70, ScaleDownCPU: 30,
 		ScaleUpP95: 500 * time.Millisecond, ScaleDownP95: 150 * time.Millisecond,
 		EvaluationWindows: 1,
-		ScaleUpWindows: 1, ScaleDownWindows: 1,
+		ScaleUpWindows:    1, ScaleDownWindows: 1,
 		ScaleUpCooldown: 60 * time.Second, ScaleDownCooldown: 60 * time.Second,
 	}
 	if s != want {

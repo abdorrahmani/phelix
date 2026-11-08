@@ -57,6 +57,7 @@ func main() {
 	rootCmd.AddCommand(cmd.StartCmd)
 	rootCmd.AddCommand(cmd.RestartCmd)
 	rootCmd.AddCommand(cmd.ScaleCmd)
+	rootCmd.AddCommand(cmd.AutoscaleCmd)
 	rootCmd.AddCommand(cmd.StatusCmd)
 	rootCmd.AddCommand(cmd.StopCmd)
 	rootCmd.AddCommand(cmd.ListCmd)

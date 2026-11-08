@@ -166,7 +166,7 @@ func effectiveSettings(ref AppRef) (project.AutoscaleSettings, bool) {
 // decide, dispatch, record. Every scaling outcome lands in the history and
 // in an ops record so `phelix operation status` and the history explain the
 // fleet's shape.
-func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) {
+func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) (deploy.ScaleDecision, error) {
 	defer func() {
 		c.mu.Lock()
 		delete(c.inFlight, ref.Name)
@@ -175,7 +175,7 @@ func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) {
 
 	paused, err := LoadPauseState(ref.Name)
 	if err == nil && paused.Paused {
-		return
+		return deploy.ScaleDecision{}, nil
 	}
 
 	evalCtx, cancel := context.WithTimeout(ctx, c.EvalTimeout)
@@ -183,18 +183,18 @@ func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) {
 
 	state, err := deploy.Load(ref.Name)
 	if err != nil {
-		return
+		return deploy.ScaleDecision{}, err
 	}
 	current := len(state.Replicas)
 
 	st, ok := c.stateFor(ref)
 	if !ok {
-		return
+		return deploy.ScaleDecision{}, nil
 	}
-	snap := st.sampler.Collect(evalCtx, replicaRefs(state))
-	decision := st.engine.Evaluate(snap.Metrics, current)
+	metrics := c.sample(evalCtx, st, ref, state)
+	decision := st.engine.Evaluate(metrics, current)
 	if decision.Direction == deploy.ScaleNone {
-		return
+		return decision, nil
 	}
 
 	c.record(ref.Name, HistoryDecision, decision, "")
@@ -228,6 +228,7 @@ func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) {
 			_ = record.MarkFailed(execErr)
 		}
 	}
+	return decision, execErr
 }
 
 // sample collects one observation through the per-app sampler. Workers and
@@ -334,4 +335,17 @@ func directionName(d deploy.ScaleDirection) string {
 		return "down"
 	}
 	return "none"
+}
+
+// EvaluateOnce runs one synchronous evaluation for an app: sample, decide,
+// dispatch, record. It exists for `phelix autoscale evaluate` diagnostics.
+// Engine state (streaks, cooldowns) is per-process, so a CLI evaluation does
+// not share windows with a concurrently running monitor controller; the app
+// lock plus the executor's stale-decision rejection keep the two safe.
+func EvaluateOnce(ctx context.Context, ref AppRef, proxyClient *proxy.Client) (deploy.ScaleDecision, error) {
+	c := NewController(func() []AppRef { return []AppRef{ref} }, proxyClient)
+	c.mu.Lock()
+	c.inFlight[ref.Name] = true
+	c.mu.Unlock()
+	return c.evaluateApp(ctx, ref)
 }
