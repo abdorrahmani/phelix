@@ -19,17 +19,13 @@ import (
 // backend the answer was bounded.
 const securityFindingsWireCap = 200
 
-// RemoteSecurityCommand executes one security command for the backend.
-// Every command targets an application identified by its stable ID or
-// registered name, and every command is gated on that application's
-// reporting consent: a disabled app answers SECURITY_REPORTING_DISABLED
-// rather than disclosing inventory.
+// RemoteSecurityCommand exposes scan data only with current local consent.
 func RemoteSecurityCommand(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
 	target, err := remoteSecurityTarget(req.GetAppName())
 	if err != nil {
 		return securityCommandError(req, err)
 	}
-	if err := remoteSecurityConsent(target); err != nil {
+	if err := remoteSecurityConsent(target); err != nil && req.GetType() != phelixgrpc.SecurityCommandConfig {
 		return securityCommandError(req, err)
 	}
 
@@ -69,19 +65,15 @@ func remoteSecurityTarget(identifier string) (*securityTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Directory == "" {
-		return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
-			"application %s has no source directory recorded; scan it locally once first", info.Name)
-	}
 	target := &securityTarget{appID: info.ID, appName: info.Name, identityKey: info.ID, dir: info.Directory}
-	if cfg, err := project.Load(info.Directory); err == nil {
-		target.cfg = cfg
+	target.cfg, err = project.LoadSecurityProject(target.dir, target.appName)
+	if err != nil {
+		return nil, err
 	}
 	return target, nil
 }
 
-// remoteSecurityConsent refuses every security operation for applications
-// that have not opted in to transmitting security data.
+// remoteSecurityConsent checks the local permission to disclose scan data.
 func remoteSecurityConsent(target *securityTarget) error {
 	if target.cfg == nil || target.cfg.Security == nil || target.cfg.Security.Vulnerability == nil {
 		return phelixerr.New(phelixerr.CodeSecurityReportingDisabled,
@@ -249,8 +241,12 @@ func remoteSecurityConfigSet(req *pb.MonitorCommandRequest, target *securityTarg
 	}
 	defer lock.Release()
 
-	cfg, err := project.Load(target.dir)
+	cfg, err := project.LoadSecurityProject(target.dir, target.appName)
 	if err != nil {
+		return securityCommandError(req, err)
+	}
+	target.cfg = cfg
+	if err := remoteSecurityConsent(target); err != nil {
 		return securityCommandError(req, err)
 	}
 	vuln := project.VulnerabilityConfig{ScanInterval: project.ScanInterval(project.ScanIntervalDefault.String()), FailThreshold: project.ScanSeverityDefault}
@@ -285,7 +281,10 @@ func remoteSecurityConfigSet(req *pb.MonitorCommandRequest, target *securityTarg
 // securityConfigState assembles the config view shared by the read and
 // write commands.
 func securityConfigState(target *securityTarget) (*pb.SecurityConfigState, error) {
-	state := &pb.SecurityConfigState{AppId: target.appID, AppName: target.appName}
+	state := &pb.SecurityConfigState{AppId: target.appID, AppName: target.appName, Reporting: "disabled"}
+	if remoteSecurityConsent(target) != nil {
+		return state, nil
+	}
 	if target.cfg != nil && target.cfg.Security != nil && target.cfg.Security.Vulnerability != nil {
 		v := target.cfg.Security.Vulnerability
 		state.Enabled = v.Enabled

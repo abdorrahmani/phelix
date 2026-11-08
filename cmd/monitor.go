@@ -94,8 +94,12 @@ func remoteSecurityAuthorize(req *pb.MonitorCommandRequest) error {
 func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
 	var out []*pb.SecurityScanSnapshot
 	for _, info := range app.Manager.ListApplications() {
-		cfg, err := project.Load(info.Directory)
-		if err != nil || cfg.Security == nil || cfg.Security.Vulnerability == nil || !cfg.Security.Vulnerability.ResolvedReporting() {
+		cfg, err := project.LoadSecurityProject(info.Directory, info.Name)
+		if err != nil {
+			logs.WarningFile("security", "cannot resolve reporting configuration for app %s: %v", info.ID, err)
+			continue
+		}
+		if remoteSecurityConsent(&securityTarget{cfg: cfg}) != nil {
 			continue
 		}
 		store := security.NewScanStore(server.DataDir())
@@ -146,7 +150,12 @@ func listSecurityScheduledApps() []security.ScheduledApp {
 			Dir:         info.Directory,
 			Interval:    project.ScanIntervalDefault,
 		}
-		if cfg, err := project.Load(info.Directory); err == nil && cfg.Security != nil && cfg.Security.Vulnerability != nil {
+		cfg, err := project.LoadSecurityProject(info.Directory, info.Name)
+		if err != nil {
+			logs.WarningFile("security", "cannot load scan configuration for app %s: %v", info.ID, err)
+			continue
+		}
+		if cfg.Security != nil && cfg.Security.Vulnerability != nil {
 			v := cfg.Security.Vulnerability
 			entry.Enabled = v.Enabled
 			if interval, err := v.ResolvedScanInterval(); err == nil {

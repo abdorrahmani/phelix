@@ -172,18 +172,16 @@ func (s *SecurityConfig) validate() error {
 	return nil
 }
 
-// SaveSecurityConfig writes the security section into dir/phelix.yaml
-// while preserving every other key, comment, and the file's overall
-// formatting: the existing document is edited as a yaml.Node and only the
-// `security` mapping is replaced (or appended). A missing file is created
-// with just the security section; a malformed existing file is an error,
-// never overwritten. The configuration is validated before any write.
+// SaveSecurityConfig updates scan settings while preserving local reporting consent.
 func SaveSecurityConfig(dir string, sc *SecurityConfig) error {
 	if sc == nil {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "cannot save a nil security config")
 	}
 	if err := sc.Validate(); err != nil {
 		return err
+	}
+	if sc.Vulnerability == nil {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "vulnerability configuration is required")
 	}
 	path := filepath.Join(dir, FileName)
 
@@ -192,11 +190,16 @@ func SaveSecurityConfig(dir string, sc *SecurityConfig) error {
 		if !os.IsNotExist(err) {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
 		}
-		body, merr := yaml.Marshal(map[string]*SecurityConfig{"security": sc})
+		vuln := *sc.Vulnerability
+		vuln.Reporting = false
+		body, merr := yaml.Marshal(map[string]*SecurityConfig{"security": {Vulnerability: &vuln}})
 		if merr != nil {
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode security config", merr)
 		}
 		return writeProjectConfigAtomic(path, append([]byte(projectConfigHeader()), body...))
+	}
+	if _, err := decodeConfig(raw, path, false); err != nil {
+		return err
 	}
 
 	var doc yaml.Node
@@ -209,21 +212,33 @@ func SaveSecurityConfig(dir string, sc *SecurityConfig) error {
 	root := doc.Content[0]
 
 	newValue := &yaml.Node{}
-	if eerr := newValue.Encode(sc); eerr != nil {
+	if eerr := newValue.Encode(sc.Vulnerability); eerr != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode security config", eerr)
 	}
-
-	replaced := false
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Kind == yaml.ScalarNode && root.Content[i].Value == "security" {
-			*root.Content[i+1] = *newValue
-			replaced = true
-			break
-		}
+	securityNode := mappingValue(root, "security")
+	if securityNode == nil {
+		securityNode = &yaml.Node{Kind: yaml.MappingNode}
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "security"}, securityNode)
 	}
-	if !replaced {
-		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "security"}
-		root.Content = append(root.Content, key, newValue)
+	vulnerabilityNode := mappingValue(securityNode, "vulnerability")
+	if vulnerabilityNode == nil {
+		vulnerabilityNode = &yaml.Node{Kind: yaml.MappingNode}
+		securityNode.Content = append(securityNode.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "vulnerability"}, vulnerabilityNode)
+	}
+	if securityNode.Kind != yaml.MappingNode || vulnerabilityNode.Kind != yaml.MappingNode {
+		return phelixerr.New(phelixerr.CodeConfiguration, "security.vulnerability must be a mapping; not modifying it")
+	}
+	for _, key := range []string{"enabled", "scan_interval", "fail_threshold"} {
+		value := mappingValue(newValue, key)
+		if value == nil {
+			continue
+		}
+		if current := mappingValue(vulnerabilityNode, key); current != nil {
+			current.Kind, current.Tag, current.Value = value.Kind, value.Tag, value.Value
+			current.Content = nil
+		} else {
+			vulnerabilityNode.Content = append(vulnerabilityNode.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
+		}
 	}
 
 	var buf strings.Builder

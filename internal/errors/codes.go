@@ -200,7 +200,12 @@ const (
 	// transmitting security data, so the remote operation was refused.
 	// Local CLI behavior is unchanged; this code only ever leaves through
 	// the remote command channel.
-	CodeSecurityReportingDisabled Code = "SECURITY_REPORTING_DISABLED"
+	CodeSecurityReportingDisabled    Code = "SECURITY_REPORTING_DISABLED"
+	CodeSecurityConfigMissing        Code = "SECURITY_CONFIG_MISSING"
+	CodeSecurityConfigInvalid        Code = "SECURITY_CONFIG_INVALID"
+	CodeSecurityConfigLoadFailed     Code = "SECURITY_CONFIG_LOAD_FAILED"
+	CodeSecurityDirectoryUnavailable Code = "SECURITY_DIRECTORY_UNAVAILABLE"
+	CodeSecurityRegistrationInvalid  Code = "SECURITY_REGISTRATION_INVALID"
 
 	// Remote command channel (MonitorStream). CodeUnimplemented marks a
 	// command type the agent cannot execute (e.g. rollback before a handler

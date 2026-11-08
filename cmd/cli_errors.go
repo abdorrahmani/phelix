@@ -123,7 +123,7 @@ func ExitCodeFor(err error) int {
 		return ExitPermission
 	case phelixerr.CodeNotFound, phelixerr.CodeVersionNotFound,
 		phelixerr.CodeRollbackTargetNotFound, phelixerr.CodeSecretNotFound,
-		phelixerr.CodeScanNotFound:
+		phelixerr.CodeScanNotFound, phelixerr.CodeSecurityConfigMissing:
 		return ExitNotFound
 	case phelixerr.CodeBuildFailed, phelixerr.CodeToolchainNotFound,
 		phelixerr.CodeBuildTimeout, phelixerr.CodeUnsupportedProject,
@@ -150,7 +150,9 @@ func ExitCodeFor(err error) int {
 	case phelixerr.CodeNetwork, phelixerr.CodeConnection, phelixerr.CodeGRPC,
 		phelixerr.CodePortUnavailable:
 		return ExitNetwork
-	case phelixerr.CodeConfiguration:
+	case phelixerr.CodeConfiguration, phelixerr.CodeSecurityConfigInvalid,
+		phelixerr.CodeSecurityConfigLoadFailed, phelixerr.CodeSecurityRegistrationInvalid,
+		phelixerr.CodeSecurityDirectoryUnavailable:
 		return ExitConfig
 	case phelixerr.CodeDocker, phelixerr.CodeDockerDaemonUnavailable:
 		return ExitDocker

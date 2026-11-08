@@ -124,6 +124,45 @@ func TestRemoteSecurity_ConsentGate(t *testing.T) {
 	}
 }
 
+func TestRemoteSecurity_CurrentConfiguration(t *testing.T) {
+	dir := securityRemoteFixture(t, true)
+	osv := securityOSV(t, "low")
+	defer osv.Close()
+	securityRemoteScan(t, dir, osv.URL)
+	for _, tc := range []struct{ content, code, reporting string }{
+		{"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: true\n", "", "enabled"},
+		{"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: false\n", "SECURITY_REPORTING_DISABLED", "disabled"},
+		{"security: [", "SECURITY_CONFIG_INVALID", ""},
+		{"name: another\nsecurity:\n  vulnerability:\n    reporting: true\n", "SECURITY_REGISTRATION_INVALID", ""},
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "phelix.yaml"), []byte(tc.content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		result := RemoteSecurityCommand(securityRequest("r", phelixgrpc.SecurityCommandReport, securityRemoteAppID, nil))
+		if result.GetErrorCode() != tc.code {
+			t.Fatalf("report: %v, want %s", result, tc.code)
+		}
+		cfg := RemoteSecurityCommand(securityRequest("c", phelixgrpc.SecurityCommandConfig, securityRemoteAppID, nil))
+		if tc.reporting != "" && cfg.GetSecurityConfig().GetReporting() != tc.reporting {
+			t.Fatalf("config: %v", cfg)
+		}
+		if tc.reporting == "disabled" && (cfg.GetSecurityConfig().GetLastScanId() != "" || cfg.GetSecurityConfig().GetScanInterval() != "") {
+			t.Fatal("disabled status disclosed scan settings")
+		}
+		snapshots := securitySnapshotsForConsentingApps()
+		if (len(snapshots) > 0) != (tc.reporting == "enabled") {
+			t.Fatalf("snapshots ignored current config: %v", snapshots)
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, "phelix.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	result := RemoteSecurityCommand(securityRequest("m", phelixgrpc.SecurityCommandReport, securityRemoteAppID, nil))
+	if result.GetErrorCode() != "SECURITY_CONFIG_MISSING" {
+		t.Fatalf("missing config: %v", result)
+	}
+}
+
 func TestRemoteSecurity_UnknownApp(t *testing.T) {
 	securityRemoteFixture(t, true)
 	result := RemoteSecurityCommand(securityRequest("r1", phelixgrpc.SecurityCommandReport, "nosuchapp", nil))

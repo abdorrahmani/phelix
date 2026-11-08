@@ -152,8 +152,9 @@ func resolveSecurityTarget(args []string) (*securityTarget, error) {
 				"application %s has no source directory recorded; rebuild it once or scan its project directory directly", info.Name)
 		}
 		target := &securityTarget{appID: info.ID, appName: info.Name, identityKey: info.ID, dir: info.Directory}
-		if cfg, err := project.Load(info.Directory); err == nil {
-			target.cfg = cfg
+		target.cfg, err = project.LoadSecurityProject(target.dir, target.appName)
+		if err != nil {
+			return nil, err
 		}
 		return target, nil
 	}
