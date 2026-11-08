@@ -9,6 +9,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/authz"
+	"github.com/abdorrahmani/phelix/internal/autoscale"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
@@ -16,6 +17,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/security"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/abdorrahmani/phelix/internal/supervisor"
@@ -209,6 +211,7 @@ func runMonitor() error {
 	}
 	startupSecretsRuntime()
 	restoreDeployedApps()
+	recoverInterruptedScales()
 
 	if _, err := app.Manager.RestoreAutoStartApps(); err != nil {
 
@@ -250,6 +253,19 @@ func runMonitor() error {
 	go func() {
 		logs.Info("monitor", "worker supervisor loop started")
 		supervisor.New().Run(supervisorCtx)
+	}()
+
+	autoscaleCtx, cancelAutoscale := context.WithCancel(context.Background())
+	defer cancelAutoscale()
+	autoscaleDone := make(chan struct{})
+	go func() {
+		defer close(autoscaleDone)
+		controller := newAutoscaleController()
+		if controller == nil {
+			return
+		}
+		logs.Info("monitor", "autoscaling controller started")
+		controller.Run(autoscaleCtx)
 	}()
 
 	securityCtx, cancelSecurity := context.WithCancel(context.Background())
@@ -360,6 +376,13 @@ func runMonitor() error {
 	phelixgrpc.WaitPendingWorkerCommands(phelixgrpc.WorkerCommandSettleTimeout())
 	phelixgrpc.StopMatrixSender(5 * time.Second)
 
+	cancelAutoscale()
+	select {
+	case <-autoscaleDone:
+	case <-time.After(5 * time.Second):
+		logs.Warning("monitor", "autoscaling controller did not stop within the shutdown window")
+	}
+
 	close(done)
 
 	if err := healthDaemon.Stop(); err != nil {
@@ -463,4 +486,46 @@ func reconcileOrphanContainers(am *app.AppManager) {
 			logs.Info("monitor", "reclaimed %d orphaned containers for %s", len(removed), info.Name)
 		}
 	}
+}
+
+// recoverInterruptedScales converges automatic scaling operations that a
+// monitor crash left in flight: each rolling app's deploy.json scale marker
+// is reconciled against live processes and proxy membership before the
+// controller starts. Failures are logged, never fatal.
+func recoverInterruptedScales() {
+	var proxyClient *proxy.Client
+	if socket, err := proxy.DefaultSocketPath(); err == nil {
+		proxyClient = proxy.NewClient(socket)
+	}
+	for _, info := range app.Manager.ListApplications() {
+		state, err := loadDeployState(info.Name)
+		if err != nil || state == nil || state.Mode != deploy.ModeRolling || state.ScaleProgress == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if err := deploy.RecoverInterruptedScale(ctx, info.Name, proxyClient); err != nil {
+			logs.Warning("monitor", "autoscale recovery for %s failed: %v", info.Name, err)
+		} else {
+			logs.Info("monitor", "autoscale recovery for %s converged", info.Name)
+		}
+		cancel()
+	}
+}
+
+// newAutoscaleController builds the autoscaling controller over the app
+// registry and the proxy control socket. A nil proxy client is valid: apps
+// then scale on resource metrics only, with traffic reported not applicable.
+func newAutoscaleController() *autoscale.Controller {
+	var proxyClient *proxy.Client
+	if socket, err := proxy.DefaultSocketPath(); err == nil {
+		proxyClient = proxy.NewClient(socket)
+	}
+	apps := func() []autoscale.AppRef {
+		refs := make([]autoscale.AppRef, 0, 8)
+		for _, info := range app.Manager.ListApplications() {
+			refs = append(refs, autoscale.AppRef{Name: info.Name, ID: info.ID, Directory: info.Directory})
+		}
+		return refs
+	}
+	return autoscale.NewController(apps, proxyClient)
 }
