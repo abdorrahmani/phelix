@@ -47,7 +47,7 @@ phelix security scan [app]      # scan; progress renders on stderr, --json stays
 phelix security report [app]    # latest completed scan, --previous for the diff
 phelix security history [app]   # recorded scans with status and counts
 phelix security show <ID>       # one advisory, cache first
-phelix security config [app]    # show; --set-* flags edit phelix.yaml safely
+phelix security config [app]    # show the effective settings and schedule
 ```
 
 Run without arguments in a terminal, the commands guide you: `phelix
@@ -60,8 +60,8 @@ validate before writing, and serialize concurrent Phelix edits through a
 lock:
 
 ```bash
-phelix security config myapp --enable --scan-interval 12h --fail-threshold medium
-phelix security config myapp --disable
+phelix security config myapp --set-enabled true --set-scan-interval 12h --set-fail-threshold medium
+phelix security config myapp --set-enabled false
 ```
 
 Scheduled scans run opt-in through the monitor daemon:
