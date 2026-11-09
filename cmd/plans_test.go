@@ -7,10 +7,9 @@ package cmd
 // mutation happens, not merely that an error was returned (spec §37).
 //
 // Isolation notes: internal/app resolves its state file eagerly at package
-// init, so in-process tests cannot redirect it with t.Setenv. The app-store
-// tests therefore seed a uniquely named app and restore the original
-// apps.json bytes afterwards (withAppStore); everything else (plan store,
-// ops ledger, versions) resolves the data dir per call and honors
+// init, so in-process tests redirect it explicitly with
+// app.SetStateDirForTesting (withAppStore); everything else (plan store, ops
+// ledger, versions) resolves the data dir per call and honors
 // PHELIX_DATA_DIR. The full end-to-end contract runs as a subprocess test
 // (TestPlanCLI_EndToEnd) with an isolated HOME, mirroring the repo's
 // cli_integration_test.go pattern.
@@ -41,15 +40,13 @@ func planTestDataDir(t *testing.T) string {
 	return dir
 }
 
-// withAppStore seeds a uniquely named app and restores the original
-// apps.json bytes when the test finishes — byte-for-byte, including absence.
+// withAppStore seeds a uniquely named app in a throwaway state file, so the
+// seeded record never reaches the real apps.json and is removed with the temp
+// dir when the test finishes.
 func withAppStore(t *testing.T) *app.AppInfo {
 	t.Helper()
-	stateFile := filepath.Join(appDataDirForTest(), "apps.json")
-	original, readErr := os.ReadFile(stateFile)
-
-	if err := app.Manager.LoadState(); err != nil {
-		t.Fatalf("LoadState: %v", err)
+	if err := app.SetStateDirForTesting(t.TempDir()); err != nil {
+		t.Fatalf("SetStateDirForTesting: %v", err)
 	}
 	name := fmt.Sprintf("pln-test-%d", time.Now().UnixNano()%1e9)
 	id, err := app.Manager.GenerateAppID()
@@ -68,25 +65,7 @@ func withAppStore(t *testing.T) *app.AppInfo {
 	if err := app.Manager.SaveState(); err != nil {
 		t.Fatalf("SaveState: %v", err)
 	}
-
-	t.Cleanup(func() {
-		if readErr != nil && os.IsNotExist(readErr) {
-			_ = os.Remove(stateFile)
-			return
-		}
-		_ = os.WriteFile(stateFile, original, 0o644)
-	})
 	return info
-}
-
-// appDataDirForTest mirrors internal/app's eager resolution so the cleanup
-// restores the same file the manager reads.
-func appDataDirForTest() string {
-	if v := os.Getenv("PHELIX_DATA_DIR"); v != "" {
-		return v
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".phelix")
 }
 
 // manualRebuildPlan assembles and persists a rebuild plan for the given app

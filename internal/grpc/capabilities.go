@@ -28,6 +28,9 @@ const (
 	// metrics, logs, ServerInfo, and the remote lifecycle command channel
 	// (start/stop/restart/remove/rebuild).
 	CapabilityMonitoring = "monitoring"
+	// CapabilityMonitorRestart: the agent can restart its own systemd unit
+	// through the fixed, pre-authorized monitor restart path.
+	CapabilityMonitorRestart = "monitor_restart"
 	// CapabilityDeployment: the agent implements zero-downtime deployment
 	// (blue-green/rolling/canary/progressive) — remote rebuild with strategy
 	// overrides and DeploymentEvent/DeploymentSnapshot telemetry.
