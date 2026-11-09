@@ -152,6 +152,10 @@ func TestSecurityMonitorEndToEnd(t *testing.T) {
 	if got := request("empty-history", phelixgrpc.SecurityCommandHistory, nil); got.GetSecurityScanList().GetTotal() != 0 || got.Status != "success" {
 		t.Fatalf("empty history: %v", got)
 	}
+	backend.controls <- &pb.MonitorControl{Payload: &pb.MonitorControl_Command{Command: securityRequest("unknown-app", phelixgrpc.SecurityCommandHistory, "missing-app", nil)}}
+	if got := await(func(ev *pb.MonitorEvent) bool { return ev.GetCommandResult().GetRequestId() == "unknown-app" }).GetCommandResult(); got.GetErrorCode() != "NOT_FOUND" {
+		t.Fatalf("unknown app: %v", got)
+	}
 	run := request("run", phelixgrpc.SecurityCommandRun, nil)
 	if run.Status != "success" || run.GetSecurityScanRecord().GetScanId() == "" {
 		t.Fatalf("run: %v", run)

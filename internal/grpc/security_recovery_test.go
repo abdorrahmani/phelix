@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -92,5 +93,65 @@ func TestSecurityQueryDoesNotBlockMonitorPing(t *testing.T) {
 	result := backend.eventsWithPayload(func(ev *pb.MonitorEvent) bool { return ev.GetCommandResult().GetRequestId() == "slow" }, time.Second)
 	if result == nil || result.GetCommandResult().GetErrorCode() != "SCAN_NOT_FOUND" {
 		t.Fatal("delayed result lost correlation")
+	}
+}
+
+func TestSecurityLedgerLostAckAndPersistenceFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	ledger := newRollbackLedger(path, 0, "security", "")
+	if err := ledger.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	req := securityTestRequest("lost-ack", "stable-app", nil)
+	if _, _, err := ledger.begin(req); err != nil {
+		t.Fatal(err)
+	}
+	result := finalizeSecurityResult(req, &pb.MonitorCommandResult{Status: "success"})
+	if err := ledger.complete(req.RequestId, result); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newRollbackLedger(path, 0, "security", "")
+	if err := restarted.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := restarted.pendingResults()
+	if err != nil || len(pending) != 1 || pending[0].RequestId != req.RequestId {
+		t.Fatalf("%v %v", pending, err)
+	}
+	acknowledgeSecurityResult(restarted, &pb.SecurityResultAck{RequestId: req.RequestId, Command: req.Type, AppName: req.AppName})
+	afterAck := newRollbackLedger(path, 0, "security", "")
+	if err := afterAck.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = afterAck.pendingResults()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("ack did not survive restart: %v %v", pending, err)
+	}
+	outcome, replay, err := afterAck.begin(req)
+	if err != nil || outcome != rollbackBeginReplay || replay.Status != "success" {
+		t.Fatalf("dedup lost after ack: %v %v", replay, err)
+	}
+	req = securityTestRequest("failed-write", "stable-app", nil)
+	if _, _, err := afterAck.begin(req); err != nil {
+		t.Fatal(err)
+	}
+	invalidPath := filepath.Join(t.TempDir(), "directory")
+	if err := os.Mkdir(invalidPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	afterAck.path = invalidPath
+	if err := afterAck.complete(req.RequestId, finalizeSecurityResult(req, &pb.MonitorCommandResult{Status: "success"})); err == nil {
+		t.Fatal("write failure ignored")
+	}
+	if _, _, err := afterAck.begin(req); err == nil {
+		t.Fatal("unpersisted ledger accepted retry")
+	}
+	afterFailure := newRollbackLedger(path, 0, "security", "")
+	if err := afterFailure.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	_, replay, err = afterFailure.begin(req)
+	if err != nil || replay.ErrorCode != "SECURITY_OUTCOME_UNKNOWN" {
+		t.Fatalf("%v %v", replay, err)
 	}
 }
