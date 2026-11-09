@@ -191,7 +191,7 @@ func TestScheduler_RecoversAbandonedRuns(t *testing.T) {
 	app := f.app(t, "myapp", true)
 	f.scans = []ScheduledApp{app}
 
-	abandoned := f.base.Add(-2 * time.Hour)
+	abandoned := f.base.Add(-time.Second)
 	if err := f.store.SaveScan(&ScanRecord{
 		ScanID:      NewScanID(),
 		IdentityKey: app.IdentityKey,
@@ -211,6 +211,11 @@ func TestScheduler_RecoversAbandonedRuns(t *testing.T) {
 	if err := f.store.SaveScan(live); err != nil {
 		t.Fatal(err)
 	}
+	lock, err := f.store.TryAcquireScanLock(live.IdentityKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
 
 	f.scheduler.recoverInterrupted()
 	records, _ := f.store.ListScans(app.IdentityKey)
@@ -222,9 +227,14 @@ func TestScheduler_RecoversAbandonedRuns(t *testing.T) {
 	}
 	other, _ := f.store.ListScans("name:other")
 	if len(other) != 1 || other[0].Status != ScanRunning {
-		t.Fatalf("a recent running record belongs to a live process: %+v", other)
+		t.Fatalf("a locked running record belongs to a live process: %+v", other)
 	}
-	_ = live
+	lock.Release()
+	f.scheduler.recoverInterrupted()
+	other, err = f.store.ListScans(live.IdentityKey)
+	if err != nil || len(other) != 1 || other[0].Status != ScanInterrupted {
+		t.Fatalf("an unlocked running record must recover immediately: %+v %v", other, err)
+	}
 }
 
 func TestScheduler_ShutdownCancelsInFlightScan(t *testing.T) {

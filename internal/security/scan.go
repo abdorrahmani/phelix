@@ -72,7 +72,7 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	cache.Now = now
 	client := &OSVClient{BaseURL: opts.OSVBaseURL, HTTP: opts.HTTPClient}
 
-	if err := store.ReclaimStaleRunning(opts.IdentityKey, StaleRunningAge); err != nil {
+	if err := store.ReclaimInterrupted(opts.IdentityKey); err != nil {
 		return nil, err
 	}
 

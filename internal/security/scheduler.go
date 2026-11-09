@@ -12,12 +12,6 @@ import (
 // SchedulerPollInterval is how often the scheduler checks for due scans.
 const SchedulerPollInterval = 60 * time.Second
 
-// StaleRunningAge bounds how long a running scan record may survive
-// before a scheduler start marks it interrupted. A live scan holds the
-// per-app lock and updates its record when it finishes; anything older
-// than this was abandoned by a dead process.
-const StaleRunningAge = time.Hour
-
 // FailureBackoffBase is the first retry delay after a failed scheduled
 // scan. It doubles per consecutive failure and is capped by the app's own
 // scan interval, so failures never cause a tight retry loop.
@@ -114,7 +108,6 @@ func (s *Scheduler) recoverInterrupted() {
 	if err != nil {
 		return
 	}
-	cutoff := s.now().Add(-StaleRunningAge)
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -123,18 +116,19 @@ func (s *Scheduler) recoverInterrupted() {
 		if err != nil || record.Status != ScanRunning {
 			continue
 		}
-		if record.StartedAt.After(cutoff) {
+		lock, err := s.Store.TryAcquireScanLock(record.IdentityKey)
+		if errors.Is(err, ErrScanLockHeld) {
 			continue
 		}
-		stamp := s.now()
-		record.Status = ScanInterrupted
-		record.FinishedAt = &stamp
-		record.Outcome = "interrupted by a process restart"
-		if err := s.Store.SaveScan(record); err != nil {
+		if err != nil {
+			s.log("warning", "security: cannot check scan %s recovery: %v", record.ScanID, err)
+			continue
+		}
+		err = s.Store.ReclaimInterrupted(record.IdentityKey)
+		lock.Release()
+		if err != nil {
 			s.log("warning", "security: could not mark scan %s interrupted: %v", record.ScanID, err)
-			continue
 		}
-		s.log("info", "security: marked abandoned scan %s of %s interrupted", record.ScanID, record.AppName)
 	}
 }
 
