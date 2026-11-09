@@ -93,7 +93,7 @@ func TestScheduler_MissedRunRunsOnceAfterDowntime(t *testing.T) {
 	f := newSchedulerFixture(t)
 	app := f.app(t, "myapp", true)
 	f.scans = []ScheduledApp{app}
-	if err := f.store.ScheduleNext(app.IdentityKey, f.base.Add(-24*time.Hour)); err != nil {
+	if err := f.store.ScheduleNext(app.IdentityKey, f.base.Add(-24*time.Hour), app.Interval); err != nil {
 		t.Fatal(err)
 	}
 

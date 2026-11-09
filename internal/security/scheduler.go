@@ -141,17 +141,12 @@ func (s *Scheduler) recoverInterrupted() {
 // dueApp decides whether one app is due and computes the basis the next
 // schedule will use.
 func (s *Scheduler) isDue(app ScheduledApp, now time.Time) bool {
-	entry, err := s.Store.Latest(app.IdentityKey)
-	if err != nil || entry == nil {
-		return true
+	next, err := s.Store.NextScanTime(app.IdentityKey, app.Interval)
+	if err != nil {
+		s.log("warning", "security schedule unavailable for %s: %v", app.AppID, err)
+		return false
 	}
-	if entry.NextScanAt != nil {
-		return !entry.NextScanAt.After(now)
-	}
-	if entry.FinishedAt != nil {
-		return !entry.FinishedAt.Add(app.Interval).After(now)
-	}
-	return true
+	return next == nil || !next.After(now)
 }
 
 // tick checks every app once. Scans execute sequentially inside the tick:
@@ -199,7 +194,7 @@ func (s *Scheduler) tryScan(ctx context.Context, app ScheduledApp, now time.Time
 			return false
 		}
 		backoff := s.nextBackoff(app.IdentityKey, app.Interval)
-		if scheduleErr := s.Store.ScheduleNext(app.IdentityKey, now.Add(backoff)); scheduleErr != nil {
+		if scheduleErr := s.Store.ScheduleNext(app.IdentityKey, now.Add(backoff), app.Interval); scheduleErr != nil {
 			s.log("warning", "security: %s: could not schedule a retry: %v", app.AppName, scheduleErr)
 		}
 		s.log("warning", "security: scheduled scan of %s failed (%s); retrying in %s", app.AppName, err, backoff)
@@ -214,7 +209,7 @@ func (s *Scheduler) tryScan(ctx context.Context, app ScheduledApp, now time.Time
 	if entryErr == nil && entry != nil && entry.FinishedAt != nil {
 		finished = *entry.FinishedAt
 	}
-	if scheduleErr := s.Store.ScheduleNext(app.IdentityKey, finished.Add(app.Interval)); scheduleErr != nil {
+	if scheduleErr := s.Store.ScheduleNext(app.IdentityKey, finished.Add(app.Interval), app.Interval); scheduleErr != nil {
 		s.log("warning", "security: %s: could not schedule the next scan: %v", app.AppName, scheduleErr)
 	}
 	s.log("info", "security: scheduled scan of %s completed (scan %s); next run at %s", app.AppName, entryScanID(entry), finished.Add(app.Interval).Format(time.RFC3339))

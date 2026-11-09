@@ -57,6 +57,7 @@ type ScanTrigger string
 
 const (
 	TriggerManual    ScanTrigger = "manual"
+	TriggerRemote    ScanTrigger = "remote"
 	TriggerScheduled ScanTrigger = "scheduled"
 )
 
@@ -189,7 +190,7 @@ func (s *ScanStore) LoadScan(scanID string) (*ScanRecord, error) {
 	}
 	raw, err := os.ReadFile(s.scanPath(scanID))
 	if os.IsNotExist(err) {
-		return nil, phelixerr.Newf(phelixerr.CodeNotFound, "no scan record %s", scanID)
+		return nil, phelixerr.Newf(phelixerr.CodeScanNotFound, "no scan record %s", scanID)
 	}
 	if err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read scan record %s", scanID)
@@ -198,6 +199,9 @@ func (s *ScanStore) LoadScan(scanID string) (*ScanRecord, error) {
 	if err := json.Unmarshal(raw, &record); err != nil {
 		_ = quarantineCacheEntry(s.scanPath(scanID))
 		return nil, phelixerr.Newf(phelixerr.CodeFilesystem, "scan record %s is corrupt and was quarantined", scanID)
+	}
+	if record.ScanID != scanID || record.IdentityKey == "" {
+		return nil, phelixerr.New(phelixerr.CodeFilesystem, "scan record identity or completion time is invalid")
 	}
 	if record.SchemaVersion != scanSchemaVersion {
 		_ = quarantineCacheEntry(s.scanPath(scanID))
@@ -279,6 +283,7 @@ func (s *ScanStore) ReclaimStaleRunning(identityKey string, olderThan time.Durat
 // LatestEntry is one app's row in the latest index: the newest completed
 // scan and the next scheduled scan time.
 type LatestEntry struct {
+	IntervalMS int64      `json:"interval_ms,omitempty"`
 	ScanID     string     `json:"scan_id,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	NextScanAt *time.Time `json:"next_scan_at,omitempty"`
@@ -361,11 +366,12 @@ func (s *ScanStore) MarkLatestSuccess(identityKey string, scanID string, finishe
 
 // ScheduleNext updates only the next scheduled scan time, preserving the
 // last successful scan pointer. Failed scans keep the last good report.
-func (s *ScanStore) ScheduleNext(identityKey string, nextScanAt time.Time) error {
+func (s *ScanStore) ScheduleNext(identityKey string, nextScanAt time.Time, interval time.Duration) error {
 	return s.withLatestLock(func(index latestIndex) (latestIndex, error) {
 		entry := index.Apps[identityKey]
 		when := nextScanAt
 		entry.NextScanAt = &when
+		entry.IntervalMS = interval.Milliseconds()
 		index.Apps[identityKey] = entry
 		return index, nil
 	})
@@ -379,18 +385,25 @@ func (s *ScanStore) Latest(identityKey string) (*LatestEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if entry, ok := index.Apps[identityKey]; ok {
-		return &entry, nil
+	entry := index.Apps[identityKey]
+	if entry.ScanID != "" {
+		if record, err := s.LoadScan(entry.ScanID); err == nil && record.IdentityKey == identityKey && record.Status == ScanCompleted && record.FinishedAt != nil {
+			entry.FinishedAt = record.FinishedAt
+			return &entry, nil
+		}
 	}
 	records, err := s.ListScans(identityKey)
 	if err != nil {
 		return nil, err
 	}
 	for _, record := range records {
-		if record.Status == ScanCompleted {
+		if record.Status == ScanCompleted && record.FinishedAt != nil {
 			finished := *record.FinishedAt
-			return &LatestEntry{ScanID: record.ScanID, FinishedAt: &finished}, nil
+			return &LatestEntry{ScanID: record.ScanID, FinishedAt: &finished, NextScanAt: entry.NextScanAt, IntervalMS: entry.IntervalMS}, nil
 		}
+	}
+	if entry.NextScanAt != nil {
+		return &LatestEntry{NextScanAt: entry.NextScanAt, IntervalMS: entry.IntervalMS}, nil
 	}
 	return nil, nil
 }
@@ -486,4 +499,20 @@ func FingerprintFiles(dir string, names []string) map[string]string {
 		out[name] = hex.EncodeToString(sum[:])
 	}
 	return out
+}
+
+// NextScanTime resolves the current interval against the persisted schedule.
+func (s *ScanStore) NextScanTime(identityKey string, interval time.Duration) (*time.Time, error) {
+	entry, err := s.Latest(identityKey)
+	if err != nil || entry == nil {
+		return nil, err
+	}
+	if entry.NextScanAt != nil && (entry.IntervalMS == 0 || entry.IntervalMS == interval.Milliseconds()) && (entry.FinishedAt == nil || entry.NextScanAt.After(*entry.FinishedAt)) {
+		return entry.NextScanAt, nil
+	}
+	if entry.FinishedAt != nil {
+		next := entry.FinishedAt.Add(interval)
+		return &next, nil
+	}
+	return nil, nil
 }

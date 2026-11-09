@@ -140,23 +140,7 @@ type securityTarget struct {
 // phelix.yaml so the scan is unambiguous.
 func resolveSecurityTarget(args []string) (*securityTarget, error) {
 	if len(args) == 1 {
-		if err := app.Manager.LoadState(); err != nil {
-			return nil, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load application state", err)
-		}
-		info, err := GetAppInfo(args[0])
-		if err != nil {
-			return nil, err
-		}
-		if info.Directory == "" {
-			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
-				"application %s has no source directory recorded; rebuild it once or scan its project directory directly", info.Name)
-		}
-		target := &securityTarget{appID: info.ID, appName: info.Name, identityKey: info.ID, dir: info.Directory}
-		target.cfg, err = project.LoadSecurityProject(target.dir, target.appName)
-		if err != nil {
-			return nil, err
-		}
-		return target, nil
+		return remoteSecurityTarget(args[0])
 	}
 
 	dir, err := os.Getwd()

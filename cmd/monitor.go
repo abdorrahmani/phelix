@@ -82,11 +82,11 @@ func runSecurityScheduler(ctx context.Context) {
 // host authorization boundary. The application identifier resolves to its
 // stable id before the decision so policies can target apps precisely.
 func remoteSecurityAuthorize(req *pb.MonitorCommandRequest) error {
-	info, err := GetAppInfo(req.GetAppName())
+	target, err := remoteSecurityTarget(req.GetAppName())
 	if err != nil {
 		return err
 	}
-	return authorizeDirectExecution(authz.ActionSecurity, info.Name, info.ID)
+	return authorizeDirectExecution(authz.ActionSecurity, target.appName, target.appID)
 }
 
 // securitySnapshotsForConsentingApps builds the latest completed scan
@@ -94,7 +94,7 @@ func remoteSecurityAuthorize(req *pb.MonitorCommandRequest) error {
 func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
 	var out []*pb.SecurityScanSnapshot
 	for _, info := range app.Manager.ListApplications() {
-		cfg, err := project.LoadSecurityProject(info.Directory, info.Name)
+		cfg, err := project.LoadSecurityProject(info.Directory)
 		if err != nil {
 			logs.WarningFile("security", "cannot resolve reporting configuration for app %s: %v", info.ID, err)
 			continue
@@ -150,7 +150,7 @@ func listSecurityScheduledApps() []security.ScheduledApp {
 			Dir:         info.Directory,
 			Interval:    project.ScanIntervalDefault,
 		}
-		cfg, err := project.LoadSecurityProject(info.Directory, info.Name)
+		cfg, err := project.LoadSecurityProject(info.Directory)
 		if err != nil {
 			logs.WarningFile("security", "cannot load scan configuration for app %s: %v", info.ID, err)
 			continue

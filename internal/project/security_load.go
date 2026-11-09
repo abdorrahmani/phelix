@@ -8,7 +8,7 @@ import (
 )
 
 // LoadSecurityProject reads the registered project's current configuration.
-func LoadSecurityProject(dir, name string) (*Config, error) {
+func LoadSecurityProject(dir string) (*Config, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, phelixerr.New(phelixerr.CodeSecurityRegistrationInvalid, "application registration requires an absolute project directory")
 	}
@@ -29,9 +29,6 @@ func LoadSecurityProject(dir, name string) (*Config, error) {
 			code = phelixerr.CodeSecurityConfigInvalid
 		}
 		return nil, phelixerr.Wrap(code, "cannot load registered application's phelix.yaml", err)
-	}
-	if cfg.Name != "" && cfg.Name != name {
-		return nil, phelixerr.New(phelixerr.CodeSecurityRegistrationInvalid, "phelix.yaml name does not match the registered application")
 	}
 	return cfg, nil
 }

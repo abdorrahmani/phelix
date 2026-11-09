@@ -124,6 +124,33 @@ func TestRemoteSecurity_ConsentGate(t *testing.T) {
 	}
 }
 
+func TestRemoteSecurityFindingPagesAndHistorySummaries(t *testing.T) {
+	dir := securityRemoteFixture(t, true)
+	osv := securityOSV(t, "high")
+	defer osv.Close()
+	record := securityRemoteScan(t, dir, osv.URL)
+	first := record.Findings[0]
+	record.Findings = make([]security.Finding, 205)
+	for i := range record.Findings {
+		record.Findings[i] = first
+	}
+	record.Counts.Affected = 205
+	record.Counts.PotentiallyAffected = 0
+	store := security.NewScanStore(securityTestDataDir())
+	if err := store.SaveScan(record); err != nil {
+		t.Fatal(err)
+	}
+	req := securityRequest("page", phelixgrpc.SecurityCommandDetail, securityRemoteAppID, &pb.SecurityCommandOptions{ScanId: record.ScanID, FindingsOffset: 200, IncludeGraph: true})
+	page := RemoteSecurityCommand(req).GetSecurityScanRecord()
+	if len(page.GetFindings()) != 5 || page.GetFindingsTotal() != 205 || page.GetFindingsTruncated() || page.GetGraph().GetEcosystem() != "go" {
+		t.Fatalf("page = %v", page)
+	}
+	history := RemoteSecurityCommand(securityRequest("history", phelixgrpc.SecurityCommandHistory, securityRemoteAppID, nil)).GetSecurityScanList()
+	if len(history.GetScans()) != 1 || len(history.Scans[0].Findings) != 0 || !history.Scans[0].FindingsTruncated {
+		t.Fatalf("history must contain summaries: %v", history)
+	}
+}
+
 func TestRemoteSecurity_CurrentConfiguration(t *testing.T) {
 	dir := securityRemoteFixture(t, true)
 	osv := securityOSV(t, "low")
@@ -133,7 +160,7 @@ func TestRemoteSecurity_CurrentConfiguration(t *testing.T) {
 		{"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: true\n", "", "enabled"},
 		{"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: false\n", "SECURITY_REPORTING_DISABLED", "disabled"},
 		{"security: [", "SECURITY_CONFIG_INVALID", ""},
-		{"name: another\nsecurity:\n  vulnerability:\n    reporting: true\n", "SECURITY_REGISTRATION_INVALID", ""},
+		{"name: another\nsecurity:\n  vulnerability:\n    reporting: true\n", "", "enabled"},
 	} {
 		if err := os.WriteFile(filepath.Join(dir, "phelix.yaml"), []byte(tc.content), 0600); err != nil {
 			t.Fatal(err)
@@ -257,8 +284,8 @@ func TestRemoteSecurity_DetailAndGraph(t *testing.T) {
 	}
 	missing := &pb.MonitorCommandRequest{RequestId: "r4", Type: phelixgrpc.SecurityCommandDetail, AppName: "remoteapp",
 		Security: &pb.SecurityCommandOptions{ScanId: "scn_ffffffffffffffff"}}
-	if got := resultErrorCode(RemoteSecurityCommand(missing)); got != "NOT_FOUND" {
-		t.Fatalf("a nonexistent scan is NOT_FOUND: %s", got)
+	if got := resultErrorCode(RemoteSecurityCommand(missing)); got != "SCAN_NOT_FOUND" {
+		t.Fatalf("a nonexistent scan is SCAN_NOT_FOUND: %s", got)
 	}
 }
 
@@ -296,12 +323,13 @@ func TestRemoteSecurity_ScanRunAndDedup(t *testing.T) {
 	securityRemoteFixture(t, true)
 	server := securityOSV(t, "high")
 	defer server.Close()
+	t.Setenv("PHELIX_OSV_URL", server.URL)
 
 	run := RemoteSecurityCommand(securityRequest("r1", phelixgrpc.SecurityCommandRun, "remoteapp", nil))
 	if run.GetStatus() != "success" || run.GetSecurityScanRecord() == nil {
 		t.Fatalf("remote scan run failed: %s %s", run.GetStatus(), run.GetError())
 	}
-	if run.GetSecurityScanRecord().GetTrigger() != "scheduled" {
+	if run.GetSecurityScanRecord().GetTrigger() != "remote" {
 		t.Fatalf("a remote run records its trigger: %+v", run.GetSecurityScanRecord())
 	}
 

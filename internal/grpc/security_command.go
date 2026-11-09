@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -222,7 +223,7 @@ func validateSecurityCommand(req *pb.MonitorCommandRequest) error {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "findings_offset is non-negative and only valid for report or detail")
 	}
 	for _, filter := range [][2]string{{opts.GetSeverity(), "low medium high critical unknown"}, {opts.GetEcosystem(), "go rust"}, {opts.GetState(), "affected potentially_affected unknown not_affected"}} {
-		if filter[0] != "" && !strings.Contains(" "+filter[1]+" ", " "+strings.ToLower(filter[0])+" ") {
+		if filter[0] != "" && !slices.Contains(strings.Fields(filter[1]), strings.ToLower(filter[0])) {
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "invalid security finding filter")
 		}
 	}

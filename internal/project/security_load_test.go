@@ -19,14 +19,14 @@ func TestLoadSecurityProject(t *testing.T) {
 		{name: "default disabled", content: "name: app\n"},
 		{name: "invalid yaml", content: "security: [", code: phelixerr.CodeSecurityConfigInvalid},
 		{name: "invalid settings", content: "security:\n  vulnerability:\n    reporting: true\n    scan_interval: 1m\n", code: phelixerr.CodeSecurityConfigInvalid},
-		{name: "wrong identity", content: "name: other\nsecurity:\n  vulnerability:\n    reporting: true\n", code: phelixerr.CodeSecurityRegistrationInvalid},
+		{name: "registered display name override", content: "name: other\nsecurity:\n  vulnerability:\n    reporting: true\n", reporting: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(dir, FileName), []byte(tc.content), 0600); err != nil {
 				t.Fatal(err)
 			}
-			cfg, err := LoadSecurityProject(dir, "app")
+			cfg, err := LoadSecurityProject(dir)
 			if tc.code != "" {
 				if phelixerr.CodeOf(err) != tc.code {
 					t.Fatalf("error = %v, want %s", err, tc.code)
@@ -57,14 +57,14 @@ func TestLoadSecurityProject(t *testing.T) {
 		{filepath.Join(dir, "missing"), phelixerr.CodeSecurityDirectoryUnavailable},
 		{dir, phelixerr.CodeSecurityConfigMissing},
 	} {
-		if _, err := LoadSecurityProject(tc.dir, "app"); phelixerr.CodeOf(err) != tc.code {
+		if _, err := LoadSecurityProject(tc.dir); phelixerr.CodeOf(err) != tc.code {
 			t.Fatalf("%q: %v, want %s", tc.dir, err, tc.code)
 		}
 	}
 	if err := os.Mkdir(filepath.Join(dir, FileName), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadSecurityProject(dir, "app"); phelixerr.CodeOf(err) != phelixerr.CodeSecurityConfigLoadFailed {
+	if _, err := LoadSecurityProject(dir); phelixerr.CodeOf(err) != phelixerr.CodeSecurityConfigLoadFailed {
 		t.Fatalf("read failure = %v", err)
 	}
 }

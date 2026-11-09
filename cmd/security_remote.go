@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -61,12 +62,25 @@ func remoteSecurityTarget(identifier string) (*securityTarget, error) {
 	if err := appManagerLoadState(); err != nil {
 		return nil, err
 	}
-	info, err := GetAppInfo(identifier)
-	if err != nil {
-		return nil, err
+	manager := app.Manager.(*app.AppManager)
+	manager.Lock.Lock()
+	info := manager.Apps[identifier]
+	if info == nil {
+		for _, candidate := range manager.Apps {
+			if candidate.Name == identifier {
+				info = candidate
+				break
+			}
+		}
+	}
+	if info == nil {
+		manager.Lock.Unlock()
+		return nil, phelixerr.New(phelixerr.CodeNotFound, "application is not registered")
 	}
 	target := &securityTarget{appID: info.ID, appName: info.Name, identityKey: info.ID, dir: info.Directory}
-	target.cfg, err = project.LoadSecurityProject(target.dir, target.appName)
+	manager.Lock.Unlock()
+	var err error
+	target.cfg, err = project.LoadSecurityProject(target.dir)
 	if err != nil {
 		return nil, err
 	}
@@ -132,10 +146,22 @@ func remoteSecurityHistory(req *pb.MonitorCommandRequest, target *securityTarget
 	if err != nil {
 		return securityCommandError(req, err)
 	}
+	if securityFilter := optsToFilter(opts); securityFilter.Severity != "" || securityFilter.Ecosystem != "" || securityFilter.State != "" || securityFilter.Package != "" {
+		matched := records[:0]
+		for _, record := range records {
+			if len(security.FilterFindings(record.Findings, securityFilter)) > 0 {
+				matched = append(matched, record)
+			}
+		}
+		records = matched
+	}
 	total := len(records)
 	list := &pb.SecurityScanList{Total: int32(total), Offset: int32(offset)}
 	for i := offset; i < len(records) && len(list.Scans) < limit; i++ {
-		list.Scans = append(list.Scans, recordToProto(req, target, records[i], false, nil))
+		summary := recordToProto(req, target, records[i], false, opts)
+		summary.Findings = nil
+		summary.FindingsTruncated = summary.FindingsTotal > 0 || summary.StorageTruncated
+		list.Scans = append(list.Scans, summary)
 	}
 	list.HasMore = offset+len(list.Scans) < total
 	return &pb.MonitorCommandResult{Status: "success", SecurityScanList: list}
@@ -169,7 +195,7 @@ func remoteSecurityAdvisory(req *pb.MonitorCommandRequest, target *securityTarge
 	}
 	store := security.NewScanStore(server.DataDir())
 	cache := security.NewAdvisoryCache(store.AdvisoryCacheDir())
-	adv, _, err := cache.Get(id)
+	adv, stale, err := cache.Get(id)
 	cached := err == nil && adv != nil
 	if adv == nil {
 		client := &security.OSVClient{BaseURL: security.OSVBaseURL()}
@@ -182,7 +208,9 @@ func remoteSecurityAdvisory(req *pb.MonitorCommandRequest, target *securityTarge
 		}
 		_ = cache.Put(adv, time.Now())
 	}
-	return &pb.MonitorCommandResult{Status: "success", SecurityAdvisory: advisoryToProto(adv, cached)}
+	view := advisoryToProto(adv, cached)
+	view.Stale = stale
+	return &pb.MonitorCommandResult{Status: "success", SecurityAdvisory: view}
 }
 
 // remoteSecurityConfig returns the effective configuration plus scheduler
@@ -202,9 +230,12 @@ func remoteSecurityConfig(req *pb.MonitorCommandRequest, target *securityTarget)
 func remoteSecurityScanRun(req *pb.MonitorCommandRequest, target *securityTarget) *pb.MonitorCommandResult {
 	store := security.NewScanStore(server.DataDir())
 	lock, err := store.TryAcquireScanLock(target.identityKey)
-	if err != nil {
+	if errors.Is(err, security.ErrScanLockHeld) {
 		return securityCommandError(req, phelixerr.New(phelixerr.CodeUnavailable,
 			"a scan is already running for this application; retry after it completes"))
+	}
+	if err != nil {
+		return securityCommandError(req, err)
 	}
 	defer lock.Release()
 
@@ -213,7 +244,7 @@ func remoteSecurityScanRun(req *pb.MonitorCommandRequest, target *securityTarget
 		AppName:     target.appName,
 		IdentityKey: target.identityKey,
 		Dir:         target.dir,
-		Trigger:     security.TriggerScheduled,
+		Trigger:     security.TriggerRemote,
 		DataDir:     server.DataDir(),
 		OSVBaseURL:  security.OSVBaseURL(),
 	}
@@ -241,7 +272,7 @@ func remoteSecurityConfigSet(req *pb.MonitorCommandRequest, target *securityTarg
 	}
 	defer lock.Release()
 
-	cfg, err := project.LoadSecurityProject(target.dir, target.appName)
+	cfg, err := project.LoadSecurityProject(target.dir)
 	if err != nil {
 		return securityCommandError(req, err)
 	}
@@ -295,14 +326,37 @@ func securityConfigState(target *securityTarget) (*pb.SecurityConfigState, error
 		state.FailThreshold = string(v.ResolvedFailThreshold())
 	}
 	store := security.NewScanStore(server.DataDir())
-	if entry, err := store.Latest(target.identityKey); err == nil && entry != nil {
+	entry, err := store.Latest(target.identityKey)
+	if err != nil {
+		return nil, err
+	}
+	if entry != nil {
 		state.LastScanId = entry.ScanID
 		if entry.FinishedAt != nil {
 			state.LastScanAtMs = entry.FinishedAt.UnixMilli()
 		}
-		if entry.NextScanAt != nil {
-			state.NextScanAtMs = entry.NextScanAt.UnixMilli()
-			state.HasNextScan = true
+	}
+	records, err := store.ListScans(target.identityKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) > 0 {
+		state.ScanStatus = string(records[0].Status)
+		state.CurrentScanId = records[0].ScanID
+	}
+	if state.Enabled {
+		interval, err := target.cfg.Security.Vulnerability.ResolvedScanInterval()
+		if err != nil {
+			return nil, err
+		}
+		next, err := store.NextScanTime(target.identityKey, interval)
+		if err != nil {
+			return nil, err
+		}
+		state.HasNextScan = true
+		state.NextScanAtMs = time.Now().UnixMilli()
+		if next != nil {
+			state.NextScanAtMs = next.UnixMilli()
 		}
 	}
 	return state, nil
@@ -362,18 +416,21 @@ func recordToProto(req *pb.MonitorCommandRequest, target *securityTarget, record
 		NotAffected:         int32(record.Counts.NotAffected),
 	}
 
-	for _, finding := range security.FilterFindings(record.Findings, optsToFilter(opts)) {
-		if len(out.Findings) >= securityFindingsWireCap {
-			out.FindingsTruncated = true
-			break
-		}
-		out.Findings = append(out.Findings, findingToProto(finding))
+	findings := security.FilterFindings(record.Findings, optsToFilter(opts))
+	out.FindingsTotal = int32(len(findings))
+	out.FindingsOffset = opts.GetFindingsOffset()
+	out.StorageTruncated = record.Counts.Affected+record.Counts.PotentiallyAffected+record.Counts.Unknown > len(record.Findings)
+	for i := int(opts.GetFindingsOffset()); i < len(findings) && len(out.Findings) < securityFindingsWireCap; i++ {
+		out.Findings = append(out.Findings, findingToProto(findings[i]))
 	}
+	out.FindingsTruncated = int(out.FindingsOffset)+len(out.Findings) < len(findings) || out.StorageTruncated
 
 	if includeGraph && record.Inventory != nil {
-		graph := &pb.SecurityGraph{Roots: record.Inventory.Roots}
+		graph := &pb.SecurityGraph{Roots: record.Inventory.Roots, Ecosystem: string(record.Inventory.Ecosystem), Level: string(record.Inventory.Level), Warnings: record.Inventory.Notes}
 		for _, mod := range record.Inventory.Modules {
-			graph.Nodes = append(graph.Nodes, moduleToProto(mod))
+			node := moduleToProto(mod)
+			node.Ecosystem = string(record.Inventory.Ecosystem)
+			graph.Nodes = append(graph.Nodes, node)
 		}
 		for _, edge := range record.Inventory.Edges {
 			graph.Edges = append(graph.Edges, &pb.SecurityGraphEdge{From: edge.From, To: edge.To})
@@ -447,7 +504,7 @@ func advisoryToProto(adv *security.OSVAdvisory, cached bool) *pb.SecurityAdvisor
 	out := &pb.SecurityAdvisory{
 		Id:          adv.ID,
 		Aliases:     adv.Aliases,
-		Summary:     truncateCell(sanitizeText(adv.Summary), 300),
+		Summary:     adv.Summary,
 		Severity:    label,
 		CvssVectors: vectors,
 		Modified:    adv.Modified,

@@ -145,11 +145,16 @@ func TestScanStore_LatestIndex(t *testing.T) {
 	identity := "name:myapp"
 	finished := time.Now()
 	next := finished.Add(24 * time.Hour)
+	for _, id := range []string{"scn_0000000000000001", "scn_0000000000000002"} {
+		if err := store.SaveScan(&ScanRecord{ScanID: id, IdentityKey: identity, Status: ScanCompleted, StartedAt: finished, FinishedAt: &finished}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if err := store.MarkLatestSuccess(identity, "scn_0000000000000001", finished); err != nil {
 		t.Fatalf("MarkLatestSuccess: %v", err)
 	}
-	if err := store.ScheduleNext(identity, next); err != nil {
+	if err := store.ScheduleNext(identity, next, 24*time.Hour); err != nil {
 		t.Fatalf("ScheduleNext: %v", err)
 	}
 	entry, err := store.Latest(identity)
