@@ -295,8 +295,8 @@ func validateSecurityCommand(req *pb.MonitorCommandRequest) error {
 // validated and ledger-begun synchronously, then executed on a background
 // goroutine; their terminal result is persisted in the ledger BEFORE the
 // send attempt and replayed on the next stream connection when the send
-// could not be confirmed. Queries are answered synchronously without the
-// ledger.
+// could not be confirmed. Queries use bounded background workers without
+// the ledger.
 func (c *Client) handleSecurityCommand(req *pb.MonitorCommandRequest, ledger *rollbackLedger) {
 	if err := validateSecurityCommand(req); err != nil {
 		_ = sendCommandResultLogged(finalizeSecurityResult(req, commandErrorResult(req, err)))

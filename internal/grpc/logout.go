@@ -16,12 +16,12 @@ import (
 // (UNAUTHENTICATED / expired or revoked session). It stops authenticated
 // synchronization without touching the local runtime: managed apps keep
 // running and local lifecycle commands keep working. The reconnect loop stops
-// redialing with the invalid credential; 'phelix auth login' restores the
-// connection using the same persistent agent_id.
+// redialing with the invalid credential. Log in again and restart the monitor
+// service to reconnect using the same persistent agent_id.
 func (c *Client) handleAuthRejected() {
 	connstate.MarkAuthExpired()
 	c.Close()
-	logs.WarningFile("grpc", "[gRPC] Backend rejected credentials (auth_expired); dashboard sync paused until 'phelix auth login'. Local runtime and apps are unaffected.")
+	logs.WarningFile("grpc", "[gRPC] Backend rejected credentials (auth_expired); dashboard sync paused; run 'phelix auth login --scope agent', then restart the phelix monitor service. Local runtime and apps are unaffected.")
 }
 
 // NotifyLogout explicitly tells the backend this agent is logging out so it

@@ -4,12 +4,6 @@ package phelix;
 
 option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 
-// Security remote-management contract. All payloads carry data the local
-// scanner already persists; nothing here invents state. Reporting consent
-// (security.vulnerability.reporting.enabled) gates every security
-// command: a disabled app answers SECURITY_REPORTING_DISABLED instead of
-// disclosing inventory.
-
 // SecurityCommandOptions carries the parameters of one security command
 // (MonitorCommandRequest.security = 15).
 message SecurityCommandOptions {
@@ -24,8 +18,8 @@ message SecurityCommandOptions {
   // security_history: how many records to skip.
   int32 offset = 3;
   // Finding filters shared by report/history/detail; empty means no
-  // filtering. severity: low|medium|high|critical. ecosystem: go|rust.
-  // state: affected|potentially_affected|unknown. package: name prefix.
+  // filtering. severity: low|medium|high|critical|unknown. ecosystem: go|rust.
+  // state: affected|potentially_affected|unknown|not_affected. package: substring.
   string severity = 4;
   string ecosystem = 5;
   string state = 6;
@@ -116,10 +110,9 @@ message SecurityScanCounts {
   int32 not_affected = 7;
 }
 
-// SecurityScanRecord is one persisted scan. Findings are capped at 200
-// per message with findings_truncated set beyond that; the full record
-// stays in the local store. The graph rides only when the command asked
-// for it.
+// SecurityScanRecord carries up to 200 findings from a local record.
+// findings_total counts matching stored findings; findings_offset pages them.
+// storage_truncated means some findings were omitted when the scan was saved.
 message SecurityScanRecord {
   string scan_id = 1;
   string app_id = 2;
@@ -150,9 +143,7 @@ message SecurityScanList {
   bool has_more = 4;
 }
 
-// SecurityAdvisory is a bounded advisory detail view. The backend fetches
-// full advisory detail from OSV.dev by id; the agent relays only what it
-// already caches.
+// SecurityAdvisory is the cached advisory view, fetched from OSV on cache miss.
 message SecurityAdvisory {
   string id = 1;
   repeated string aliases = 2;

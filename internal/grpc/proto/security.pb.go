@@ -36,8 +36,8 @@ type SecurityCommandOptions struct {
 	// security_history: how many records to skip.
 	Offset int32 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
 	// Finding filters shared by report/history/detail; empty means no
-	// filtering. severity: low|medium|high|critical. ecosystem: go|rust.
-	// state: affected|potentially_affected|unknown. package: name prefix.
+	// filtering. severity: low|medium|high|critical|unknown. ecosystem: go|rust.
+	// state: affected|potentially_affected|unknown|not_affected. package: substring.
 	Severity  string `protobuf:"bytes,4,opt,name=severity,proto3" json:"severity,omitempty"`
 	Ecosystem string `protobuf:"bytes,5,opt,name=ecosystem,proto3" json:"ecosystem,omitempty"`
 	State     string `protobuf:"bytes,6,opt,name=state,proto3" json:"state,omitempty"`
@@ -792,10 +792,9 @@ func (x *SecurityScanCounts) GetNotAffected() int32 {
 	return 0
 }
 
-// SecurityScanRecord is one persisted scan. Findings are capped at 200
-// per message with findings_truncated set beyond that; the full record
-// stays in the local store. The graph rides only when the command asked
-// for it.
+// SecurityScanRecord carries up to 200 findings from a local record.
+// findings_total counts matching stored findings; findings_offset pages them.
+// storage_truncated means some findings were omitted when the scan was saved.
 type SecurityScanRecord struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	ScanId            string                 `protobuf:"bytes,1,opt,name=scan_id,json=scanId,proto3" json:"scan_id,omitempty"`
@@ -1053,9 +1052,7 @@ func (x *SecurityScanList) GetHasMore() bool {
 	return false
 }
 
-// SecurityAdvisory is a bounded advisory detail view. The backend fetches
-// full advisory detail from OSV.dev by id; the agent relays only what it
-// already caches.
+// SecurityAdvisory is the cached advisory view, fetched from OSV on cache miss.
 type SecurityAdvisory struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
