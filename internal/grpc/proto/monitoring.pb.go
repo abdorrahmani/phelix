@@ -2290,9 +2290,11 @@ type MonitorCommandResult struct {
 	Paused bool `protobuf:"varint,25,opt,name=paused,proto3" json:"paused,omitempty"`
 	// enabled is the configuration-level autoscaling switch carried by
 	// autoscale_status and the toggling commands.
-	Enabled       bool `protobuf:"varint,26,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Enabled                  bool   `protobuf:"varint,26,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	SecurityResultWithheld   bool   `protobuf:"varint,27,opt,name=security_result_withheld,json=securityResultWithheld,proto3" json:"security_result_withheld,omitempty"`
+	SecurityConsentErrorCode string `protobuf:"bytes,28,opt,name=security_consent_error_code,json=securityConsentErrorCode,proto3" json:"security_consent_error_code,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *MonitorCommandResult) Reset() {
@@ -2505,6 +2507,20 @@ func (x *MonitorCommandResult) GetEnabled() bool {
 		return x.Enabled
 	}
 	return false
+}
+
+func (x *MonitorCommandResult) GetSecurityResultWithheld() bool {
+	if x != nil {
+		return x.SecurityResultWithheld
+	}
+	return false
+}
+
+func (x *MonitorCommandResult) GetSecurityConsentErrorCode() string {
+	if x != nil {
+		return x.SecurityConsentErrorCode
+	}
+	return ""
 }
 
 // AutoscaleStatusState is the autoscale_status answer: what the agent's
@@ -3853,7 +3869,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\x12\x14\n" +
 	"\x05limit\x18\r \x01(\x05R\x05limit\x12\x18\n" +
 	"\areplica\x18\x0e \x01(\tR\areplica\x12:\n" +
-	"\bsecurity\x18\x0f \x01(\v2\x1e.phelix.SecurityCommandOptionsR\bsecurity\"\xfa\t\n" +
+	"\bsecurity\x18\x0f \x01(\v2\x1e.phelix.SecurityCommandOptionsR\bsecurity\"\xf3\n" +
+	"\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -3886,7 +3903,9 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x10autoscale_status\x18\x17 \x01(\v2\x1c.phelix.AutoscaleStatusStateR\x0fautoscaleStatus\x12J\n" +
 	"\x11autoscale_history\x18\x18 \x03(\v2\x1d.phelix.AutoscaleHistoryEntryR\x10autoscaleHistory\x12\x16\n" +
 	"\x06paused\x18\x19 \x01(\bR\x06paused\x12\x18\n" +
-	"\aenabled\x18\x1a \x01(\bR\aenabled\"\xd5\x06\n" +
+	"\aenabled\x18\x1a \x01(\bR\aenabled\x128\n" +
+	"\x18security_result_withheld\x18\x1b \x01(\bR\x16securityResultWithheld\x12=\n" +
+	"\x1bsecurity_consent_error_code\x18\x1c \x01(\tR\x18securityConsentErrorCode\"\xd5\x06\n" +
 	"\x14AutoscaleStatusState\x12\x10\n" +
 	"\x03app\x18\x01 \x01(\tR\x03app\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1a\n" +

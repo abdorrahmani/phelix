@@ -510,6 +510,8 @@ message MonitorCommandResult {
   // enabled is the configuration-level autoscaling switch carried by
   // autoscale_status and the toggling commands.
   bool enabled = 26;
+  bool security_result_withheld = 27;
+  string security_consent_error_code = 28;
 }
 
 // AutoscaleStatusState is the autoscale_status answer: what the agent's

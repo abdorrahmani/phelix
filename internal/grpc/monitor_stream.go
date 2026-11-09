@@ -544,6 +544,8 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 			c.handleMonitorCommand(p.Command, executor, ledger)
 		case *pb.MonitorControl_Ping:
 			c.handleMonitorPing(p.Ping)
+		case *pb.MonitorControl_SecurityResultAck:
+			acknowledgeSecurityResult(securityLedger, p.SecurityResultAck)
 		}
 	}
 }

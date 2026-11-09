@@ -1,24 +1,18 @@
 package grpc
 
-// Security remote management over the MonitorStream command channel,
-// following the webhook template: read-only queries are answered
-// synchronously without touching idempotency state; mutations
-// (security_scan_run, security_config_set) are validated, ledger-begun,
-// executed on a background goroutine, persisted in the ledger before the
-// send attempt, and replayed on the next connection when the send could
-// not be confirmed. Every command is gated on the application's reporting
-// consent by the registered handler: a disabled app answers
-// SECURITY_REPORTING_DISABLED instead of disclosing inventory.
-
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"google.golang.org/protobuf/proto"
 )
 
 // Security command types (MonitorCommandRequest.type).
@@ -103,8 +97,8 @@ func getSecurityAuthorizer() SecurityAuthorizerFunc {
 
 // securityResults is the durable idempotency ledger for remote security
 // mutations.
-var securityResults = newRollbackLedger(filepath.Join(server.DataDir(), securityLedgerFile), rollbackLedgerCapacity, "security",
-	"the security mutation may or may not have been applied — reconcile with a security_config or security_scan_detail command")
+var securityResults = newRollbackLedger(filepath.Join(server.DataDir(), securityLedgerFile), 0, "security",
+	"the security mutation may or may not have been applied; reconcile with a security_config or security_scan_detail command")
 
 // InitializeSecurityLedger loads the durable remote-security idempotency
 // ledger. Monitor startup must call it before accepting security
@@ -122,6 +116,7 @@ func SecurityLedgerPath() string {
 
 // pendingSecurityWG tracks in-flight mutating security commands.
 var pendingSecurityWG sync.WaitGroup
+var securityQuerySlots = make(chan struct{}, 8)
 
 // WaitPendingSecurityCommands waits for in-flight security commands to
 // settle, bounded by timeout.
@@ -189,12 +184,12 @@ func securityFindingFilterActive(opts *pb.SecurityCommandOptions) bool {
 // severity vocabulary, resulting configuration validity) happens in the
 // handler through the same project-package validation the local CLI uses.
 func validateSecurityCommand(req *pb.MonitorCommandRequest) error {
-	if req.GetRequestId() == "" {
+	if req.GetRequestId() == "" || len(req.GetRequestId()) > 64 || strings.ContainsFunc(req.GetRequestId(), unicode.IsControl) {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command requires a request_id", req.GetType())
 	}
 	if req.GetStrategy() != "" || req.GetReplicas() != 0 || req.GetReason() != "" ||
 		req.GetVerifyDurationMs() != 0 || req.GetDryRun() || req.GetTarget() != "" || req.GetMatrix() != nil ||
-		req.GetWebhook() != nil {
+		req.GetWebhook() != nil || req.GetLimit() != 0 || req.GetReplica() != "" || req.GetCanaryPercent() != 0 {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"%s command must not carry rollback/rebuild/matrix/webhook options", req.GetType())
 	}
@@ -212,8 +207,24 @@ func validateSecurityCommand(req *pb.MonitorCommandRequest) error {
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "security_scan_detail requires security.scan_id")
 		case SecurityCommandAdvisory:
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "security_advisory requires security.advisory_id")
+		case SecurityCommandConfigSet:
+			return phelixerr.New(phelixerr.CodeInvalidArgument, "security_config_set requires configuration fields")
 		}
 		return nil
+	}
+	if opts.GetProtocolVersion() > SecurityProtocolVersion {
+		return phelixerr.New(phelixerr.CodeUnimplemented, "unsupported security protocol version")
+	}
+	if opts.GetEnabled() && !opts.GetSetEnabled() {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "enabled requires set_enabled")
+	}
+	if opts.GetFindingsOffset() < 0 || (opts.GetFindingsOffset() != 0 && req.GetType() != SecurityCommandReport && req.GetType() != SecurityCommandDetail) {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "findings_offset is non-negative and only valid for report or detail")
+	}
+	for _, filter := range [][2]string{{opts.GetSeverity(), "low medium high critical unknown"}, {opts.GetEcosystem(), "go rust"}, {opts.GetState(), "affected potentially_affected unknown not_affected"}} {
+		if filter[0] != "" && !strings.Contains(" "+filter[1]+" ", " "+strings.ToLower(filter[0])+" ") {
+			return phelixerr.New(phelixerr.CodeInvalidArgument, "invalid security finding filter")
+		}
 	}
 
 	configFields := opts.GetSetEnabled() || opts.GetEnabled() || opts.GetScanInterval() != "" || opts.GetFailThreshold() != ""
@@ -221,21 +232,21 @@ func validateSecurityCommand(req *pb.MonitorCommandRequest) error {
 
 	switch req.GetType() {
 	case SecurityCommandDetail:
-		if configFields {
+		if configFields || opts.GetAdvisoryId() != "" || opts.GetLimit() != 0 || opts.GetOffset() != 0 {
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "security_scan_detail must not carry configuration fields")
 		}
 		if opts.GetScanId() == "" {
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "security_scan_detail requires security.scan_id")
 		}
 	case SecurityCommandAdvisory:
-		if configFields || opts.GetIncludeGraph() || opts.GetLimit() != 0 || opts.GetOffset() != 0 {
+		if configFields || filterFields || opts.GetScanId() != "" || opts.GetLimit() != 0 || opts.GetOffset() != 0 {
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "security_advisory accepts only security.advisory_id")
 		}
 		if opts.GetAdvisoryId() == "" {
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "security_advisory requires security.advisory_id")
 		}
 	case SecurityCommandHistory:
-		if configFields {
+		if configFields || opts.GetIncludeGraph() {
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "security_history must not carry configuration fields")
 		}
 		if opts.GetScanId() != "" || opts.GetAdvisoryId() != "" {
@@ -272,9 +283,8 @@ func validateSecurityCommand(req *pb.MonitorCommandRequest) error {
 			return phelixerr.New(phelixerr.CodeInvalidArgument,
 				"security_config_set requires at least one of set_enabled, set_scan_interval, set_fail_threshold")
 		}
-		if opts.GetSetEnabled() && opts.GetEnabled() == false && opts.GetScanInterval() == "" && opts.GetFailThreshold() == "" {
-			return phelixerr.New(phelixerr.CodeInvalidArgument,
-				"security_config_set with set_enabled must also carry the value in enabled")
+		if err := (&project.SecurityConfig{Vulnerability: &project.VulnerabilityConfig{ScanInterval: project.ScanInterval(opts.GetScanInterval()), FailThreshold: project.ScanSeverity(opts.GetFailThreshold())}}).Validate(); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeInvalidArgument, "invalid security settings", err)
 		}
 	}
 	return nil
@@ -293,7 +303,17 @@ func (c *Client) handleSecurityCommand(req *pb.MonitorCommandRequest, ledger *ro
 	}
 
 	if !isMutatingSecurityCommand(req.GetType()) {
-		_ = sendCommandResultLogged(executeSecurityCommand(req))
+		select {
+		case securityQuerySlots <- struct{}{}:
+			pendingSecurityWG.Add(1)
+			go func() {
+				defer pendingSecurityWG.Done()
+				defer func() { <-securityQuerySlots }()
+				_ = sendSecurityResult(executeSecurityCommand(req))
+			}()
+		default:
+			_ = sendCommandResultLogged(commandErrorResult(req, phelixerr.New(phelixerr.CodeUnavailable, "security query capacity reached")))
+		}
 		return
 	}
 
@@ -310,11 +330,7 @@ func (c *Client) handleSecurityCommand(req *pb.MonitorCommandRequest, ledger *ro
 		return
 	}
 	if outcome == rollbackBeginReplay {
-		if sendCommandResultLogged(replay) == nil {
-			if err := ledger.markDelivered(req.GetRequestId()); err != nil {
-				logs.ErrorFile("grpc", "[gRPC Security] failed to mark replay delivered: %v", err)
-			}
-		}
+		_ = sendSecurityResult(replay)
 		return
 	}
 
@@ -324,15 +340,10 @@ func (c *Client) handleSecurityCommand(req *pb.MonitorCommandRequest, ledger *ro
 		result := executeSecurityCommand(req)
 		if err := ledger.complete(req.GetRequestId(), result); err != nil {
 			logs.ErrorFile("grpc", "[gRPC Security] result persistence failed: %v", err)
-			result = finalizeSecurityResult(req, commandErrorResult(req, phelixerr.Wrap(phelixerr.CodeUnavailable,
+			result = finalizeSecurityResult(req, commandErrorResult(req, phelixerr.Wrap(phelixerr.CodeSecurityOutcomeUnknown,
 				"security command completed but its durable result could not be recorded", err)))
-		} else if monitorStream.sendCommandResult(result) == nil {
-			if err := ledger.markDelivered(req.GetRequestId()); err != nil {
-				logs.ErrorFile("grpc", "[gRPC Security] failed to mark result delivered: %v", err)
-			}
 		}
-		// A failed send leaves the entry pending: the next MonitorStream
-		// connection replays it (replayPendingSecurityResults).
+		_ = sendSecurityResult(result)
 	}()
 }
 
@@ -365,6 +376,9 @@ func finalizeSecurityResult(req *pb.MonitorCommandRequest, result *pb.MonitorCom
 	result.Command = req.GetType()
 	result.AppName = req.GetAppName()
 	result.Timestamp = time.Now().UnixMilli()
+	if proto.Size(result) > 3<<20 {
+		return commandErrorResult(req, phelixerr.New(phelixerr.CodeSecurityResponseTooLarge, "security response exceeds 3 MiB; request a smaller page or omit the graph"))
+	}
 	if result.Status == "error" {
 		if result.ErrorCode == "" {
 			result.ErrorCode = string(phelixerr.CodeUnknown)
@@ -372,6 +386,46 @@ func finalizeSecurityResult(req *pb.MonitorCommandRequest, result *pb.MonitorCom
 		result.Error = phelixerr.Redact(result.Error)
 	}
 	return result
+}
+
+func sendSecurityResult(result *pb.MonitorCommandResult) error {
+	if result.GetSecurityScanRecord() != nil || result.GetSecurityScanList() != nil || result.GetSecurityAdvisory() != nil || result.GetSecurityConfig() != nil {
+		status := executeSecurityCommand(&pb.MonitorCommandRequest{RequestId: result.GetRequestId(), Type: SecurityCommandConfig, AppName: result.GetAppName()})
+		if result.GetCommand() == SecurityCommandConfig {
+			return sendCommandResultLogged(status)
+		}
+		if status.GetStatus() != "success" || status.GetSecurityConfig().GetReporting() != "enabled" {
+			code := status.GetErrorCode()
+			if code == "" {
+				code = string(phelixerr.CodeSecurityReportingDisabled)
+			}
+			result = proto.Clone(result).(*pb.MonitorCommandResult)
+			result.SecurityScanRecord = nil
+			result.SecurityScanList = nil
+			result.SecurityAdvisory = nil
+			result.SecurityConfig = nil
+			result.SecurityResultWithheld = true
+			result.SecurityConsentErrorCode = code
+			if !isMutatingSecurityCommand(result.GetCommand()) {
+				result.Status = "error"
+				result.ErrorCode = code
+				result.Error = "security data is withheld by current local configuration"
+			}
+		}
+	}
+	return sendCommandResultLogged(result)
+}
+
+func acknowledgeSecurityResult(ledger *rollbackLedger, ack *pb.SecurityResultAck) {
+	ledger.mu.Lock()
+	entry := ledger.entries[ack.GetRequestId()]
+	valid := entry != nil && entry.State == ledgerStateComplete && entry.Result.GetCommand() == ack.GetCommand() && entry.Result.GetAppName() == ack.GetAppName()
+	ledger.mu.Unlock()
+	if valid {
+		if err := ledger.markDelivered(ack.GetRequestId()); err != nil {
+			logs.ErrorFile("grpc", "security result acknowledgement failed: %v", err)
+		}
+	}
 }
 
 // replayPendingSecurityResults re-sends security mutation results that
@@ -384,12 +438,8 @@ func (c *Client) replayPendingSecurityResults(ledger *rollbackLedger) {
 		return
 	}
 	for _, result := range results {
-		if err := monitorStream.sendCommandResult(result); err != nil {
+		if err := sendSecurityResult(result); err != nil {
 			logs.ErrorFile("grpc", "[gRPC Security] failed to replay security result request_id=%s: %v", result.GetRequestId(), err)
-			return
-		}
-		if err := ledger.markDelivered(result.GetRequestId()); err != nil {
-			logs.ErrorFile("grpc", "[gRPC Security] failed to mark security result delivered request_id=%s: %v", result.GetRequestId(), err)
 			return
 		}
 	}

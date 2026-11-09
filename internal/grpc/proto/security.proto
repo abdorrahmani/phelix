@@ -17,6 +17,8 @@ message SecurityCommandOptions {
   string scan_id = 1;
   // security_advisory: which advisory identifier to inspect.
   string advisory_id = 14;
+  uint32 protocol_version = 15;
+  int32 findings_offset = 16;
   // security_history: page size (default 20, max 100).
   int32 limit = 2;
   // security_history: how many records to skip.
@@ -58,6 +60,7 @@ message SecurityModule {
   string replaced_from = 14;
   bool dev = 15;
   bool optional = 16;
+  string ecosystem = 17;
 }
 
 // SecurityGraphEdge is one dependency relationship: from depends on to.
@@ -72,6 +75,9 @@ message SecurityGraph {
   repeated string roots = 1;
   repeated SecurityModule nodes = 2;
   repeated SecurityGraphEdge edges = 3;
+  string ecosystem = 4;
+  string level = 5;
+  repeated string warnings = 6;
 }
 
 // SecurityFinding is one advisory evaluated against one dependency, with
@@ -131,6 +137,9 @@ message SecurityScanRecord {
   repeated SecurityFinding findings = 14;
   bool findings_truncated = 15;
   SecurityGraph graph = 16;
+  int32 findings_total = 17;
+  int32 findings_offset = 18;
+  bool storage_truncated = 19;
 }
 
 // SecurityScanList is a page of scan history, newest first.
@@ -154,6 +163,7 @@ message SecurityAdvisory {
   repeated string references = 7;
   string modified = 8;
   bool from_cache = 9;
+  bool stale = 10;
 }
 
 // SecurityConfigState is the effective configuration plus scheduler
@@ -169,6 +179,8 @@ message SecurityConfigState {
   int64 last_scan_at_ms = 8;
   int64 next_scan_at_ms = 9;
   bool has_next_scan = 10;
+  string scan_status = 11;
+  string current_scan_id = 12;
 }
 
 // SecurityScanSnapshot rides MonitorStream as an idempotent statement of
