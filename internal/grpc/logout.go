@@ -32,13 +32,28 @@ func (c *Client) handleAuthRejected() {
 // reason is connstate.Disconnected for an explicit 'phelix auth logout' or
 // connstate.AuthExpired when credentials were revoked. Idempotent: calling
 // twice is harmless (the backend just rewrites the same state).
+func NotifyLogout(reason string) error {
+	return notifyAgentState(reason)
+}
+
+// NotifyDisconnect tells the backend the monitor daemon is stopping cleanly.
+// The local session stays valid, so a later restart reconnects with the same
+// agent identity. Best-effort: a failed notification falls back to the
+// backend's stream-loss and heartbeat-timeout detection.
+func NotifyDisconnect() error {
+	connstate.MarkStopping()
+	return notifyAgentState(connstate.Stopping)
+}
+
+// notifyAgentState is the shared best-effort notification path for explicit
+// logout and clean daemon shutdown.
 //
 // best-effort by design:
 //   - No session (logged out already) → nothing to notify, returns nil.
 //   - No gRPC URL configured → nothing to notify, returns nil.
-//   - Network failure → the caller still deletes the local session; the
-//     backend falls back to heartbeat-timeout detection.
-func NotifyLogout(reason string) error {
+//   - Network failure → the caller still proceeds; the backend falls back to
+//     heartbeat-timeout detection.
+func notifyAgentState(reason string) error {
 	cfg := config.Get()
 	if cfg == nil || cfg.App.GRPCUrl == "" {
 		return nil // nowhere to notify
@@ -89,6 +104,6 @@ func NotifyLogout(reason string) error {
 		logs.WarningFile("grpc", "[gRPC] Logout notification failed: %v", phelixerr.FromGRPC(err))
 		return nil
 	}
-	logs.InfoFile("grpc", "[gRPC] Backend notified of logout (agent_id=%s accepted=%v)", server.GetAgentID(), resp.GetAccepted())
+	logs.InfoFile("grpc", "[gRPC] Backend notified of state %s (agent_id=%s accepted=%v)", reason, server.GetAgentID(), resp.GetAccepted())
 	return nil
 }

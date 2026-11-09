@@ -281,6 +281,7 @@ do_uninstall() {
         ${SUDO} rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
         ${SUDO} systemctl daemon-reload 2>/dev/null || true
     fi
+    ${SUDO} rm -f "/etc/sudoers.d/${SERVICE_NAME}-restart"
 
     ${SUDO} rm -f "${INSTALL_DIR}/${SERVICE_NAME}"
     # Removes the legacy startup wrapper from older installs; the current
@@ -384,6 +385,21 @@ KillMode=process
 [Install]
 WantedBy=multi-user.target
 UNIT
+
+    local systemctl_bin
+    systemctl_bin="$(command -v systemctl || true)"
+    if [ -n "${systemctl_bin}" ]; then
+        local sudoers_tmp
+        sudoers_tmp="$(mktemp)"
+        printf '%s ALL=(root) NOPASSWD: %s restart --no-block %s.service\n' \
+            "${svc_user}" "${systemctl_bin}" "${SERVICE_NAME}" > "${sudoers_tmp}"
+        if command -v visudo >/dev/null 2>&1 && ! visudo -cf "${sudoers_tmp}" >/dev/null 2>&1; then
+            warn "generated sudoers rule failed validation; remote Restart Monitor will be unsupported"
+        else
+            ${SUDO} install -m 0440 "${sudoers_tmp}" "/etc/sudoers.d/${SERVICE_NAME}-restart"
+        fi
+        rm -f "${sudoers_tmp}"
+    fi
 
     ${SUDO} systemctl daemon-reload
     ${SUDO} systemctl enable "${SERVICE_NAME}.service"

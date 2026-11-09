@@ -107,9 +107,12 @@ type monitorStreamManager struct {
 	serverInfoSent bool
 }
 
-// The MonitorStream compiled into this build (metrics, logs, ServerInfo,
-// and the remote lifecycle command channel) declares its capability.
-func init() { RegisterCapability(CapabilityMonitoring) }
+// The MonitorStream compiled into this build declares its capability, and the
+// systemd-supervised monitor restart declares its own.
+func init() {
+	RegisterCapability(CapabilityMonitoring)
+	RegisterCapability(CapabilityMonitorRestart)
+}
 
 var monitorStream = &monitorStreamManager{
 	metricsCollector: monitor.NewMetricsCollector(),
@@ -593,6 +596,51 @@ func (c *Client) replayPendingRollbackResults(ledger *rollbackLedger) {
 	}
 }
 
+// handleRestartMonitorCommand validates, deduplicates and acknowledges a
+// monitor self-restart. The accepted result is sent before the restart is
+// queued so the backend records it even though systemd stops this process.
+func (c *Client) handleRestartMonitorCommand(req *pb.MonitorCommandRequest) {
+	if err := monitor.ValidateRestartMonitorRequest(req.GetAppName(), req.GetRequestId()); err != nil {
+		_ = sendCommandResultLogged(commandErrorResult(req, err))
+		return
+	}
+
+	if outcome, seen := monitor.BeginRestartRequest(req.GetRequestId()); seen {
+		_ = sendCommandResultLogged(restartOutcomeResult(req, outcome))
+		return
+	}
+
+	accepted := &pb.MonitorCommandResult{
+		RequestId: req.GetRequestId(),
+		Command:   req.GetType(),
+		Status:    "accepted",
+		Timestamp: time.Now().UnixMilli(),
+	}
+	if err := sendCommandResultLogged(accepted); err != nil {
+		monitor.FinishRestartRequest(req.GetRequestId(), err)
+		return
+	}
+
+	outcome := monitor.FinishRestartRequest(req.GetRequestId(), monitor.RestartMonitor())
+	_ = sendCommandResultLogged(restartOutcomeResult(req, outcome))
+}
+
+// restartOutcomeResult builds the replayable result for a restart request.
+func restartOutcomeResult(req *pb.MonitorCommandRequest, outcome monitor.RestartOutcome) *pb.MonitorCommandResult {
+	result := &pb.MonitorCommandResult{
+		RequestId: req.GetRequestId(),
+		Command:   req.GetType(),
+		Status:    "accepted",
+		Timestamp: time.Now().UnixMilli(),
+	}
+	if outcome.ErrorText != "" {
+		result.Status = "error"
+		result.Error = outcome.ErrorText
+		result.ErrorCode = outcome.ErrorCode
+	}
+	return result
+}
+
 func commandErrorResult(req *pb.MonitorCommandRequest, err error) *pb.MonitorCommandResult {
 	result := &pb.MonitorCommandResult{
 		RequestId: req.GetRequestId(),
@@ -628,6 +676,11 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 		return
 	}
 	logs.InfoFile("grpc", "[gRPC Monitor] received command: type=%s app=%s", req.GetType(), req.GetAppName())
+
+	if monitor.IsRestartMonitorCommand(req.GetType()) {
+		c.handleRestartMonitorCommand(req)
+		return
+	}
 
 	isRollback := req.GetType() == monitor.CommandRollback
 

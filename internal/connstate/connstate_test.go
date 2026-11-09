@@ -24,6 +24,11 @@ func TestTransitions(t *testing.T) {
 	// Re-login restores connected with the same agent identity — the state is
 	// just a label, nothing was deleted anywhere.
 	MarkConnected()
+	MarkStopping()
+	if Get() != Stopping {
+		t.Fatalf("after MarkStopping = %q", Get())
+	}
+	MarkConnected()
 	if Get() != Connected {
 		t.Fatalf("final = %q, want %q", Get(), Connected)
 	}
@@ -36,6 +41,7 @@ func TestStateValuesAreStable(t *testing.T) {
 		Connected:    "connected",
 		Disconnected: "disconnected",
 		AuthExpired:  "auth_expired",
+		Stopping:     "stopping",
 	}
 	for got, exp := range want {
 		if got != exp {

@@ -33,6 +33,7 @@ var expectedBuildCapabilities = []string{
 	CapabilityBuildReport,
 	CapabilityLogBatch,
 	CapabilityMonitoring,
+	CapabilityMonitorRestart,
 	CapabilityRollback,
 	CapabilitySecurityScan,
 	CapabilityWebhookManagement,

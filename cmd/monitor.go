@@ -22,6 +22,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/security"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/abdorrahmani/phelix/internal/supervisor"
+	"github.com/abdorrahmani/phelix/internal/syscmd"
+	"github.com/abdorrahmani/phelix/internal/update"
 	"github.com/spf13/cobra"
 )
 
@@ -335,6 +337,10 @@ func runMonitor() error {
 		return RemoteRollback(payload)
 	})
 
+	monitor.SetRestartAgentHandler(func() error {
+		return (update.Systemd{Runner: syscmd.ExecRunner{}}).RequestRestart()
+	})
+
 	matrixCtx, cancelMatrixSessions := context.WithCancel(context.Background())
 	defer cancelMatrixSessions()
 	phelixgrpc.SetMatrixHandler(func(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
@@ -443,6 +449,10 @@ func runMonitor() error {
 
 	if err := healthDaemon.Stop(); err != nil {
 		logs.Warning("monitor", "error stopping health daemon: %v", err)
+	}
+
+	if err := phelixgrpc.NotifyDisconnect(); err != nil {
+		logs.Warning("monitor", "could not notify backend of shutdown: %v", err)
 	}
 
 	c.Close()

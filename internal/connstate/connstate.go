@@ -19,6 +19,9 @@ const (
 	// (UNAUTHENTICATED / revoked API key). The runtime keeps running; the user
 	// recovers with 'phelix auth login'.
 	AuthExpired = "auth_expired"
+	// Stopping means the daemon is shutting down cleanly and is about to
+	// disconnect. It is a short-lived state on the wire, not an auth state.
+	Stopping = "stopping"
 )
 
 var (
@@ -49,3 +52,6 @@ func MarkDisconnected() { Set(Disconnected) }
 
 // MarkAuthExpired records that the backend rejected the credentials.
 func MarkAuthExpired() { Set(AuthExpired) }
+
+// MarkStopping records that the daemon is shutting down cleanly.
+func MarkStopping() { Set(Stopping) }
