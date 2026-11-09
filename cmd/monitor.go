@@ -11,6 +11,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/autoscale"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
@@ -82,20 +83,61 @@ func runSecurityScheduler(ctx context.Context) {
 // host authorization boundary. The application identifier resolves to its
 // stable id before the decision so policies can target apps precisely.
 func remoteSecurityAuthorize(req *pb.MonitorCommandRequest) error {
-	info, err := GetAppInfo(req.GetAppName())
+	target, err := remoteSecurityTarget(req.GetAppName())
 	if err != nil {
 		return err
 	}
-	return authorizeDirectExecution(authz.ActionSecurity, info.Name, info.ID)
+	return authorizeDirectExecution(authz.ActionSecurity, target.appName, target.appID)
 }
+
+// securityProjectSkips counts applications whose project configuration
+// could not be read during one periodic pass. Aggregating the count keeps a
+// large registry with stale project directories from producing one log line
+// per application per tick.
+type securityProjectSkips struct {
+	unavailable int
+	unreadable  int
+}
+
+// add classifies one failed project configuration read.
+func (s *securityProjectSkips) add(err error) {
+	if phelixerr.CodeOf(err) == phelixerr.CodeSecurityDirectoryUnavailable {
+		s.unavailable++
+		return
+	}
+	s.unreadable++
+}
+
+// any reports whether the pass skipped at least one application.
+func (s securityProjectSkips) any() bool {
+	return s.unavailable > 0 || s.unreadable > 0
+}
+
+// log writes one summary warning for the pass.
+func (s securityProjectSkips) log(action string) {
+	if !s.any() {
+		return
+	}
+	securityWarningFile("security", "%s: skipped %d application(s) with an unavailable project directory and %d with unreadable security configuration", action, s.unavailable, s.unreadable)
+}
+
+// securityWarningFile is the warning sink for periodic security passes. It is
+// a variable so tests can assert that a pass emits one summary line instead
+// of one line per application.
+var securityWarningFile = logs.WarningFile
 
 // securitySnapshotsForConsentingApps builds the latest completed scan
 // summary for every application that opted in to security reporting.
 func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
 	var out []*pb.SecurityScanSnapshot
+	var skips securityProjectSkips
 	for _, info := range app.Manager.ListApplications() {
-		cfg, err := project.Load(info.Directory)
-		if err != nil || cfg.Security == nil || cfg.Security.Vulnerability == nil || !cfg.Security.Vulnerability.ResolvedReporting() {
+		cfg, err := project.LoadSecurityProject(info.Directory)
+		if err != nil {
+			skips.add(err)
+			continue
+		}
+		if remoteSecurityConsent(&securityTarget{cfg: cfg}) != nil {
 			continue
 		}
 		store := security.NewScanStore(server.DataDir())
@@ -129,6 +171,7 @@ func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
 		}
 		out = append(out, snapshot)
 	}
+	skips.log("cannot resolve reporting configuration")
 	return out
 }
 
@@ -138,6 +181,7 @@ func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
 func listSecurityScheduledApps() []security.ScheduledApp {
 	apps := app.Manager.ListApplications()
 	out := make([]security.ScheduledApp, 0, len(apps))
+	var skips securityProjectSkips
 	for _, info := range apps {
 		entry := security.ScheduledApp{
 			AppID:       info.ID,
@@ -146,7 +190,12 @@ func listSecurityScheduledApps() []security.ScheduledApp {
 			Dir:         info.Directory,
 			Interval:    project.ScanIntervalDefault,
 		}
-		if cfg, err := project.Load(info.Directory); err == nil && cfg.Security != nil && cfg.Security.Vulnerability != nil {
+		cfg, err := project.LoadSecurityProject(info.Directory)
+		if err != nil {
+			skips.add(err)
+			continue
+		}
+		if cfg.Security != nil && cfg.Security.Vulnerability != nil {
 			v := cfg.Security.Vulnerability
 			entry.Enabled = v.Enabled
 			if interval, err := v.ResolvedScanInterval(); err == nil {
@@ -155,6 +204,7 @@ func listSecurityScheduledApps() []security.ScheduledApp {
 		}
 		out = append(out, entry)
 	}
+	skips.log("cannot load scan configuration")
 	return out
 }
 

@@ -161,7 +161,7 @@ func TestRunScan_ReclaimsOwnStaleRunningRecords(t *testing.T) {
 	writeGoProject(t, projectDir)
 
 	store := NewScanStore(dataDir)
-	stale := time.Now().Add(-2 * time.Hour)
+	stale := time.Now().Add(-time.Second)
 	if err := store.SaveScan(&ScanRecord{
 		ScanID:      NewScanID(),
 		IdentityKey: "name:myapp",

@@ -12,12 +12,6 @@ import (
 // SchedulerPollInterval is how often the scheduler checks for due scans.
 const SchedulerPollInterval = 60 * time.Second
 
-// StaleRunningAge bounds how long a running scan record may survive
-// before a scheduler start marks it interrupted. A live scan holds the
-// per-app lock and updates its record when it finishes; anything older
-// than this was abandoned by a dead process.
-const StaleRunningAge = time.Hour
-
 // FailureBackoffBase is the first retry delay after a failed scheduled
 // scan. It doubles per consecutive failure and is capped by the app's own
 // scan interval, so failures never cause a tight retry loop.
@@ -114,7 +108,6 @@ func (s *Scheduler) recoverInterrupted() {
 	if err != nil {
 		return
 	}
-	cutoff := s.now().Add(-StaleRunningAge)
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -123,35 +116,31 @@ func (s *Scheduler) recoverInterrupted() {
 		if err != nil || record.Status != ScanRunning {
 			continue
 		}
-		if record.StartedAt.After(cutoff) {
+		lock, err := s.Store.TryAcquireScanLock(record.IdentityKey)
+		if errors.Is(err, ErrScanLockHeld) {
 			continue
 		}
-		stamp := s.now()
-		record.Status = ScanInterrupted
-		record.FinishedAt = &stamp
-		record.Outcome = "interrupted by a process restart"
-		if err := s.Store.SaveScan(record); err != nil {
+		if err != nil {
+			s.log("warning", "security: cannot check scan %s recovery: %v", record.ScanID, err)
+			continue
+		}
+		err = s.Store.ReclaimInterrupted(record.IdentityKey)
+		lock.Release()
+		if err != nil {
 			s.log("warning", "security: could not mark scan %s interrupted: %v", record.ScanID, err)
-			continue
 		}
-		s.log("info", "security: marked abandoned scan %s of %s interrupted", record.ScanID, record.AppName)
 	}
 }
 
 // dueApp decides whether one app is due and computes the basis the next
 // schedule will use.
 func (s *Scheduler) isDue(app ScheduledApp, now time.Time) bool {
-	entry, err := s.Store.Latest(app.IdentityKey)
-	if err != nil || entry == nil {
-		return true
+	next, err := s.Store.NextScanTime(app.IdentityKey, app.Interval)
+	if err != nil {
+		s.log("warning", "security schedule unavailable for %s: %v", app.AppID, err)
+		return false
 	}
-	if entry.NextScanAt != nil {
-		return !entry.NextScanAt.After(now)
-	}
-	if entry.FinishedAt != nil {
-		return !entry.FinishedAt.Add(app.Interval).After(now)
-	}
-	return true
+	return next == nil || !next.After(now)
 }
 
 // tick checks every app once. Scans execute sequentially inside the tick:
@@ -199,7 +188,7 @@ func (s *Scheduler) tryScan(ctx context.Context, app ScheduledApp, now time.Time
 			return false
 		}
 		backoff := s.nextBackoff(app.IdentityKey, app.Interval)
-		if scheduleErr := s.Store.ScheduleNext(app.IdentityKey, now.Add(backoff)); scheduleErr != nil {
+		if scheduleErr := s.Store.ScheduleNext(app.IdentityKey, now.Add(backoff), app.Interval); scheduleErr != nil {
 			s.log("warning", "security: %s: could not schedule a retry: %v", app.AppName, scheduleErr)
 		}
 		s.log("warning", "security: scheduled scan of %s failed (%s); retrying in %s", app.AppName, err, backoff)
@@ -214,7 +203,7 @@ func (s *Scheduler) tryScan(ctx context.Context, app ScheduledApp, now time.Time
 	if entryErr == nil && entry != nil && entry.FinishedAt != nil {
 		finished = *entry.FinishedAt
 	}
-	if scheduleErr := s.Store.ScheduleNext(app.IdentityKey, finished.Add(app.Interval)); scheduleErr != nil {
+	if scheduleErr := s.Store.ScheduleNext(app.IdentityKey, finished.Add(app.Interval), app.Interval); scheduleErr != nil {
 		s.log("warning", "security: %s: could not schedule the next scan: %v", app.AppName, scheduleErr)
 	}
 	s.log("info", "security: scheduled scan of %s completed (scan %s); next run at %s", app.AppName, entryScanID(entry), finished.Add(app.Interval).Format(time.RFC3339))

@@ -73,6 +73,21 @@ func TestScanStore_CorruptRecordQuarantined(t *testing.T) {
 	}
 }
 
+func TestScanStore_CorruptHistoryNeverLooksEmpty(t *testing.T) {
+	store := NewScanStore(t.TempDir())
+	if err := store.ensureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.scanPath(NewScanID()), []byte("invalid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if records, err := store.ListScans("app"); err == nil || records != nil {
+			t.Fatalf("corrupt or quarantined history must fail: %+v %v", records, err)
+		}
+	}
+}
+
 func TestScanStore_ListScansAndRetain(t *testing.T) {
 	store := NewScanStore(t.TempDir())
 	identity := "name:myapp"
@@ -145,11 +160,16 @@ func TestScanStore_LatestIndex(t *testing.T) {
 	identity := "name:myapp"
 	finished := time.Now()
 	next := finished.Add(24 * time.Hour)
+	for _, id := range []string{"scn_0000000000000001", "scn_0000000000000002"} {
+		if err := store.SaveScan(&ScanRecord{ScanID: id, IdentityKey: identity, Status: ScanCompleted, StartedAt: finished, FinishedAt: &finished}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if err := store.MarkLatestSuccess(identity, "scn_0000000000000001", finished); err != nil {
 		t.Fatalf("MarkLatestSuccess: %v", err)
 	}
-	if err := store.ScheduleNext(identity, next); err != nil {
+	if err := store.ScheduleNext(identity, next, 24*time.Hour); err != nil {
 		t.Fatalf("ScheduleNext: %v", err)
 	}
 	entry, err := store.Latest(identity)

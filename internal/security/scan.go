@@ -72,7 +72,9 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	cache.Now = now
 	client := &OSVClient{BaseURL: opts.OSVBaseURL, HTTP: opts.HTTPClient}
 
-	_ = store.ReclaimStaleRunning(opts.IdentityKey, StaleRunningAge)
+	if err := store.ReclaimInterrupted(opts.IdentityKey); err != nil {
+		return nil, err
+	}
 
 	started := now()
 	record := &ScanRecord{
@@ -95,7 +97,7 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 		record.FinishedAt = &stamp
 		record.Outcome = sanitizeOutcome(cause)
 		if saveErr := store.SaveScan(record); saveErr != nil {
-			return nil, cause
+			return nil, errors.Join(cause, saveErr)
 		}
 		return nil, cause
 	}
@@ -164,6 +166,7 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 		warnings = append(warnings, "some advisory data is past its freshness window")
 	}
 	if failures := source.FetchFailures(); failures > 0 {
+		coverage = CoveragePartial
 		warnings = append(warnings, "some advisories could not be retrieved")
 	}
 	if coverage == CoveragePartial {
@@ -175,10 +178,7 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	record.Status = ScanCompleted
 	record.FinishedAt = &finished
 	record.Coverage = coverage
-	if coverage == CoveragePartial {
-		record.Warnings = append(record.Warnings,
-			"advisory coverage is incomplete: "+itoa(totalQueries-resolvedQueries)+" of "+itoa(totalQueries)+" packages could not be checked offline")
-	}
+
 	record.Findings = open
 	record.Counts = counts
 	record.Freshness = freshness
@@ -262,7 +262,9 @@ func buildCounts(inv *Inventory, findings []Finding) ([]Finding, ScanCounts, []s
 	var open []Finding
 	truncated := false
 	for _, finding := range findings {
-		counts.BySeverity[finding.Severity]++
+		if finding.State != StateNotAffected {
+			counts.BySeverity[finding.Severity]++
+		}
 		switch finding.State {
 		case StateAffected:
 			counts.Affected++

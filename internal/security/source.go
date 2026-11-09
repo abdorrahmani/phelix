@@ -78,9 +78,7 @@ func (s *PrefetchSource) refreshDetails(ctx context.Context) {
 			seen[id] = true
 			adv, stale, err := s.cache.Get(id)
 			switch {
-			case err != nil:
-				continue
-			case adv == nil, stale:
+			case err != nil, adv == nil, stale:
 				missing = append(missing, id)
 			}
 		}
@@ -105,7 +103,11 @@ func (s *PrefetchSource) refreshDetails(ctx context.Context) {
 				s.fetchFailures++
 				s.mu.Unlock()
 			} else {
-				s.cache.Put(adv, s.Now())
+				if err := s.cache.Put(adv, s.Now()); err != nil {
+					s.mu.Lock()
+					s.fetchFailures++
+					s.mu.Unlock()
+				}
 			}
 			counter.one()
 			if s.FetchProgress != nil {
@@ -129,7 +131,9 @@ func (s *PrefetchSource) indexCacheFallback() {
 			}
 			key := queryKey(eco, affected.Package.Name)
 			s.mu.Lock()
-			s.byQuery[key] = appendUnique(s.byQuery[key], adv.ID)
+			if s.attempted[key] {
+				s.byQuery[key] = appendUnique(s.byQuery[key], adv.ID)
+			}
 			s.mu.Unlock()
 		}
 	}
@@ -203,7 +207,12 @@ func (s *PrefetchSource) HasData() bool {
 func (s *PrefetchSource) Coverage() (resolved int, total int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.byQuery), len(s.attempted)
+	for key := range s.attempted {
+		if _, ok := s.byQuery[key]; ok {
+			resolved++
+		}
+	}
+	return resolved, len(s.attempted)
 }
 
 func (s *PrefetchSource) ids(query OSVQuery) []string {

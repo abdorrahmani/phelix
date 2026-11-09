@@ -47,7 +47,7 @@ phelix security scan [app]      # scan; progress renders on stderr, --json stays
 phelix security report [app]    # latest completed scan, --previous for the diff
 phelix security history [app]   # recorded scans with status and counts
 phelix security show <ID>       # one advisory, cache first
-phelix security config [app]    # show; --set-* flags edit phelix.yaml safely
+phelix security config [app]    # show the effective settings and schedule
 ```
 
 Run without arguments in a terminal, the commands guide you: `phelix
@@ -60,8 +60,8 @@ validate before writing, and serialize concurrent Phelix edits through a
 lock:
 
 ```bash
-phelix security config myapp --enable --scan-interval 12h --fail-threshold medium
-phelix security config myapp --disable
+phelix security config myapp --set-enabled true --set-scan-interval 12h --set-fail-threshold medium
+phelix security config myapp --set-enabled false
 ```
 
 Scheduled scans run opt-in through the monitor daemon:
@@ -88,14 +88,51 @@ security:
     reporting: true
 ```
 
-With `reporting` disabled (the default), remote security operations
-against the application answer `SECURITY_REPORTING_DISABLED` and the
-monitor pushes nothing. With it enabled, the monitor pushes a summary of
-the latest completed scan on every stream sync, and the full reports,
-graphs, and configuration travel only on explicit backend queries. Remote
-mutations (running a scan, changing settings) additionally pass through
-the host authorization boundary (`security` action) and carry persistent
-idempotency, so a retried request never duplicates work.
+Agent reads the registered application's current `phelix.yaml` for each request.
+A missing file, invalid configuration, or unavailable project directory returns
+its own error code. None becomes a false consent denial. The registered app ID
+and directory identify the application; its display name may differ from the
+YAML name.
+
+With `reporting` disabled, `security_config` returns only identity and disabled
+consent. Reports, history, advisory details, scans, configuration changes, and
+snapshots require consent. Remote commands and CLI configuration flags cannot
+change reporting. Only a local edit to `phelix.yaml` can grant it.
+
+Agent sends connection status every 10 seconds even when no app is watched or
+metrics are paused. Backend uses the active stream and its own receive time,
+with a 30-second freshness window. Consent, missing scans, and individual command
+failures do not decide Agent availability.
+
+Mutations use durable request IDs. Retry the same ID with the same payload.
+Agent persists the outcome before delivery and replays it until backend
+acknowledges persistence. Restarted unfinished operations return
+`SECURITY_OUTCOME_UNKNOWN`; they do not execute again. A timeout does not prove
+failure. If consent changes, Agent withholds data while preserving the outcome.
+An already-running separate scan returns `SECURITY_SCAN_RUNNING`.
+
+Reports and details page stored findings in groups of 200. Graphs use the actual
+local inventory. `storage_truncated` identifies scans whose findings exceeded
+the local 1000-finding bound. Backend reads require a live consent check.
+
+For expired credentials, log in again with `phelix auth login --scope agent`,
+then restart the monitor service. Routine network disconnects reconnect
+automatically without changing Agent identity.
+
+### Integration verification
+
+Run deterministic OSV fixtures through the real Agent stream:
+
+```bash
+go test ./cmd -run TestSecurityMonitorEndToEnd -count=1
+go test -race ./internal/grpc ./cmd -run 'Security|CLISecurity'
+go test -race ./internal/security
+```
+
+The backend companion test is `TestSecurityHTTPMonitorIntegration` in
+`b-phelix/services/app/internal/grpc`. It covers HTTP routing through authenticated
+MonitorStream and connection recovery. Dashboard tests cover request correlation,
+consent gating, findings pagination, and delayed results.
 
 ## Secrets at rest
 

@@ -43,6 +43,11 @@ var serverMetricsSampleInterval = 2 * time.Second
 
 const monitorCommandSettleDelay = 2 * time.Second
 
+// maxLegacyLogEventsPerTick bounds how many entries one collection pass sends
+// on the legacy per-line log channel. The batch channel carries the remainder,
+// so a chatty source cannot exceed the backend's per-stream message budget.
+const maxLegacyLogEventsPerTick = 10
+
 // monitorStreamRetryDelay is how long to wait before re-opening the
 // monitor stream after it ends (the underlying gRPC connection's own
 // reconnect/backoff logic — see reconnect.go — governs connection-level
@@ -58,16 +63,6 @@ const monitorStreamRetryDelay = 2 * time.Second
 // login' writes a fresh session. It is a var (not a const) so tests can
 // shorten it.
 var monitorStreamNoSessionDelay = 15 * time.Second
-
-// monitorStreamNoWatchDelay is how long the stream loop parks between checks
-// when no application is watched. Server-level stream payloads — ServerInfo
-// first, which binds the stream to this server's identity — flow only while
-// at least one app is watched (app.AnyWatched); with none, an open stream
-// would stay unbound and be reaped by the backend's 2-minute pre-bind window
-// (E5), so the loop parks instead of churning connections. The first
-// `phelix watch` opt-in re-opens the stream within one delay. It is a var
-// (not a const) so tests can shorten it.
-var monitorStreamNoWatchDelay = 5 * time.Second
 
 // maxRemoteVerifyDurationMS is the wire representation (milliseconds) of the
 // single shared verify-window cap, deploy.MaxRollbackVerifyDuration. This is
@@ -306,15 +301,6 @@ func (c *Client) monitorStreamLoop() {
 			continue
 		}
 
-		if !app.AnyWatched() {
-			select {
-			case <-c.done:
-				return
-			case <-time.After(monitorStreamNoWatchDelay):
-			}
-			continue
-		}
-
 		if err := c.runMonitorStream(); err != nil {
 			if isAuthRejection(err) {
 				logs.ErrorFile("grpc", "[gRPC Monitor] backend rejected credentials on monitor stream: %v", err)
@@ -370,7 +356,7 @@ func (c *Client) runMonitorStream() error {
 		return phelixerr.Wrap(phelixerr.CodeConnection, "attach auth metadata for monitor stream", err)
 	}
 
-	stream, err := c.serviceClient.MonitorStream(authCtx)
+	stream, err := c.GetServiceClient().MonitorStream(authCtx)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeConnection, "open monitor stream", err)
 	}
@@ -397,6 +383,20 @@ func (c *Client) runMonitorStream() error {
 	}()
 
 	logs.InfoFile("grpc", "[gRPC Monitor] monitor stream connected (agent_id=%s)", server.GetAgentID())
+
+	if err := c.sendMonitorServerInfo(); err != nil {
+		if errors.Is(err, io.EOF) {
+			_, err = stream.Recv()
+		}
+		return err
+	}
+	agentStatus := newAgentStatus()
+	if err := sendAgentStatus(agentStatus); err != nil {
+		if errors.Is(err, io.EOF) {
+			_, err = stream.Recv()
+		}
+		return err
+	}
 
 	ledger := rollbackResults
 	matrixLedger := matrixResults
@@ -435,10 +435,6 @@ func (c *Client) runMonitorStream() error {
 		c.replayPendingAutoscaleResults()
 	}
 
-	if err := c.sendMonitorServerInfo(); err != nil {
-		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
-	}
-
 	c.sendDeploymentSnapshots()
 
 	c.sendHealthSnapshots()
@@ -448,6 +444,9 @@ func (c *Client) runMonitorStream() error {
 	c.sendVersionSyncs()
 
 	c.sendSecuritySnapshots()
+
+	heartbeat := time.NewTicker(agentHeartbeatInterval)
+	defer heartbeat.Stop()
 
 	recvErrCh := make(chan error, 1)
 	go func() {
@@ -472,6 +471,10 @@ func (c *Client) runMonitorStream() error {
 			return nil
 		case err := <-recvErrCh:
 			return err
+		case <-heartbeat.C:
+			if err := sendAgentStatus(agentStatus); err != nil {
+				return err
+			}
 		case <-ticker.C:
 			if monitorStream.isPaused() {
 				continue
@@ -546,6 +549,8 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 			c.handleMonitorCommand(p.Command, executor, ledger)
 		case *pb.MonitorControl_Ping:
 			c.handleMonitorPing(p.Ping)
+		case *pb.MonitorControl_SecurityResultAck:
+			acknowledgeSecurityResult(securityLedger, p.SecurityResultAck)
 		}
 	}
 }
@@ -780,7 +785,6 @@ func (s *monitorStreamManager) markServerInfoSent() {
 // filtered by watching at the collection boundary (monitor.MetricsCollector).
 func (c *Client) sendMonitorTick() {
 	serverID := server.GetServerID()
-
 	if err := c.sendMonitorServerInfo(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
@@ -846,10 +850,10 @@ func (c *Client) sendMonitorTick() {
 	}
 }
 
-// sendLogEntries delivers one source's entries on the legacy per-line channel
-// and queues the same entries for batched delivery. A send failure stops the
-// legacy pass but the batch is still queued, so a reconnect does not lose the
-// collected lines.
+// sendLogEntries delivers a bounded prefix of one source's entries on the
+// legacy per-line channel and queues every entry for batched delivery. A send
+// failure stops the legacy pass but the batch is still queued, so a reconnect
+// does not lose the collected lines.
 func (c *Client) sendLogEntries(entries []logs.LogEntry, source pb.LogSource, label string) {
 	if len(entries) == 0 {
 		return
@@ -859,7 +863,7 @@ func (c *Client) sendLogEntries(entries []logs.LogEntry, source pb.LogSource, la
 	for _, e := range entries {
 		batch = append(batch, toProtoLogEntry(e, source))
 	}
-	for _, entry := range batch {
+	for _, entry := range legacyLogEvents(batch) {
 		event := &pb.MonitorEvent{
 			ServerId:  serverID,
 			Timestamp: time.Now().UnixMilli(),
@@ -873,6 +877,15 @@ func (c *Client) sendLogEntries(entries []logs.LogEntry, source pb.LogSource, la
 		}
 	}
 	monitorStream.queueBatchEntries(batch)
+}
+
+// legacyLogEvents returns the entries one collection pass may send on the
+// legacy per-line channel.
+func legacyLogEvents(entries []*pb.MonitorLogEntry) []*pb.MonitorLogEntry {
+	if len(entries) <= maxLegacyLogEventsPerTick {
+		return entries
+	}
+	return entries[:maxLegacyLogEventsPerTick]
 }
 
 // sendSelfLogTick ships the daemon's own log lines. It runs on the fast

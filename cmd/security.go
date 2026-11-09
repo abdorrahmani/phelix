@@ -140,22 +140,7 @@ type securityTarget struct {
 // phelix.yaml so the scan is unambiguous.
 func resolveSecurityTarget(args []string) (*securityTarget, error) {
 	if len(args) == 1 {
-		if err := app.Manager.LoadState(); err != nil {
-			return nil, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load application state", err)
-		}
-		info, err := GetAppInfo(args[0])
-		if err != nil {
-			return nil, err
-		}
-		if info.Directory == "" {
-			return nil, phelixerr.Newf(phelixerr.CodeInvalidArgument,
-				"application %s has no source directory recorded; rebuild it once or scan its project directory directly", info.Name)
-		}
-		target := &securityTarget{appID: info.ID, appName: info.Name, identityKey: info.ID, dir: info.Directory}
-		if cfg, err := project.Load(info.Directory); err == nil {
-			target.cfg = cfg
-		}
-		return target, nil
+		return remoteSecurityTarget(args[0])
 	}
 
 	dir, err := os.Getwd()
@@ -424,8 +409,8 @@ func runSecurityReport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if entry == nil || entry.ScanID == "" {
-		return phelixerr.Newf(phelixerr.CodeNotFound,
-			"no completed scan found for %s; run phelix security scan first", target.appName)
+		return phelixerr.Newf(phelixerr.CodeScanNotFound,
+			"no completed scan found for %s", target.appName)
 	}
 	record, err := store.LoadScan(entry.ScanID)
 	if err != nil {

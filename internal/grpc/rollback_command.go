@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -45,6 +44,7 @@ type rollbackLedgerEntry struct {
 	RequestID   string                   `json:"request_id"`
 	Fingerprint string                   `json:"fingerprint"`
 	Command     string                   `json:"command,omitempty"`
+	AppName     string                   `json:"app_name,omitempty"`
 	State       string                   `json:"state"`
 	Result      *pb.MonitorCommandResult `json:"result,omitempty"`
 	Delivered   bool                     `json:"delivered,omitempty"`
@@ -177,7 +177,7 @@ func (l *rollbackLedger) loadLocked() error {
 	if disk.Version != rollbackLedgerVersion {
 		return phelixerr.Newf(phelixerr.CodeUnavailable, "unsupported remote rollback ledger version %d", disk.Version)
 	}
-	if len(disk.Entries) > l.max {
+	if l.max > 0 && len(disk.Entries) > l.max {
 		return phelixerr.Newf(phelixerr.CodeUnavailable, "remote rollback ledger exceeds capacity %d", l.max)
 	}
 	for _, e := range disk.Entries {
@@ -236,7 +236,11 @@ func (l *rollbackLedger) begin(req *pb.MonitorCommandRequest) (rollbackBeginOutc
 				"request_id already exists with a different "+l.commandNoun(existing)+" payload")
 		}
 		if existing.State == ledgerStateInProgress {
-			return 0, nil, phelixerr.Newf(phelixerr.CodeUnavailable,
+			code := phelixerr.CodeUnavailable
+			if l.fallbackCommand == "security" {
+				code = phelixerr.CodeSecurityInProgress
+			}
+			return 0, nil, phelixerr.Newf(code,
 				"%s request is already in progress", l.commandNoun(existing))
 		}
 		return rollbackBeginReplay, cloneMonitorCommandResult(existing.Result), nil
@@ -246,7 +250,7 @@ func (l *rollbackLedger) begin(req *pb.MonitorCommandRequest) (rollbackBeginOutc
 	// dropped; in-flight and undelivered-terminal entries are protected, so a
 	// window saturated with those still fails closed below.
 	l.evictOldestDeliveredLocked()
-	if len(l.entries) >= l.max {
+	if l.max > 0 && len(l.entries) >= l.max {
 		return 0, nil, phelixerr.Newf(phelixerr.CodeUnavailable,
 			"remote rollback ledger window full (%d in-flight or undelivered commands); retry once results drain", l.max)
 	}
@@ -255,6 +259,7 @@ func (l *rollbackLedger) begin(req *pb.MonitorCommandRequest) (rollbackBeginOutc
 		RequestID:   req.GetRequestId(),
 		Fingerprint: fingerprint,
 		Command:     req.GetType(),
+		AppName:     req.GetAppName(),
 		State:       ledgerStateInProgress,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -337,7 +342,7 @@ func (l *rollbackLedger) markDelivered(requestID string) error {
 // backend has not yet confirmed receiving) are never evicted — losing either
 // would break a guarantee. Caller holds l.mu.
 func (l *rollbackLedger) evictOldestDeliveredLocked() {
-	if len(l.entries) < l.max {
+	if l.max <= 0 || len(l.entries) < l.max {
 		return
 	}
 	kept := make([]string, 0, len(l.order))
@@ -414,11 +419,11 @@ func (l *rollbackLedger) persistLocked() error {
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeUnavailable, "encode remote rollback ledger", err)
 	}
-	tmp := fmt.Sprintf("%s.tmp-%d", l.path, os.Getpid())
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(l.path), filepath.Base(l.path)+".tmp-*")
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeUnavailable, "create remote rollback ledger temp file", err)
 	}
+	tmp := f.Name()
 	cleanup := func() { _ = f.Close(); _ = os.Remove(tmp) }
 	if _, err := f.Write(data); err != nil {
 		cleanup()
@@ -462,14 +467,19 @@ func (l *rollbackLedger) indeterminateResult(e *rollbackLedgerEntry) *pb.Monitor
 	}
 	message := "agent restarted while the command was in progress; outcome is indeterminate and the command was not re-executed"
 	if l.indeterminateNote != "" {
-		message += " — " + l.indeterminateNote
+		message += "; " + l.indeterminateNote
+	}
+	code := phelixerr.CodeUnavailable
+	if l.fallbackCommand == "security" {
+		code = phelixerr.CodeSecurityOutcomeUnknown
 	}
 	return &pb.MonitorCommandResult{
 		RequestId: e.RequestID,
 		Command:   command,
+		AppName:   e.AppName,
 		Status:    "error",
 		Error:     message,
-		ErrorCode: string(phelixerr.CodeUnavailable),
+		ErrorCode: string(code),
 		Timestamp: time.Now().UnixMilli(),
 	}
 }

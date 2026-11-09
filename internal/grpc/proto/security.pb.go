@@ -28,14 +28,16 @@ type SecurityCommandOptions struct {
 	// security_scan_detail: which scan to fetch.
 	ScanId string `protobuf:"bytes,1,opt,name=scan_id,json=scanId,proto3" json:"scan_id,omitempty"`
 	// security_advisory: which advisory identifier to inspect.
-	AdvisoryId string `protobuf:"bytes,14,opt,name=advisory_id,json=advisoryId,proto3" json:"advisory_id,omitempty"`
+	AdvisoryId      string `protobuf:"bytes,14,opt,name=advisory_id,json=advisoryId,proto3" json:"advisory_id,omitempty"`
+	ProtocolVersion uint32 `protobuf:"varint,15,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	FindingsOffset  int32  `protobuf:"varint,16,opt,name=findings_offset,json=findingsOffset,proto3" json:"findings_offset,omitempty"`
 	// security_history: page size (default 20, max 100).
 	Limit int32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
 	// security_history: how many records to skip.
 	Offset int32 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
 	// Finding filters shared by report/history/detail; empty means no
-	// filtering. severity: low|medium|high|critical. ecosystem: go|rust.
-	// state: affected|potentially_affected|unknown. package: name prefix.
+	// filtering. severity: low|medium|high|critical|unknown. ecosystem: go|rust.
+	// state: affected|potentially_affected|unknown|not_affected. package: substring.
 	Severity  string `protobuf:"bytes,4,opt,name=severity,proto3" json:"severity,omitempty"`
 	Ecosystem string `protobuf:"bytes,5,opt,name=ecosystem,proto3" json:"ecosystem,omitempty"`
 	State     string `protobuf:"bytes,6,opt,name=state,proto3" json:"state,omitempty"`
@@ -94,6 +96,20 @@ func (x *SecurityCommandOptions) GetAdvisoryId() string {
 		return x.AdvisoryId
 	}
 	return ""
+}
+
+func (x *SecurityCommandOptions) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
+func (x *SecurityCommandOptions) GetFindingsOffset() int32 {
+	if x != nil {
+		return x.FindingsOffset
+	}
+	return 0
 }
 
 func (x *SecurityCommandOptions) GetLimit() int32 {
@@ -192,6 +208,7 @@ type SecurityModule struct {
 	ReplacedFrom     string                 `protobuf:"bytes,14,opt,name=replaced_from,json=replacedFrom,proto3" json:"replaced_from,omitempty"`
 	Dev              bool                   `protobuf:"varint,15,opt,name=dev,proto3" json:"dev,omitempty"`
 	Optional         bool                   `protobuf:"varint,16,opt,name=optional,proto3" json:"optional,omitempty"`
+	Ecosystem        string                 `protobuf:"bytes,17,opt,name=ecosystem,proto3" json:"ecosystem,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -338,6 +355,13 @@ func (x *SecurityModule) GetOptional() bool {
 	return false
 }
 
+func (x *SecurityModule) GetEcosystem() string {
+	if x != nil {
+		return x.Ecosystem
+	}
+	return ""
+}
+
 // SecurityGraphEdge is one dependency relationship: from depends on to.
 type SecurityGraphEdge struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -398,6 +422,9 @@ type SecurityGraph struct {
 	Roots         []string               `protobuf:"bytes,1,rep,name=roots,proto3" json:"roots,omitempty"`
 	Nodes         []*SecurityModule      `protobuf:"bytes,2,rep,name=nodes,proto3" json:"nodes,omitempty"`
 	Edges         []*SecurityGraphEdge   `protobuf:"bytes,3,rep,name=edges,proto3" json:"edges,omitempty"`
+	Ecosystem     string                 `protobuf:"bytes,4,opt,name=ecosystem,proto3" json:"ecosystem,omitempty"`
+	Level         string                 `protobuf:"bytes,5,opt,name=level,proto3" json:"level,omitempty"`
+	Warnings      []string               `protobuf:"bytes,6,rep,name=warnings,proto3" json:"warnings,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -449,6 +476,27 @@ func (x *SecurityGraph) GetNodes() []*SecurityModule {
 func (x *SecurityGraph) GetEdges() []*SecurityGraphEdge {
 	if x != nil {
 		return x.Edges
+	}
+	return nil
+}
+
+func (x *SecurityGraph) GetEcosystem() string {
+	if x != nil {
+		return x.Ecosystem
+	}
+	return ""
+}
+
+func (x *SecurityGraph) GetLevel() string {
+	if x != nil {
+		return x.Level
+	}
+	return ""
+}
+
+func (x *SecurityGraph) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
 	}
 	return nil
 }
@@ -744,10 +792,9 @@ func (x *SecurityScanCounts) GetNotAffected() int32 {
 	return 0
 }
 
-// SecurityScanRecord is one persisted scan. Findings are capped at 200
-// per message with findings_truncated set beyond that; the full record
-// stays in the local store. The graph rides only when the command asked
-// for it.
+// SecurityScanRecord carries up to 200 findings from a local record.
+// findings_total counts matching stored findings; findings_offset pages them.
+// storage_truncated means some findings were omitted when the scan was saved.
 type SecurityScanRecord struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	ScanId            string                 `protobuf:"bytes,1,opt,name=scan_id,json=scanId,proto3" json:"scan_id,omitempty"`
@@ -766,6 +813,9 @@ type SecurityScanRecord struct {
 	Findings          []*SecurityFinding     `protobuf:"bytes,14,rep,name=findings,proto3" json:"findings,omitempty"`
 	FindingsTruncated bool                   `protobuf:"varint,15,opt,name=findings_truncated,json=findingsTruncated,proto3" json:"findings_truncated,omitempty"`
 	Graph             *SecurityGraph         `protobuf:"bytes,16,opt,name=graph,proto3" json:"graph,omitempty"`
+	FindingsTotal     int32                  `protobuf:"varint,17,opt,name=findings_total,json=findingsTotal,proto3" json:"findings_total,omitempty"`
+	FindingsOffset    int32                  `protobuf:"varint,18,opt,name=findings_offset,json=findingsOffset,proto3" json:"findings_offset,omitempty"`
+	StorageTruncated  bool                   `protobuf:"varint,19,opt,name=storage_truncated,json=storageTruncated,proto3" json:"storage_truncated,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -912,6 +962,27 @@ func (x *SecurityScanRecord) GetGraph() *SecurityGraph {
 	return nil
 }
 
+func (x *SecurityScanRecord) GetFindingsTotal() int32 {
+	if x != nil {
+		return x.FindingsTotal
+	}
+	return 0
+}
+
+func (x *SecurityScanRecord) GetFindingsOffset() int32 {
+	if x != nil {
+		return x.FindingsOffset
+	}
+	return 0
+}
+
+func (x *SecurityScanRecord) GetStorageTruncated() bool {
+	if x != nil {
+		return x.StorageTruncated
+	}
+	return false
+}
+
 // SecurityScanList is a page of scan history, newest first.
 type SecurityScanList struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -981,9 +1052,7 @@ func (x *SecurityScanList) GetHasMore() bool {
 	return false
 }
 
-// SecurityAdvisory is a bounded advisory detail view. The backend fetches
-// full advisory detail from OSV.dev by id; the agent relays only what it
-// already caches.
+// SecurityAdvisory is the cached advisory view, fetched from OSV on cache miss.
 type SecurityAdvisory struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -995,6 +1064,7 @@ type SecurityAdvisory struct {
 	References       []string               `protobuf:"bytes,7,rep,name=references,proto3" json:"references,omitempty"`
 	Modified         string                 `protobuf:"bytes,8,opt,name=modified,proto3" json:"modified,omitempty"`
 	FromCache        bool                   `protobuf:"varint,9,opt,name=from_cache,json=fromCache,proto3" json:"from_cache,omitempty"`
+	Stale            bool                   `protobuf:"varint,10,opt,name=stale,proto3" json:"stale,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -1092,6 +1162,13 @@ func (x *SecurityAdvisory) GetFromCache() bool {
 	return false
 }
 
+func (x *SecurityAdvisory) GetStale() bool {
+	if x != nil {
+		return x.Stale
+	}
+	return false
+}
+
 // SecurityConfigState is the effective configuration plus scheduler
 // status for one application.
 type SecurityConfigState struct {
@@ -1106,6 +1183,8 @@ type SecurityConfigState struct {
 	LastScanAtMs  int64                  `protobuf:"varint,8,opt,name=last_scan_at_ms,json=lastScanAtMs,proto3" json:"last_scan_at_ms,omitempty"`
 	NextScanAtMs  int64                  `protobuf:"varint,9,opt,name=next_scan_at_ms,json=nextScanAtMs,proto3" json:"next_scan_at_ms,omitempty"`
 	HasNextScan   bool                   `protobuf:"varint,10,opt,name=has_next_scan,json=hasNextScan,proto3" json:"has_next_scan,omitempty"`
+	ScanStatus    string                 `protobuf:"bytes,11,opt,name=scan_status,json=scanStatus,proto3" json:"scan_status,omitempty"`
+	CurrentScanId string                 `protobuf:"bytes,12,opt,name=current_scan_id,json=currentScanId,proto3" json:"current_scan_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1208,6 +1287,20 @@ func (x *SecurityConfigState) GetHasNextScan() bool {
 		return x.HasNextScan
 	}
 	return false
+}
+
+func (x *SecurityConfigState) GetScanStatus() string {
+	if x != nil {
+		return x.ScanStatus
+	}
+	return ""
+}
+
+func (x *SecurityConfigState) GetCurrentScanId() string {
+	if x != nil {
+		return x.CurrentScanId
+	}
+	return ""
 }
 
 // SecurityScanSnapshot rides MonitorStream as an idempotent statement of
@@ -1318,11 +1411,13 @@ var File_internal_grpc_proto_security_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"\n" +
-	"\"internal/grpc/proto/security.proto\x12\x06phelix\"\x96\x03\n" +
+	"\"internal/grpc/proto/security.proto\x12\x06phelix\"\xea\x03\n" +
 	"\x16SecurityCommandOptions\x12\x17\n" +
 	"\ascan_id\x18\x01 \x01(\tR\x06scanId\x12\x1f\n" +
 	"\vadvisory_id\x18\x0e \x01(\tR\n" +
-	"advisoryId\x12\x14\n" +
+	"advisoryId\x12)\n" +
+	"\x10protocol_version\x18\x0f \x01(\rR\x0fprotocolVersion\x12'\n" +
+	"\x0ffindings_offset\x18\x10 \x01(\x05R\x0efindingsOffset\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x05R\x06offset\x12\x1a\n" +
 	"\bseverity\x18\x04 \x01(\tR\bseverity\x12\x1c\n" +
@@ -1335,7 +1430,7 @@ const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"setEnabled\x12\x18\n" +
 	"\aenabled\x18\v \x01(\bR\aenabled\x12#\n" +
 	"\rscan_interval\x18\f \x01(\tR\fscanInterval\x12%\n" +
-	"\x0efail_threshold\x18\r \x01(\tR\rfailThreshold\"\xed\x03\n" +
+	"\x0efail_threshold\x18\r \x01(\tR\rfailThreshold\"\x8b\x04\n" +
 	"\x0eSecurityModule\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\tR\x03key\x12\x18\n" +
@@ -1356,14 +1451,18 @@ const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"\x11observed_versions\x18\r \x03(\tR\x10observedVersions\x12#\n" +
 	"\rreplaced_from\x18\x0e \x01(\tR\freplacedFrom\x12\x10\n" +
 	"\x03dev\x18\x0f \x01(\bR\x03dev\x12\x1a\n" +
-	"\boptional\x18\x10 \x01(\bR\boptional\"7\n" +
+	"\boptional\x18\x10 \x01(\bR\boptional\x12\x1c\n" +
+	"\tecosystem\x18\x11 \x01(\tR\tecosystem\"7\n" +
 	"\x11SecurityGraphEdge\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\tR\x04from\x12\x0e\n" +
-	"\x02to\x18\x02 \x01(\tR\x02to\"\x84\x01\n" +
+	"\x02to\x18\x02 \x01(\tR\x02to\"\xd4\x01\n" +
 	"\rSecurityGraph\x12\x14\n" +
 	"\x05roots\x18\x01 \x03(\tR\x05roots\x12,\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x16.phelix.SecurityModuleR\x05nodes\x12/\n" +
-	"\x05edges\x18\x03 \x03(\v2\x19.phelix.SecurityGraphEdgeR\x05edges\"\xd2\x04\n" +
+	"\x05edges\x18\x03 \x03(\v2\x19.phelix.SecurityGraphEdgeR\x05edges\x12\x1c\n" +
+	"\tecosystem\x18\x04 \x01(\tR\tecosystem\x12\x14\n" +
+	"\x05level\x18\x05 \x01(\tR\x05level\x12\x1a\n" +
+	"\bwarnings\x18\x06 \x03(\tR\bwarnings\"\xd2\x04\n" +
 	"\x0fSecurityFinding\x12\x1f\n" +
 	"\vadvisory_id\x18\x01 \x01(\tR\n" +
 	"advisoryId\x12\x18\n" +
@@ -1396,7 +1495,7 @@ const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"\baffected\x18\x04 \x01(\x05R\baffected\x121\n" +
 	"\x14potentially_affected\x18\x05 \x01(\x05R\x13potentiallyAffected\x12\x18\n" +
 	"\aunknown\x18\x06 \x01(\x05R\aunknown\x12!\n" +
-	"\fnot_affected\x18\a \x01(\x05R\vnotAffected\"\xb7\x04\n" +
+	"\fnot_affected\x18\a \x01(\x05R\vnotAffected\"\xb4\x05\n" +
 	"\x12SecurityScanRecord\x12\x17\n" +
 	"\ascan_id\x18\x01 \x01(\tR\x06scanId\x12\x15\n" +
 	"\x06app_id\x18\x02 \x01(\tR\x05appId\x12\x19\n" +
@@ -1414,12 +1513,15 @@ const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"\x06counts\x18\r \x01(\v2\x1a.phelix.SecurityScanCountsR\x06counts\x123\n" +
 	"\bfindings\x18\x0e \x03(\v2\x17.phelix.SecurityFindingR\bfindings\x12-\n" +
 	"\x12findings_truncated\x18\x0f \x01(\bR\x11findingsTruncated\x12+\n" +
-	"\x05graph\x18\x10 \x01(\v2\x15.phelix.SecurityGraphR\x05graph\"\x8d\x01\n" +
+	"\x05graph\x18\x10 \x01(\v2\x15.phelix.SecurityGraphR\x05graph\x12%\n" +
+	"\x0efindings_total\x18\x11 \x01(\x05R\rfindingsTotal\x12'\n" +
+	"\x0ffindings_offset\x18\x12 \x01(\x05R\x0efindingsOffset\x12+\n" +
+	"\x11storage_truncated\x18\x13 \x01(\bR\x10storageTruncated\"\x8d\x01\n" +
 	"\x10SecurityScanList\x120\n" +
 	"\x05scans\x18\x01 \x03(\v2\x1a.phelix.SecurityScanRecordR\x05scans\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x05R\x06offset\x12\x19\n" +
-	"\bhas_more\x18\x04 \x01(\bR\ahasMore\"\x9d\x02\n" +
+	"\bhas_more\x18\x04 \x01(\bR\ahasMore\"\xb3\x02\n" +
 	"\x10SecurityAdvisory\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
 	"\aaliases\x18\x02 \x03(\tR\aaliases\x12\x18\n" +
@@ -1432,7 +1534,9 @@ const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"references\x12\x1a\n" +
 	"\bmodified\x18\b \x01(\tR\bmodified\x12\x1d\n" +
 	"\n" +
-	"from_cache\x18\t \x01(\bR\tfromCache\"\xdf\x02\n" +
+	"from_cache\x18\t \x01(\bR\tfromCache\x12\x14\n" +
+	"\x05stale\x18\n" +
+	" \x01(\bR\x05stale\"\xa8\x03\n" +
 	"\x13SecurityConfigState\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
 	"\bapp_name\x18\x02 \x01(\tR\aappName\x12\x18\n" +
@@ -1445,7 +1549,10 @@ const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"\x0flast_scan_at_ms\x18\b \x01(\x03R\flastScanAtMs\x12%\n" +
 	"\x0fnext_scan_at_ms\x18\t \x01(\x03R\fnextScanAtMs\x12\"\n" +
 	"\rhas_next_scan\x18\n" +
-	" \x01(\bR\vhasNextScan\"\x8d\x02\n" +
+	" \x01(\bR\vhasNextScan\x12\x1f\n" +
+	"\vscan_status\x18\v \x01(\tR\n" +
+	"scanStatus\x12&\n" +
+	"\x0fcurrent_scan_id\x18\f \x01(\tR\rcurrentScanId\"\x8d\x02\n" +
 	"\x14SecurityScanSnapshot\x12\x17\n" +
 	"\ascan_id\x18\x01 \x01(\tR\x06scanId\x12\x15\n" +
 	"\x06app_id\x18\x02 \x01(\tR\x05appId\x12\x19\n" +

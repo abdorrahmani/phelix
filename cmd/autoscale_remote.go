@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/autoscale"
 	"github.com/abdorrahmani/phelix/internal/deploy"
@@ -47,11 +46,12 @@ func remoteAutoscaleError(req *pb.MonitorCommandRequest, err error) *pb.MonitorC
 	return &pb.MonitorCommandResult{Status: "error", Error: err.Error()}
 }
 
-// autoscaleCommandTarget resolves the app reference from the request.
+// autoscaleCommandTarget resolves the app reference from the request against
+// the in-memory registry, exactly like the worker family: the daemon loaded
+// state at startup, and LoadState must never run on a stream goroutine (it
+// re-reads apps.json and mutates the shared app map while other monitor
+// goroutines iterate it).
 func autoscaleCommandTarget(req *pb.MonitorCommandRequest) (autoscale.AppRef, error) {
-	if err := app.Manager.LoadState(); err != nil {
-		return autoscale.AppRef{}, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
-	}
 	appInfo, err := GetAppInfo(req.GetAppName())
 	if err != nil {
 		return autoscale.AppRef{}, err
@@ -209,11 +209,9 @@ func pauseWord(pause bool) string {
 // remoteAutoscaleAuthorize gates remote autoscale mutations through the host
 // authorization boundary with the dedicated scale action. The application
 // identifier resolves to its stable id before the decision so policies can
-// target apps precisely.
+// target apps precisely. Resolution reads the in-memory registry only: no
+// LoadState on a stream goroutine (see autoscaleCommandTarget).
 func remoteAutoscaleAuthorize(req *pb.MonitorCommandRequest) error {
-	if err := app.Manager.LoadState(); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load app state", err)
-	}
 	appInfo, err := GetAppInfo(req.GetAppName())
 	if err != nil {
 		return err

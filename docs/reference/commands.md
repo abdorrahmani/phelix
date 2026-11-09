@@ -419,7 +419,9 @@ phelix security scan myapp        # scan a registered application
 phelix security report myapp      # latest completed scan (add --previous to diff)
 phelix security history myapp     # recorded scans (add --limit N)
 phelix security show GHSA-...     # one advisory, from cache or OSV.dev
-phelix security config myapp      # effective settings; --set-* flags edit phelix.yaml
+phelix security config myapp      # effective settings and schedule
+phelix security config myapp --set-enabled true --set-scan-interval 12h --set-fail-threshold medium
+phelix security config myapp --set-enabled false
 phelix security                   # interactive menu (in a terminal; help otherwise)
 ```
 

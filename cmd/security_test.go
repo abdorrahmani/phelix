@@ -220,7 +220,16 @@ func TestCLISecurityReport_RequiresCompletedScan_Exit12(t *testing.T) {
 
 	code, _, stderr := runPhelixSecurity(t, home, project, "http://127.0.0.1:1", "security", "report")
 	if code != 12 {
-		t.Fatalf("report without scans must be NOT_FOUND: exit=%d stderr=%s", code, stderr)
+		t.Fatalf("report without scans must exit 12: exit=%d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "SCAN_NOT_FOUND") {
+		t.Fatalf("a missing scan must be SCAN_NOT_FOUND, not a generic NOT_FOUND: %s", stderr)
+	}
+	if !strings.Contains(stderr, "phelix security scan") {
+		t.Fatalf("the hint must point at the scan command: %s", stderr)
+	}
+	if strings.Contains(stderr, "phelix list") {
+		t.Fatalf("the generic list hint must not appear for a missing scan: %s", stderr)
 	}
 }
 
@@ -301,6 +310,13 @@ func TestProjectIdentityKey(t *testing.T) {
 	}
 	if !strings.HasPrefix(first, "name:myapp:") {
 		t.Fatalf("identity keeps the declared name: %s", first)
+	}
+}
+
+func TestHintForScanNotFound(t *testing.T) {
+	hint := hintFor(phelixerr.New(phelixerr.CodeScanNotFound, "no completed scan found"))
+	if !strings.Contains(hint, "phelix security scan <app-name>") {
+		t.Fatalf("the missing-scan hint must name the scan command: %q", hint)
 	}
 }
 

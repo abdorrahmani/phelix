@@ -21,6 +21,10 @@ func TestExitCodeFor(t *testing.T) {
 		{"nil", nil, ExitOK},
 		{"unknown", errors.New("boom"), ExitFailure},
 		{"notfound", phelixerr.New(phelixerr.CodeNotFound, "nope"), ExitNotFound},
+		// A missing scan shares the not-found exit code with an unknown
+		// application; the JSON error code distinguishes the two truths.
+		{"scannotfound", phelixerr.New(phelixerr.CodeScanNotFound, "no scan"), ExitNotFound},
+		{"securityfindings", phelixerr.New(phelixerr.CodeSecurityFindings, "findings"), ExitSecurity},
 		{"auth", phelixerr.New(phelixerr.CodeUnauthenticated, "auth"), ExitAuth},
 		{"permission", phelixerr.New(phelixerr.CodePermissionDenied, "perm"), ExitPermission},
 		{"build", phelixerr.New(phelixerr.CodeBuildFailed, "build"), ExitBuild},
