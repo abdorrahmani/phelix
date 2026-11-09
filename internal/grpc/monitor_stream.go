@@ -43,6 +43,11 @@ var serverMetricsSampleInterval = 2 * time.Second
 
 const monitorCommandSettleDelay = 2 * time.Second
 
+// maxLegacyLogEventsPerTick bounds how many entries one collection pass sends
+// on the legacy per-line log channel. The batch channel carries the remainder,
+// so a chatty source cannot exceed the backend's per-stream message budget.
+const maxLegacyLogEventsPerTick = 10
+
 // monitorStreamRetryDelay is how long to wait before re-opening the
 // monitor stream after it ends (the underlying gRPC connection's own
 // reconnect/backoff logic — see reconnect.go — governs connection-level
@@ -845,10 +850,10 @@ func (c *Client) sendMonitorTick() {
 	}
 }
 
-// sendLogEntries delivers one source's entries on the legacy per-line channel
-// and queues the same entries for batched delivery. A send failure stops the
-// legacy pass but the batch is still queued, so a reconnect does not lose the
-// collected lines.
+// sendLogEntries delivers a bounded prefix of one source's entries on the
+// legacy per-line channel and queues every entry for batched delivery. A send
+// failure stops the legacy pass but the batch is still queued, so a reconnect
+// does not lose the collected lines.
 func (c *Client) sendLogEntries(entries []logs.LogEntry, source pb.LogSource, label string) {
 	if len(entries) == 0 {
 		return
@@ -858,7 +863,7 @@ func (c *Client) sendLogEntries(entries []logs.LogEntry, source pb.LogSource, la
 	for _, e := range entries {
 		batch = append(batch, toProtoLogEntry(e, source))
 	}
-	for _, entry := range batch {
+	for _, entry := range legacyLogEvents(batch) {
 		event := &pb.MonitorEvent{
 			ServerId:  serverID,
 			Timestamp: time.Now().UnixMilli(),
@@ -872,6 +877,15 @@ func (c *Client) sendLogEntries(entries []logs.LogEntry, source pb.LogSource, la
 		}
 	}
 	monitorStream.queueBatchEntries(batch)
+}
+
+// legacyLogEvents returns the entries one collection pass may send on the
+// legacy per-line channel.
+func legacyLogEvents(entries []*pb.MonitorLogEntry) []*pb.MonitorLogEntry {
+	if len(entries) <= maxLegacyLogEventsPerTick {
+		return entries
+	}
+	return entries[:maxLegacyLogEventsPerTick]
 }
 
 // sendSelfLogTick ships the daemon's own log lines. It runs on the fast
