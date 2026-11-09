@@ -341,8 +341,8 @@ func TestRemoteSecurity_ScanRunAndDedup(t *testing.T) {
 	defer lock.Release()
 
 	busy := RemoteSecurityCommand(securityRequest("r2", phelixgrpc.SecurityCommandRun, "remoteapp", nil))
-	if resultErrorCode(busy) != "UNAVAILABLE" {
-		t.Fatalf("a scan while the lock is held answers UNAVAILABLE: %+v", busy)
+	if resultErrorCode(busy) != "SECURITY_SCAN_RUNNING" {
+		t.Fatalf("a scan while the lock is held answers SECURITY_SCAN_RUNNING: %+v", busy)
 	}
 }
 

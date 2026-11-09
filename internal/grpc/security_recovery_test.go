@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -153,5 +154,32 @@ func TestSecurityLedgerLostAckAndPersistenceFailure(t *testing.T) {
 	_, replay, err = afterFailure.begin(req)
 	if err != nil || replay.ErrorCode != "SECURITY_OUTCOME_UNKNOWN" {
 		t.Fatalf("%v %v", replay, err)
+	}
+}
+
+func TestSecurityReplayKeepsOutcomeWhenAuthorizationChanges(t *testing.T) {
+	ledger := newRollbackLedger(filepath.Join(t.TempDir(), "ledger.json"), 0, "security", "")
+	if err := ledger.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	req := securityTestRequest("authorized-once", "stable-app", nil)
+	if _, _, err := ledger.begin(req); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.complete(req.RequestId, finalizeSecurityResult(req, &pb.MonitorCommandResult{Status: "success"})); err != nil {
+		t.Fatal(err)
+	}
+	previous := getSecurityAuthorizer()
+	defer SetSecurityAuthorizer(previous)
+	called := false
+	SetSecurityAuthorizer(func(*pb.MonitorCommandRequest) error {
+		called = true
+		return phelixerr.New(phelixerr.CodePermissionDenied, "denied")
+	})
+	client := NewClient()
+	defer client.Close()
+	client.handleSecurityCommand(req, ledger)
+	if called {
+		t.Fatal("completed replay was treated as a new mutation")
 	}
 }

@@ -206,6 +206,7 @@ const (
 	CodeSecurityConfigLoadFailed     Code = "SECURITY_CONFIG_LOAD_FAILED"
 	CodeSecurityDirectoryUnavailable Code = "SECURITY_DIRECTORY_UNAVAILABLE"
 	CodeSecurityRegistrationInvalid  Code = "SECURITY_REGISTRATION_INVALID"
+	CodeSecurityScanRunning          Code = "SECURITY_SCAN_RUNNING"
 	CodeSecurityInProgress           Code = "SECURITY_IN_PROGRESS"
 	CodeSecurityOutcomeUnknown       Code = "SECURITY_OUTCOME_UNKNOWN"
 	CodeSecurityResponseTooLarge     Code = "SECURITY_RESPONSE_TOO_LARGE"

@@ -225,13 +225,13 @@ func remoteSecurityConfig(req *pb.MonitorCommandRequest, target *securityTarget)
 
 // remoteSecurityScanRun triggers a scan of the application. The scan runs
 // synchronously under the per-app scan lock: a concurrent scan (local or
-// remote) answers UNAVAILABLE instead of duplicating work. The result is
+// remote) returns SECURITY_SCAN_RUNNING instead of duplicating work. The result is
 // the completed (or failed) scan record.
 func remoteSecurityScanRun(req *pb.MonitorCommandRequest, target *securityTarget) *pb.MonitorCommandResult {
 	store := security.NewScanStore(server.DataDir())
 	lock, err := store.TryAcquireScanLock(target.identityKey)
 	if errors.Is(err, security.ErrScanLockHeld) {
-		return securityCommandError(req, phelixerr.New(phelixerr.CodeUnavailable,
+		return securityCommandError(req, phelixerr.New(phelixerr.CodeSecurityScanRunning,
 			"a scan is already running for this application; retry after it completes"))
 	}
 	if err != nil {

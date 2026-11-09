@@ -318,13 +318,6 @@ func (c *Client) handleSecurityCommand(req *pb.MonitorCommandRequest, ledger *ro
 		return
 	}
 
-	if authorizer := getSecurityAuthorizer(); authorizer != nil {
-		if err := authorizer(req); err != nil {
-			_ = sendCommandResultLogged(finalizeSecurityResult(req, commandErrorResult(req, err)))
-			return
-		}
-	}
-
 	outcome, replay, err := ledger.begin(req)
 	if err != nil {
 		_ = sendCommandResultLogged(finalizeSecurityResult(req, commandErrorResult(req, err)))
@@ -338,7 +331,15 @@ func (c *Client) handleSecurityCommand(req *pb.MonitorCommandRequest, ledger *ro
 	pendingSecurityWG.Add(1)
 	go func() {
 		defer pendingSecurityWG.Done()
-		result := executeSecurityCommand(req)
+		var result *pb.MonitorCommandResult
+		if authorizer := getSecurityAuthorizer(); authorizer != nil {
+			if err := authorizer(req); err != nil {
+				result = finalizeSecurityResult(req, commandErrorResult(req, err))
+			}
+		}
+		if result == nil {
+			result = executeSecurityCommand(req)
+		}
 		if err := ledger.complete(req.GetRequestId(), result); err != nil {
 			logs.ErrorFile("grpc", "[gRPC Security] result persistence failed: %v", err)
 			result = finalizeSecurityResult(req, commandErrorResult(req, phelixerr.Wrap(phelixerr.CodeSecurityOutcomeUnknown,
