@@ -73,6 +73,21 @@ func TestScanStore_CorruptRecordQuarantined(t *testing.T) {
 	}
 }
 
+func TestScanStore_CorruptHistoryNeverLooksEmpty(t *testing.T) {
+	store := NewScanStore(t.TempDir())
+	if err := store.ensureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.scanPath(NewScanID()), []byte("invalid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if records, err := store.ListScans("app"); err == nil || records != nil {
+			t.Fatalf("corrupt or quarantined history must fail: %+v %v", records, err)
+		}
+	}
+}
+
 func TestScanStore_ListScansAndRetain(t *testing.T) {
 	store := NewScanStore(t.TempDir())
 	identity := "name:myapp"

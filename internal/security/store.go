@@ -210,8 +210,7 @@ func (s *ScanStore) LoadScan(scanID string) (*ScanRecord, error) {
 	return &record, nil
 }
 
-// ListScans returns every stored scan record for one identity, newest
-// first. Records that fail validation are skipped and counted.
+// ListScans returns retained records newest first and reports unreadable history.
 func (s *ScanStore) ListScans(identityKey string) ([]*ScanRecord, error) {
 	entries, err := os.ReadDir(s.scansDir())
 	if os.IsNotExist(err) {
@@ -222,13 +221,16 @@ func (s *ScanStore) ListScans(identityKey string) ([]*ScanRecord, error) {
 	}
 	var out []*ScanRecord
 	for _, entry := range entries {
+		if scanID, _, quarantined := strings.Cut(entry.Name(), ".json.corrupt."); quarantined && validScanID(scanID) {
+			return nil, phelixerr.New(phelixerr.CodeFilesystem, "security scan history contains a quarantined record; repair or remove it locally")
+		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		scanID := strings.TrimSuffix(entry.Name(), ".json")
 		record, err := s.LoadScan(scanID)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		if record.IdentityKey == identityKey {
 			out = append(out, record)
