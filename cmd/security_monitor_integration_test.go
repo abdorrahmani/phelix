@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -59,6 +60,14 @@ func (b *securityMonitorBackend) MonitorStream(stream pb.PhelixService_MonitorSt
 }
 
 func TestSecurityMonitorEndToEnd(t *testing.T) {
+	if os.Getenv("PHELIX_SECURITY_MONITOR_TEST") != "1" {
+		child := exec.Command(os.Args[0], "-test.run=^TestSecurityMonitorEndToEnd$", "-test.timeout=45s")
+		child.Env = append(os.Environ(), "PHELIX_SECURITY_MONITOR_TEST=1")
+		if output, err := child.CombinedOutput(); err != nil {
+			t.Fatalf("MonitorStream integration: %v\n%s", err, output)
+		}
+		return
+	}
 	dir := securityRemoteFixture(t, true)
 	osv := securityOSV(t, "high")
 	defer osv.Close()
