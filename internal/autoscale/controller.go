@@ -243,7 +243,9 @@ func (c *Controller) sample(ctx context.Context, st *appState, ref AppRef, state
 		stats = c.Proxy
 	}
 	st.sampler.SetStatsSource(stats)
-	snap := st.sampler.Collect(ctx, replicaRefs(state))
+	st.sampler.SetMemoryLimit(MemoryLimitBytesForApp(ref.Name))
+	st.sampler.SetFreshnessWindow(FreshnessWindow(st.settings.Interval))
+	snap := st.sampler.Collect(ctx, ReplicaRefs(state))
 	return snap.Metrics
 }
 
@@ -301,16 +303,6 @@ func workerStopSettings(dir string) (sig os.Signal, grace time.Duration, err err
 		return nil, 0, err
 	}
 	return sig, ps.GracePeriod, nil
-}
-
-func replicaRefs(state *deploy.DeployState) []ReplicaRef {
-	refs := make([]ReplicaRef, 0, len(state.Replicas))
-	for key, inst := range state.Replicas {
-		if inst != nil && inst.PID > 0 {
-			refs = append(refs, ReplicaRef{Key: key, PID: inst.PID})
-		}
-	}
-	return refs
 }
 
 // record appends a history entry, never failing the evaluation.
