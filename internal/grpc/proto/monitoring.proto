@@ -177,6 +177,57 @@ message AppTrafficBackend {
   double share_percent = 7;
 }
 
+// ReplicaMetricValidity states whether one replica metric is trustworthy.
+// Zero is only reported as available when the process really used no CPU or
+// memory; missing data keeps its own state instead of reading as zero.
+enum ReplicaMetricValidity {
+  REPLICA_METRIC_VALIDITY_UNSPECIFIED = 0;
+  REPLICA_METRIC_AVAILABLE = 1;
+  REPLICA_METRIC_INITIALIZING = 2;
+  REPLICA_METRIC_UNAVAILABLE = 3;
+  REPLICA_METRIC_STALE = 4;
+  REPLICA_METRIC_PROCESS_EXITED = 5;
+}
+
+// ReplicaResourceMetrics is one instance's CPU and memory observation.
+// CPU is normalised to one logical core: a process using two full cores
+// reports 200 percent. Memory percent is relative to the app's configured
+// memory limit; host_memory_percent is relative to the host's total RAM and
+// is never presented as an application limit.
+message ReplicaResourceMetrics {
+  // replica is the deploy slot key: a rolling/worker replica index or a
+  // blue-green slot name.
+  string replica = 1;
+  int32 pid = 2;
+  string process_status = 3;
+  double cpu_percent = 4;
+  ReplicaMetricValidity cpu_state = 5;
+  uint64 memory_bytes = 6;
+  ReplicaMetricValidity memory_state = 7;
+  uint64 memory_limit_bytes = 8;
+  double memory_percent = 9;
+  ReplicaMetricValidity memory_percent_state = 10;
+  double host_memory_percent = 11;
+  ReplicaMetricValidity host_memory_state = 12;
+  // collected_at is the observation time in unix milliseconds.
+  int64 collected_at = 13;
+  // error carries the read failure that produced a stale or unavailable
+  // state. Empty when every requested value was read.
+  string error = 14;
+}
+
+// ReplicaMetricsSnapshot carries one app's per-instance resource observation.
+// It is sent independently of autoscaling, so the backend can show replica
+// resources even when autoscaling is disabled.
+message ReplicaMetricsSnapshot {
+  string app_id = 1;
+  string server_id = 2;
+  string app_name = 3;
+  repeated ReplicaResourceMetrics replicas = 4;
+  // collected_at is the observation time in unix milliseconds.
+  int64 collected_at = 5;
+}
+
 // ApplicationInfo mirrors monitor.AppDetails. Sent on every monitoring tick,
 // exactly like the old "apps" WebSocket message.
 message ApplicationInfo {
@@ -512,6 +563,11 @@ message MonitorCommandResult {
   bool enabled = 26;
   bool security_result_withheld = 27;
   string security_consent_error_code = 28;
+  // Remote autoscale evaluation detail (additive; set on autoscale_evaluate
+  // results, empty on every other command). from_replicas/to_replicas carry
+  // the counts; these carry the engine's verdict.
+  string autoscale_direction = 29;
+  string autoscale_reason = 30;
 }
 
 // AutoscaleStatusState is the autoscale_status answer: what the agent's
@@ -542,6 +598,19 @@ message AutoscaleStatusState {
   string cooldown_up = 23;
   string cooldown_down = 24;
   string stabilization_window = 25;
+  // desired_replicas is the replica count the last recorded decision asked
+  // for; it equals replicas when no decision is pending.
+  int32 desired_replicas = 26;
+  // last_evaluation is when the controller last evaluated the app, RFC3339
+  // UTC. Empty before the first evaluation.
+  string last_evaluation = 27;
+  // last_successful_scale is when a scaling operation last completed,
+  // RFC3339 UTC. Empty before the first successful scale.
+  string last_successful_scale = 28;
+  // last_decision is the most recent recorded verdict, if any.
+  AutoscaleHistoryEntry last_decision = 29;
+  // replica_metrics is the current per-instance resource observation.
+  repeated ReplicaResourceMetrics replica_metrics = 30;
 }
 
 // AutoscaleHistoryEntry is one record of an app's scaling history.
@@ -616,6 +685,10 @@ message MonitorEvent {
     // only when the app has reporting consent enabled.
     SecurityScanSnapshot security_scan = 23;
     AgentStatus agent_status = 24;
+    // replica_metrics is one app's per-instance CPU/memory observation. It is
+    // sent for every deploy-managed watched app regardless of autoscaling, so
+    // a backend can render replica resources without enabling autoscaling.
+    ReplicaMetricsSnapshot replica_metrics = 25;
   }
 }
 

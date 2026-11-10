@@ -234,4 +234,7 @@ type AppListItem struct {
 	Networking AppNetworkingConfig
 	Logging    AppLoggingConfig
 	Storage    AppStorageConfig
+	// Resources carries the per-instance runtime limits so monitoring can
+	// report limit-relative memory without re-reading the app's files.
+	Resources resources.Config
 }

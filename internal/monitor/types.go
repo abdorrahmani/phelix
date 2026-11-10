@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/autoscale"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
@@ -23,6 +24,7 @@ const (
 type MetricsCollector interface {
 	CollectAppMetrics() []AppMetrics
 	CollectAppDetails() []AppDetails
+	CollectReplicaMetrics() []ReplicaMetricsSnapshot
 	CollectServerMetrics() (*server.Metrics, error)
 	CollectAppLogs() ([]logs.LogEntry, error)
 	CollectSelfLogs() ([]logs.LogEntry, error)
@@ -104,4 +106,36 @@ type AppDetails struct {
 	Networking app.AppNetworkingConfig `json:"networking,omitempty"`
 	Logging    app.AppLoggingConfig    `json:"logging,omitempty"`
 	Storage    app.AppStorageConfig    `json:"storage,omitempty"`
+}
+
+// ReplicaMetrics is one instance's resource usage together with the validity
+// of each dimension. A zero value is only reported as available when the
+// process really used nothing; missing data keeps its state instead of
+// masquerading as zero.
+type ReplicaMetrics struct {
+	Replica          string
+	PID              int
+	ProcessStatus    string
+	CPUPercent       float64
+	CPUState         autoscale.MetricState
+	MemoryBytes      uint64
+	MemoryState      autoscale.MetricState
+	MemoryLimitBytes uint64
+	MemoryPercent    float64
+	MemoryPctState   autoscale.MetricState
+	HostMemoryPct    float64
+	HostMemState     autoscale.MetricState
+	CollectedAt      time.Time
+	Error            string
+}
+
+// ReplicaMetricsSnapshot carries one app's per-instance resource observation.
+// It is collected independently of autoscaling so monitoring and the CLI can
+// show replica resources for every deploy-managed app.
+type ReplicaMetricsSnapshot struct {
+	AppID       string
+	AppName     string
+	ServerID    string
+	Replicas    []ReplicaMetrics
+	CollectedAt time.Time
 }
