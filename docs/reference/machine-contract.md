@@ -97,6 +97,36 @@ traffic for the app; absence means "never proxied", never "zero traffic".
 daemon restart resets them to zero. `p95_latency_ms` is estimated from the
 proxy's latency histogram and is `0` until a request has been timed.
 
+### `status <app>` replica resource fields
+
+Each entry in `deploy.replicas` (and each blue-green entry in `deploy.slots`)
+carries the sampled resources of that instance:
+
+```json
+{
+  "slot": "0",
+  "status": "running",
+  "pid": 4242,
+  "cpu_percent": 12.5,
+  "cpu_state": "available",
+  "memory_bytes": 268435456,
+  "memory_state": "available",
+  "memory_limit_bytes": 536870912,
+  "memory_percent": 50,
+  "memory_percent_state": "available",
+  "host_memory_percent": 1.6,
+  "host_memory_state": "available",
+  "collected_at_ms": 1760000000000
+}
+```
+
+State values are `available`, `initializing`, `unavailable`, `stale`, and
+`process_exited`. A zero value is real usage only when its state is
+`available`. `cpu_percent` is relative to one logical core, so two full cores
+report `200`. `memory_percent` is relative to `memory_limit_bytes`; when the
+app has no configured memory limit, `memory_percent_state` is `unavailable`.
+`host_memory_percent` is host-relative and informational.
+
 ## Plans (Phase 3)
 
 Plans are first-class, immutable, content-addressed execution artifacts. The

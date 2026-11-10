@@ -28,6 +28,13 @@ func (fakeMetricsCollector) CollectAppDetails() []monitor.AppDetails {
 	return []monitor.AppDetails{{ID: "app-1", ServerID: "srv-1", Name: "myapp", Status: "running"}}
 }
 
+func (fakeMetricsCollector) CollectReplicaMetrics() []monitor.ReplicaMetricsSnapshot {
+	return []monitor.ReplicaMetricsSnapshot{{
+		AppID: "app-1", AppName: "myapp", ServerID: "srv-1",
+		Replicas: []monitor.ReplicaMetrics{{Replica: "0", PID: 42, CPUPercent: 12.5, MemoryBytes: 1024}},
+	}}
+}
+
 func (fakeMetricsCollector) CollectServerMetrics() (*server.Metrics, error) {
 	return &server.Metrics{ServerID: "srv-1", CPUUsagePercent: 5}, nil
 }

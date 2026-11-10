@@ -60,6 +60,10 @@ const (
 	// surface: status/history queries plus the pause/resume/enable/disable
 	// and one-shot evaluation commands (backend may gate autoscale_* on it).
 	CapabilityAutoscaling = "autoscaling"
+	// CapabilityScaling: the agent implements the generic "scale" command
+	// that changes a worker or rolling service replica count in place through
+	// the same scaling paths the CLI uses.
+	CapabilityScaling = "scaling"
 	// CapabilityLogBatch: the agent batches monitor log entries into
 	// MonitorLogBatch events (log_batch oneof case) alongside the legacy
 	// per-line log_entry events, with bounded queueing and a dropped-lines

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/autoscale"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
@@ -145,6 +146,51 @@ func toProtoAppMetrics(m monitor.AppMetrics) *pb.AppResourceMetrics {
 		ServerId:    m.ServerID,
 		CpuUsage:    m.CPUUsage,
 		MemoryUsage: m.MemoryUsage,
+	}
+}
+
+// toProtoReplicaMetrics converts one app's replica resource observation.
+func toProtoReplicaMetrics(s monitor.ReplicaMetricsSnapshot) *pb.ReplicaMetricsSnapshot {
+	out := &pb.ReplicaMetricsSnapshot{
+		AppId:       s.AppID,
+		ServerId:    s.ServerID,
+		AppName:     s.AppName,
+		CollectedAt: s.CollectedAt.UnixMilli(),
+		Replicas:    make([]*pb.ReplicaResourceMetrics, 0, len(s.Replicas)),
+	}
+	for _, r := range s.Replicas {
+		out.Replicas = append(out.Replicas, &pb.ReplicaResourceMetrics{
+			Replica:            r.Replica,
+			Pid:                int32(r.PID),
+			ProcessStatus:      r.ProcessStatus,
+			CpuPercent:         r.CPUPercent,
+			CpuState:           toProtoMetricValidity(r.CPUState),
+			MemoryBytes:        r.MemoryBytes,
+			MemoryState:        toProtoMetricValidity(r.MemoryState),
+			MemoryLimitBytes:   r.MemoryLimitBytes,
+			MemoryPercent:      r.MemoryPercent,
+			MemoryPercentState: toProtoMetricValidity(r.MemoryPctState),
+			HostMemoryPercent:  r.HostMemoryPct,
+			HostMemoryState:    toProtoMetricValidity(r.HostMemState),
+			CollectedAt:        r.CollectedAt.UnixMilli(),
+			Error:              r.Error,
+		})
+	}
+	return out
+}
+
+func toProtoMetricValidity(state autoscale.MetricState) pb.ReplicaMetricValidity {
+	switch state {
+	case autoscale.MetricAvailable:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE
+	case autoscale.MetricInitializing:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_INITIALIZING
+	case autoscale.MetricStale:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_STALE
+	case autoscale.MetricProcessExited:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_PROCESS_EXITED
+	default:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_UNAVAILABLE
 	}
 }
 

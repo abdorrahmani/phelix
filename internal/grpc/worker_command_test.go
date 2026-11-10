@@ -7,7 +7,7 @@ import (
 )
 
 func TestIsWorkerCommand_CoversEveryWorkerType(t *testing.T) {
-	for _, cmd := range []string{WorkerCommandScale, WorkerCommandRestartReplica} {
+	for _, cmd := range []string{WorkerCommandScale, WorkerCommandRestartReplica, ScaleCommand} {
 		if !isWorkerCommand(cmd) {
 			t.Fatalf("%s must dispatch as a worker command", cmd)
 		}
@@ -37,6 +37,13 @@ func TestValidateWorkerCommand_ScaleShape(t *testing.T) {
 	}
 	if err := validateWorkerCommand(withReplica); err == nil {
 		t.Fatal("scale carrying a replica must be rejected")
+	}
+
+	generic := &pb.MonitorCommandRequest{
+		RequestId: "r4", Type: ScaleCommand, AppName: "web", Replicas: 4,
+	}
+	if err := validateWorkerCommand(generic); err != nil {
+		t.Fatalf("valid generic scale rejected: %v", err)
 	}
 }
 

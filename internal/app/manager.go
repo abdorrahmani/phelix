@@ -253,6 +253,7 @@ func (m *AppManager) ListApplications() []AppListItem {
 			Networking:  app.Config().Networking,
 			Logging:     app.Config().Logging,
 			Storage:     app.Config().Storage,
+			Resources:   app.Resources,
 		})
 	}
 	return appList

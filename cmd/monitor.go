@@ -299,6 +299,7 @@ func runMonitor() error {
 		return err
 	}
 	phelixgrpc.SetWorkerHandler(RemoteWorkerCommand)
+	phelixgrpc.SetWorkerAuthorizer(remoteWorkerAuthorize)
 	if err := phelixgrpc.InitializeAutoscaleLedger(); err != nil {
 		return err
 	}

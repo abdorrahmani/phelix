@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // TestMonitorEvent_RoundTrip verifies that every oneof branch of MonitorEvent
@@ -154,6 +155,34 @@ func TestMonitorEvent_RoundTrip(t *testing.T) {
 		},
 		{
 			ServerId:  "srv-1",
+			Timestamp: 7500,
+			Payload: &MonitorEvent_ReplicaMetrics{
+				ReplicaMetrics: &ReplicaMetricsSnapshot{
+					AppId:       "app-1",
+					ServerId:    "srv-1",
+					AppName:     "myapp",
+					CollectedAt: 7500,
+					Replicas: []*ReplicaResourceMetrics{{
+						Replica:            "0",
+						Pid:                123,
+						ProcessStatus:      "running",
+						CpuPercent:         12.5,
+						CpuState:           ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE,
+						MemoryBytes:        1024,
+						MemoryState:        ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE,
+						MemoryLimitBytes:   2048,
+						MemoryPercent:      50,
+						MemoryPercentState: ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE,
+						HostMemoryPercent:  0.1,
+						HostMemoryState:    ReplicaMetricValidity_REPLICA_METRIC_STALE,
+						CollectedAt:        7500,
+						Error:              "transient read failure",
+					}},
+				},
+			},
+		},
+		{
+			ServerId:  "srv-1",
 			Timestamp: 7000,
 			Payload: &MonitorEvent_Pong{
 				Pong: &Pong{Id: "ping-1", Timestamp: 7000},
@@ -212,6 +241,33 @@ func TestMonitorControl_RoundTrip(t *testing.T) {
 
 		if !proto.Equal(want, got) {
 			t.Fatalf("round trip mismatch:\nwant: %v\ngot:  %v", want, got)
+		}
+	}
+}
+
+// TestReplicaMetrics_WireCompatibility locks the snapshot field numbers and
+// validity enum values to the backend's proto. A mismatch here silently drops
+// every replica row on the wire, which is not visible to a round-trip test.
+func TestReplicaMetrics_WireCompatibility(t *testing.T) {
+	fields := (&ReplicaMetricsSnapshot{}).ProtoReflect().Descriptor().Fields()
+	for name, want := range map[protoreflect.Name]protoreflect.FieldNumber{
+		"collected_at": 4,
+		"replicas":     5,
+	} {
+		if got := fields.ByName(name).Number(); got != want {
+			t.Fatalf("ReplicaMetricsSnapshot.%s = %d, want %d", name, got, want)
+		}
+	}
+	values := map[ReplicaMetricValidity]int32{
+		ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE:      0,
+		ReplicaMetricValidity_REPLICA_METRIC_INITIALIZING:   1,
+		ReplicaMetricValidity_REPLICA_METRIC_UNAVAILABLE:    2,
+		ReplicaMetricValidity_REPLICA_METRIC_STALE:          3,
+		ReplicaMetricValidity_REPLICA_METRIC_PROCESS_EXITED: 4,
+	}
+	for state, want := range values {
+		if int32(state) != want {
+			t.Fatalf("expected %v to equal %d, got %d", state, want, int32(state))
 		}
 	}
 }

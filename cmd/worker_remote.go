@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/authz"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
@@ -21,9 +22,44 @@ func RemoteWorkerCommand(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult
 		return remoteWorkerScale(req)
 	case phelixgrpc.WorkerCommandRestartReplica:
 		return remoteWorkerRestartReplica(req)
+	case phelixgrpc.ScaleCommand:
+		return remoteScale(req)
 	default:
 		return remoteWorkerError(req, phelixerr.Newf(phelixerr.CodeInvalidArgument,
 			"unknown worker command type %q", req.GetType()))
+	}
+}
+
+// remoteScale changes a worker or rolling service replica count through the
+// same scaleApplication path the local `phelix scale` command uses.
+func remoteScale(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
+	appInfo, err := GetAppInfo(req.GetAppName())
+	if err != nil {
+		return remoteWorkerError(req, err)
+	}
+	state, err := deploy.Load(appInfo.Name)
+	if err != nil {
+		return remoteWorkerError(req, err)
+	}
+	if state.Mode != deploy.ModeWorker && state.Mode != deploy.ModeRolling {
+		return remoteWorkerError(req, phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"%s is a %s deployment; scale changes replica counts for worker and rolling apps", appInfo.Name, state.Mode))
+	}
+	if err := validateScaleRange(appInfo.Directory, int(req.GetReplicas())); err != nil {
+		return remoteWorkerError(req, err)
+	}
+	from, to, err := scaleApplication(context.Background(), appInfo, state, int(req.GetReplicas()))
+	if err != nil {
+		phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "scale", false, err.Error(), 0, "", "")
+		return remoteWorkerError(req, err)
+	}
+	reconcileAppWithDeploy(appInfo.Name)
+	phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "scale", true, "", 0, "", "")
+	logs.Info("worker", "remote scale of %s: %d -> %d replica(s) (request %s)", appInfo.Name, from, to, req.GetRequestId())
+	return &pb.MonitorCommandResult{
+		Status:       "success",
+		FromReplicas: int32(from),
+		ToReplicas:   int32(to),
 	}
 }
 
@@ -98,4 +134,15 @@ func remoteWorkerError(req *pb.MonitorCommandRequest, err error) *pb.MonitorComm
 		Error:     err.Error(),
 		ErrorCode: string(phelixerr.CodeOf(err)),
 	}
+}
+
+// remoteWorkerAuthorize gates remote replica mutations through the host
+// authorization boundary with the dedicated scale action, before any ledger
+// entry or state change.
+func remoteWorkerAuthorize(req *pb.MonitorCommandRequest) error {
+	appInfo, err := GetAppInfo(req.GetAppName())
+	if err != nil {
+		return err
+	}
+	return authorizeDirectExecution(authz.ActionScale, appInfo.Name, appInfo.ID)
 }

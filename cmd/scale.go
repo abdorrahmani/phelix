@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/authz"
@@ -11,6 +12,7 @@ import (
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/abdorrahmani/phelix/internal/ops"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -21,7 +23,7 @@ var scaleRequestKey string
 
 var ScaleCmd = &cobra.Command{
 	Use:           "scale [ID|AppName] --replicas N",
-	Short:         "Change a worker's replica count in place, without rebuilding.",
+	Short:         "Change a worker or rolling service replica count in place, without rebuilding.",
 	Args:          cobra.MaximumNArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -32,13 +34,13 @@ var ScaleCmd = &cobra.Command{
 		}
 		if scaleReplicas < 1 {
 			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-				"missing required --replicas N (the desired worker replica count, >= 1)")
+				"missing required --replicas N (the desired replica count, >= 1)")
 		}
 		if len(args) == 0 {
 			if !IsInteractive() {
 				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "missing required <ID|AppName>; usage: phelix scale <ID|AppName> --replicas N")
 			}
-			identifier, err := PromptApp(false, "Select worker to scale")
+			identifier, err := PromptApp(false, "Select app to scale")
 			if err != nil {
 				return err
 			}
@@ -52,12 +54,19 @@ var ScaleCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if wstate, werr := workerAppState(appInfo.Name); werr != nil || wstate == nil {
+		state, err := deploy.Load(appInfo.Name)
+		if err != nil {
+			return err
+		}
+		if state.Mode != deploy.ModeWorker && state.Mode != deploy.ModeRolling {
 			return phelixerr.Newf(phelixerr.CodeInvalidArgument,
-				"%s is not a worker app\nHint: phelix scale changes the replica set of a type: worker app; services scale via 'phelix rebuild --replicas N'", appInfo.Name)
+				"%s is a %s deployment; phelix scale changes replica counts for type: worker apps and rolling services", appInfo.Name, state.Mode)
+		}
+		if err := validateScaleRange(appInfo.Directory, scaleReplicas); err != nil {
+			return err
 		}
 
-		if authzErr := authorizeDirectExecution(authz.ActionRebuild, appInfo.Name, appInfo.ID); authzErr != nil {
+		if authzErr := authorizeDirectExecution(authz.ActionScale, appInfo.Name, appInfo.ID); authzErr != nil {
 			return authzErr
 		}
 
@@ -73,11 +82,7 @@ var ScaleCmd = &cobra.Command{
 			return nil
 		}
 
-		sig, grace, err := workerStopSettings(appInfo)
-		if err != nil {
-			return err
-		}
-		from, to, err := deploy.WorkerScale(context.Background(), appInfo.Name, scaleReplicas, sig, grace)
+		from, to, err := scaleApplication(context.Background(), appInfo, state, scaleReplicas)
 		if err != nil {
 			phelixgrpc.ReportEvent(appInfo.ID, appInfo.Name, "scale", false, err.Error(), 0, "", "")
 			return err
@@ -92,7 +97,7 @@ var ScaleCmd = &cobra.Command{
 			fmt.Printf("%s Scaled %s from %d to %d replica(s) (%d drained)\n",
 				color.GreenString("✓"), color.CyanString("'%s'", appInfo.Name), from, to, from-to)
 		}
-		op.setResult(&ops.Result{Strategy: "worker-scale"})
+		op.setResult(&ops.Result{Strategy: string(state.Mode) + "-scale"})
 		return op.writeResultEnv(machine.Success(op.operationID(), scaleResult{
 			App:      appInfo.Name,
 			AppID:    appInfo.ID,
@@ -101,6 +106,64 @@ var ScaleCmd = &cobra.Command{
 			Replicas: to,
 		}))
 	},
+}
+
+// scaleApplication applies one replica count through the app's existing
+// scaling path: WorkerScale for workers, ScaleExecutor for rolling services.
+// Callers must not hold the app lock; both paths acquire it themselves.
+func scaleApplication(ctx context.Context, appInfo *app.AppInfo, state *deploy.DeployState, replicas int) (int, int, error) {
+	switch state.Mode {
+	case deploy.ModeWorker:
+		sig, grace, err := workerStopSettings(appInfo)
+		if err != nil {
+			return 0, 0, err
+		}
+		return deploy.WorkerScale(ctx, appInfo.Name, replicas, sig, grace)
+	case deploy.ModeRolling:
+		client := autoscaleProxyClient()
+		if client == nil {
+			return 0, 0, phelixerr.New(phelixerr.CodeConfiguration,
+				"the proxy control socket is unavailable; start it with 'phelix proxy' before scaling a rolling service")
+		}
+		from := len(state.Replicas)
+		executor := &deploy.ScaleExecutor{
+			AppName:        appInfo.Name,
+			AppID:          appInfo.ID,
+			PublicPort:     state.PublicPort,
+			Launcher:       deploy.LauncherForApp(appInfo.Name),
+			ProxyClient:    client,
+			HealthProvider: deploy.DefaultHealthProvider(),
+			GracePeriod:    time.Duration(state.GraceSeconds) * time.Second,
+		}
+		if err := executor.Scale(ctx, from, replicas); err != nil {
+			return from, from, err
+		}
+		return from, replicas, nil
+	default:
+		return 0, 0, phelixerr.Newf(phelixerr.CodeConfiguration,
+			"mode %s has no manual scaling path", state.Mode)
+	}
+}
+
+// validateScaleRange keeps a manual replica count inside the configured
+// autoscaling bounds when autoscaling is enabled for the app.
+func validateScaleRange(dir string, replicas int) error {
+	cfg, err := project.Load(dir)
+	if err != nil && phelixerr.CodeOf(err) != phelixerr.CodeNotFound {
+		return err
+	}
+	if cfg == nil || cfg.Deploy == nil || cfg.Deploy.Autoscaling == nil {
+		return nil
+	}
+	settings := cfg.Deploy.Autoscaling.Resolve(cfg.Deploy.Replicas)
+	if !settings.Enabled {
+		return nil
+	}
+	if replicas < settings.MinReplicas || replicas > settings.MaxReplicas {
+		return phelixerr.Newf(phelixerr.CodeInvalidArgument,
+			"replicas %d is outside the configured autoscaling range %d..%d", replicas, settings.MinReplicas, settings.MaxReplicas)
+	}
+	return nil
 }
 
 // scaleResult is the machine-contract result of a successful scale.

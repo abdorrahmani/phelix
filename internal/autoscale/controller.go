@@ -191,6 +191,7 @@ func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) (deploy.ScaleD
 	if !ok {
 		return deploy.ScaleDecision{}, nil
 	}
+	RecordEvaluation(ref.Name, c.Now())
 	metrics := c.sample(evalCtx, st, ref, state)
 	decision := st.engine.Evaluate(metrics, current)
 	if decision.Direction == deploy.ScaleNone {
@@ -211,6 +212,7 @@ func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) (deploy.ScaleD
 	switch {
 	case execErr == nil:
 		st.engine.ConfirmExecution(now)
+		RecordScaleSuccess(ref.Name, now)
 		c.record(ref.Name, HistoryExecuted, decision, "")
 		if record != nil {
 			_ = record.MarkSucceeded(&ops.Result{Strategy: string(state.Mode)})
@@ -243,7 +245,9 @@ func (c *Controller) sample(ctx context.Context, st *appState, ref AppRef, state
 		stats = c.Proxy
 	}
 	st.sampler.SetStatsSource(stats)
-	snap := st.sampler.Collect(ctx, replicaRefs(state))
+	st.sampler.SetMemoryLimit(MemoryLimitBytesForApp(ref.Name))
+	st.sampler.SetFreshnessWindow(FreshnessWindow(st.settings.Interval))
+	snap := st.sampler.Collect(ctx, ReplicaRefs(state))
 	return snap.Metrics
 }
 
@@ -303,16 +307,6 @@ func workerStopSettings(dir string) (sig os.Signal, grace time.Duration, err err
 	return sig, ps.GracePeriod, nil
 }
 
-func replicaRefs(state *deploy.DeployState) []ReplicaRef {
-	refs := make([]ReplicaRef, 0, len(state.Replicas))
-	for key, inst := range state.Replicas {
-		if inst != nil && inst.PID > 0 {
-			refs = append(refs, ReplicaRef{Key: key, PID: inst.PID})
-		}
-	}
-	return refs
-}
-
 // record appends a history entry, never failing the evaluation.
 func (c *Controller) record(app, kind string, d deploy.ScaleDecision, execErr string) {
 	rec := HistoryRecord{
@@ -325,6 +319,7 @@ func (c *Controller) record(app, kind string, d deploy.ScaleDecision, execErr st
 		Error:     execErr,
 	}
 	_ = AppendHistoryRecord(app, rec)
+	RecordDecision(app, rec)
 }
 
 func directionName(d deploy.ScaleDirection) string {

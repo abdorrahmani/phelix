@@ -104,9 +104,99 @@ func remoteAutoscaleStatus(req *pb.MonitorCommandRequest) *pb.MonitorCommandResu
 		st.CooldownDown = s.ScaleDownCooldown.String()
 		st.StabilizationWindow = s.StabilizationWindow.String()
 	}
+
+	runtime := autoscale.RuntimeStateFor(ref.Name)
+	st.DesiredReplicas = int32(len(state.Replicas))
+	if runtime.LastDecision != nil && runtime.LastDecision.To > 0 {
+		st.DesiredReplicas = int32(runtime.LastDecision.To)
+	}
+	if !runtime.LastEvaluation.IsZero() {
+		st.LastEvaluation = runtime.LastEvaluation.UTC().Format(time.RFC3339)
+	}
+	if !runtime.LastSuccessfulScale.IsZero() {
+		st.LastSuccessfulScale = runtime.LastSuccessfulScale.UTC().Format(time.RFC3339)
+	}
+	if runtime.LastDecision != nil {
+		st.LastDecision = toProtoAutoscaleHistory(*runtime.LastDecision)
+	} else if records, rerr := autoscale.ReadHistory(ref.Name, 50); rerr == nil && len(records) > 0 {
+		last := records[len(records)-1]
+		st.LastDecision = toProtoAutoscaleHistory(last)
+		if st.LastEvaluation == "" {
+			st.LastEvaluation = last.Time
+		}
+		if st.LastSuccessfulScale == "" {
+			for i := len(records) - 1; i >= 0; i-- {
+				if records[i].Kind == autoscale.HistoryExecuted {
+					st.LastSuccessfulScale = records[i].Time
+					break
+				}
+			}
+		}
+	}
+	st.ReplicaMetrics = replicaResourceMessages(ref.Name, state)
 	return &pb.MonitorCommandResult{
 		Status:          "success",
 		AutoscaleStatus: st,
+	}
+}
+
+func toProtoAutoscaleHistory(rec autoscale.HistoryRecord) *pb.AutoscaleHistoryEntry {
+	return &pb.AutoscaleHistoryEntry{
+		Time:      rec.Time,
+		Kind:      rec.Kind,
+		Direction: rec.Direction,
+		From:      int32(rec.From),
+		To:        int32(rec.To),
+		Reason:    rec.Reason,
+		Error:     rec.Error,
+	}
+}
+
+// replicaResourceMessages takes one per-instance resource observation through
+// the shared sampler. The 150ms baseline gives a real CPU delta without
+// depending on autoscaling being enabled.
+func replicaResourceMessages(appName string, state *deploy.DeployState) []*pb.ReplicaResourceMetrics {
+	refs := autoscale.ResourceRefs(state)
+	if len(refs) == 0 {
+		return nil
+	}
+	sampler := autoscale.NewSampler(appName, nil)
+	sampler.SetMemoryLimit(autoscale.MemoryLimitBytesForApp(appName))
+	samples := sampler.SampleResources(refs, statusSampleInterval)
+	out := make([]*pb.ReplicaResourceMetrics, 0, len(samples))
+	for _, s := range samples {
+		out = append(out, &pb.ReplicaResourceMetrics{
+			Replica:            s.Key,
+			Pid:                int32(s.PID),
+			ProcessStatus:      s.ProcessStatus,
+			CpuPercent:         s.CPUPercent,
+			CpuState:           toProtoReplicaValidity(s.CPUState),
+			MemoryBytes:        s.MemoryBytes,
+			MemoryState:        toProtoReplicaValidity(s.MemoryState),
+			MemoryLimitBytes:   s.MemoryLimit,
+			MemoryPercent:      s.MemoryPercent,
+			MemoryPercentState: toProtoReplicaValidity(s.MemoryPctState),
+			HostMemoryPercent:  s.HostMemoryPct,
+			HostMemoryState:    toProtoReplicaValidity(s.HostMemState),
+			CollectedAt:        s.At.UnixMilli(),
+			Error:              s.Error,
+		})
+	}
+	return out
+}
+
+func toProtoReplicaValidity(state autoscale.MetricState) pb.ReplicaMetricValidity {
+	switch state {
+	case autoscale.MetricAvailable:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE
+	case autoscale.MetricInitializing:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_INITIALIZING
+	case autoscale.MetricStale:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_STALE
+	case autoscale.MetricProcessExited:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_PROCESS_EXITED
+	default:
+		return pb.ReplicaMetricValidity_REPLICA_METRIC_UNAVAILABLE
 	}
 }
 
@@ -181,15 +271,27 @@ func remoteAutoscaleEvaluate(req *pb.MonitorCommandRequest) *pb.MonitorCommandRe
 	logs.Info("autoscale", "remote evaluate of %s: direction %d, %d->%d (%s) (request %s)",
 		ref.Name, int(decision.Direction), decision.CurrentReplicas, decision.DesiredReplicas, decision.Reason, req.GetRequestId())
 	result := &pb.MonitorCommandResult{
-		Status:       "success",
-		FromReplicas: int32(decision.CurrentReplicas),
-		ToReplicas:   int32(decision.DesiredReplicas),
+		Status:             "success",
+		FromReplicas:       int32(decision.CurrentReplicas),
+		ToReplicas:         int32(decision.DesiredReplicas),
+		AutoscaleDirection: scaleDirectionName(decision.Direction),
+		AutoscaleReason:    decision.Reason,
 	}
 	if execErr != nil {
 		result.Status = "error"
 		result.Error = execErr.Error()
 	}
 	return result
+}
+
+func scaleDirectionName(d deploy.ScaleDirection) string {
+	switch d {
+	case deploy.ScaleUp:
+		return "up"
+	case deploy.ScaleDown:
+		return "down"
+	}
+	return "none"
 }
 
 func toggleWord(enabled bool) string {

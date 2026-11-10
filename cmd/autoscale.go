@@ -83,25 +83,32 @@ var autoscaleStatusCmd = &cobra.Command{
 
 // autoscaleStatusView is the status command's machine contract.
 type autoscaleStatusView struct {
-	App        string                     `json:"app"`
-	AppID      string                     `json:"app_id"`
-	Mode       string                     `json:"mode"`
-	Replicas   int                        `json:"replicas"`
-	Enabled    bool                       `json:"enabled"`
-	Paused     bool                       `json:"paused"`
-	PausedAt   string                     `json:"paused_at,omitempty"`
-	PausedBy   string                     `json:"paused_by,omitempty"`
-	Settings   *project.AutoscaleSettings `json:"settings,omitempty"`
-	RecentUser []autoscale.HistoryRecord  `json:"recent_history,omitempty"`
+	App                 string                     `json:"app"`
+	AppID               string                     `json:"app_id"`
+	Mode                string                     `json:"mode"`
+	Replicas            int                        `json:"replicas"`
+	DesiredReplicas     int                        `json:"desired_replicas"`
+	Enabled             bool                       `json:"enabled"`
+	Paused              bool                       `json:"paused"`
+	PausedAt            string                     `json:"paused_at,omitempty"`
+	PausedBy            string                     `json:"paused_by,omitempty"`
+	LastEvaluation      string                     `json:"last_evaluation,omitempty"`
+	LastSuccessfulScale string                     `json:"last_successful_scale,omitempty"`
+	LastDecision        *autoscale.HistoryRecord   `json:"last_decision,omitempty"`
+	ReplicaMetrics      []autoscale.ReplicaSample  `json:"replica_metrics,omitempty"`
+	Settings            *project.AutoscaleSettings `json:"settings,omitempty"`
+	RecentUser          []autoscale.HistoryRecord  `json:"recent_history,omitempty"`
 }
 
 func buildAutoscaleStatus(appInfo *app.AppInfo) (*autoscaleStatusView, error) {
 	view := &autoscaleStatusView{App: appInfo.Name, AppID: appInfo.ID}
 
-	state, err := deploy.Load(appInfo.Name)
-	if err == nil {
+	var state *deploy.DeployState
+	if loaded, err := deploy.Load(appInfo.Name); err == nil {
+		state = loaded
 		view.Mode = string(state.Mode)
 		view.Replicas = len(state.Replicas)
+		view.DesiredReplicas = len(state.Replicas)
 	}
 
 	pause, err := autoscale.LoadPauseState(appInfo.Name)
@@ -122,9 +129,38 @@ func buildAutoscaleStatus(appInfo *app.AppInfo) (*autoscaleStatusView, error) {
 		view.Settings = &s
 	}
 
-	records, err := autoscale.ReadHistory(appInfo.Name, 5)
-	if err == nil {
+	records, err := autoscale.ReadHistory(appInfo.Name, 50)
+	if err == nil && len(records) > 0 {
 		view.RecentUser = records
+		if len(view.RecentUser) > 5 {
+			view.RecentUser = view.RecentUser[len(view.RecentUser)-5:]
+		}
+		last := records[len(records)-1]
+		view.LastDecision = &last
+		view.LastEvaluation = last.Time
+		for i := len(records) - 1; i >= 0; i-- {
+			if records[i].Kind == autoscale.HistoryExecuted {
+				view.LastSuccessfulScale = records[i].Time
+				break
+			}
+		}
+	}
+	if runtime := autoscale.RuntimeStateFor(appInfo.Name); !runtime.LastEvaluation.IsZero() {
+		view.LastEvaluation = runtime.LastEvaluation.UTC().Format(time.RFC3339)
+		if runtime.LastDecision != nil {
+			view.LastDecision = runtime.LastDecision
+		}
+		if !runtime.LastSuccessfulScale.IsZero() {
+			view.LastSuccessfulScale = runtime.LastSuccessfulScale.UTC().Format(time.RFC3339)
+		}
+	}
+	if view.LastDecision != nil && view.LastDecision.To > 0 {
+		view.DesiredReplicas = view.LastDecision.To
+	}
+	if refs := autoscale.ResourceRefs(state); len(refs) > 0 {
+		sampler := autoscale.NewSampler(appInfo.Name, nil)
+		sampler.SetMemoryLimit(autoscale.MemoryLimitBytesForApp(appInfo.Name))
+		view.ReplicaMetrics = sampler.SampleResources(refs, statusSampleInterval)
 	}
 	return view, nil
 }
@@ -143,7 +179,33 @@ func renderAutoscaleStatus(v *autoscaleStatusView) {
 	}
 	fmt.Printf("Autoscaling for %s: %s\n", color.CyanString("'%s'", v.App), state)
 	if v.Mode != "" {
-		fmt.Printf("  Mode: %s, replicas: %d\n", v.Mode, v.Replicas)
+		fmt.Printf("  Mode: %s, replicas: %d", v.Mode, v.Replicas)
+		if v.DesiredReplicas > 0 && v.DesiredReplicas != v.Replicas {
+			fmt.Printf(" (desired: %d)", v.DesiredReplicas)
+		}
+		fmt.Println()
+	}
+	if v.LastEvaluation != "" {
+		fmt.Printf("  Last evaluation: %s\n", v.LastEvaluation)
+	}
+	if v.LastSuccessfulScale != "" {
+		fmt.Printf("  Last successful scale: %s\n", v.LastSuccessfulScale)
+	}
+	if d := v.LastDecision; d != nil {
+		line := fmt.Sprintf("  Last decision: %s %s", d.Kind, d.Direction)
+		if d.From != d.To {
+			line += fmt.Sprintf(" %d->%d", d.From, d.To)
+		}
+		if d.Reason != "" {
+			line += " (" + d.Reason + ")"
+		}
+		fmt.Println(line)
+	}
+	if len(v.ReplicaMetrics) > 0 {
+		fmt.Println("  Replica resources:")
+		for _, sample := range v.ReplicaMetrics {
+			fmt.Printf("    %-10s%s\n", sample.Key, formatReplicaResources(sample))
+		}
 	}
 	if s := v.Settings; s != nil {
 		w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)

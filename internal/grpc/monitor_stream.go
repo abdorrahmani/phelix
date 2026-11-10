@@ -870,6 +870,20 @@ func (c *Client) sendMonitorTick() {
 		}
 	}
 
+	for _, s := range monitorStream.metricsCollector.CollectReplicaMetrics() {
+		event := &pb.MonitorEvent{
+			ServerId:  serverID,
+			Timestamp: time.Now().UnixMilli(),
+			Payload: &pb.MonitorEvent_ReplicaMetrics{
+				ReplicaMetrics: toProtoReplicaMetrics(s),
+			},
+		}
+		if err := monitorStream.send(event); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send replica metrics for %s: %v", s.AppName, err)
+			return
+		}
+	}
+
 	for _, a := range monitorStream.metricsCollector.CollectAppDetails() {
 		event := &pb.MonitorEvent{
 			ServerId:  serverID,

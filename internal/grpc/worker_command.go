@@ -30,6 +30,10 @@ import (
 const (
 	WorkerCommandScale          = "worker_scale"
 	WorkerCommandRestartReplica = "worker_restart_replica"
+	// ScaleCommand is the generic in-place replica change. It routes by the
+	// app's deploy mode (worker or rolling) through the same scaling paths as
+	// the local `phelix scale` command.
+	ScaleCommand = "scale"
 )
 
 // workerCommandSettleTimeout bounds how long daemon shutdown waits for
@@ -46,8 +50,12 @@ func WorkerCommandSettleTimeout() time.Duration {
 const workerLedgerFile = "remote-worker-ledger.json"
 
 // The worker dispatch compiled into this build declares its capability: the
-// backend may gate worker_* commands on it.
-func init() { RegisterCapability(CapabilityWorkerLifecycle) }
+// backend may gate worker_* commands on it. The generic scale command has its
+// own capability so a backend can gate in-place scaling independently.
+func init() {
+	RegisterCapability(CapabilityWorkerLifecycle)
+	RegisterCapability(CapabilityScaling)
+}
 
 // WorkerHandlerFunc executes one worker command and returns its fully
 // populated result.
@@ -56,7 +64,29 @@ type WorkerHandlerFunc func(req *pb.MonitorCommandRequest) *pb.MonitorCommandRes
 var (
 	workerHandlerMu sync.RWMutex
 	workerHandler   WorkerHandlerFunc
+
+	workerAuthorizerMu sync.RWMutex
+	workerAuthorizer   WorkerAuthorizerFunc
 )
+
+// WorkerAuthorizerFunc gates a mutating worker/scale command through the
+// host authorization boundary. It runs before any ledger entry or state
+// change.
+type WorkerAuthorizerFunc func(req *pb.MonitorCommandRequest) error
+
+// SetWorkerAuthorizer registers the mutation authorization gate. The daemon
+// wiring calls it before the client starts.
+func SetWorkerAuthorizer(a WorkerAuthorizerFunc) {
+	workerAuthorizerMu.Lock()
+	defer workerAuthorizerMu.Unlock()
+	workerAuthorizer = a
+}
+
+func getWorkerAuthorizer() WorkerAuthorizerFunc {
+	workerAuthorizerMu.RLock()
+	defer workerAuthorizerMu.RUnlock()
+	return workerAuthorizer
+}
 
 // SetWorkerHandler registers the remote worker implementation. The daemon
 // wiring calls it before the client starts.
@@ -101,7 +131,7 @@ func WaitPendingWorkerCommands(timeout time.Duration) {
 
 // isWorkerCommand reports whether a command type is a worker command.
 func isWorkerCommand(t string) bool {
-	return t == WorkerCommandScale || t == WorkerCommandRestartReplica
+	return t == WorkerCommandScale || t == WorkerCommandRestartReplica || t == ScaleCommand
 }
 
 // validateWorkerCommand checks the transport-level shape of a worker command
@@ -121,7 +151,7 @@ func validateWorkerCommand(req *pb.MonitorCommandRequest) error {
 			"%s command must not carry strategy, reason, verify_duration_ms, dry_run, target, matrix or webhook options", req.GetType())
 	}
 	switch req.GetType() {
-	case WorkerCommandScale:
+	case WorkerCommandScale, ScaleCommand:
 		if req.GetReplica() != "" {
 			return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s command must not carry a replica", req.GetType())
 		}
@@ -148,6 +178,13 @@ func (c *Client) handleWorkerCommand(req *pb.MonitorCommandRequest, ledger *roll
 	if err := validateWorkerCommand(req); err != nil {
 		_ = sendCommandResultLogged(finalizeWorkerResult(req, commandErrorResult(req, err)))
 		return
+	}
+
+	if authorize := getWorkerAuthorizer(); authorize != nil {
+		if err := authorize(req); err != nil {
+			_ = sendCommandResultLogged(finalizeWorkerResult(req, commandErrorResult(req, err)))
+			return
+		}
 	}
 
 	outcome, replay, err := ledger.begin(req)

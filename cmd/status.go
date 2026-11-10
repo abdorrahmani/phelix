@@ -6,9 +6,11 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/autoscale"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/health"
@@ -73,9 +75,10 @@ var StatusCmd = &cobra.Command{
 
 		displayStatus(status)
 		displayHTTPMetrics(status.ID)
-		displayDeployAndProxy(status.Name)
+		observation := collectStatusObservation(status.Name)
+		displayDeployAndProxy(status.Name, observation)
 
-		return writeEnvelopeResult(machine.Success("", buildStatusResult(status)))
+		return writeEnvelopeResult(machine.Success("", buildStatusResult(status, observation)))
 	},
 }
 
@@ -119,6 +122,21 @@ type statusInstanceView struct {
 	Restarts       int    `json:"restarts,omitempty"`
 	LastExitCode   int    `json:"last_exit_code,omitempty"`
 	LastExitReason string `json:"last_exit_reason,omitempty"`
+
+	// Resource observation. The state fields say whether each value is
+	// trustworthy: a zero cpu_percent with cpu_state "available" is a real
+	// idle process, while "initializing" or "unavailable" means no value.
+	CPUPercent         float64 `json:"cpu_percent,omitempty"`
+	CPUState           string  `json:"cpu_state,omitempty"`
+	MemoryBytes        uint64  `json:"memory_bytes,omitempty"`
+	MemoryState        string  `json:"memory_state,omitempty"`
+	MemoryLimitBytes   uint64  `json:"memory_limit_bytes,omitempty"`
+	MemoryPercent      float64 `json:"memory_percent,omitempty"`
+	MemoryPercentState string  `json:"memory_percent_state,omitempty"`
+	HostMemoryPercent  float64 `json:"host_memory_percent,omitempty"`
+	HostMemoryState    string  `json:"host_memory_state,omitempty"`
+	CollectedAt        int64   `json:"collected_at_ms,omitempty"`
+	Error              string  `json:"error,omitempty"`
 }
 
 type statusRollbackView struct {
@@ -172,6 +190,98 @@ type statusResult struct {
 	Traffic *statusTrafficView `json:"traffic,omitempty"`
 }
 
+// statusObservation is one read of the live sources both the human renderer
+// and the machine contract describe, so `status` never reads deploy.json or
+// the proxy twice.
+type statusObservation struct {
+	state      *deploy.DeployState
+	proxyUp    bool
+	proxyByApp map[string]proxy.AppStatus
+	traffic    []proxy.BackendStat
+	replicas   map[string]autoscale.ReplicaSample
+}
+
+// statusSampleInterval is the gap between the two resource reads a one-shot
+// status command uses to turn cumulative CPU time into a real percentage.
+const statusSampleInterval = 150 * time.Millisecond
+
+func collectStatusObservation(appName string) *statusObservation {
+	obs := &statusObservation{}
+	if state, err := deploy.Load(appName); err == nil {
+		obs.state = state
+	}
+	obs.proxyUp, obs.proxyByApp = loadProxySnapshot()
+	obs.traffic = loadProxyStats(appName)
+	if refs := autoscale.ResourceRefs(obs.state); len(refs) > 0 {
+		sampler := autoscale.NewSampler(appName, nil)
+		sampler.SetMemoryLimit(autoscale.MemoryLimitBytesForApp(appName))
+		samples := sampler.SampleResources(refs, statusSampleInterval)
+		obs.replicas = make(map[string]autoscale.ReplicaSample, len(samples))
+		for _, s := range samples {
+			obs.replicas[s.Key] = s
+		}
+	}
+	return obs
+}
+
+// applyReplicaResources copies one sample onto the machine-contract view.
+func applyReplicaResources(view *statusInstanceView, sample autoscale.ReplicaSample) {
+	if sample.Key == "" {
+		return
+	}
+	view.CPUPercent = sample.CPUPercent
+	view.CPUState = string(sample.CPUState)
+	view.MemoryBytes = sample.MemoryBytes
+	view.MemoryState = string(sample.MemoryState)
+	view.MemoryLimitBytes = sample.MemoryLimit
+	view.MemoryPercent = sample.MemoryPercent
+	view.MemoryPercentState = string(sample.MemoryPctState)
+	view.HostMemoryPercent = sample.HostMemoryPct
+	view.HostMemoryState = string(sample.HostMemState)
+	view.CollectedAt = sample.At.UnixMilli()
+	view.Error = sample.Error
+}
+
+// formatReplicaResources renders one replica's resource summary for the human
+// status view. Missing data is named, never printed as a zero.
+func formatReplicaResources(sample autoscale.ReplicaSample) string {
+	if sample.Key == "" {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	switch sample.CPUState {
+	case autoscale.MetricAvailable:
+		parts = append(parts, fmt.Sprintf("cpu=%.1f%%", sample.CPUPercent))
+	case autoscale.MetricInitializing:
+		parts = append(parts, "cpu=initializing")
+	case autoscale.MetricStale:
+		parts = append(parts, fmt.Sprintf("cpu=%.1f%% (stale)", sample.CPUPercent))
+	case autoscale.MetricProcessExited:
+		parts = append(parts, "cpu=exited")
+	default:
+		parts = append(parts, "cpu=unavailable")
+	}
+	switch sample.MemoryState {
+	case autoscale.MetricAvailable, autoscale.MetricStale:
+		mem := fmt.Sprintf("mem=%.1fMB", float64(sample.MemoryBytes)/(1024*1024))
+		if sample.MemoryPctState == autoscale.MetricAvailable || sample.MemoryPctState == autoscale.MetricStale {
+			mem += fmt.Sprintf(" (%.1f%% of limit)", sample.MemoryPercent)
+		}
+		if sample.MemoryState == autoscale.MetricStale {
+			mem += " (stale)"
+		}
+		parts = append(parts, mem)
+	case autoscale.MetricProcessExited:
+		parts = append(parts, "mem=exited")
+	default:
+		parts = append(parts, "mem=unavailable")
+	}
+	if sample.HostMemState == autoscale.MetricAvailable || sample.HostMemState == autoscale.MetricStale {
+		parts = append(parts, fmt.Sprintf("host=%.1f%%", sample.HostMemoryPct))
+	}
+	return "  " + strings.Join(parts, " ")
+}
+
 // buildStatusTraffic projects the proxy's per-backend counters onto the
 // machine contract. Absent traffic means the app was never proxied.
 func buildStatusTraffic(stats []proxy.BackendStat) *statusTrafficView {
@@ -220,7 +330,10 @@ func loadProxyStats(appName string) []proxy.BackendStat {
 // deployment state and proxy routing onto the machine contract. The same
 // sources the human renderer reads (versions.json, deploy.json, proxy
 // daemon) feed it — no second state read path.
-func buildStatusResult(status app.AppStatus) *statusResult {
+func buildStatusResult(status app.AppStatus, obs *statusObservation) *statusResult {
+	if obs == nil {
+		obs = &statusObservation{}
+	}
 	res := &statusResult{
 		App: statusAppView{
 			ID:         status.ID,
@@ -255,8 +368,8 @@ func buildStatusResult(status app.AppStatus) *statusResult {
 		res.Version = vv
 	}
 
-	state, err := deploy.Load(status.Name)
-	if err == nil && state != nil && state.Mode != "" {
+	state := obs.state
+	if state != nil && state.Mode != "" {
 		dv := &statusDeployView{
 			Mode:          string(state.Mode),
 			ActiveSlot:    state.ActiveSlot,
@@ -268,19 +381,23 @@ func buildStatusResult(status app.AppStatus) *statusResult {
 		}
 		for _, slot := range []string{deploy.SlotBlue, deploy.SlotGreen} {
 			if inst := state.Slots[slot]; inst != nil {
-				dv.Slots = append(dv.Slots, statusInstanceView{
+				view := statusInstanceView{
 					Slot: inst.Slot, Status: inst.Status, PID: inst.PID, Port: inst.Port, Version: inst.Version,
-				})
+				}
+				applyReplicaResources(&view, obs.replicas[slot])
+				dv.Slots = append(dv.Slots, view)
 			}
 		}
 		for _, key := range sortedReplicaKeysForDisplay(state.Replicas) {
 			if inst := state.Replicas[key]; inst != nil {
-				dv.Replicas = append(dv.Replicas, statusInstanceView{
+				view := statusInstanceView{
 					Slot: key, Status: inst.Status, PID: inst.PID, Port: inst.Port, Version: inst.Version,
 					Restarts:       inst.RestartCount,
 					LastExitCode:   inst.LastExitCode,
 					LastExitReason: inst.LastExitReason,
-				})
+				}
+				applyReplicaResources(&view, obs.replicas[key])
+				dv.Replicas = append(dv.Replicas, view)
 			}
 		}
 		if state.LastRollback != nil {
@@ -293,7 +410,7 @@ func buildStatusResult(status app.AppStatus) *statusResult {
 		res.Deploy = dv
 	}
 
-	proxyUp, proxyByApp := loadProxySnapshot()
+	proxyUp, proxyByApp := obs.proxyUp, obs.proxyByApp
 	pv := &statusProxyView{Running: proxyUp}
 	if ps, ok := proxyByApp[status.Name]; ok {
 		pv.Enrolled = true
@@ -302,7 +419,7 @@ func buildStatusResult(status app.AppStatus) *statusResult {
 		pv.InFlight = ps.InFlight
 	}
 	res.Proxy = pv
-	res.Traffic = buildStatusTraffic(loadProxyStats(status.Name))
+	res.Traffic = buildStatusTraffic(obs.traffic)
 
 	return res
 }
@@ -466,8 +583,12 @@ func rolloutReasonSuffix(reason string) string {
 
 // displayDeployAndProxy prints zero-downtime deploy mode and live proxy
 // routing for the app, when available.
-func displayDeployAndProxy(appName string) {
-	proxyUp, proxyByApp := loadProxySnapshot()
+func displayDeployAndProxy(appName string, obs *statusObservation) {
+	if obs == nil {
+		obs = &statusObservation{}
+	}
+	proxyUp, proxyByApp := obs.proxyUp, obs.proxyByApp
+	state := obs.state
 
 	fmt.Println()
 
@@ -522,8 +643,7 @@ func displayDeployAndProxy(appName string) {
 	fmt.Println()
 	fmt.Printf("%s Zero-downtime deploy\n", color.BlueString("→"))
 
-	state, err := deploy.Load(appName)
-	if err != nil || state == nil {
+	if state == nil {
 		fmt.Printf("  Deploy method: %s\n", color.HiBlackString("none (classic stop→start)"))
 	} else {
 		switch state.Mode {
@@ -545,8 +665,8 @@ func displayDeployAndProxy(appName string) {
 						if inst.Version > 0 {
 							ver = fmt.Sprintf(" version=v%d", inst.Version)
 						}
-						fmt.Printf("  Slot %-5s:    status=%s pid=%d port=%d%s\n",
-							slot, inst.Status, inst.PID, inst.Port, ver)
+						fmt.Printf("  Slot %-5s:    status=%s pid=%d port=%d%s%s\n",
+							slot, inst.Status, inst.PID, inst.Port, ver, formatReplicaResources(obs.replicas[slot]))
 					}
 				}
 			}
@@ -566,8 +686,8 @@ func displayDeployAndProxy(appName string) {
 				if inst.Version > 0 {
 					ver = fmt.Sprintf(" version=v%d", inst.Version)
 				}
-				fmt.Printf("  Replica %-3s:   status=%s pid=%d port=%d%s\n",
-					key, inst.Status, inst.PID, inst.Port, ver)
+				fmt.Printf("  Replica %-3s:   status=%s pid=%d port=%d%s%s\n",
+					key, inst.Status, inst.PID, inst.Port, ver, formatReplicaResources(obs.replicas[key]))
 			}
 		case deploy.ModeWorker:
 			summary := deploy.SummarizeWorker(state)
@@ -597,8 +717,8 @@ func displayDeployAndProxy(appName string) {
 				if inst.LastExitReason != "" {
 					exit = inst.LastExitReason
 				}
-				fmt.Printf("  Replica %-3s:  status=%-10s pid=%-7d restarts=%d last_exit=%s%s\n",
-					key, inst.Status, inst.PID, inst.RestartCount, exit, ver)
+				fmt.Printf("  Replica %-3s:  status=%-10s pid=%-7d restarts=%d last_exit=%s%s%s\n",
+					key, inst.Status, inst.PID, inst.RestartCount, exit, ver, formatReplicaResources(obs.replicas[key]))
 			}
 			// A worker has no proxy route: skip the proxy section entirely.
 			return
@@ -649,7 +769,7 @@ func displayDeployAndProxy(appName string) {
 			fmt.Println()
 		}
 		fmt.Printf("  In-flight:     %d\n", ps.InFlight)
-		displayTraffic(loadProxyStats(appName))
+		displayTraffic(obs.traffic)
 		// Invariant: for blue-green, the slot the deployment calls active MUST
 		// be the one the proxy routes to. Anything else means traffic and
 		// deploy.json disagree — surface it instead of rendering two "green"

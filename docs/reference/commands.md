@@ -210,8 +210,8 @@ Shows the recorded rollback outcomes for one application, newest first.
 | `phelix start [<ID\|AppName>] [--port P] [--ensure]` | Start an app (or all apps if none given). `--ensure` builds if missing and rebuilds if startup fails. For a worker app: launches every dead replica slot (no port used). |
 | `phelix stop <ID\|AppName>` | Stop a running app. For a worker app: graceful stop of every replica (configured signal + grace period). |
 | `phelix restart <ID\|AppName> [--replica N]` | Restart an app. For a worker app: restarts every replica and resets crash counters; `--replica N` restarts one slot only. |
-| `phelix scale <ID\|AppName> --replicas N` | Change a worker's replica count in place, without rebuilding. Worker apps only. |
-| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing, and live request traffic (request/error counts, p95 latency, per-backend share). For a worker app: the replica tree (per-replica status, PID, restarts, last exit, version) instead of proxy routing. |
+| `phelix scale <ID\|AppName> --replicas N` | Change a worker or rolling service replica count in place, without rebuilding. |
+| `phelix status <ID\|AppName>` | Show status: PID, uptime, RAM/CPU, watching, version, deploy mode, proxy routing, and live request traffic (request/error counts, p95 latency, per-backend share). For a worker app: the replica tree (per-replica status, PID, restarts, last exit, version) instead of proxy routing. Deploy-managed apps also list per-replica CPU, limit-relative memory, and host-relative memory with explicit validity states. |
 | `phelix status --workspace` | One overview of every workspace service: derived lifecycle status, version, health, port, and strategy. |
 | `phelix list` | Table of all apps with version, status, watching, deploy, and proxy columns. The deploy column shows `worker (×N)` for worker apps. |
 | `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. `--replica N` tails one worker replica's output instead. |
@@ -278,10 +278,16 @@ example is [`examples/worker-go`](../../examples/worker-go/).
 
 ### `phelix scale <ID|AppName> --replicas N`
 
-Changes a worker's replica count in place at the current version, without rebuilding.
-Grow launches the new slots from the recorded env snapshot; shrink drains the
-highest-index replicas gracefully (they never count as crashes). Worker apps
-only; services scale via `rebuild --replicas N`.
+Changes a worker or rolling service replica count in place at the current
+version, without rebuilding. Grow launches the new slots from the recorded
+artifact and env snapshot; shrink drains the highest-index replicas gracefully
+(they never count as crashes). Rolling services use the same scale executor as
+automatic scaling, including proxy membership updates and the per-app deploy
+lock. Blue-green, canary, progressive and classic apps must be scaled through
+`rebuild --replicas N` instead.
+
+When autoscaling is enabled for the app, the requested count must stay inside
+the configured `min_replicas`..`max_replicas` range.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -291,11 +297,11 @@ only; services scale via `rebuild --replicas N`.
 
 ```bash
 phelix scale email-worker --replicas 5
-phelix scale email-worker --replicas 1 --json
+phelix scale api --replicas 3 --json
 ```
 
-The same operation is available remotely through the dashboard's
-`worker_scale` command.
+The same operation is available remotely through the dashboard's `worker_scale`
+command for workers and the generic `scale` command for either workload.
 
 ## Encrypted environment variables
 

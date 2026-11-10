@@ -13,6 +13,7 @@ type fakeReader struct {
 	busy map[int]float64
 	rss  map[int]uint64
 	errs map[int]bool
+	dead map[int]bool
 }
 
 func (f *fakeReader) busySeconds(pid int) (float64, error) {
@@ -27,6 +28,13 @@ func (f *fakeReader) rssBytes(pid int) (uint64, error) {
 		return 0, context.DeadlineExceeded
 	}
 	return f.rss[pid], nil
+}
+
+func (f *fakeReader) alive(pid int) (bool, error) {
+	if f.dead[pid] {
+		return false, nil
+	}
+	return true, nil
 }
 
 type fakeStats struct {
@@ -50,6 +58,7 @@ func newTestSampler(t *testing.T, app string, stats ProxyStatsSource, reader pro
 	s.now = func() time.Time { return base }
 	s.reader = reader
 	s.hostMemoryBytes = func() (uint64, error) { return 8 << 30, nil }
+	s.SetMemoryLimit(8 << 30)
 	return s, &base
 }
 
@@ -228,5 +237,127 @@ func TestSamplerWorkerWithoutProxy(t *testing.T) {
 	}
 	if snap.Metrics.Missing.Has(deploy.MissingRPS) {
 		t.Errorf("not-applicable traffic is not missing data: %+v", snap.Metrics)
+	}
+}
+
+func TestSamplerZeroCPUIsAvailable(t *testing.T) {
+	r := &fakeReader{busy: map[int]float64{101: 5.0}, rss: map[int]uint64{101: 1 << 20}}
+	s, base := newTestSampler(t, "api", nil, r)
+	s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}})
+
+	*base = base.Add(10 * time.Second)
+	s.now = func() time.Time { return *base }
+	snap := s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}})
+	if snap.Replicas[0].CPUState != MetricAvailable {
+		t.Errorf("CPU state = %s, want available", snap.Replicas[0].CPUState)
+	}
+	if snap.Replicas[0].CPUPercent != 0 {
+		t.Errorf("CPU = %.2f, want 0", snap.Replicas[0].CPUPercent)
+	}
+	if snap.Metrics.Missing.Has(deploy.MissingCPU) {
+		t.Errorf("an idle process is measured, not missing: %+v", snap.Metrics)
+	}
+}
+
+func TestSamplerMemoryWithoutLimitIsUnavailable(t *testing.T) {
+	r := &fakeReader{busy: map[int]float64{101: 0}, rss: map[int]uint64{101: 2 << 30}}
+	s, base := newTestSampler(t, "api", nil, r)
+	s.SetMemoryLimit(0)
+	s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}})
+
+	*base = base.Add(10 * time.Second)
+	s.now = func() time.Time { return *base }
+	snap := s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}})
+	rs := snap.Replicas[0]
+	if rs.MemoryState != MetricAvailable || rs.MemoryBytes != 2<<30 {
+		t.Errorf("memory = %+v, want available 2GiB", rs)
+	}
+	if rs.MemoryPctState != MetricUnavailable || rs.MemoryPercent != 0 {
+		t.Errorf("memory percent = %.2f/%s, want unavailable without a limit", rs.MemoryPercent, rs.MemoryPctState)
+	}
+	if rs.HostMemState != MetricAvailable || rs.HostMemoryPct != 25 {
+		t.Errorf("host memory = %.2f/%s, want available 25 percent of 8GiB", rs.HostMemoryPct, rs.HostMemState)
+	}
+	if !snap.Metrics.Missing.Has(deploy.MissingMemory) {
+		t.Errorf("autoscaling memory should be missing without a limit: %+v", snap.Metrics)
+	}
+}
+
+func TestSamplerProcessExited(t *testing.T) {
+	r := &fakeReader{dead: map[int]bool{102: true}}
+	s, _ := newTestSampler(t, "api", nil, r)
+	snap := s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 102, Status: "running"}})
+	rs := snap.Replicas[0]
+	if rs.ProcessStatus != "exited" {
+		t.Errorf("process status = %q, want exited", rs.ProcessStatus)
+	}
+	for name, state := range map[string]MetricState{
+		"cpu": rs.CPUState, "memory": rs.MemoryState, "memory percent": rs.MemoryPctState, "host memory": rs.HostMemState,
+	} {
+		if state != MetricProcessExited {
+			t.Errorf("%s state = %s, want process_exited", name, state)
+		}
+	}
+	if !snap.Metrics.Missing.Has(deploy.MissingCPU) || !snap.Metrics.Missing.Has(deploy.MissingMemory) {
+		t.Errorf("exited replica should flag both dimensions missing: %+v", snap.Metrics)
+	}
+}
+
+func TestSamplerStaleThenUnavailable(t *testing.T) {
+	r := &fakeReader{busy: map[int]float64{101: 5.0}, rss: map[int]uint64{101: 1 << 30}, errs: map[int]bool{}}
+	s, base := newTestSampler(t, "api", nil, r)
+	s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}})
+	*base = base.Add(10 * time.Second)
+	s.now = func() time.Time { return *base }
+	s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}})
+
+	r.errs[101] = true
+	*base = base.Add(10 * time.Second)
+	s.now = func() time.Time { return *base }
+	rs := s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}}).Replicas[0]
+	if rs.CPUState != MetricStale || rs.MemoryState != MetricStale {
+		t.Errorf("within freshness = cpu %s, memory %s, want stale", rs.CPUState, rs.MemoryState)
+	}
+	if rs.MemoryBytes != 1<<30 {
+		t.Errorf("stale memory = %d, want last value", rs.MemoryBytes)
+	}
+
+	*base = base.Add(2 * DefaultFreshnessWindow)
+	s.now = func() time.Time { return *base }
+	rs = s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}}).Replicas[0]
+	if rs.CPUState != MetricUnavailable || rs.MemoryState != MetricUnavailable {
+		t.Errorf("past freshness = cpu %s, memory %s, want unavailable", rs.CPUState, rs.MemoryState)
+	}
+	if rs.MemoryBytes != 0 {
+		t.Errorf("unavailable memory = %d, want no value", rs.MemoryBytes)
+	}
+
+	r.errs[101] = false
+	*base = base.Add(10 * time.Second)
+	s.now = func() time.Time { return *base }
+	rs = s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}}).Replicas[0]
+	if rs.CPUState != MetricInitializing {
+		t.Errorf("CPU after a read failure = %s, want initializing", rs.CPUState)
+	}
+	*base = base.Add(10 * time.Second)
+	s.now = func() time.Time { return *base }
+	rs = s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}}).Replicas[0]
+	if rs.CPUState != MetricAvailable || rs.CPUPercent != 0 {
+		t.Errorf("CPU after recovery = %.2f/%s, want 0/available", rs.CPUPercent, rs.CPUState)
+	}
+}
+
+func TestReplicaRefsDeterministicSlotOrder(t *testing.T) {
+	state := &deploy.DeployState{Replicas: map[string]*deploy.Instance{
+		"10": {PID: 10, Status: "running"},
+		"2":  {PID: 2, Status: "running"},
+		"1":  {PID: 1, Status: "stopped"},
+	}}
+	refs := ReplicaRefs(state)
+	if len(refs) != 3 || refs[0].Key != "1" || refs[1].Key != "2" || refs[2].Key != "10" {
+		t.Errorf("refs = %+v, want numeric slot order", refs)
+	}
+	if ReplicaRefs(nil) != nil {
+		t.Errorf("nil state should yield nil refs")
 	}
 }

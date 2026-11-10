@@ -1,9 +1,11 @@
 package monitor
 
 import (
+	"sync"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
+	"github.com/abdorrahmani/phelix/internal/autoscale"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/logs"
@@ -12,14 +14,19 @@ import (
 	"github.com/abdorrahmani/phelix/internal/server"
 )
 
-// appMetricsCollector Metrics collector implementation
-type appMetricsCollector struct{}
+// appMetricsCollector Metrics collector implementation. samplers keeps one
+// per-app sampler alive so CPU deltas survive between monitoring ticks; the
+// mutex guards that map only.
+type appMetricsCollector struct {
+	mu       sync.Mutex
+	samplers map[string]*autoscale.Sampler
+}
 
 // NewMetricsCollector returns the default MetricsCollector implementation,
 // backed by the app/server/logs packages. It is transport-agnostic and can
 // be reused by any monitoring transport (gRPC today, previously WebSocket).
 func NewMetricsCollector() MetricsCollector {
-	return &appMetricsCollector{}
+	return &appMetricsCollector{samplers: make(map[string]*autoscale.Sampler)}
 }
 
 func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
@@ -73,6 +80,71 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 		})
 	}
 	return metrics
+}
+
+// CollectReplicaMetrics samples every watched app's recorded instances. It
+// uses the same sampler as autoscaling, so the CPU definition and the memory
+// limit resolution are identical; it never depends on autoscaling being
+// enabled.
+func (c *appMetricsCollector) CollectReplicaMetrics() []ReplicaMetricsSnapshot {
+	var snapshots []ReplicaMetricsSnapshot
+	serverID := server.GetServerID()
+	for _, appInfo := range app.Manager.ListApplications() {
+		if !appInfo.Watching {
+			continue
+		}
+		state, err := deploy.Load(appInfo.Name)
+		if err != nil || state == nil {
+			continue
+		}
+		refs := autoscale.ResourceRefs(state)
+		if len(refs) == 0 {
+			continue
+		}
+		limit, _ := appInfo.Resources.Limits()
+		sampler := c.samplerFor(appInfo.Name)
+		sampler.SetMemoryLimit(limit.MemoryBytes)
+		sampler.SetFreshnessWindow(autoscale.DefaultFreshnessWindow)
+		samples := sampler.CollectResources(refs)
+		replicas := make([]ReplicaMetrics, 0, len(samples))
+		for _, s := range samples {
+			replicas = append(replicas, ReplicaMetrics{
+				Replica:          s.Key,
+				PID:              s.PID,
+				ProcessStatus:    s.ProcessStatus,
+				CPUPercent:       s.CPUPercent,
+				CPUState:         s.CPUState,
+				MemoryBytes:      s.MemoryBytes,
+				MemoryState:      s.MemoryState,
+				MemoryLimitBytes: s.MemoryLimit,
+				MemoryPercent:    s.MemoryPercent,
+				MemoryPctState:   s.MemoryPctState,
+				HostMemoryPct:    s.HostMemoryPct,
+				HostMemState:     s.HostMemState,
+				CollectedAt:      s.At,
+				Error:            s.Error,
+			})
+		}
+		snapshots = append(snapshots, ReplicaMetricsSnapshot{
+			AppID:       appInfo.ID,
+			AppName:     appInfo.Name,
+			ServerID:    serverID,
+			Replicas:    replicas,
+			CollectedAt: samples[0].At,
+		})
+	}
+	return snapshots
+}
+
+func (c *appMetricsCollector) samplerFor(appName string) *autoscale.Sampler {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sampler := c.samplers[appName]
+	if sampler == nil {
+		sampler = autoscale.NewSampler(appName, nil)
+		c.samplers[appName] = sampler
+	}
+	return sampler
 }
 
 func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
