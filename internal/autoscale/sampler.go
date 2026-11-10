@@ -448,7 +448,6 @@ func (s *Sampler) collectResourcesLocked(now time.Time, replicas []ReplicaRef) (
 				rs.CPUState = MetricInitializing
 			}
 		} else {
-			s.cpuPrev[r.PID] = procSample{}
 			rs.CPUState = fallbackState(last.hasCPU, last.cpuAt, now, s.freshness)
 			if rs.CPUState == MetricStale {
 				rs.CPUPercent = last.cpu

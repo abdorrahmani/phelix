@@ -331,6 +331,20 @@ func TestSamplerStaleThenUnavailable(t *testing.T) {
 	if rs.MemoryBytes != 0 {
 		t.Errorf("unavailable memory = %d, want no value", rs.MemoryBytes)
 	}
+
+	r.errs[101] = false
+	*base = base.Add(10 * time.Second)
+	s.now = func() time.Time { return *base }
+	rs = s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}}).Replicas[0]
+	if rs.CPUState != MetricInitializing {
+		t.Errorf("CPU after a read failure = %s, want initializing", rs.CPUState)
+	}
+	*base = base.Add(10 * time.Second)
+	s.now = func() time.Time { return *base }
+	rs = s.Collect(context.Background(), []ReplicaRef{{Key: "0", PID: 101}}).Replicas[0]
+	if rs.CPUState != MetricAvailable || rs.CPUPercent != 0 {
+		t.Errorf("CPU after recovery = %.2f/%s, want 0/available", rs.CPUPercent, rs.CPUState)
+	}
 }
 
 func TestReplicaRefsDeterministicSlotOrder(t *testing.T) {
