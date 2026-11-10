@@ -191,6 +191,7 @@ func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) (deploy.ScaleD
 	if !ok {
 		return deploy.ScaleDecision{}, nil
 	}
+	RecordEvaluation(ref.Name, c.Now())
 	metrics := c.sample(evalCtx, st, ref, state)
 	decision := st.engine.Evaluate(metrics, current)
 	if decision.Direction == deploy.ScaleNone {
@@ -211,6 +212,7 @@ func (c *Controller) evaluateApp(ctx context.Context, ref AppRef) (deploy.ScaleD
 	switch {
 	case execErr == nil:
 		st.engine.ConfirmExecution(now)
+		RecordScaleSuccess(ref.Name, now)
 		c.record(ref.Name, HistoryExecuted, decision, "")
 		if record != nil {
 			_ = record.MarkSucceeded(&ops.Result{Strategy: string(state.Mode)})
@@ -317,6 +319,7 @@ func (c *Controller) record(app, kind string, d deploy.ScaleDecision, execErr st
 		Error:     execErr,
 	}
 	_ = AppendHistoryRecord(app, rec)
+	RecordDecision(app, rec)
 }
 
 func directionName(d deploy.ScaleDirection) string {

@@ -302,6 +302,28 @@ func parseSlot(key string) (int, error) {
 	return strconv.Atoi(key)
 }
 
+// ResourceRefs returns the instances whose resources should be presented for
+// an app. Rolling and worker apps use their recorded replicas; a blue-green
+// app has slots instead, and those are reported under their slot names.
+func ResourceRefs(state *deploy.DeployState) []ReplicaRef {
+	if state == nil {
+		return nil
+	}
+	if len(state.Replicas) > 0 {
+		return ReplicaRefs(state)
+	}
+	if state.Mode != deploy.ModeBlueGreen {
+		return nil
+	}
+	refs := make([]ReplicaRef, 0, len(state.Slots))
+	for _, slot := range []string{deploy.SlotBlue, deploy.SlotGreen} {
+		if inst := state.Slots[slot]; inst != nil {
+			refs = append(refs, ReplicaRef{Key: slot, PID: inst.PID, Status: inst.Status})
+		}
+	}
+	return refs
+}
+
 // Collect takes one observation of the given live replicas and the app's
 // proxy counters. Replicas whose process could not be read are skipped from
 // the engine aggregate and flag the corresponding dimension missing at the
@@ -345,6 +367,17 @@ func (s *Sampler) CollectResources(replicas []ReplicaRef) []ReplicaSample {
 	defer s.mu.Unlock()
 	samples, _ := s.collectResourcesLocked(s.now(), replicas)
 	return samples
+}
+
+// SampleResources takes two resource-only observations separated by interval
+// so a one-shot caller gets a real CPU delta instead of the initializing
+// state. Periodic callers keep using CollectResources.
+func (s *Sampler) SampleResources(replicas []ReplicaRef, interval time.Duration) []ReplicaSample {
+	s.CollectResources(replicas)
+	if interval > 0 {
+		time.Sleep(interval)
+	}
+	return s.CollectResources(replicas)
 }
 
 type resourceAggregate struct {
