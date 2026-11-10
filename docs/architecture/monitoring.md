@@ -18,6 +18,12 @@ backoff.
 - The daemon sends app info, resource metrics, and logs of every **watched** app
   roughly every 2s. Log entries are also batched into `MonitorLogBatch` with a
   200 ms flush and a bounded queue. See [Logging pipeline](logging.md).
+- `ReplicaMetricsSnapshot` rides the same tick for every watched app with a
+  recorded deploy state. It carries one `ReplicaResourceMetrics` per rolling or
+  worker replica (blue-green slots use their slot name), with CPU normalised to
+  one logical core, memory relative to the configured limit, host-relative
+  memory separately, and a validity state per dimension. Collection uses the
+  autoscaling sampler but does not depend on autoscaling being enabled.
 - Request traffic for every watched app enrolled with the proxy daemon
   (`AppTrafficStat`: request/error counts, p95 latency, in-flight requests,
   per-backend share) rides the same 2s tick, read from the proxy control socket

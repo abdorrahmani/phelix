@@ -80,11 +80,18 @@ remains a pure metrics-in / decision-out function in
 `internal/deploy/autoscale.go`.
 
 - **Sampler** (`internal/autoscale/sampler.go`): per-replica CPU (interval
-  deltas over gopsutil process times), per-replica memory (RSS over host
-  memory), and windowed proxy traffic (RPS, error rate, P95, P99) by diffing
-  the cumulative `BackendStat` counters with negative clamping after proxy
-  restarts. Missing replicas flag their dimension missing; the first traffic
-  window only seeds the baseline.
+  deltas over gopsutil process times, normalised to one logical core), per-replica
+  memory (RSS relative to the configured `resources.memory` limit; host-relative
+  usage is reported separately), and windowed proxy traffic (RPS, error rate,
+  P95, P99) by diffing the cumulative `BackendStat` counters with negative
+  clamping after proxy restarts. Every dimension carries a validity state
+  (`available`, `initializing`, `unavailable`, `stale`, `process_exited`), so
+  missing data is never rendered as zero. Missing replicas flag their dimension
+  missing; the first traffic window only seeds the baseline.
+- **Per-replica visibility**: the same sampler feeds `phelix status`, `phelix
+  autoscale status`, and the monitor stream's `ReplicaMetricsSnapshot`, so the
+  CLI and the dashboard see one definition. Collection does not depend on
+  autoscaling being enabled.
 - **Decision engine**: scale up when ANY enabled metric breaches its upper
   threshold, scale down when EVERY enabled metric is at or below its lower
   threshold; up wins conflicts. Per-direction evaluation windows and cooldowns,
@@ -93,7 +100,8 @@ remains a pure metrics-in / decision-out function in
   so a failed execution never consumes its cooldown. Every decision moves the
   desired count by exactly one replica; min/max clamp.
 - **Execution**: worker decisions dispatch to `deploy.WorkerScale` (which takes
-  the app deploy lock itself); rolling decisions go through the rolling scale
+  the app deploy lock itself and refuses to scale while a worker rollout is in
+  flight); rolling decisions go through the rolling scale
   executor (`internal/deploy/scale_exec.go`), which takes the same lock, loads
   state, rejects stale decisions and rollouts in flight, launches the active
   version's artifact (no rebuild, no new version), health-gates the new

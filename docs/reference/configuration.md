@@ -310,7 +310,7 @@ deploy:
       cpu:
         scale_up: 65
         scale_down: 30
-      memory:                  # percent of host memory
+      memory:                  # percent of the app's resources.memory limit
         scale_up: 80
         scale_down: 40
       requests_per_second:     # proxy request rate
@@ -340,6 +340,13 @@ and block scale-down. Traffic metrics apply only when a proxy is enrolled.
 Stale samples (older than twice the interval) produce no decision. Every
 decision and outcome lands in the app's `autoscale_history.jsonl` and in an
 `ops` record.
+
+CPU is measured per logical core: a replica using two full cores reports 200
+percent. Memory percent is relative to that replica's configured
+`resources.memory` limit, not the host's total RAM. Without a configured
+memory limit the memory percentage is unavailable and does not participate in
+decisions; host-relative usage is reported separately in monitoring and status
+output.
 
 Manage it with `phelix autoscale status|enable|disable|pause|resume|evaluate|history`.
 The runtime pause survives monitor restarts; enable/disable edits phelix.yaml.
