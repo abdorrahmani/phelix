@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/processex"
 )
 
@@ -393,5 +394,26 @@ func TestWorkerLogPath(t *testing.T) {
 	want := filepath.Join("/home/u", ".phelix", "logs", "deploy_app_42_replica-2.log")
 	if got != want {
 		t.Errorf("workerLogPath = %q, want %q", got, want)
+	}
+}
+
+func TestWorkerScaleRefusesRolloutInFlight(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	app := "rollout-in-flight"
+	state := &DeployState{
+		AppName: app,
+		Mode:    ModeWorker,
+		Replicas: map[string]*Instance{
+			"0": {Slot: "0", Status: "stopped"},
+		},
+		WorkerRollout: &WorkerRollout{Status: WorkerRolloutRunning, Version: 2},
+	}
+	if err := Store(state); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	_, _, err := WorkerScale(context.Background(), app, 2, mustSignal(t, "SIGTERM"), time.Second)
+	if phelixerr.CodeOf(err) != phelixerr.CodeDeployFailed {
+		t.Fatalf("WorkerScale during rollout = %v, want DEPLOY_FAILED", err)
 	}
 }

@@ -247,6 +247,10 @@ func WorkerScale(ctx context.Context, appName string, desired int, sig os.Signal
 	if state.Mode != ModeWorker {
 		return 0, 0, phelixerr.Newf(phelixerr.CodeConfiguration, "%s is not a worker app (mode %s)", appName, state.Mode)
 	}
+	if state.WorkerRollout != nil && state.WorkerRollout.Status == WorkerRolloutRunning {
+		return 0, 0, phelixerr.Newf(phelixerr.CodeDeployFailed,
+			"worker: %s has a rollout in flight; scaling is deferred", appName)
+	}
 	from = len(state.Replicas)
 	if desired < 1 {
 		return from, from, phelixerr.Newf(phelixerr.CodeInvalidArgument, "worker: --replicas must be >= 1, got %d", desired)

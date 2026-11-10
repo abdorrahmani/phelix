@@ -154,6 +154,34 @@ func TestMonitorEvent_RoundTrip(t *testing.T) {
 		},
 		{
 			ServerId:  "srv-1",
+			Timestamp: 7500,
+			Payload: &MonitorEvent_ReplicaMetrics{
+				ReplicaMetrics: &ReplicaMetricsSnapshot{
+					AppId:       "app-1",
+					ServerId:    "srv-1",
+					AppName:     "myapp",
+					CollectedAt: 7500,
+					Replicas: []*ReplicaResourceMetrics{{
+						Replica:            "0",
+						Pid:                123,
+						ProcessStatus:      "running",
+						CpuPercent:         12.5,
+						CpuState:           ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE,
+						MemoryBytes:        1024,
+						MemoryState:        ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE,
+						MemoryLimitBytes:   2048,
+						MemoryPercent:      50,
+						MemoryPercentState: ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE,
+						HostMemoryPercent:  0.1,
+						HostMemoryState:    ReplicaMetricValidity_REPLICA_METRIC_STALE,
+						CollectedAt:        7500,
+						Error:              "transient read failure",
+					}},
+				},
+			},
+		},
+		{
+			ServerId:  "srv-1",
 			Timestamp: 7000,
 			Payload: &MonitorEvent_Pong{
 				Pong: &Pong{Id: "ping-1", Timestamp: 7000},
