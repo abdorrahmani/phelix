@@ -181,12 +181,11 @@ message AppTrafficBackend {
 // Zero is only reported as available when the process really used no CPU or
 // memory; missing data keeps its own state instead of reading as zero.
 enum ReplicaMetricValidity {
-  REPLICA_METRIC_VALIDITY_UNSPECIFIED = 0;
-  REPLICA_METRIC_AVAILABLE = 1;
-  REPLICA_METRIC_INITIALIZING = 2;
-  REPLICA_METRIC_UNAVAILABLE = 3;
-  REPLICA_METRIC_STALE = 4;
-  REPLICA_METRIC_PROCESS_EXITED = 5;
+  REPLICA_METRIC_AVAILABLE = 0;
+  REPLICA_METRIC_INITIALIZING = 1;
+  REPLICA_METRIC_UNAVAILABLE = 2;
+  REPLICA_METRIC_STALE = 3;
+  REPLICA_METRIC_PROCESS_EXITED = 4;
 }
 
 // ReplicaResourceMetrics is one instance's CPU and memory observation.
@@ -223,9 +222,9 @@ message ReplicaMetricsSnapshot {
   string app_id = 1;
   string server_id = 2;
   string app_name = 3;
-  repeated ReplicaResourceMetrics replicas = 4;
   // collected_at is the observation time in unix milliseconds.
-  int64 collected_at = 5;
+  int64 collected_at = 4;
+  repeated ReplicaResourceMetrics replicas = 5;
 }
 
 // ApplicationInfo mirrors monitor.AppDetails. Sent on every monitoring tick,

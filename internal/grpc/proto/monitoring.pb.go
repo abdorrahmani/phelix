@@ -27,31 +27,28 @@ const (
 type ReplicaMetricValidity int32
 
 const (
-	ReplicaMetricValidity_REPLICA_METRIC_VALIDITY_UNSPECIFIED ReplicaMetricValidity = 0
-	ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE            ReplicaMetricValidity = 1
-	ReplicaMetricValidity_REPLICA_METRIC_INITIALIZING         ReplicaMetricValidity = 2
-	ReplicaMetricValidity_REPLICA_METRIC_UNAVAILABLE          ReplicaMetricValidity = 3
-	ReplicaMetricValidity_REPLICA_METRIC_STALE                ReplicaMetricValidity = 4
-	ReplicaMetricValidity_REPLICA_METRIC_PROCESS_EXITED       ReplicaMetricValidity = 5
+	ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE      ReplicaMetricValidity = 0
+	ReplicaMetricValidity_REPLICA_METRIC_INITIALIZING   ReplicaMetricValidity = 1
+	ReplicaMetricValidity_REPLICA_METRIC_UNAVAILABLE    ReplicaMetricValidity = 2
+	ReplicaMetricValidity_REPLICA_METRIC_STALE          ReplicaMetricValidity = 3
+	ReplicaMetricValidity_REPLICA_METRIC_PROCESS_EXITED ReplicaMetricValidity = 4
 )
 
 // Enum value maps for ReplicaMetricValidity.
 var (
 	ReplicaMetricValidity_name = map[int32]string{
-		0: "REPLICA_METRIC_VALIDITY_UNSPECIFIED",
-		1: "REPLICA_METRIC_AVAILABLE",
-		2: "REPLICA_METRIC_INITIALIZING",
-		3: "REPLICA_METRIC_UNAVAILABLE",
-		4: "REPLICA_METRIC_STALE",
-		5: "REPLICA_METRIC_PROCESS_EXITED",
+		0: "REPLICA_METRIC_AVAILABLE",
+		1: "REPLICA_METRIC_INITIALIZING",
+		2: "REPLICA_METRIC_UNAVAILABLE",
+		3: "REPLICA_METRIC_STALE",
+		4: "REPLICA_METRIC_PROCESS_EXITED",
 	}
 	ReplicaMetricValidity_value = map[string]int32{
-		"REPLICA_METRIC_VALIDITY_UNSPECIFIED": 0,
-		"REPLICA_METRIC_AVAILABLE":            1,
-		"REPLICA_METRIC_INITIALIZING":         2,
-		"REPLICA_METRIC_UNAVAILABLE":          3,
-		"REPLICA_METRIC_STALE":                4,
-		"REPLICA_METRIC_PROCESS_EXITED":       5,
+		"REPLICA_METRIC_AVAILABLE":      0,
+		"REPLICA_METRIC_INITIALIZING":   1,
+		"REPLICA_METRIC_UNAVAILABLE":    2,
+		"REPLICA_METRIC_STALE":          3,
+		"REPLICA_METRIC_PROCESS_EXITED": 4,
 	}
 )
 
@@ -1275,7 +1272,7 @@ func (x *ReplicaResourceMetrics) GetCpuState() ReplicaMetricValidity {
 	if x != nil {
 		return x.CpuState
 	}
-	return ReplicaMetricValidity_REPLICA_METRIC_VALIDITY_UNSPECIFIED
+	return ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE
 }
 
 func (x *ReplicaResourceMetrics) GetMemoryBytes() uint64 {
@@ -1289,7 +1286,7 @@ func (x *ReplicaResourceMetrics) GetMemoryState() ReplicaMetricValidity {
 	if x != nil {
 		return x.MemoryState
 	}
-	return ReplicaMetricValidity_REPLICA_METRIC_VALIDITY_UNSPECIFIED
+	return ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE
 }
 
 func (x *ReplicaResourceMetrics) GetMemoryLimitBytes() uint64 {
@@ -1310,7 +1307,7 @@ func (x *ReplicaResourceMetrics) GetMemoryPercentState() ReplicaMetricValidity {
 	if x != nil {
 		return x.MemoryPercentState
 	}
-	return ReplicaMetricValidity_REPLICA_METRIC_VALIDITY_UNSPECIFIED
+	return ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE
 }
 
 func (x *ReplicaResourceMetrics) GetHostMemoryPercent() float64 {
@@ -1324,7 +1321,7 @@ func (x *ReplicaResourceMetrics) GetHostMemoryState() ReplicaMetricValidity {
 	if x != nil {
 		return x.HostMemoryState
 	}
-	return ReplicaMetricValidity_REPLICA_METRIC_VALIDITY_UNSPECIFIED
+	return ReplicaMetricValidity_REPLICA_METRIC_AVAILABLE
 }
 
 func (x *ReplicaResourceMetrics) GetCollectedAt() int64 {
@@ -1345,13 +1342,13 @@ func (x *ReplicaResourceMetrics) GetError() string {
 // It is sent independently of autoscaling, so the backend can show replica
 // resources even when autoscaling is disabled.
 type ReplicaMetricsSnapshot struct {
-	state    protoimpl.MessageState    `protogen:"open.v1"`
-	AppId    string                    `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	ServerId string                    `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
-	AppName  string                    `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	Replicas []*ReplicaResourceMetrics `protobuf:"bytes,4,rep,name=replicas,proto3" json:"replicas,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	AppId    string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	ServerId string                 `protobuf:"bytes,2,opt,name=server_id,json=serverId,proto3" json:"server_id,omitempty"`
+	AppName  string                 `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
 	// collected_at is the observation time in unix milliseconds.
-	CollectedAt   int64 `protobuf:"varint,5,opt,name=collected_at,json=collectedAt,proto3" json:"collected_at,omitempty"`
+	CollectedAt   int64                     `protobuf:"varint,4,opt,name=collected_at,json=collectedAt,proto3" json:"collected_at,omitempty"`
+	Replicas      []*ReplicaResourceMetrics `protobuf:"bytes,5,rep,name=replicas,proto3" json:"replicas,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1407,18 +1404,18 @@ func (x *ReplicaMetricsSnapshot) GetAppName() string {
 	return ""
 }
 
-func (x *ReplicaMetricsSnapshot) GetReplicas() []*ReplicaResourceMetrics {
-	if x != nil {
-		return x.Replicas
-	}
-	return nil
-}
-
 func (x *ReplicaMetricsSnapshot) GetCollectedAt() int64 {
 	if x != nil {
 		return x.CollectedAt
 	}
 	return 0
+}
+
+func (x *ReplicaMetricsSnapshot) GetReplicas() []*ReplicaResourceMetrics {
+	if x != nil {
+		return x.Replicas
+	}
+	return nil
 }
 
 // ApplicationInfo mirrors monitor.AppDetails. Sent on every monitoring tick,
@@ -4157,9 +4154,9 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x16ReplicaMetricsSnapshot\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x19\n" +
-	"\bapp_name\x18\x03 \x01(\tR\aappName\x12:\n" +
-	"\breplicas\x18\x04 \x03(\v2\x1e.phelix.ReplicaResourceMetricsR\breplicas\x12!\n" +
-	"\fcollected_at\x18\x05 \x01(\x03R\vcollectedAt\"\x8b\x04\n" +
+	"\bapp_name\x18\x03 \x01(\tR\aappName\x12!\n" +
+	"\fcollected_at\x18\x04 \x01(\x03R\vcollectedAt\x12:\n" +
+	"\breplicas\x18\x05 \x03(\v2\x1e.phelix.ReplicaResourceMetricsR\breplicas\"\x8b\x04\n" +
 	"\x0fApplicationInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tserver_id\x18\x02 \x01(\tR\bserverId\x12\x12\n" +
@@ -4426,14 +4423,13 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x19\n" +
-	"\bapp_name\x18\x03 \x01(\tR\aappName*\xdc\x01\n" +
-	"\x15ReplicaMetricValidity\x12'\n" +
-	"#REPLICA_METRIC_VALIDITY_UNSPECIFIED\x10\x00\x12\x1c\n" +
-	"\x18REPLICA_METRIC_AVAILABLE\x10\x01\x12\x1f\n" +
-	"\x1bREPLICA_METRIC_INITIALIZING\x10\x02\x12\x1e\n" +
-	"\x1aREPLICA_METRIC_UNAVAILABLE\x10\x03\x12\x18\n" +
-	"\x14REPLICA_METRIC_STALE\x10\x04\x12!\n" +
-	"\x1dREPLICA_METRIC_PROCESS_EXITED\x10\x05*n\n" +
+	"\bapp_name\x18\x03 \x01(\tR\aappName*\xb3\x01\n" +
+	"\x15ReplicaMetricValidity\x12\x1c\n" +
+	"\x18REPLICA_METRIC_AVAILABLE\x10\x00\x12\x1f\n" +
+	"\x1bREPLICA_METRIC_INITIALIZING\x10\x01\x12\x1e\n" +
+	"\x1aREPLICA_METRIC_UNAVAILABLE\x10\x02\x12\x18\n" +
+	"\x14REPLICA_METRIC_STALE\x10\x03\x12!\n" +
+	"\x1dREPLICA_METRIC_PROCESS_EXITED\x10\x04*n\n" +
 	"\tLogSource\x12\x1a\n" +
 	"\x16LOG_SOURCE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16LOG_SOURCE_APPLICATION\x10\x01\x12\x13\n" +
