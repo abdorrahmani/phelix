@@ -2369,7 +2369,12 @@ type MonitorCommandRequest struct {
 	Replica string `protobuf:"bytes,14,opt,name=replica,proto3" json:"replica,omitempty"`
 	// Security remote-management commands (security_*). Present for every
 	// security_* command type; ignored otherwise.
-	Security      *SecurityCommandOptions `protobuf:"bytes,15,opt,name=security,proto3" json:"security,omitempty"`
+	Security *SecurityCommandOptions `protobuf:"bytes,15,opt,name=security,proto3" json:"security,omitempty"`
+	// Remote job management options, carried by job_* commands only. The
+	// agent reads and executes the SAME configured jobs the local CLI uses.
+	// Every field is command-scoped and rejected when set on another job
+	// command. See job.proto.
+	Job           *JobOptions `protobuf:"bytes,16,opt,name=job,proto3" json:"job,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2509,6 +2514,13 @@ func (x *MonitorCommandRequest) GetSecurity() *SecurityCommandOptions {
 	return nil
 }
 
+func (x *MonitorCommandRequest) GetJob() *JobOptions {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
 // sent back to the backend after a command finishes executing.
 type MonitorCommandResult struct {
@@ -2594,8 +2606,24 @@ type MonitorCommandResult struct {
 	// the counts; these carry the engine's verdict.
 	AutoscaleDirection string `protobuf:"bytes,29,opt,name=autoscale_direction,json=autoscaleDirection,proto3" json:"autoscale_direction,omitempty"`
 	AutoscaleReason    string `protobuf:"bytes,30,opt,name=autoscale_reason,json=autoscaleReason,proto3" json:"autoscale_reason,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Remote job management results (additive; set on job_* command results,
+	// empty/absent otherwise. Older backends ignore them).
+	//
+	// jobs is the job_list answer and the cluster is never mixed with
+	// services or workers.
+	Jobs []*JobDefinition `protobuf:"bytes,31,rep,name=jobs,proto3" json:"jobs,omitempty"`
+	// execution is the job_run answer describing the execution that was
+	// accepted. A long-running job reports its final state separately through
+	// job history and lifecycle events.
+	Execution *JobExecutionRecord `protobuf:"bytes,32,opt,name=execution,proto3" json:"execution,omitempty"`
+	// executions is the job_history answer, newest first and bounded by the
+	// request's limit.
+	Executions []*JobExecutionRecord `protobuf:"bytes,33,rep,name=executions,proto3" json:"executions,omitempty"`
+	// job_log is the job_logs answer, bounded by the request's limit and
+	// offset-paged through next_offset.
+	JobLog        *JobLogChunk `protobuf:"bytes,34,opt,name=job_log,json=jobLog,proto3" json:"job_log,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MonitorCommandResult) Reset() {
@@ -2836,6 +2864,34 @@ func (x *MonitorCommandResult) GetAutoscaleReason() string {
 		return x.AutoscaleReason
 	}
 	return ""
+}
+
+func (x *MonitorCommandResult) GetJobs() []*JobDefinition {
+	if x != nil {
+		return x.Jobs
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetExecution() *JobExecutionRecord {
+	if x != nil {
+		return x.Execution
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetExecutions() []*JobExecutionRecord {
+	if x != nil {
+		return x.Executions
+	}
+	return nil
+}
+
+func (x *MonitorCommandResult) GetJobLog() *JobLogChunk {
+	if x != nil {
+		return x.JobLog
+	}
+	return nil
 }
 
 // AutoscaleStatusState is the autoscale_status answer: what the agent's
@@ -3247,6 +3303,7 @@ type MonitorEvent struct {
 	//	*MonitorEvent_SecurityScan
 	//	*MonitorEvent_AgentStatus
 	//	*MonitorEvent_ReplicaMetrics
+	//	*MonitorEvent_JobEvent
 	Payload       isMonitorEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3447,6 +3504,15 @@ func (x *MonitorEvent) GetReplicaMetrics() *ReplicaMetricsSnapshot {
 	return nil
 }
 
+func (x *MonitorEvent) GetJobEvent() *JobLifecycleEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*MonitorEvent_JobEvent); ok {
+			return x.JobEvent
+		}
+	}
+	return nil
+}
+
 type isMonitorEvent_Payload interface {
 	isMonitorEvent_Payload()
 }
@@ -3551,6 +3617,13 @@ type MonitorEvent_ReplicaMetrics struct {
 	ReplicaMetrics *ReplicaMetricsSnapshot `protobuf:"bytes,25,opt,name=replica_metrics,json=replicaMetrics,proto3,oneof"`
 }
 
+type MonitorEvent_JobEvent struct {
+	// job_event is one job lifecycle transition emitted by the existing job
+	// executor or scheduler. Observations only: the durable execution record
+	// remains the source of truth and is re-read with job_history.
+	JobEvent *JobLifecycleEvent `protobuf:"bytes,26,opt,name=job_event,json=jobEvent,proto3,oneof"`
+}
+
 func (*MonitorEvent_ServerInfo) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_ServerMetrics) isMonitorEvent_Payload() {}
@@ -3582,6 +3655,8 @@ func (*MonitorEvent_SecurityScan) isMonitorEvent_Payload() {}
 func (*MonitorEvent_AgentStatus) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_ReplicaMetrics) isMonitorEvent_Payload() {}
+
+func (*MonitorEvent_JobEvent) isMonitorEvent_Payload() {}
 
 // MonitorControl is a single message sent from the backend to the CLI
 // monitor daemon over the same long-lived MonitorStream. It mirrors the old
@@ -4024,7 +4099,7 @@ var File_internal_grpc_proto_monitoring_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\n" +
-	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\"internal/grpc/proto/security.proto\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\x1a internal/grpc/proto/matrix.proto\x1a!internal/grpc/proto/webhook.proto\x1a%internal/grpc/proto/buildreport.proto\"\xd1\x05\n" +
+	"$internal/grpc/proto/monitoring.proto\x12\x06phelix\x1a\"internal/grpc/proto/security.proto\x1a\x1einternal/grpc/proto/ping.proto\x1a$internal/grpc/proto/deployment.proto\x1a internal/grpc/proto/health.proto\x1a internal/grpc/proto/matrix.proto\x1a!internal/grpc/proto/webhook.proto\x1a%internal/grpc/proto/buildreport.proto\x1a\x1dinternal/grpc/proto/job.proto\"\xd1\x05\n" +
 	"\n" +
 	"ServerInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
@@ -4256,7 +4331,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
 	"\x0fMonitorLogBatch\x121\n" +
 	"\aentries\x18\x01 \x03(\v2\x17.phelix.MonitorLogEntryR\aentries\x12\x18\n" +
-	"\adropped\x18\x02 \x01(\x03R\adropped\"\x88\x04\n" +
+	"\adropped\x18\x02 \x01(\x03R\adropped\"\xae\x04\n" +
 	"\x15MonitorCommandRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x12\n" +
@@ -4274,7 +4349,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\awebhook\x18\v \x01(\v2\x16.phelix.WebhookOptionsR\awebhook\x12\x14\n" +
 	"\x05limit\x18\r \x01(\x05R\x05limit\x12\x18\n" +
 	"\areplica\x18\x0e \x01(\tR\areplica\x12:\n" +
-	"\bsecurity\x18\x0f \x01(\v2\x1e.phelix.SecurityCommandOptionsR\bsecurity\"\xcf\v\n" +
+	"\bsecurity\x18\x0f \x01(\v2\x1e.phelix.SecurityCommandOptionsR\bsecurity\x12$\n" +
+	"\x03job\x18\x10 \x01(\v2\x12.phelix.JobOptionsR\x03job\"\x9e\r\n" +
 	"\x14MonitorCommandResult\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
@@ -4311,7 +4387,13 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x18security_result_withheld\x18\x1b \x01(\bR\x16securityResultWithheld\x12=\n" +
 	"\x1bsecurity_consent_error_code\x18\x1c \x01(\tR\x18securityConsentErrorCode\x12/\n" +
 	"\x13autoscale_direction\x18\x1d \x01(\tR\x12autoscaleDirection\x12)\n" +
-	"\x10autoscale_reason\x18\x1e \x01(\tR\x0fautoscaleReason\"\xea\b\n" +
+	"\x10autoscale_reason\x18\x1e \x01(\tR\x0fautoscaleReason\x12)\n" +
+	"\x04jobs\x18\x1f \x03(\v2\x15.phelix.JobDefinitionR\x04jobs\x128\n" +
+	"\texecution\x18  \x01(\v2\x1a.phelix.JobExecutionRecordR\texecution\x12:\n" +
+	"\n" +
+	"executions\x18! \x03(\v2\x1a.phelix.JobExecutionRecordR\n" +
+	"executions\x12,\n" +
+	"\ajob_log\x18\" \x01(\v2\x13.phelix.JobLogChunkR\x06jobLog\"\xea\b\n" +
 	"\x14AutoscaleStatusState\x12\x10\n" +
 	"\x03app\x18\x01 \x01(\tR\x03app\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x1a\n" +
@@ -4357,7 +4439,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x04from\x18\x04 \x01(\x05R\x04from\x12\x0e\n" +
 	"\x02to\x18\x05 \x01(\x05R\x02to\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\x12\x14\n" +
-	"\x05error\x18\a \x01(\tR\x05error\"\x9e\b\n" +
+	"\x05error\x18\a \x01(\tR\x05error\"\xd8\b\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x125\n" +
@@ -4382,7 +4464,8 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\tlog_batch\x18\x16 \x01(\v2\x17.phelix.MonitorLogBatchH\x00R\blogBatch\x12C\n" +
 	"\rsecurity_scan\x18\x17 \x01(\v2\x1c.phelix.SecurityScanSnapshotH\x00R\fsecurityScan\x128\n" +
 	"\fagent_status\x18\x18 \x01(\v2\x13.phelix.AgentStatusH\x00R\vagentStatus\x12I\n" +
-	"\x0freplica_metrics\x18\x19 \x01(\v2\x1e.phelix.ReplicaMetricsSnapshotH\x00R\x0ereplicaMetricsB\t\n" +
+	"\x0freplica_metrics\x18\x19 \x01(\v2\x1e.phelix.ReplicaMetricsSnapshotH\x00R\x0ereplicaMetrics\x128\n" +
+	"\tjob_event\x18\x1a \x01(\v2\x19.phelix.JobLifecycleEventH\x00R\bjobEventB\t\n" +
 	"\apayload\"\xc7\x01\n" +
 	"\x0eMonitorControl\x129\n" +
 	"\acommand\x18\x01 \x01(\v2\x1d.phelix.MonitorCommandRequestH\x00R\acommand\x12\"\n" +
@@ -4489,23 +4572,28 @@ var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(*MatrixOptions)(nil),          // 31: phelix.MatrixOptions
 	(*WebhookOptions)(nil),         // 32: phelix.WebhookOptions
 	(*SecurityCommandOptions)(nil), // 33: phelix.SecurityCommandOptions
-	(*MatrixRunState)(nil),         // 34: phelix.MatrixRunState
-	(*MatrixRunSummary)(nil),       // 35: phelix.MatrixRunSummary
-	(*MatrixPlanPreview)(nil),      // 36: phelix.MatrixPlanPreview
-	(*MatrixDockerResult)(nil),     // 37: phelix.MatrixDockerResult
-	(*WebhookJob)(nil),             // 38: phelix.WebhookJob
-	(*WebhookConfigState)(nil),     // 39: phelix.WebhookConfigState
-	(*WebhookDelivery)(nil),        // 40: phelix.WebhookDelivery
-	(*SecurityScanRecord)(nil),     // 41: phelix.SecurityScanRecord
-	(*SecurityScanList)(nil),       // 42: phelix.SecurityScanList
-	(*SecurityConfigState)(nil),    // 43: phelix.SecurityConfigState
-	(*SecurityAdvisory)(nil),       // 44: phelix.SecurityAdvisory
-	(*Pong)(nil),                   // 45: phelix.Pong
-	(*DeploymentSnapshot)(nil),     // 46: phelix.DeploymentSnapshot
-	(*AppHealthSnapshot)(nil),      // 47: phelix.AppHealthSnapshot
-	(*SecurityScanSnapshot)(nil),   // 48: phelix.SecurityScanSnapshot
-	(*Ping)(nil),                   // 49: phelix.Ping
-	(*BuildReport)(nil),            // 50: phelix.BuildReport
+	(*JobOptions)(nil),             // 34: phelix.JobOptions
+	(*MatrixRunState)(nil),         // 35: phelix.MatrixRunState
+	(*MatrixRunSummary)(nil),       // 36: phelix.MatrixRunSummary
+	(*MatrixPlanPreview)(nil),      // 37: phelix.MatrixPlanPreview
+	(*MatrixDockerResult)(nil),     // 38: phelix.MatrixDockerResult
+	(*WebhookJob)(nil),             // 39: phelix.WebhookJob
+	(*WebhookConfigState)(nil),     // 40: phelix.WebhookConfigState
+	(*WebhookDelivery)(nil),        // 41: phelix.WebhookDelivery
+	(*SecurityScanRecord)(nil),     // 42: phelix.SecurityScanRecord
+	(*SecurityScanList)(nil),       // 43: phelix.SecurityScanList
+	(*SecurityConfigState)(nil),    // 44: phelix.SecurityConfigState
+	(*SecurityAdvisory)(nil),       // 45: phelix.SecurityAdvisory
+	(*JobDefinition)(nil),          // 46: phelix.JobDefinition
+	(*JobExecutionRecord)(nil),     // 47: phelix.JobExecutionRecord
+	(*JobLogChunk)(nil),            // 48: phelix.JobLogChunk
+	(*Pong)(nil),                   // 49: phelix.Pong
+	(*DeploymentSnapshot)(nil),     // 50: phelix.DeploymentSnapshot
+	(*AppHealthSnapshot)(nil),      // 51: phelix.AppHealthSnapshot
+	(*SecurityScanSnapshot)(nil),   // 52: phelix.SecurityScanSnapshot
+	(*JobLifecycleEvent)(nil),      // 53: phelix.JobLifecycleEvent
+	(*Ping)(nil),                   // 54: phelix.Ping
+	(*BuildReport)(nil),            // 55: phelix.BuildReport
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	4,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -4528,47 +4616,53 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	31, // 17: phelix.MonitorCommandRequest.matrix:type_name -> phelix.MatrixOptions
 	32, // 18: phelix.MonitorCommandRequest.webhook:type_name -> phelix.WebhookOptions
 	33, // 19: phelix.MonitorCommandRequest.security:type_name -> phelix.SecurityCommandOptions
-	34, // 20: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
-	35, // 21: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
-	36, // 22: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
-	37, // 23: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
-	38, // 24: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
-	39, // 25: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
-	40, // 26: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
-	41, // 27: phelix.MonitorCommandResult.security_scan_record:type_name -> phelix.SecurityScanRecord
-	42, // 28: phelix.MonitorCommandResult.security_scan_list:type_name -> phelix.SecurityScanList
-	43, // 29: phelix.MonitorCommandResult.security_config:type_name -> phelix.SecurityConfigState
-	44, // 30: phelix.MonitorCommandResult.security_advisory:type_name -> phelix.SecurityAdvisory
-	22, // 31: phelix.MonitorCommandResult.autoscale_status:type_name -> phelix.AutoscaleStatusState
-	23, // 32: phelix.MonitorCommandResult.autoscale_history:type_name -> phelix.AutoscaleHistoryEntry
-	23, // 33: phelix.AutoscaleStatusState.last_decision:type_name -> phelix.AutoscaleHistoryEntry
-	11, // 34: phelix.AutoscaleStatusState.replica_metrics:type_name -> phelix.ReplicaResourceMetrics
-	3,  // 35: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
-	7,  // 36: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
-	8,  // 37: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
-	9,  // 38: phelix.MonitorEvent.app_traffic:type_name -> phelix.AppTrafficStat
-	13, // 39: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
-	18, // 40: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
-	21, // 41: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
-	45, // 42: phelix.MonitorEvent.pong:type_name -> phelix.Pong
-	46, // 43: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
-	47, // 44: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
-	34, // 45: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
-	26, // 46: phelix.MonitorEvent.version_sync:type_name -> phelix.VersionSync
-	19, // 47: phelix.MonitorEvent.log_batch:type_name -> phelix.MonitorLogBatch
-	48, // 48: phelix.MonitorEvent.security_scan:type_name -> phelix.SecurityScanSnapshot
-	28, // 49: phelix.MonitorEvent.agent_status:type_name -> phelix.AgentStatus
-	12, // 50: phelix.MonitorEvent.replica_metrics:type_name -> phelix.ReplicaMetricsSnapshot
-	20, // 51: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
-	49, // 52: phelix.MonitorControl.ping:type_name -> phelix.Ping
-	29, // 53: phelix.MonitorControl.security_result_ack:type_name -> phelix.SecurityResultAck
-	27, // 54: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
-	50, // 55: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
-	56, // [56:56] is the sub-list for method output_type
-	56, // [56:56] is the sub-list for method input_type
-	56, // [56:56] is the sub-list for extension type_name
-	56, // [56:56] is the sub-list for extension extendee
-	0,  // [0:56] is the sub-list for field type_name
+	34, // 20: phelix.MonitorCommandRequest.job:type_name -> phelix.JobOptions
+	35, // 21: phelix.MonitorCommandResult.matrix_run:type_name -> phelix.MatrixRunState
+	36, // 22: phelix.MonitorCommandResult.matrix_runs:type_name -> phelix.MatrixRunSummary
+	37, // 23: phelix.MonitorCommandResult.matrix_preview:type_name -> phelix.MatrixPlanPreview
+	38, // 24: phelix.MonitorCommandResult.matrix_docker:type_name -> phelix.MatrixDockerResult
+	39, // 25: phelix.MonitorCommandResult.webhook_jobs:type_name -> phelix.WebhookJob
+	40, // 26: phelix.MonitorCommandResult.webhook_config:type_name -> phelix.WebhookConfigState
+	41, // 27: phelix.MonitorCommandResult.webhook_deliveries:type_name -> phelix.WebhookDelivery
+	42, // 28: phelix.MonitorCommandResult.security_scan_record:type_name -> phelix.SecurityScanRecord
+	43, // 29: phelix.MonitorCommandResult.security_scan_list:type_name -> phelix.SecurityScanList
+	44, // 30: phelix.MonitorCommandResult.security_config:type_name -> phelix.SecurityConfigState
+	45, // 31: phelix.MonitorCommandResult.security_advisory:type_name -> phelix.SecurityAdvisory
+	22, // 32: phelix.MonitorCommandResult.autoscale_status:type_name -> phelix.AutoscaleStatusState
+	23, // 33: phelix.MonitorCommandResult.autoscale_history:type_name -> phelix.AutoscaleHistoryEntry
+	46, // 34: phelix.MonitorCommandResult.jobs:type_name -> phelix.JobDefinition
+	47, // 35: phelix.MonitorCommandResult.execution:type_name -> phelix.JobExecutionRecord
+	47, // 36: phelix.MonitorCommandResult.executions:type_name -> phelix.JobExecutionRecord
+	48, // 37: phelix.MonitorCommandResult.job_log:type_name -> phelix.JobLogChunk
+	23, // 38: phelix.AutoscaleStatusState.last_decision:type_name -> phelix.AutoscaleHistoryEntry
+	11, // 39: phelix.AutoscaleStatusState.replica_metrics:type_name -> phelix.ReplicaResourceMetrics
+	3,  // 40: phelix.MonitorEvent.server_info:type_name -> phelix.ServerInfo
+	7,  // 41: phelix.MonitorEvent.server_metrics:type_name -> phelix.ServerMetrics
+	8,  // 42: phelix.MonitorEvent.app_metrics:type_name -> phelix.AppResourceMetrics
+	9,  // 43: phelix.MonitorEvent.app_traffic:type_name -> phelix.AppTrafficStat
+	13, // 44: phelix.MonitorEvent.app_info:type_name -> phelix.ApplicationInfo
+	18, // 45: phelix.MonitorEvent.log_entry:type_name -> phelix.MonitorLogEntry
+	21, // 46: phelix.MonitorEvent.command_result:type_name -> phelix.MonitorCommandResult
+	49, // 47: phelix.MonitorEvent.pong:type_name -> phelix.Pong
+	50, // 48: phelix.MonitorEvent.deployment_snapshot:type_name -> phelix.DeploymentSnapshot
+	51, // 49: phelix.MonitorEvent.app_health:type_name -> phelix.AppHealthSnapshot
+	35, // 50: phelix.MonitorEvent.matrix_run:type_name -> phelix.MatrixRunState
+	26, // 51: phelix.MonitorEvent.version_sync:type_name -> phelix.VersionSync
+	19, // 52: phelix.MonitorEvent.log_batch:type_name -> phelix.MonitorLogBatch
+	52, // 53: phelix.MonitorEvent.security_scan:type_name -> phelix.SecurityScanSnapshot
+	28, // 54: phelix.MonitorEvent.agent_status:type_name -> phelix.AgentStatus
+	12, // 55: phelix.MonitorEvent.replica_metrics:type_name -> phelix.ReplicaMetricsSnapshot
+	53, // 56: phelix.MonitorEvent.job_event:type_name -> phelix.JobLifecycleEvent
+	20, // 57: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
+	54, // 58: phelix.MonitorControl.ping:type_name -> phelix.Ping
+	29, // 59: phelix.MonitorControl.security_result_ack:type_name -> phelix.SecurityResultAck
+	27, // 60: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
+	55, // 61: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
+	62, // [62:62] is the sub-list for method output_type
+	62, // [62:62] is the sub-list for method input_type
+	62, // [62:62] is the sub-list for extension type_name
+	62, // [62:62] is the sub-list for extension extendee
+	0,  // [0:62] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -4583,6 +4677,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 	file_internal_grpc_proto_matrix_proto_init()
 	file_internal_grpc_proto_webhook_proto_init()
 	file_internal_grpc_proto_buildreport_proto_init()
+	file_internal_grpc_proto_job_proto_init()
 	file_internal_grpc_proto_monitoring_proto_msgTypes[21].OneofWrappers = []any{
 		(*MonitorEvent_ServerInfo)(nil),
 		(*MonitorEvent_ServerMetrics)(nil),
@@ -4600,6 +4695,7 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_SecurityScan)(nil),
 		(*MonitorEvent_AgentStatus)(nil),
 		(*MonitorEvent_ReplicaMetrics)(nil),
+		(*MonitorEvent_JobEvent)(nil),
 	}
 	file_internal_grpc_proto_monitoring_proto_msgTypes[22].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),
