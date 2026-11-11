@@ -14,6 +14,7 @@ import (
 // runJobScheduler drives scheduled jobs inside the monitor daemon.
 func runJobScheduler(ctx context.Context) {
 	store := job.NewStore(server.DataDir())
+	store.Events = emitJobLifecycle
 	executor := job.NewExecutor(store)
 	executor.Log = func(level, format string, args ...any) {
 		if level == "warning" {

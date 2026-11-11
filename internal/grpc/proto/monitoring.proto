@@ -11,6 +11,7 @@ import "internal/grpc/proto/health.proto";
 import "internal/grpc/proto/matrix.proto";
 import "internal/grpc/proto/webhook.proto";
 import "internal/grpc/proto/buildreport.proto";
+import "internal/grpc/proto/job.proto";
 
 // ============================================================================
 // Monitoring data messages
@@ -479,6 +480,12 @@ message MonitorCommandRequest {
   // Security remote-management commands (security_*). Present for every
   // security_* command type; ignored otherwise.
   SecurityCommandOptions security = 15;
+
+  // Remote job management options, carried by job_* commands only. The
+  // agent reads and executes the SAME configured jobs the local CLI uses.
+  // Every field is command-scoped and rejected when set on another job
+  // command. See job.proto.
+  JobOptions job = 16;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -567,6 +574,23 @@ message MonitorCommandResult {
   // the counts; these carry the engine's verdict.
   string autoscale_direction = 29;
   string autoscale_reason = 30;
+
+  // Remote job management results (additive; set on job_* command results,
+  // empty/absent otherwise. Older backends ignore them).
+  //
+  // jobs is the job_list answer and the cluster is never mixed with
+  // services or workers.
+  repeated JobDefinition jobs = 31;
+  // execution is the job_run answer describing the execution that was
+  // accepted. A long-running job reports its final state separately through
+  // job history and lifecycle events.
+  JobExecutionRecord execution = 32;
+  // executions is the job_history answer, newest first and bounded by the
+  // request's limit.
+  repeated JobExecutionRecord executions = 33;
+  // job_log is the job_logs answer, bounded by the request's limit and
+  // offset-paged through next_offset.
+  JobLogChunk job_log = 34;
 }
 
 // AutoscaleStatusState is the autoscale_status answer: what the agent's
@@ -688,6 +712,10 @@ message MonitorEvent {
     // sent for every deploy-managed watched app regardless of autoscaling, so
     // a backend can render replica resources without enabling autoscaling.
     ReplicaMetricsSnapshot replica_metrics = 25;
+    // job_event is one job lifecycle transition emitted by the existing job
+    // executor or scheduler. Observations only: the durable execution record
+    // remains the source of truth and is re-read with job_history.
+    JobLifecycleEvent job_event = 26;
   }
 }
 

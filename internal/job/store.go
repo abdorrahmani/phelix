@@ -96,6 +96,9 @@ type Store struct {
 	root string
 	// Now makes the clock injectable for tests.
 	Now func() time.Time
+	// Events receives lifecycle transitions when installed. Emission is
+	// best-effort and never blocks or fails an execution.
+	Events func(Event)
 }
 
 // NewStore returns the job store rooted at dataDir.
@@ -353,6 +356,7 @@ func (s *Store) RecoverInterrupted() (int, error) {
 			if err := s.Save(record); err != nil {
 				return recovered, err
 			}
+			s.emitRecord(record, PhaseInterrupted, record.Attempts)
 			recovered++
 		}
 	}

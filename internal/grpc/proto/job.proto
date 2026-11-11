@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// Remote job management over the existing MonitorStream.
+//
+// The agent remains the only scheduler, executor, history store and log
+// store. These messages only expose that existing subsystem to the backend:
+// no second execution path exists.
+//
+// Command types carried by MonitorCommandRequest.type:
+//   job_list    read-only
+//   job_run     mutation, idempotent by request_id
+//   job_history read-only, bounded
+//   job_logs    read-only, bounded and offset-paged
+//
+// Results carry one of the structured payloads on MonitorCommandResult.
+// Lifecycle transitions travel as MonitorEvent.job_event, separately from
+// command results, and are observations only. Durable job records remain
+// the source of truth after reconnects.
+
+// JobOptions carries the options of the four job_* commands. Each command
+// accepts only its own fields; unexpected fields are rejected.
+message JobOptions {
+  // job_name selects one configured job. Empty means the app's only job for
+  // commands that can infer it; job_list ignores it.
+  string job_name = 1;
+  // limit bounds job_history. 0 means the default, values above the agent
+  // cap are rejected.
+  int32 limit = 2;
+  // execution_id selects one execution for job_logs or one history record.
+  string execution_id = 3;
+  // offset is the byte offset into the execution log. 0 starts at the
+  // beginning. Log responses return next_offset for the following page.
+  int64 offset = 4;
+  // max_bytes bounds one log response body. 0 means the agent default.
+  int32 max_bytes = 5;
+}
+
+// JobDefinition is one configured job resolved from phelix.yaml and the
+// agent's app registry. Only real type: job applications are returned.
+message JobDefinition {
+  string app_id = 1;
+  string job_name = 2;
+  string workload_type = 3;
+  string cron = 4;
+  string timezone = 5;
+  repeated string command = 6;
+  int64 timeout_ms = 7;
+  int32 retries = 8;
+  string concurrency_policy = 9;
+  string current_status = 10;
+  string running_execution_id = 11;
+  string last_execution_status = 12;
+  int64 last_execution_at = 13;
+  int64 next_scheduled_at = 14;
+}
+
+// JobExecutionRecord is one durable execution record, newest first in
+// history answers. Timestamps are unix milliseconds. exit_code is -1 when
+// the process never produced an exit status.
+message JobExecutionRecord {
+  string execution_id = 1;
+  string job_name = 2;
+  string app_id = 3;
+  string trigger = 4;
+  string status = 5;
+  int64 scheduled_at = 6;
+  int64 started_at = 7;
+  int64 finished_at = 8;
+  int64 duration_ms = 9;
+  int32 attempts = 10;
+  int32 exit_code = 11;
+  string error = 12;
+  string error_code = 13;
+}
+
+// JobLogEntry is one log line of an execution. stream preserves the
+// stdout/stderr distinction the job executor recorded. message is the
+// already redacted, unprefixed output line.
+message JobLogEntry {
+  string stream = 1;
+  string level = 2;
+  string message = 3;
+  int64 timestamp = 4;
+}
+
+// JobLogChunk is a bounded page of one execution log. offset is the first
+// byte returned, next_offset the byte at which the next page starts, and
+// total_bytes the current file size. eof is true when this page reached the
+// current end of file.
+message JobLogChunk {
+  string execution_id = 1;
+  int64 offset = 2;
+  int64 next_offset = 3;
+  int64 total_bytes = 4;
+  bool eof = 5;
+  repeated JobLogEntry entries = 6;
+}
+
+// JobLifecycleEvent is one meaningful job transition. It is emitted by the
+// existing executor and scheduler, never reconstructed by parsing logs.
+// phase is the transition name (accepted, started, attempt_started,
+// attempt_failed, succeeded, failed, timed_out, cancelled, skipped,
+// interrupted). status is the execution status after the transition.
+message JobLifecycleEvent {
+  string server_id = 1;
+  string app_id = 2;
+  string job_name = 3;
+  string execution_id = 4;
+  string trigger = 5;
+  string phase = 6;
+  string status = 7;
+  int64 timestamp = 8;
+  int32 attempt = 9;
+  string error = 10;
+  string error_code = 11;
+  int64 scheduled_at = 12;
+}
