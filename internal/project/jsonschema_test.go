@@ -36,7 +36,7 @@ func TestSchemaJSONMapsConfiguration(t *testing.T) {
 	}
 
 	properties := doc["properties"].(map[string]any)
-	for _, key := range []string{"name", "port", "watching", "resources", "health", "deploy", "matrix", "webhook"} {
+	for _, key := range []string{"name", "port", "watching", "resources", "health", "deploy", "matrix", "webhook", "schedule", "job"} {
 		if _, ok := properties[key]; !ok {
 			t.Errorf("top-level property %q missing from the schema", key)
 		}

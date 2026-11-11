@@ -395,6 +395,45 @@
       },
       "type": "object"
     },
+    "job": {
+      "description": "The one-shot command a type: job runs. Required when type is job.",
+      "properties": {
+        "command": {
+          "description": "argv run without a shell from the project directory. The first element is the executable.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "concurrency": {
+          "description": "Overlap handling when a previous run of the same job is still alive.",
+          "properties": {
+            "policy": {
+              "description": "forbid (default) skips the new occurrence while one runs; allow starts it anyway.",
+              "enum": [
+                "allow",
+                "forbid"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "retries": {
+          "description": "Extra attempts after a failed attempt, run sequentially. Defaults to 0.",
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "How long one attempt may run, as a duration. Defaults to 30m.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
     "matrix": {
       "description": "Build matrix profile: toolchain versions by platform.",
       "properties": {
@@ -561,6 +600,30 @@
       },
       "type": "object"
     },
+    "schedule": {
+      "description": "Cron schedule for a type: job. Required when type is job.",
+      "properties": {
+        "cron": {
+          "description": "Standard five-field cron expression (minute hour day month weekday), or a descriptor such as @hourly or @daily.",
+          "type": "string"
+        },
+        "missed": {
+          "description": "What to do with occurrences missed while the monitor was down. Only skip is supported.",
+          "enum": [
+            "skip"
+          ],
+          "type": "string"
+        },
+        "timezone": {
+          "description": "IANA timezone the expression is evaluated in. Defaults to UTC.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cron"
+      ],
+      "type": "object"
+    },
     "secrets": {
       "description": "Local secret management: maps secrets from the app's encrypted secret store onto environment variables. Values are resolved at launch, never stored in phelix.yaml, and are not part of version snapshots or rollbacks.",
       "properties": {
@@ -609,8 +672,9 @@
       "type": "object"
     },
     "type": {
-      "description": "Workload type: service (default, a port-listening app) or worker (a supervised background process with no public port).",
+      "description": "Workload type: service (default, a port-listening app), worker (a supervised background process with no public port), or job (a one-shot command run on a cron schedule).",
       "enum": [
+        "job",
         "service",
         "worker"
       ],
