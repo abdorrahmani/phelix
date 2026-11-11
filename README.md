@@ -35,6 +35,9 @@ window, automatic rollback on failed deploy, audited history.
 - **Workers**: supervised background workloads (`type: worker`) with no port:
 restart policies with jittered backoff, exec health checks, replica scaling
 and rolling replacement. See [Workers](docs/guides/workers.md).
+- **Scheduled jobs**: one-shot commands (`type: job`) run on a cron schedule by
+the monitor, with timezone, timeout, sequential retries, overlap prevention,
+execution history and per-run logs. See [Jobs](docs/guides/jobs.md).
 - **Health checks**: tiered deploy health gating (2xx / any-HTTP / TCP / PID).
 - **Docker**: generate optimized multi-stage images (`dockerize`), or run app
 **instances as containers** under the proxy.
@@ -149,6 +152,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Docker + compose profile (Rust)](examples/docker-compose-profiles-rust/): the same, in Rust.
 - [Docker image built from a compose service (Go)](examples/docker-compose-aware-go/): `deploy.docker.build: compose`.
 - [Docker image built from a compose service (Rust)](examples/docker-compose-aware-rust/): the same, in Rust.
+- [Scheduled job (Go)](examples/job-go/): a one-shot cron job with timeout, retry and its own history.
 - [Docker multiservice (Go)](examples/docker-compose-multiservice-go/): several app services, one shared backing tier.
 - [Docker multiservice (Rust)](examples/docker-compose-multiservice-rust/): the same, in Rust.
 - [Go workspace](examples/workspace-go/): three services, one `phelix.workspace.yaml`, one `build --all`.
@@ -169,6 +173,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Interactive Usage](docs/guides/interactive-usage.md)
 - [Zero-Downtime Deployments](docs/guides/zero-downtime-deployments.md)
 - [Workers](docs/guides/workers.md)
+- [Jobs](docs/guides/jobs.md)
 - [Canary & Progressive Rollouts](docs/guides/canary-and-progressive-rollouts.md)
 - [Rollback](docs/guides/rollback.md)
 - [Workspaces](docs/guides/workspaces.md)
