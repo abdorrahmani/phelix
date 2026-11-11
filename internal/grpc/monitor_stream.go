@@ -437,6 +437,11 @@ func (c *Client) runMonitorStream() error {
 	} else {
 		c.replayPendingAutoscaleResults()
 	}
+	if err := jobResults.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote job ledger unavailable; job_run commands will fail closed: %v", err)
+	} else {
+		c.replayPendingJobResults(jobResults)
+	}
 
 	c.sendDeploymentSnapshots()
 
@@ -542,6 +547,11 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 			if isAutoscaleCommand(p.Command.GetType()) {
 				c.handleAutoscaleCommand(p.Command)
+				continue
+			}
+
+			if isJobCommand(p.Command.GetType()) {
+				c.handleJobCommand(p.Command, jobResults)
 				continue
 			}
 

@@ -305,6 +305,11 @@ func runMonitor() error {
 	}
 	phelixgrpc.SetAutoscaleHandler(RemoteAutoscaleCommand)
 	phelixgrpc.SetAutoscaleAuthorizer(remoteAutoscaleAuthorize)
+	if err := phelixgrpc.InitializeJobLedger(); err != nil {
+		return err
+	}
+	phelixgrpc.SetJobHandler(RemoteJobCommand)
+	phelixgrpc.SetJobAuthorizer(remoteJobAuthorize)
 
 	supervisorCtx, cancelSupervisor := context.WithCancel(context.Background())
 	defer cancelSupervisor()
@@ -452,6 +457,7 @@ func runMonitor() error {
 	phelixgrpc.WaitPendingWebhookCommands(phelixgrpc.WebhookCommandSettleTimeout())
 	phelixgrpc.WaitPendingWorkerCommands(phelixgrpc.WorkerCommandSettleTimeout())
 	phelixgrpc.WaitPendingAutoscaleCommands(phelixgrpc.AutoscaleCommandSettleTimeout())
+	phelixgrpc.WaitPendingJobCommands(phelixgrpc.JobCommandSettleTimeout())
 	phelixgrpc.StopMatrixSender(5 * time.Second)
 
 	cancelAutoscale()

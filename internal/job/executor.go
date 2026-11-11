@@ -48,6 +48,10 @@ type Executor struct {
 	Now func() time.Time
 	// Log receives diagnostics, never command output.
 	Log func(level string, format string, args ...any)
+	// OnAccepted receives a snapshot of the durable running record before the
+	// first attempt. It lets a caller report acceptance without waiting for a
+	// long execution. It must not block.
+	OnAccepted func(*Record)
 }
 
 // NewExecutor builds an executor over the given store.
@@ -142,6 +146,10 @@ func (e *Executor) Run(ctx context.Context, req RunRequest) (*Record, error) {
 		return nil, err
 	}
 	e.Store.emitRecord(record, PhaseAccepted, 0)
+	if e.OnAccepted != nil {
+		snapshot := *record
+		e.OnAccepted(&snapshot)
+	}
 
 	status := StatusFailed
 	total := req.Retries + 1
