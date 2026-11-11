@@ -35,6 +35,11 @@ type Config struct {
 	// Process configures worker supervision (restart policy, backoff,
 	// shutdown). Only valid with type: worker.
 	Process *ProcessConfig `yaml:"process,omitempty"`
+	// Schedule configures when a type: job runs. Only valid with type: job.
+	Schedule *ScheduleConfig `yaml:"schedule,omitempty"`
+	// Job configures what a type: job runs and how. Only valid with
+	// type: job.
+	Job *JobConfig `yaml:"job,omitempty"`
 	// Watching declares whether the app participates in backend monitoring:
 	// WatchingEnable ("enable") or WatchingDisable ("disable"). Empty means
 	// the key is absent and the app's persisted flag is left untouched.

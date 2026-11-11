@@ -44,6 +44,12 @@ All state lives under `~/.phelix/` (relocatable with `PHELIX_DATA_DIR` — see t
 ├── sessions/                 # agent execution sessions (see Agent Sessions)
 │   ├── <session-id>.json      # one durable tracking record (ses_<16 hex>.json, 0600)
 │   └── <session-id>.lock      # per-session advisory lock serializing updates
+├── jobs/                     # scheduled jobs (type: job; see Jobs)
+│   └── <AppName>/
+│       ├── executions/       # one record per run (job_<16 hex>.json, 0600;
+│       │                     #   bounded to the 200 newest finished runs)
+│       ├── logs/             # redacted stdout/stderr per run (job_<16 hex>.log, 0600)
+│       └── locks/            # per-app run lock serializing forbid-policy runs
 └── apps/<AppName>/          # per-app data
     ├── versions.json        # version metadata index (incl. per-version build reports + per-combo matrix reports)
     ├── deploy.json           # blue-green / rolling state
@@ -59,6 +65,11 @@ All state lives under `~/.phelix/` (relocatable with `PHELIX_DATA_DIR` — see t
 > (see [Rollback](../guides/rollback.md)). The proxy persists enrolled apps and
 > targets to `~/.phelix/proxy-state.json`
 > (see [Zero-downtime deployments](../guides/zero-downtime-deployments.md)).
+
+`jobs/<AppName>/executions/*.json` records are written atomically and a corrupt
+record is skipped when history is read, so one damaged file never hides the
+rest. Retention keeps the 200 most recent finished executions and never deletes
+an active one. See [Jobs](../guides/jobs.md).
 
 Everything under `cache/` is derived data. It can be deleted at any time and is
 rebuilt on demand, unlike the records above.

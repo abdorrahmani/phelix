@@ -67,8 +67,8 @@ webhook:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | no* | Application name used by `build`, `rebuild`, `health`, `rollback`, etc. *Optional: when missing, `build` prompts for it (TTY) or fails with a clear error (scripts). |
-| `type` | no | Workload type: `service` (the default; every file written before the key existed) or `worker`, a supervised background process with no public port (see [Workers](../guides/workers.md)). |
-| `port` | no | Public application port. Default `8080` when missing. Not valid for `type: worker`. |
+| `type` | no | Workload type: `service` (the default; every file written before the key existed), `worker`, a supervised background process with no public port (see [Workers](../guides/workers.md)), or `job`, a one-shot command run on a cron schedule (see [Jobs](../guides/jobs.md)). |
+| `port` | no | Public application port. Default `8080` when missing. Not valid for `type: worker` or `type: job`. |
 | `watching` | no | Backend monitoring opt-in: `enable` or `disable` (`phelix init` writes `disable`). Applied to the app on every build/rebuild; absent leaves the app's current state (see [Monitoring](../guides/monitoring.md)). |
 | `health.endpoints[].name` | yes (per endpoint) | Endpoint name, e.g. `default`, `readiness`. Must be unique. |
 | `health.endpoints[].path` | yes (per endpoint) | HTTP path on localhost, e.g. `/health`. Must start with `/`. |
@@ -85,6 +85,13 @@ webhook:
 | `deploy.rollout.duration` | no | Verification window for `canary` (e.g. `2m`). Default `30s`. |
 | `deploy.rollout.steps[]` | no | Progressive steps: `traffic` (percent) and optional `duration` per step; must strictly increase and end at `100`. |
 | `deploy.rollout.verification` | no | Regression thresholds: `interval`, `max_error_rate`, `max_error_delta`, `max_p95_factor` (see [Canary & progressive rollouts](../guides/canary-and-progressive-rollouts.md)). |
+| `schedule.cron` | yes (job) | Cron expression: standard five fields (`minute hour day month weekday`) or `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly`. Only valid with `type: job`. |
+| `schedule.timezone` | no (job) | IANA timezone the expression is evaluated in. Default `UTC`. The expression must not embed `TZ=` or `CRON_TZ=`. |
+| `schedule.missed` | no (job) | What happens to occurrences missed while the monitor was down. Only `skip` is supported (the default): missed occurrences never run and are not replayed. |
+| `job.command` | yes (job) | Command argv run without a shell, from the project directory. Relative paths fall back to the current built version binary when they no longer exist after a build. |
+| `job.timeout` | no (job) | Time limit for one attempt, as a Go duration (e.g. `2m`). Default `30m`. On expiry the whole process group is killed. |
+| `job.retries` | no (job) | Extra attempts after a failed attempt. Default `0`. Attempts run sequentially, never in parallel. |
+| `job.concurrency.policy` | no (job) | `forbid` (default) or `allow`. `forbid` serializes runs of the same job across processes; `allow` permits overlap. |
 | `deploy.rolling` | no | Worker rolling-replacement parameters. Only valid with `type: worker`. |
 | `deploy.rolling.max_surge` | no | Replacements started above the desired count. Only `1` is supported (sequential replacement). Default `1`. |
 | `deploy.rolling.max_unavailable` | no | Replicas that may be down during replacement. Only `0` is supported. Default `0`. |
@@ -244,6 +251,40 @@ commands and the recovery contract are in
 [Workers](../guides/workers.md); a runnable example lives in
 [`examples/worker-go`](../../examples/worker-go/).
 
+## Job workloads (`type: job`)
+
+A job is a one-shot command, not a service and not a supervised process. Phelix
+builds it as a version, then runs it on a cron schedule from the monitor. A run
+that exits 0 is `succeeded`; a non-zero exit is `failed`. There is no port, no
+proxy route, no health endpoint, no deploy strategy and no restart supervision:
+the exit status is the result. Service and worker keys are rejected for jobs,
+and `schedule`/`job` are rejected for services and workers.
+
+```yaml
+name: nightly-report
+type: job
+
+schedule:
+  cron: "0 3 * * *"             # every day at 03:00
+  timezone: Europe/Paris        # optional, default UTC
+  missed: skip                  # the only supported policy in v1
+
+job:
+  command: ["./nightly-report", "-message", "nightly report"]
+  timeout: 2m                   # per attempt, default 30m
+  retries: 1                    # extra sequential attempts, default 0
+  concurrency:
+    policy: forbid              # forbid (default) or allow
+```
+
+`$HOME/.phelix/jobs/<name>/executions/<id>.json` stores every execution and
+`logs/<id>.log` keeps its output (secrets redacted). The 200 most recent
+finished executions are retained; running or pending records are never
+pruned. `phelix job list`, `run`, `history` and `logs` inspect and trigger jobs
+by hand. Full scheduling, recovery and retention behavior is in
+[Jobs](../guides/jobs.md); a runnable example lives in
+[`examples/job-go`](../../examples/job-go/).
+
 ## Per-instance CPU and memory limits (Linux)
 
 ```yaml
@@ -375,6 +416,8 @@ workers may also declare it under `classic`), endpoint names (required, unique),
 the `100%` promotion, non-negative durations, `canary` within `1-99`, and
 verification thresholds (positive interval, error rates within `0-100`, p95
 factor ≥ 1).
+
+For jobs additionally: the type value itself, a parseable cron expression, an IANA timezone, a positive `job.timeout`, `job.retries >= 0`, the concurrency policy vocabulary (`forbid`/`allow`), a non-empty `command`, and both `schedule` and `job` blocks. A job must not declare `port`, `health`, `process` or `deploy`; services and workers must not declare `schedule` or `job`.
 
 For workers additionally: the type value itself, the restart policy vocabulary
 (`always`/`on-failure`/`never`), backoff bounds (positive durations,

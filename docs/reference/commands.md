@@ -19,7 +19,7 @@ config file supplies both, the command runs without asking anything.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port, -p` | `8080` | Port to run the app on (not required for matrix builds, which never start an instance, and not required for `type: worker` projects, which never listen) |
+| `--port, -p` | `8080` | Port to run the app on (not required for matrix builds, which never start an instance, and not required for `type: worker` or `type: job` projects, which never listen) |
 | `--build-arg, -a` | — | Extra args passed to the build tool (repeatable); in matrix mode they are passed to every `go build` / `cross build` |
 | `--tag` | — | Human label stored with the version (e.g. `"hotfix-auth"`) |
 | `--debug` | `false` | Verbose build/tool output |
@@ -83,6 +83,12 @@ one replica at a time (the old replica keeps running until its replacement
 passed the startup gate, then is drained). No proxy is involved and
 `--blue-green`/`--canary` are rejected. Failures revert the replicas that were
 already replaced; see [Workers](../guides/workers.md).
+
+For a `type: job` app the build records and promotes a version with mode `job`
+and never starts a service or worker. The monitor runs the job on its schedule.
+`rebuild` has the same behavior and rejects `--blue-green`, `--canary` and
+`--replicas`; `start`, `stop` and `restart` reject job apps and point to
+`phelix job run`. See [Jobs](../guides/jobs.md).
 
 ### `phelix init`
 
@@ -303,6 +309,33 @@ phelix scale api --replicas 3 --json
 The same operation is available remotely through the dashboard's `worker_scale`
 command for workers and the generic `scale` command for either workload.
 
+## Jobs
+
+Job workloads (`type: job`) are one-shot commands run on a cron schedule by
+`phelix monitor`. They have no port, no health endpoint, no deploy strategy and
+no supervision: the exit status is the result. The full model, including
+scheduling, missed occurrences, recovery and retention, is in
+[Jobs](../guides/jobs.md); a runnable example is
+[`examples/job-go`](../../examples/job-go/).
+
+| Command | Description |
+|---------|-------------|
+| `phelix job list` | Every registered app declaring `type: job`, with its cron expression, timezone and command. |
+| `phelix job run <NAME>` | Run the job once, now, outside its schedule. Still respects `job.timeout`, `job.retries` and the concurrency policy. Exits non-zero when the run fails. |
+| `phelix job history <NAME> [--limit N]` | Recent executions, newest first: ID, start time, status, duration, exit code and trigger. Default limit `20`. |
+| `phelix job logs <NAME> [--execution ID]` | Output of one execution, or of the newest one when `--execution` is omitted. Secrets are redacted. |
+
+```bash
+phelix build nightly-report
+phelix job list
+phelix job run nightly-report
+phelix job history nightly-report --limit 5
+phelix job logs nightly-report --execution job_a1b2c3d4e5f60718
+```
+
+Execution records and logs live under `~/.phelix/jobs/<AppName>/` and are
+described in [Where Phelix stores data](data-directory.md).
+
 ## Encrypted environment variables
 
 `phelix env` manages per-app secrets encrypted at rest with **AES-256-GCM**. See
@@ -470,4 +503,6 @@ phelix wizard       # guided interactive menu (see Interactive usage)
   resolve.
 - [Workers](../guides/workers.md) — the workload model behind `phelix scale`
   and the worker behavior of the lifecycle commands.
+- [Jobs](../guides/jobs.md) — the scheduled one-shot workload behind
+  `phelix job`.
 - [Exit codes](exit-codes.md), [Error codes](error-codes.md).

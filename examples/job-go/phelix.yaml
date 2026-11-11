@@ -1,0 +1,14 @@
+name: nightly-report
+type: job
+
+schedule:
+  cron: "*/5 * * * *"
+  timezone: UTC
+  missed: skip
+
+job:
+  command: ["./nightly-report", "-message", "nightly report"]
+  timeout: 2m
+  retries: 1
+  concurrency:
+    policy: forbid

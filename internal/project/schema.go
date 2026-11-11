@@ -672,12 +672,24 @@ func (c *Config) validate() error {
 	if err := c.validateType(); err != nil {
 		return err
 	}
-	if c.IsWorker() {
+	switch {
+	case c.IsWorker():
 		if err := c.validateWorker(); err != nil {
 			return err
 		}
-	} else if err := c.validateServiceRejectsWorkerKeys(); err != nil {
-		return err
+	case c.IsJob():
+		if err := c.validateJob(); err != nil {
+			return err
+		}
+	default:
+		if err := c.validateServiceRejectsWorkerKeys(); err != nil {
+			return err
+		}
+	}
+	if !c.IsJob() {
+		if err := c.validateRejectsJobKeys(); err != nil {
+			return err
+		}
 	}
 
 	if c.Deploy != nil {

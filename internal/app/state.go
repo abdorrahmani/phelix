@@ -359,3 +359,9 @@ func SetStateDirForTesting(dir string) error {
 	stateFile = filepath.Join(dir, "apps.json")
 	return Manager.LoadState()
 }
+
+// StateDirForTesting reports the directory backing the test state file so a
+// test can restore it after SetStateDirForTesting.
+func StateDirForTesting() string {
+	return filepath.Dir(stateFile)
+}

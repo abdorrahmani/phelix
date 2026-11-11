@@ -57,7 +57,7 @@ const (
 const StableWindow = 300 * time.Second
 
 var supportedTypes = map[string]bool{
-	TypeService: true, TypeWorker: true,
+	TypeService: true, TypeWorker: true, TypeJob: true,
 }
 
 var supportedRestartPolicies = map[string]bool{
@@ -278,7 +278,7 @@ func (c *Config) validateType() error {
 	t := strings.TrimSpace(c.Type)
 	if t != "" && !supportedTypes[t] {
 		return phelixerr.Newf(phelixerr.CodeConfiguration,
-			"configuration error: invalid type %q\nHint: expected one of: service, worker", c.Type)
+			"configuration error: invalid type %q\nHint: expected one of: service, worker, job", c.Type)
 	}
 	return nil
 }

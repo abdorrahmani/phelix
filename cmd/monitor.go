@@ -334,6 +334,14 @@ func runMonitor() error {
 		runSecurityScheduler(securityCtx)
 	}()
 
+	jobCtx, cancelJobs := context.WithCancel(context.Background())
+	defer cancelJobs()
+	jobsDone := make(chan struct{})
+	go func() {
+		defer close(jobsDone)
+		runJobScheduler(jobCtx)
+	}()
+
 	monitor.SetRollbackHandler(func(payload monitor.CommandPayload) error {
 		return RemoteRollback(payload)
 	})
@@ -430,6 +438,13 @@ func runMonitor() error {
 	case <-securityDone:
 	case <-time.After(10 * time.Second):
 		logs.Warning("security", "scheduler did not settle within the shutdown window")
+	}
+
+	cancelJobs()
+	select {
+	case <-jobsDone:
+	case <-time.After(10 * time.Second):
+		logs.Warning("job", "scheduler did not settle within the shutdown window")
 	}
 
 	cancelMatrixSessions()

@@ -37,6 +37,10 @@ var StopCmd = &cobra.Command{
 			return err
 		}
 
+		if err := rejectJobLifecycle(appInfo, "stop"); err != nil {
+			return err
+		}
+
 		state, derr := loadDeployState(appInfo.Name)
 		if derr != nil {
 			return derr
