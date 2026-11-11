@@ -56,6 +56,7 @@ func main() {
 	rootCmd.AddCommand(cmd.RollbackCmd)
 	rootCmd.AddCommand(cmd.StartCmd)
 	rootCmd.AddCommand(cmd.RestartCmd)
+	rootCmd.AddCommand(cmd.JobCmd)
 	rootCmd.AddCommand(cmd.ScaleCmd)
 	rootCmd.AddCommand(cmd.AutoscaleCmd)
 	rootCmd.AddCommand(cmd.StatusCmd)
