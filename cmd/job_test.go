@@ -16,9 +16,15 @@ import (
 func withJobManager(t *testing.T, apps map[string]*app.AppInfo) {
 	t.Helper()
 	orig := app.Manager
+	origStateDir := app.StateDirForTesting()
 	if err := app.SetStateDirForTesting(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := app.SetStateDirForTesting(origStateDir); err != nil {
+			t.Errorf("restore app state dir: %v", err)
+		}
+	})
 	manager := &app.AppManager{Apps: map[string]*app.AppInfo{}}
 	for id, info := range apps {
 		manager.Apps[id] = info
