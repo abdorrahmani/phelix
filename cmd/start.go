@@ -51,6 +51,10 @@ var StartCmd = &cobra.Command{
 			fmt.Println(color.BlueString("→") + " Starting all applications...")
 			var failed []string
 			for _, a := range apps {
+				if isJobDir(a.Directory) {
+					fmt.Printf("  %s Skipping job %s (ID: %s); run it with 'phelix job run %s'\n", color.YellowString("-"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID), a.Name)
+					continue
+				}
 				if a.Status == "running" {
 					fmt.Printf("  %s %s (ID: %s) is already running\n", color.GreenString("✓"), color.CyanString("'%s'", a.Name), color.YellowString(a.ID))
 					continue
@@ -117,6 +121,10 @@ var StartCmd = &cobra.Command{
 			if startEnsure {
 				return ensureNewApplication(identifier, port)
 			}
+			return err
+		}
+
+		if err := rejectJobLifecycle(appInfo, "start"); err != nil {
 			return err
 		}
 

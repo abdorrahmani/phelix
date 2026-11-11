@@ -111,10 +111,17 @@ func buildRebuildSpec(cmd *cobra.Command, args []string) (*rebuildSpec, error) {
 	}
 
 	isWorker := projCfg != nil && projCfg.IsWorker()
+	isJob := projCfg != nil && projCfg.IsJob()
 	if isWorker {
 		if rebuildCanary > 0 || rebuildBlueGreen || rolloutPlan != nil {
 			return nil, phelixerr.New(phelixerr.CodeInvalidArgument,
 				"--blue-green and --canary are not valid for type: worker\nHint: workers support --strategy classic or rolling")
+		}
+	}
+	if isJob {
+		if rebuildCanary > 0 || rebuildBlueGreen || rolloutPlan != nil || rebuildReplicas > 0 {
+			return nil, phelixerr.New(phelixerr.CodeInvalidArgument,
+				"--blue-green, --canary and --replicas are not valid for type: job\nHint: jobs are one-shot; they have no deployment strategy")
 		}
 	}
 
@@ -122,7 +129,7 @@ func buildRebuildSpec(cmd *cobra.Command, args []string) (*rebuildSpec, error) {
 		return nil, err
 	}
 
-	if !isWorker {
+	if !isWorker && !isJob {
 		if err := phelixport.Validate(portToUse); err != nil {
 			return nil, err
 		}
@@ -210,9 +217,13 @@ func runRebuildExec(spec *rebuildSpec, op *opRun) error {
 		}
 	}
 
-	if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil && !projCfg.IsWorker() {
+	if serr := syncProjectHealth(projCfg, appInfo.ID, name, portToUse); serr != nil && !projCfg.IsWorker() && !projCfg.IsJob() {
 		fmt.Fprintf(out, "  %s Warning: could not apply health endpoints from %s: %v\n",
 			color.YellowString("⚠"), project.FileName, serr)
+	}
+
+	if projCfg.IsJob() {
+		return runJobRebuild(spec, op)
 	}
 
 	if projCfg.IsWorker() {

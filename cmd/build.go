@@ -102,6 +102,7 @@ var BuildCmd = &cobra.Command{
 
 		name := args[0]
 		isWorker := projCfg != nil && projCfg.IsWorker()
+		isJob := projCfg != nil && projCfg.IsJob()
 
 		if ferr := matrixFlagConflict(cmd.Flags().Changed("matrix"), matrixFlag, goVersions, rustVersions, platforms); ferr != nil {
 			return ferr
@@ -113,7 +114,7 @@ var BuildCmd = &cobra.Command{
 				return ferr
 			}
 		}
-		if !cmd.Flags().Changed("port") && !isMatrix && !isWorker {
+		if !cmd.Flags().Changed("port") && !isMatrix && !isWorker && !isJob {
 			if projCfg != nil && projCfg.Port != 0 {
 				buildPort = projCfg.Port
 			}
@@ -136,7 +137,7 @@ var BuildCmd = &cobra.Command{
 			}
 		}()
 
-		if !isMatrix && !isWorker {
+		if !isMatrix && !isWorker && !isJob {
 			if err := phelixport.Validate(buildPort); err != nil {
 				return err
 			}
@@ -200,6 +201,10 @@ var BuildCmd = &cobra.Command{
 				return phelixerr.New(phelixerr.CodeConfiguration,
 					"deploy.runtime: docker is not supported for type: worker\nHint: workers run as supervised host processes")
 			}
+			if isJob {
+				return phelixerr.New(phelixerr.CodeConfiguration,
+					"deploy.runtime: docker is not supported for type: job\nHint: jobs run as host commands")
+			}
 			if buildListener != nil {
 				_ = buildListener.Close()
 				buildListener = nil
@@ -244,7 +249,7 @@ var BuildCmd = &cobra.Command{
 			}
 		}
 
-		if !isWorker {
+		if !isWorker && !isJob {
 			if serr := syncProjectHealth(projCfg, id, name, buildPort); serr != nil {
 				fmt.Printf("  %s Warning: could not apply health endpoints from %s: %v\n",
 					color.YellowString("⚠"), project.FileName, serr)
@@ -271,7 +276,7 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 		var secretTxn *deploy.SecretTxn
-		if isWorker {
+		if isWorker || isJob {
 			if projCfg.Secrets != nil {
 				var pinned *secrets.PinnedSet
 				pinned, err = secrets.PinBindings(context.Background(), id, projCfg.Secrets.Imports)
@@ -320,6 +325,35 @@ var BuildCmd = &cobra.Command{
 		if buildListener != nil {
 			_ = buildListener.Close()
 			buildListener = nil
+		}
+
+		if isJob {
+			buildVer := 0
+			if rec != nil {
+				buildVer = rec.Version
+			}
+			releaseBuild()
+			if rec != nil {
+				if err := deploy.PromoteVersion(name, rec.Version, "job"); err != nil {
+					fmt.Printf("  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
+				}
+			}
+			markJobBuilt(id)
+			tracker.PromoteCurrentVersion()
+			tracker.Completed("built; runs on schedule")
+			fmt.Printf("%s Job %s (ID: %s) built (version v%d); it will run on its schedule\n",
+				color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(id), buildVer)
+
+			phelixgrpc.ReportEvent(id, name, "build", true, "", 0, "job", "")
+			phelixgrpc.SendVersionListForApp(id, name, currentDir)
+
+			op.setResult(&ops.Result{Version: buildVer, Strategy: "job"})
+			return op.writeResultEnv(machine.Success(op.operationID(), buildResult{
+				App:     name,
+				AppID:   id,
+				Version: buildVer,
+				Path:    binPath,
+			}))
 		}
 
 		if isWorker {
