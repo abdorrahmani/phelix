@@ -141,6 +141,7 @@ func (e *Executor) Run(ctx context.Context, req RunRequest) (*Record, error) {
 	if err := e.Store.Save(record); err != nil {
 		return nil, err
 	}
+	e.Store.emitRecord(record, PhaseAccepted, 0)
 
 	status := StatusFailed
 	total := req.Retries + 1
@@ -150,11 +151,17 @@ func (e *Executor) Run(ctx context.Context, req RunRequest) (*Record, error) {
 			record.Error = "cancelled"
 			break
 		}
+		if attempt == 1 {
+			e.Store.emitRecord(record, PhaseStarted, attempt)
+		}
 		attemptStatus, exitCode, message := e.attempt(ctx, req, exe, args, env, logFile, record)
 		record.Attempts = attempt
 		record.ExitCode = exitCode
 		record.Error = message
 		status = attemptStatus
+		if attemptStatus != StatusSucceeded {
+			e.Store.emitRecord(record, PhaseAttemptFailed, attempt)
+		}
 		if attemptStatus == StatusSucceeded || attemptStatus == StatusCancelled {
 			break
 		}
@@ -170,6 +177,7 @@ func (e *Executor) Run(ctx context.Context, req RunRequest) (*Record, error) {
 	if err := e.Store.Save(record); err != nil {
 		return record, err
 	}
+	e.Store.emitRecord(record, terminalPhase(status), record.Attempts)
 	if err := e.Store.Retain(req.AppName, Retention); err != nil {
 		e.log("warning", "job: %s: could not apply retention: %v", req.AppName, err)
 	}
@@ -199,6 +207,7 @@ func (e *Executor) Skip(req RunRequest, scheduledFor time.Time, reason string) (
 	if err := e.Store.Save(record); err != nil {
 		return nil, err
 	}
+	e.Store.emitRecord(record, PhaseSkipped, 0)
 	return record, nil
 }
 
@@ -230,6 +239,7 @@ func (e *Executor) attempt(ctx context.Context, req RunRequest, exe string, args
 	if err := e.Store.Save(record); err != nil {
 		e.log("warning", "job: %s: could not record the running process: %v", req.AppName, err)
 	}
+	e.Store.emitRecord(record, PhaseAttemptStarted, record.Attempts+1)
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
