@@ -10,6 +10,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	"github.com/abdorrahmani/phelix/internal/deployanalysis"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
@@ -852,7 +853,11 @@ func (c *Client) sendMonitorTick() {
 		logs.ErrorFile("grpc", "[gRPC Monitor] failed to send server info: %v", err)
 	}
 
-	for _, m := range monitorStream.metricsCollector.CollectAppMetrics() {
+	appMetrics := monitorStream.metricsCollector.CollectAppMetrics()
+	for _, m := range appMetrics {
+		if m.AppName != "" {
+			deployanalysis.RecordAppMetric(m.AppName, time.Now(), m.CPUUsage, m.MemoryUsage)
+		}
 		event := &pb.MonitorEvent{
 			ServerId:  serverID,
 			Timestamp: time.Now().UnixMilli(),
@@ -867,6 +872,9 @@ func (c *Client) sendMonitorTick() {
 	}
 
 	for _, t := range monitor.CollectAppTraffic() {
+		if t.AppName != "" {
+			deployanalysis.RecordTraffic(t.AppName, time.Now(), t.Requests, t.Errors, t.P95)
+		}
 		event := &pb.MonitorEvent{
 			ServerId:  serverID,
 			Timestamp: time.Now().UnixMilli(),
@@ -877,6 +885,16 @@ func (c *Client) sendMonitorTick() {
 		if err := monitorStream.send(event); err != nil {
 			logs.ErrorFile("grpc", "[gRPC Monitor] failed to send app traffic for %s: %v", t.AppName, err)
 			return
+		}
+	}
+
+	for _, m := range appMetrics {
+		if m.AppName == "" {
+			continue
+		}
+		_, _ = deployanalysis.FinalizeDue(m.AppName, deployanalysis.DefaultConfig())
+		if deployanalysis.HasPendingSync(m.AppName) {
+			SyncDeploymentAnalysesAsync(m.AppName)
 		}
 	}
 

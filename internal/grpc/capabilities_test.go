@@ -21,6 +21,7 @@ import (
 //	rollback           → rollback_command.go
 //	build_matrix       → matrix_command.go
 //	build_report       → build_reporter.go
+//	deployment_analysis → deployment_analysis_reporter.go
 //	webhook_management → webhook_command.go
 //	worker_lifecycle   → worker_command.go
 //	security_scan      → security_command.go
@@ -32,6 +33,7 @@ var expectedBuildCapabilities = []string{
 	CapabilityDeployment,
 	CapabilityBuildMatrix,
 	CapabilityBuildReport,
+	CapabilityDeploymentAnalysis,
 	CapabilityLogBatch,
 	CapabilityMonitoring,
 	CapabilityMonitorRestart,
