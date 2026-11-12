@@ -144,6 +144,15 @@ func evaluate(mc *MetricComparison, def metricDefinition, before, after, thresho
 		regression = delta > threshold
 		improvement = delta < -threshold
 	} else {
+		if mc.Percent == nil {
+			if before == 0 && after == 0 {
+				mc.Status = StatusNormal
+				return
+			}
+			mc.Status = StatusInsufficientData
+			mc.SkipReason = "the baseline value was zero, so a percentage change cannot be computed"
+			return
+		}
 		change := *mc.Percent
 		if lowerBetter {
 			regression = change < -threshold

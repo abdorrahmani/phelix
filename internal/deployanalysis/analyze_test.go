@@ -116,6 +116,27 @@ func TestAnalyzeThroughputDegradation(t *testing.T) {
 	}
 }
 
+func TestAnalyzeZeroBaselineDoesNotPanic(t *testing.T) {
+	before, after := aggregatePair(0, 12, 0, 64<<20, 0, 1, 0, 30, 100, 100)
+	rep := Analyze(ReportInput{
+		AnalysisID:      "a1",
+		DeploymentID:    "d1",
+		AppName:         "demo",
+		Strategy:        "rolling",
+		PreviousVersion: "v1",
+		NewVersion:      "v2",
+		DeployedAt:      time.Now(),
+		CompletedAt:     time.Now(),
+	}, before, after, DefaultConfig())
+
+	for _, key := range []string{MetricCPUUsage, MetricMemoryUsage, MetricP95Latency} {
+		mc := rep.Metric(key)
+		if mc.Status != StatusInsufficientData {
+			t.Fatalf("%s status = %q, want insufficient data (zero baseline)", key, mc.Status)
+		}
+	}
+}
+
 func TestAnalyzeMissingAndInsufficientData(t *testing.T) {
 	useTempHome(t)
 	app := "sparse"
