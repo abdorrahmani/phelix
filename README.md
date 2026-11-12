@@ -175,6 +175,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Workers](docs/guides/workers.md)
 - [Jobs](docs/guides/jobs.md)
 - [Canary & Progressive Rollouts](docs/guides/canary-and-progressive-rollouts.md)
+- [Deployment Rollout Analysis](docs/guides/deployment-analysis.md)
 - [Rollback](docs/guides/rollback.md)
 - [Workspaces](docs/guides/workspaces.md)
 - [Health Checks](docs/guides/health-checks.md)

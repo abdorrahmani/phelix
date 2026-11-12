@@ -181,6 +181,29 @@ phelix build-report myapp            # 5 most recent reports
 phelix build-report myapp --limit 10
 ```
 
+### `phelix deployment-report <AppName> [flags]`
+
+Read-only inspection of stored deployment impact analyses. Never deploys, never
+rolls back, and works fully offline. Pending analyses whose observation window
+has elapsed are finalized on read. See
+[Deployment Rollout Analysis](../guides/deployment-analysis.md).
+
+```bash
+phelix deployment-report myapp                # 10 most recent analyses
+phelix deployment-report myapp --latest       # most recent summary
+phelix deployment-report myapp --detailed     # per-metric comparison
+phelix deployment-report myapp --version v12  # one target version
+phelix deployment-report myapp --json         # machine-readable output
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--limit` | `10` | How many recent analyses to list |
+| `--latest` | `false` | Show the most recent analysis |
+| `--version` | `""` (all) | Show the analysis for one target version (for example `v12`) |
+| `--detailed` | `false` | Show per-metric before and after comparisons |
+| `--json` | `false` | Print machine-readable JSON |
+
 ## Versioning & rollback
 
 Full behavior, flags, and examples are documented in [Rollback](../guides/rollback.md).
