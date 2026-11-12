@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// Deployment impact analysis telemetry. One message per finalized deployment
+// report; identity is analysis_id, so a retried delivery is a no-op.
+
+message DeploymentAnalysisWindow {
+  int64 started_at = 1;
+  int64 ended_at = 2;
+  int32 samples = 3;
+}
+
+message DeploymentAnalysisMetric {
+  string key = 1;
+  string label = 2;
+  string unit = 3;
+  string status = 4;
+  optional double before = 5;
+  optional double after = 6;
+  optional double delta = 7;
+  optional double percent_delta = 8;
+  optional double before_peak = 9;
+  optional double after_peak = 10;
+  int32 baseline_samples = 11;
+  int32 observed_samples = 12;
+  string skip_reason = 13;
+}
+
+message DeploymentAnalysisVerification {
+  double canary_error_rate = 1;
+  double baseline_error_rate = 2;
+  double canary_p95_ms = 3;
+  double baseline_p95_ms = 4;
+  int64 canary_requests = 5;
+  int64 canary_errors = 6;
+  int64 baseline_requests = 7;
+  bool passed = 8;
+  string skip_reason = 9;
+}
+
+message DeploymentAnalysisRollout {
+  string strategy = 1;
+  bool promoted = 2;
+  int32 total_steps = 3;
+  int32 failed_step = 4;
+  string failure_code = 5;
+  string reason = 6;
+  DeploymentAnalysisVerification verification = 7;
+}
+
+message DeploymentAnalysisReport {
+  int32 schema_version = 1;
+  string analysis_id = 2;
+  string deployment_id = 3;
+  string app_id = 4;
+  string app_name = 5;
+  string server_id = 6;
+  string strategy = 7;
+  string previous_version = 8;
+  string new_version = 9;
+  string outcome = 10;
+  string status = 11;
+  string recommendation = 12;
+  double impact_score = 13;
+  string impact_grade = 14;
+  int64 deployed_at = 15;
+  int64 completed_at = 16;
+  int64 analyzed_at = 17;
+  DeploymentAnalysisWindow baseline = 18;
+  DeploymentAnalysisWindow observed = 19;
+  repeated DeploymentAnalysisMetric metrics = 20;
+  DeploymentAnalysisRollout rollout = 21;
+  string failure_code = 22;
+}
+
+message DeploymentAnalysisEvent {
+  DeploymentAnalysisReport report = 1;
+}
+
+message DeploymentAnalysisResponse {
+  bool accepted = 1;
+  string message = 2;
+}
