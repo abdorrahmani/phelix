@@ -59,6 +59,7 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 			}
 			metrics = append(metrics, AppMetrics{
 				AppID:       appInfo.ID,
+				AppName:     appInfo.Name,
 				ServerID:    serverID,
 				CPUUsage:    cpu,
 				MemoryUsage: ram,
@@ -74,6 +75,7 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 
 		metrics = append(metrics, AppMetrics{
 			AppID:       appInfo.ID,
+			AppName:     appInfo.Name,
 			ServerID:    serverID,
 			CPUUsage:    status.CPUUsage,
 			MemoryUsage: status.RAMUsage,

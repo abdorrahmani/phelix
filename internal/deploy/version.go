@@ -142,6 +142,12 @@ type RecordResult struct {
 	EnvPath    string
 }
 
+// AppDataDir returns the per-application data directory
+// (~/.phelix/apps/<AppName>) after validating the name.
+func AppDataDir(appName string) (string, error) {
+	return appDataDir(appName)
+}
+
 func appDataDir(appName string) (string, error) {
 	if err := ValidateAppName(appName); err != nil {
 		return "", err
