@@ -88,6 +88,7 @@ func main() {
 	rootCmd.AddCommand(cmd.UpdateCmd)
 	rootCmd.AddCommand(cmd.WizardCmd)
 	rootCmd.AddCommand(cmd.BuildReportCmd)
+	rootCmd.AddCommand(cmd.DeploymentReportCmd)
 	rootCmd.SetVersionTemplate("Phelix CLI {{.Version}}\n")
 
 	rootCmd.PersistentFlags().BoolVar(&cmd.Debug, "debug", false, "Show verbose error details and debug output")
