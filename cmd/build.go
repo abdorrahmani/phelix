@@ -196,6 +196,8 @@ var BuildCmd = &cobra.Command{
 			return err
 		}
 
+		finalizeDeploymentAnalyses(os.Stdout, name, projCfg)
+
 		if projCfg.DeployRuntime() == project.RuntimeDocker {
 			if isWorker {
 				return phelixerr.New(phelixerr.CodeConfiguration,
@@ -421,6 +423,7 @@ var BuildCmd = &cobra.Command{
 		if rec != nil {
 			buildResVer = rec.Version
 		}
+		beginDeploymentAnalysis(os.Stdout, name, id, "classic", 0, buildResVer, tracker, projCfg, time.Now())
 		op.setResult(&ops.Result{Version: buildResVer, Port: buildPort, Strategy: "classic"})
 		return op.writeResultEnv(machine.Success(op.operationID(), buildResult{
 			App:     name,

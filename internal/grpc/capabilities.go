@@ -47,6 +47,10 @@ const (
 	// (ReportBuildEvent with compiler/cache/duration/artifact metrics and
 	// regression deltas for build/rebuild and matrix builds).
 	CapabilityBuildReport = "build_report"
+	// CapabilityDeploymentAnalysis: the agent stores deployment impact
+	// analyses locally and reports them with ReportDeploymentAnalysis,
+	// including an offline retry queue.
+	CapabilityDeploymentAnalysis = "deployment_analysis"
 	// CapabilityWebhookManagement: the agent implements remote webhook
 	// management (webhook_* MonitorStream commands reading and mutating the
 	// existing webhook subsystem — durable jobs, delivery ledger, and the

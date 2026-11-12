@@ -5,6 +5,44 @@
     "deploy": {
       "description": "Deployment strategy and runtime.",
       "properties": {
+        "analysis": {
+          "properties": {
+            "baseline_window": {
+              "type": "string"
+            },
+            "cpu_max_percent": {
+              "type": "number"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "error_rate_max_delta": {
+              "type": "number"
+            },
+            "health_failures_max_extra": {
+              "type": "integer"
+            },
+            "latency_max_percent": {
+              "type": "number"
+            },
+            "memory_max_percent": {
+              "type": "number"
+            },
+            "min_samples": {
+              "type": "integer"
+            },
+            "observe_window": {
+              "type": "string"
+            },
+            "restart_max_extra": {
+              "type": "integer"
+            },
+            "throughput_max_degradation": {
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
         "autoscaling": {
           "description": "Replica autoscaling for rolling services and workers. The monitor controller evaluates metrics and scales via the existing scaling paths.",
           "properties": {

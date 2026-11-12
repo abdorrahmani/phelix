@@ -16,6 +16,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	"github.com/abdorrahmani/phelix/internal/deploy"
+	"github.com/abdorrahmani/phelix/internal/deployanalysis"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/machine"
@@ -107,6 +108,7 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	if err != nil {
 		return err
 	}
+	finalizeDeploymentAnalyses(out, name, cfg)
 	secretTxn, err := beginProjectSecrets(appInfo, cfg, tracker.DeploymentID())
 	if err != nil {
 		tracker.Failed(err)
@@ -230,6 +232,7 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	}
 	phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true, rbVer, spec.Tag, gitCommit, rebuildReport, "")
 
+	beginDeploymentAnalysis(out, name, appInfo.ID, "classic", currentVer, rbVer, tracker, cfg, time.Now())
 	op.setResult(&ops.Result{Version: rbVer, Port: portToUse, Strategy: "classic"})
 	return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
 		App:      name,
@@ -431,6 +434,8 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 	if spec.Rollout != nil {
 		strategy = spec.Rollout.Strategy
 	}
+	previousVer, _ := deploy.CurrentVersion(name)
+	finalizeDeploymentAnalyses(out, name, runtimeCfg)
 	tracker := deploy.NewTracker(phelixgrpc.NewDeploymentSink(), appInfo.ID, name, strategy)
 	op.setDeploymentID(tracker)
 	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
@@ -470,8 +475,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 		err := ro.Deploy(deployCtx)
 		reconcileAppWithDeploy(name)
 		if err != nil {
+			recordFailedDeploymentAnalysis(out, name, appInfo.ID, spec.Rollout.Strategy, previousVer,
+				deploy.TargetVersionOf(deploySource), tracker, runtimeCfg, deployanalysis.OutcomeRejected,
+				string(phelixerr.CodeOf(err)), time.Now())
 			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
-				proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
+				proxyClient, healthProvider, logger, tracker, runtimeCfg, spec.AutoRollback, spec.Replicas, err)
 		}
 		if err := deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil); err != nil {
 			return err
@@ -486,6 +494,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
 			deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport(), "")
 		ver := deploy.TargetVersionOf(deploySource)
+		beginDeploymentAnalysis(out, name, appInfo.ID, spec.Rollout.Strategy, previousVer, ver, tracker, runtimeCfg, time.Now())
 		op.setResult(&ops.Result{Version: ver, Port: publicPort, Strategy: spec.Rollout.Strategy})
 		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
 			App:      name,
@@ -517,8 +526,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 		err := bg.Deploy(context.Background())
 		reconcileAppWithDeploy(name)
 		if err != nil {
+			recordFailedDeploymentAnalysis(out, name, appInfo.ID, "blue-green", previousVer,
+				deploy.TargetVersionOf(deploySource), tracker, runtimeCfg, deployanalysis.OutcomeRejected,
+				string(phelixerr.CodeOf(err)), time.Now())
 			return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
-				proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
+				proxyClient, healthProvider, logger, tracker, runtimeCfg, spec.AutoRollback, spec.Replicas, err)
 		}
 		if err := deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil); err != nil {
 			return err
@@ -533,6 +545,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 		phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
 			deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport(), "")
 		bgVer := deploy.TargetVersionOf(deploySource)
+		beginDeploymentAnalysis(out, name, appInfo.ID, "blue-green", previousVer, bgVer, tracker, runtimeCfg, time.Now())
 		op.setResult(&ops.Result{Version: bgVer, Port: publicPort, Strategy: "blue-green"})
 		return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
 			App:      name,
@@ -563,8 +576,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 	err = r.Deploy(context.Background())
 	reconcileAppWithDeploy(name)
 	if err != nil {
+		recordFailedDeploymentAnalysis(out, name, appInfo.ID, "rolling", previousVer,
+			deploy.TargetVersionOf(deploySource), tracker, runtimeCfg, deployanalysis.OutcomeRejected,
+			string(phelixerr.CodeOf(err)), time.Now())
 		return autoRollbackAfterFailedDeploy(out, appInfo, name, publicPort, deploy.TargetVersionOf(deploySource), launcher,
-			proxyClient, healthProvider, logger, tracker, spec.AutoRollback, spec.Replicas, err)
+			proxyClient, healthProvider, logger, tracker, runtimeCfg, spec.AutoRollback, spec.Replicas, err)
 	}
 	if err := deploy.FinishSecretTxn(appInfo.ID, secretTxn, nil); err != nil {
 		return err
@@ -579,6 +595,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 	phelixgrpc.ReportBuildEventForApp(appInfo.ID, name, "classic", true,
 		deploy.TargetVersionOf(deploySource), spec.Tag, gitCommit, lastReport(), "")
 	rollVer := deploy.TargetVersionOf(deploySource)
+	beginDeploymentAnalysis(out, name, appInfo.ID, "rolling", previousVer, rollVer, tracker, runtimeCfg, time.Now())
 	op.setResult(&ops.Result{Version: rollVer, Port: publicPort, Strategy: "rolling"})
 	return op.writeResultEnv(machine.Success(op.operationID(), rebuildResult{
 		App:      name,
@@ -599,7 +616,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 func autoRollbackAfterFailedDeploy(out io.Writer, appInfo *app.AppInfo, name string, publicPort int,
 	failedVer int, launcher deploy.InstanceLauncher, proxyClient *proxy.Client,
 	healthProvider deploy.HealthConfigProvider, logger *colorLogger,
-	tracker *deploy.Tracker, autoRollback bool, replicas int, deployErr error) error {
+	tracker *deploy.Tracker, cfg *project.Config, autoRollback bool, replicas int, deployErr error) error {
 
 	if !autoRollback || !deploy.RecoverableDeployFailure(deployErr) {
 		return deployErr
@@ -651,6 +668,8 @@ func autoRollbackAfterFailedDeploy(out io.Writer, appInfo *app.AppInfo, name str
 	}
 	emitAutoRollbackEvent(appInfo, name, "", failedVer, res.ToVer,
 		deploy.AutoRollbackReason(failedVer, deployErr), res.AlreadyServing, nil, tracker.DeploymentID())
+	recordFailedDeploymentAnalysis(out, name, appInfo.ID, "", res.ToVer, failedVer,
+		tracker, cfg, deployanalysis.OutcomeRolledBack, "", time.Now())
 	if res.AlreadyServing {
 
 		fmt.Fprintf(out, "%s Deployment rolled back automatically, %s kept serving\n",
@@ -658,6 +677,8 @@ func autoRollbackAfterFailedDeploy(out io.Writer, appInfo *app.AppInfo, name str
 		return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
 			"deployment of v%d failed; previous version v%d is serving again", failedVer, res.ToVer)
 	}
+	recordFailedDeploymentAnalysis(out, name, appInfo.ID, "", res.ToVer, failedVer,
+		tracker, cfg, deployanalysis.OutcomeRolledBack, "", time.Now())
 	fmt.Fprintf(out, "%s Deployment rolled back automatically\n", color.GreenString("✓"))
 	return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
 		"deployment of v%d failed; previous version v%d restored automatically", failedVer, res.ToVer)

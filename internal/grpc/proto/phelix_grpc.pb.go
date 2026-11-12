@@ -19,21 +19,22 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	PhelixService_ReportEvent_FullMethodName           = "/phelix.PhelixService/ReportEvent"
-	PhelixService_SyncMetadata_FullMethodName          = "/phelix.PhelixService/SyncMetadata"
-	PhelixService_StreamEvents_FullMethodName          = "/phelix.PhelixService/StreamEvents"
-	PhelixService_AgentStream_FullMethodName           = "/phelix.PhelixService/AgentStream"
-	PhelixService_HealthSetConfig_FullMethodName       = "/phelix.PhelixService/HealthSetConfig"
-	PhelixService_HealthAddEndpoint_FullMethodName     = "/phelix.PhelixService/HealthAddEndpoint"
-	PhelixService_HealthRemoveEndpoint_FullMethodName  = "/phelix.PhelixService/HealthRemoveEndpoint"
-	PhelixService_ReportHealthResult_FullMethodName    = "/phelix.PhelixService/ReportHealthResult"
-	PhelixService_ReportAutoRestart_FullMethodName     = "/phelix.PhelixService/ReportAutoRestart"
-	PhelixService_ReportRollbackEvent_FullMethodName   = "/phelix.PhelixService/ReportRollbackEvent"
-	PhelixService_ReportDeploymentEvent_FullMethodName = "/phelix.PhelixService/ReportDeploymentEvent"
-	PhelixService_ReportMatrixEvent_FullMethodName     = "/phelix.PhelixService/ReportMatrixEvent"
-	PhelixService_ReportBuildEvent_FullMethodName      = "/phelix.PhelixService/ReportBuildEvent"
-	PhelixService_MonitorStream_FullMethodName         = "/phelix.PhelixService/MonitorStream"
-	PhelixService_AgentLogout_FullMethodName           = "/phelix.PhelixService/AgentLogout"
+	PhelixService_ReportEvent_FullMethodName              = "/phelix.PhelixService/ReportEvent"
+	PhelixService_SyncMetadata_FullMethodName             = "/phelix.PhelixService/SyncMetadata"
+	PhelixService_StreamEvents_FullMethodName             = "/phelix.PhelixService/StreamEvents"
+	PhelixService_AgentStream_FullMethodName              = "/phelix.PhelixService/AgentStream"
+	PhelixService_HealthSetConfig_FullMethodName          = "/phelix.PhelixService/HealthSetConfig"
+	PhelixService_HealthAddEndpoint_FullMethodName        = "/phelix.PhelixService/HealthAddEndpoint"
+	PhelixService_HealthRemoveEndpoint_FullMethodName     = "/phelix.PhelixService/HealthRemoveEndpoint"
+	PhelixService_ReportHealthResult_FullMethodName       = "/phelix.PhelixService/ReportHealthResult"
+	PhelixService_ReportAutoRestart_FullMethodName        = "/phelix.PhelixService/ReportAutoRestart"
+	PhelixService_ReportRollbackEvent_FullMethodName      = "/phelix.PhelixService/ReportRollbackEvent"
+	PhelixService_ReportDeploymentEvent_FullMethodName    = "/phelix.PhelixService/ReportDeploymentEvent"
+	PhelixService_ReportMatrixEvent_FullMethodName        = "/phelix.PhelixService/ReportMatrixEvent"
+	PhelixService_ReportBuildEvent_FullMethodName         = "/phelix.PhelixService/ReportBuildEvent"
+	PhelixService_ReportDeploymentAnalysis_FullMethodName = "/phelix.PhelixService/ReportDeploymentAnalysis"
+	PhelixService_MonitorStream_FullMethodName            = "/phelix.PhelixService/MonitorStream"
+	PhelixService_AgentLogout_FullMethodName              = "/phelix.PhelixService/AgentLogout"
 )
 
 // PhelixServiceClient is the client API for PhelixService service.
@@ -111,6 +112,10 @@ type PhelixServiceClient interface {
 	// disables it for the rest of the process, and the build/rebuild succeeds
 	// unchanged — identical to ReportDeploymentEvent's contract.
 	ReportBuildEvent(ctx context.Context, in *BuildEvent, opts ...grpc.CallOption) (*EventResponse, error)
+	// ReportDeploymentAnalysis sends one finalized deployment impact report.
+	// Delivery is idempotent on analysis_id. An older backend answers
+	// UNIMPLEMENTED; the CLI keeps the report locally and retries later.
+	ReportDeploymentAnalysis(ctx context.Context, in *DeploymentAnalysisEvent, opts ...grpc.CallOption) (*DeploymentAnalysisResponse, error)
 	// MonitorStream is the persistent, bidirectional monitoring channel that
 	// replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
 	// stream once and keeps it open for the lifetime of the process, pushing a
@@ -276,6 +281,16 @@ func (c *phelixServiceClient) ReportBuildEvent(ctx context.Context, in *BuildEve
 	return out, nil
 }
 
+func (c *phelixServiceClient) ReportDeploymentAnalysis(ctx context.Context, in *DeploymentAnalysisEvent, opts ...grpc.CallOption) (*DeploymentAnalysisResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeploymentAnalysisResponse)
+	err := c.cc.Invoke(ctx, PhelixService_ReportDeploymentAnalysis_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *phelixServiceClient) MonitorStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MonitorEvent, MonitorControl], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &PhelixService_ServiceDesc.Streams[2], PhelixService_MonitorStream_FullMethodName, cOpts...)
@@ -374,6 +389,10 @@ type PhelixServiceServer interface {
 	// disables it for the rest of the process, and the build/rebuild succeeds
 	// unchanged — identical to ReportDeploymentEvent's contract.
 	ReportBuildEvent(context.Context, *BuildEvent) (*EventResponse, error)
+	// ReportDeploymentAnalysis sends one finalized deployment impact report.
+	// Delivery is idempotent on analysis_id. An older backend answers
+	// UNIMPLEMENTED; the CLI keeps the report locally and retries later.
+	ReportDeploymentAnalysis(context.Context, *DeploymentAnalysisEvent) (*DeploymentAnalysisResponse, error)
 	// MonitorStream is the persistent, bidirectional monitoring channel that
 	// replaces the legacy WebSocket monitor. The CLI monitor daemon opens this
 	// stream once and keeps it open for the lifetime of the process, pushing a
@@ -437,6 +456,9 @@ func (UnimplementedPhelixServiceServer) ReportMatrixEvent(context.Context, *Matr
 }
 func (UnimplementedPhelixServiceServer) ReportBuildEvent(context.Context, *BuildEvent) (*EventResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportBuildEvent not implemented")
+}
+func (UnimplementedPhelixServiceServer) ReportDeploymentAnalysis(context.Context, *DeploymentAnalysisEvent) (*DeploymentAnalysisResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportDeploymentAnalysis not implemented")
 }
 func (UnimplementedPhelixServiceServer) MonitorStream(grpc.BidiStreamingServer[MonitorEvent, MonitorControl]) error {
 	return status.Error(codes.Unimplemented, "method MonitorStream not implemented")
@@ -677,6 +699,24 @@ func _PhelixService_ReportBuildEvent_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PhelixService_ReportDeploymentAnalysis_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeploymentAnalysisEvent)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PhelixServiceServer).ReportDeploymentAnalysis(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PhelixService_ReportDeploymentAnalysis_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PhelixServiceServer).ReportDeploymentAnalysis(ctx, req.(*DeploymentAnalysisEvent))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _PhelixService_MonitorStream_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(PhelixServiceServer).MonitorStream(&grpc.GenericServerStream[MonitorEvent, MonitorControl]{ServerStream: stream})
 }
@@ -752,6 +792,10 @@ var PhelixService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportBuildEvent",
 			Handler:    _PhelixService_ReportBuildEvent_Handler,
+		},
+		{
+			MethodName: "ReportDeploymentAnalysis",
+			Handler:    _PhelixService_ReportDeploymentAnalysis_Handler,
 		},
 		{
 			MethodName: "AgentLogout",

@@ -65,6 +65,9 @@ type DeployConfig struct {
 	Docker *DockerRuntimeConfig `yaml:"docker,omitempty"`
 	// Rollout configures canary/progressive deployments.
 	Rollout *RolloutConfig `yaml:"rollout,omitempty"`
+	// Analysis configures post-deployment impact analysis. Optional; absent
+	// means enabled with the built-in windows and thresholds.
+	Analysis *DeployAnalysisConfig `yaml:"analysis,omitempty"`
 	// Autoscaling configures the rolling-deploy replica autoscaling decision
 	// engine. Optional; apps without the block never autoscale.
 	Autoscaling *AutoscalingConfig `yaml:"autoscaling,omitempty"`
@@ -103,6 +106,43 @@ const DefaultComposeFile = "docker-compose.yml"
 
 var supportedDockerBuilds = map[string]bool{
 	DockerBuildDockerfile: true, DockerBuildCompose: true,
+}
+
+// DeployAnalysisConfig is the phelix.yaml shape of deploy.analysis, the
+// post-deployment impact analysis settings. The zero value of every field
+// means "use the built-in default", so an empty block is harmless.
+type DeployAnalysisConfig struct {
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// BaselineWindow is how far back from the deployment the stable baseline is
+	// measured ("5m" by default).
+	BaselineWindow string `yaml:"baseline_window,omitempty"`
+	// ObserveWindow is how long after promotion the new version is observed
+	// ("2m" by default).
+	ObserveWindow string `yaml:"observe_window,omitempty"`
+	// MinSamples is the minimum sample count required per window and metric
+	// family before a comparison is considered meaningful (5 by default).
+	MinSamples int `yaml:"min_samples,omitempty"`
+	// ErrorRateMaxDelta is the allowed error-rate increase in percentage points
+	// before it counts as a regression (1.0 by default).
+	ErrorRateMaxDelta float64 `yaml:"error_rate_max_delta,omitempty"`
+	// LatencyMaxPercent is the allowed P95 latency increase percentage (20 by
+	// default).
+	LatencyMaxPercent float64 `yaml:"latency_max_percent,omitempty"`
+	// CPUMaxPercent is the allowed average CPU increase percentage (25 by
+	// default).
+	CPUMaxPercent float64 `yaml:"cpu_max_percent,omitempty"`
+	// MemoryMaxPercent is the allowed average memory increase percentage (15 by
+	// default).
+	MemoryMaxPercent float64 `yaml:"memory_max_percent,omitempty"`
+	// RestartMaxExtra is the number of additional restarts tolerated after the
+	// deployment (0 by default).
+	RestartMaxExtra int `yaml:"restart_max_extra,omitempty"`
+	// ThroughputMaxDegradation is the allowed throughput drop percentage (20 by
+	// default).
+	ThroughputMaxDegradation float64 `yaml:"throughput_max_degradation,omitempty"`
+	// HealthFailuresMaxExtra is the number of additional failed health checks
+	// tolerated after the deployment (0 by default).
+	HealthFailuresMaxExtra int `yaml:"health_failures_max_extra,omitempty"`
 }
 
 // RolloutConfig is the phelix.yaml shape of a canary/progressive rollout. A

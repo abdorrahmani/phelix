@@ -80,6 +80,7 @@ type Command struct {
 // AppMetrics carries a single application's current CPU/RAM usage.
 type AppMetrics struct {
 	AppID       string  `json:"appID"`
+	AppName     string  `json:"appName,omitempty"`
 	ServerID    string  `json:"server_id"`
 	CPUUsage    float64 `json:"cpuUsage"`
 	MemoryUsage uint64  `json:"memoryUsage"`
