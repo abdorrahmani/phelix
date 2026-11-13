@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -159,7 +158,10 @@ func saveOperations(dataDir string, data operationsFile) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Release()
+	defer func() {
+		_ = releaseHostLock(lock)
+		_ = lock.Close()
+	}()
 	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
@@ -318,10 +320,10 @@ func requirePrivilege() error {
 		"package updates require root privileges; run the operation as root (no automatic privilege escalation)")
 }
 
-// Preview evaluates the update path for the requested packages with the
-// manager's native dry-run. Read-only: no transaction is executed and no
-// lock is taken or released.
-func Preview(ctx context.Context, system System, host Host, packages []string, dataDir string) (Preview, error) {
+// PreviewUpdates evaluates the update path for the requested packages with
+// the manager's native dry-run. Read-only: no transaction is executed and
+// no package manager lock is taken or released.
+func PreviewUpdates(ctx context.Context, system System, host Host, packages []string, dataDir string) (Preview, error) {
 	out := Preview{Manager: host.Manager, Warnings: []string{}, Limitations: []string{}, Items: []UpdateItem{}, CreatedAt: time.Now().UTC()}
 	if err := validatePackageList(packages); err != nil {
 		return out, err
@@ -413,8 +415,8 @@ func previewLimitations(manager string) []string {
 }
 
 var (
-	aptInstLine = regexp.MustCompile(`^Inst (\S+) \[(\S+)\] \((\S+)[)\]]`)
-	aptConfLine = regexp.MustCompile(`^Conf (\S+) \((\S+)\)`)
+	aptInstLine = regexp.MustCompile(`^Inst (\S+) \[(\S+)\] \(([^)\s]+)`)
+	aptConfLine = regexp.MustCompile(`^Conf (\S+) \(([^)\s]+)`)
 	aptRemvLine = regexp.MustCompile(`^Remv (\S+) \[(\S+)\]`)
 	apkUpdate   = regexp.MustCompile(`Upgrading (\S+) \((\S+) -> (\S+)\)`)
 )
@@ -424,6 +426,7 @@ var (
 // from the simulation text.
 func parsePreview(manager string, packages []string, versions map[string]string, raw []byte) ([]UpdateItem, []string) {
 	warnings := []string{}
+	out := make([]UpdateItem, 0, len(packages))
 	targets := map[string]string{}
 	dependencyChanges := map[string][]string{}
 	removals := map[string][]string{}
@@ -638,22 +641,20 @@ var managerLockPatterns = []string{
 	"failed to lock database",
 }
 
-// lockHeld probes the manager's lock files without blocking. A missing
-// lock file cannot be held. The probe never removes or waits out a lock.
+// lockHeld probes the manager's lock files without blocking. A missing or
+// unreadable lock file cannot prove a busy package database. The probe
+// never removes a lock and never waits for one.
 func lockHeld(system System, manager string) bool {
 	for _, path := range managerLockPaths(manager) {
-		f, err := os.Open(filepath.Join(system.Root, path))
+		lock, err := acquireHostLock(filepath.Join(system.Root, path), false)
+		if errors.Is(err, ErrHostScanLockHeld) {
+			return true
+		}
 		if err != nil {
 			continue
 		}
-		locked, releaseErr := acquireHostLockFile(f)
-		if releaseErr == nil {
-			_ = releaseErr
-		}
-		f.Close()
-		if locked {
-			return true
-		}
+		_ = releaseHostLock(lock)
+		_ = lock.Close()
 	}
 	return false
 }
@@ -713,10 +714,10 @@ func applyCommand(manager string, items []UpdateItem) (string, []string) {
 	return "", nil
 }
 
-// Apply executes one previewed update. It revalidates the captured package
-// state immediately before execution and fails closed on any mismatch.
-// Every terminal outcome is persisted before the caller sees it.
-func Apply(ctx context.Context, system System, host Host, packages []string, token string, dataDir string) (UpdateResult, error) {
+// ApplyUpdates executes one previewed update. It revalidates the captured
+// package state immediately before execution and fails closed on any
+// mismatch. Every terminal outcome is persisted before the caller sees it.
+func ApplyUpdates(ctx context.Context, system System, host Host, packages []string, token string, dataDir string) (UpdateResult, error) {
 	result := UpdateResult{Manager: host.Manager, StartedAt: time.Now().UTC()}
 	if err := validatePackageList(packages); err != nil {
 		return result, err
@@ -731,11 +732,12 @@ func Apply(ctx context.Context, system System, host Host, packages []string, tok
 	if err := requirePrivilege(); err != nil {
 		return result, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, ApplyTimeout)
+	defer cancel()
 
 	names := packageNames(packages)
 	var preview *storedPreview
 	err := mutateOperations(dataDir, func(data *operationsFile) error {
-		pruneLocked(data, result.StartedAt)
 		for _, active := range data.Operations {
 			if active.Status == OperationStatusExecuting {
 				return phelixerr.New(phelixerr.CodeHostSecurityInvalid,
@@ -813,9 +815,9 @@ func Apply(ctx context.Context, system System, host Host, packages []string, tok
 		}
 		return result, err
 	}
-	entries := make([][2]string, 0, len(preview.Items))
-	for _, item := range preview.Items {
-		entries = append(entries, [2]string{item.Name, item.CurrentVersion})
+	entries := make([][2]string, 0, len(preview.Packages))
+	for _, name := range preview.Packages {
+		entries = append(entries, [2]string{name, versions[name]})
 	}
 	if stateHashOf(entries) != preview.StateHash {
 		err := phelixerr.New(phelixerr.CodeHostSecurityPreviewStale,
@@ -826,8 +828,6 @@ func Apply(ctx context.Context, system System, host Host, packages []string, tok
 		return result, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, ApplyTimeout)
-	defer cancel()
 	name, args := applyCommand(host.Manager, preview.Items)
 	raw, runErr := system.Runner.Run(ctx, name, args...)
 	if runErr != nil {
@@ -877,7 +877,7 @@ func isLockOutput(raw []byte) bool {
 // Verify re-scans the host and maps each requested package's remaining
 // findings. The fresh scan record is the only verification evidence: exit
 // codes never verify an operation.
-func Verify(ctx context.Context, system System, store *Store, serverID, host, operationID, dataDir string, intel *Intelligence) (Scan, []VerificationEntry, error) {
+func Verify(ctx context.Context, system System, store *Store, serverID, operationID, dataDir string, intel *Intelligence) (Scan, []VerificationEntry, error) {
 	entries := []VerificationEntry{}
 	empty := Scan{}
 	if operationID == "" {
@@ -943,6 +943,3 @@ func Verify(ctx context.Context, system System, store *Store, serverID, host, op
 	}
 	return scan, entries, nil
 }
-
-// strconv is imported for parity with other managers' version fields.
-var _ = strconv.Itoa

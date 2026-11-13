@@ -35,6 +35,10 @@ func ScanHost(ctx context.Context, system System, store *Store, serverID string,
 	if err == nil && h.Status == "supported" {
 		scan.Status = "inventoried"
 		scan.Warnings = append(scan.Warnings, "Vulnerability intelligence has not been evaluated")
+		if state, known := DetectReboot(ctx, system, h); known {
+			scan.RebootRequired = state.Required
+			scan.RebootReasons = state.Reasons
+		}
 	}
 	if err != nil {
 		scan.Warnings = append(scan.Warnings, err.Error())
