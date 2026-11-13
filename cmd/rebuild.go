@@ -108,6 +108,13 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	if err != nil {
 		return err
 	}
+	hookAdapter := newDeploymentHookRunner(name, appInfo.ID, buildSource, tracker.DeploymentID(), "classic", cfg)
+	if hookAdapter != nil {
+		if err := runBuildHook(context.Background(), hookRunnerOf(hookAdapter), hookConfigOf(cfg), project.HookPreBuild, 0, currentVer); err != nil {
+			tracker.Failed(err)
+			return err
+		}
+	}
 	finalizeDeploymentAnalyses(out, name, cfg)
 	secretTxn, err := beginProjectSecrets(appInfo, cfg, tracker.DeploymentID())
 	if err != nil {
@@ -150,7 +157,7 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	}
 
 	if secretTxn == nil {
-		if err := stopExistingApp(out, appInfo); err != nil {
+		if err := stopExistingAppWithHooks(context.Background(), out, appInfo, hookAdapter, cfg, 0, currentVer); err != nil {
 			return err
 		}
 	}
@@ -180,8 +187,21 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 
 	emitBuildReportTo(out, name, rebuildReport, gitCommit, rec, verErr)
 
+	buildVersion := 0
+	if rec != nil {
+		buildVersion = rec.Version
+	}
+	if err := runBuildHook(context.Background(), hookRunnerOf(hookAdapter), hookConfigOf(cfg), project.HookPostBuild, buildVersion, currentVer); err != nil {
+		tracker.Failed(err)
+		return err
+	}
+	if err := runBuildHook(context.Background(), hookRunnerOf(hookAdapter), hookConfigOf(cfg), project.HookPreDeploy, buildVersion, currentVer); err != nil {
+		tracker.Failed(err)
+		return err
+	}
+
 	if secretTxn != nil {
-		if err := stopExistingApp(out, appInfo); err != nil {
+		if err := stopExistingAppWithHooks(context.Background(), out, appInfo, hookAdapter, cfg, buildVersion, currentVer); err != nil {
 			tracker.Failed(err)
 			return err
 		}
@@ -212,6 +232,15 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	}
 	tracker.InstanceStarted("", classicPID(appInfo.ID), portToUse)
 
+	if err := runBuildHook(context.Background(), hookRunnerOf(hookAdapter), hookConfigOf(cfg), project.HookPostStart, buildVersion, currentVer); err != nil {
+		_ = app.Manager.StopApplication(appInfo.ID)
+		tracker.Failed(err)
+		if rec != nil && spec.AutoRollback && secretTxn == nil {
+			runClassicAutoRollback(out, name, appInfo, rec.Version, portToUse, err)
+		}
+		return err
+	}
+
 	if rec != nil {
 		if err := deploy.PromoteVersion(name, rec.Version, "classic"); err != nil {
 			fmt.Fprintf(out, "  %s Warning: could not promote version: %v\n", color.YellowString("⚠"), err)
@@ -222,6 +251,7 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 	}
 	tracker.PromoteCurrentVersion()
 	tracker.Completed(fmt.Sprintf("running on port %d", portToUse))
+	_ = runBuildHook(context.Background(), hookRunnerOf(hookAdapter), hookConfigOf(cfg), project.HookPostDeploy, buildVersion, currentVer)
 
 	fmt.Fprintf(out, "%s Application %s (ID: %s) rebuilt and started successfully on port %d\n", color.GreenString("✓"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID), portToUse)
 	phelixgrpc.ReportEvent(appInfo.ID, name, "rebuild", true, "", 0, "", "")
@@ -440,6 +470,11 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 	op.setDeploymentID(tracker)
 	defer phelixgrpc.StopDeploymentSender(5 * time.Second)
 
+	hookAdapter := newDeploymentHookRunner(name, appInfo.ID, buildSource, tracker.DeploymentID(), strategy, runtimeCfg)
+	if hookAdapter != nil {
+		deploySource = &deploy.HookBuildSource{Inner: deploySource, Hooks: hookAdapter, Previous: previousVer}
+	}
+
 	secretTxn, err := beginProjectSecrets(appInfo, runtimeCfg, tracker.DeploymentID())
 	if err != nil {
 		return err
@@ -471,6 +506,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 			PortHandoff:    stopPublicPortOwner,
 			Telemetry:      tracker,
 			Secrets:        secretTxn,
+			Hooks:          hookAdapter,
 		}
 		err := ro.Deploy(deployCtx)
 		reconcileAppWithDeploy(name)
@@ -522,6 +558,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 
 			PortHandoff: stopPublicPortOwner,
 			Secrets:     secretTxn,
+			Hooks:       hookAdapter,
 		}
 		err := bg.Deploy(context.Background())
 		reconcileAppWithDeploy(name)
@@ -572,6 +609,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 		PortHandoff:    stopPublicPortOwner,
 		Telemetry:      tracker,
 		Secrets:        secretTxn,
+		Hooks:          hookAdapter,
 	}
 	err = r.Deploy(context.Background())
 	reconcileAppWithDeploy(name)
@@ -679,6 +717,7 @@ func autoRollbackAfterFailedDeploy(out io.Writer, appInfo *app.AppInfo, name str
 	}
 	recordFailedDeploymentAnalysis(out, name, appInfo.ID, "", res.ToVer, failedVer,
 		tracker, cfg, deployanalysis.OutcomeRolledBack, "", time.Now())
+	runPostRollbackHook(context.Background(), appInfo, "", res.ToVer, failedVer, tracker.DeploymentID())
 	fmt.Fprintf(out, "%s Deployment rolled back automatically\n", color.GreenString("✓"))
 	return phelixerr.Wrapf(phelixerr.CodeDeployFailed, deployErr,
 		"deployment of v%d failed; previous version v%d restored automatically", failedVer, res.ToVer)
@@ -734,6 +773,7 @@ func runClassicAutoRollback(out io.Writer, name string, appInfo *app.AppInfo, fa
 		deploy.AutoRollbackReason(failedVer, deployErr), nil, nil, deploy.RollbackSourceAutomatic)
 	emitAutoRollbackEvent(appInfo, name, "classic", failedVer, target,
 		deploy.AutoRollbackReason(failedVer, deployErr), false, nil, "")
+	runPostRollbackHook(context.Background(), appInfo, "classic", target, failedVer, "")
 	logger.Successf("v%d started; previous version restored automatically", target)
 }
 

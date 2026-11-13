@@ -700,6 +700,7 @@ func rollbackZeroDowntime(appInfo *app.AppInfo, appName string, target int, targ
 	// Step: complete
 	fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", appName), target)
 	r.Emit(phelixgrpc.RollbackStepComplete, true, fmt.Sprintf("zero-downtime rollback %s -> %s complete", currentVerStr, targetVerStr), time.Since(totalStart), "")
+	runPostRollbackHook(ctx, appInfo, strategy, target, currentVer, tracker.DeploymentID())
 	verifyStatus := ""
 	if verifyDuration > 0 {
 		// ExecuteRollback returns nil only after the requested verification
@@ -919,6 +920,7 @@ func rollbackClassic(appInfo *app.AppInfo, appName string, target int, targetTag
 	// Step: complete
 	fmt.Printf("%s Rollback of %s to v%d complete\n", color.GreenString("✓"), color.CyanString("'%s'", appName), target)
 	r.Emit(phelixgrpc.RollbackStepComplete, true, fmt.Sprintf("classic rollback %s -> %s complete", currentVerStr, targetVerStr), time.Since(totalStart), "")
+	runPostRollbackHook(context.Background(), appInfo, strategy, target, currentVer, "")
 
 	// Stability verification runs only after the rollback is fully committed
 	// (start + promotion), so it observes the version actually serving.

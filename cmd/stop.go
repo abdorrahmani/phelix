@@ -41,6 +41,14 @@ var StopCmd = &cobra.Command{
 			return err
 		}
 
+		stopStrategy := "classic"
+		if current, derr := loadDeployState(appInfo.Name); derr == nil && current != nil && current.Mode != "" {
+			stopStrategy = string(current.Mode)
+		}
+		if err := runPreStopHook(cmd.Context(), appInfo, stopStrategy); err != nil {
+			return err
+		}
+
 		state, derr := loadDeployState(appInfo.Name)
 		if derr != nil {
 			return derr
