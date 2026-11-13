@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -133,7 +134,315 @@ func newServerSecurityCommand() *cobra.Command {
 		root.AddCommand(sub)
 	}
 	root.AddCommand(newServerHostConfigCommand(&jsonOutput))
+	root.AddCommand(newServerHostPreviewCommand(&jsonOutput))
+	root.AddCommand(newServerHostApplyCommand(&jsonOutput))
+	root.AddCommand(newServerHostVerifyCommand(&jsonOutput))
+	root.AddCommand(newServerHostRebootCommand(&jsonOutput))
 	return root
+}
+
+// serverUpdateContext resolves the outer command budget. Apply and verify
+// need headroom beyond the shared 5m default: the engine's own apply budget
+// is 15m, so the outer bound only shrinks when the operator passes a
+// smaller explicit --timeout.
+func serverUpdateContext(cmd *cobra.Command) (context.Context, context.CancelFunc, error) {
+	duration := 30 * time.Minute
+	if cmd.Flags().Changed("timeout") {
+		duration, _ = cmd.Flags().GetDuration("timeout")
+	}
+	if duration <= 0 || duration > 30*time.Minute {
+		return nil, nil, phelixerr.New(phelixerr.CodeInvalidArgument, "timeout must be positive and at most 30m")
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), duration)
+	return ctx, cancel, nil
+}
+
+// serverDetectHost detects the local host for the update engine.
+func serverDetectHost(ctx context.Context) (hostsecurity.System, hostsecurity.Host, error) {
+	system := newServerHostSystem()
+	host, err := system.Detect(ctx)
+	return system, host, err
+}
+
+// newServerHostPreviewCommand builds the update preview command: the
+// manager's native dry-run for the requested packages, persisted with a
+// confirmable token.
+func newServerHostPreviewCommand(jsonOutput *bool) *cobra.Command {
+	sub := &cobra.Command{
+		Use:           "preview",
+		Short:         "Simulate package updates for the requested packages without installing anything",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if *jsonOutput {
+				defer machine.EnterJSON()()
+			}
+			packages, _ := cmd.Flags().GetStringArray("package")
+			if len(packages) == 0 {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--package is required at least once: --package name or --package name=version, repeatable")
+			}
+			ctx, cancel, err := serverUpdateContext(cmd)
+			if err != nil {
+				return err
+			}
+			defer cancel()
+			system, host, err := serverDetectHost(ctx)
+			if err != nil {
+				return err
+			}
+			preview, err := hostsecurity.PreviewUpdates(ctx, system, host, packages, server.DataDir())
+			if err != nil {
+				return err
+			}
+			if *jsonOutput {
+				return machine.WriteEnvelope(machine.Success("", preview))
+			}
+			return printServerHostPreview(cmd.OutOrStdout(), preview)
+		},
+	}
+	sub.Flags().StringArray("package", nil, "update target, repeatable: --package name or --package name=version (at most 50)")
+	return sub
+}
+
+// newServerHostApplyCommand builds the apply command. Without an explicit
+// token the newest stored preview is used. Apply mutates the package
+// database, so the preview summary is printed and an explicit --yes or an
+// interactive confirmation is required first.
+func newServerHostApplyCommand(jsonOutput *bool) *cobra.Command {
+	sub := &cobra.Command{
+		Use:           "apply",
+		Short:         "Install the packages from a stored preview",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if *jsonOutput {
+				defer machine.EnterJSON()()
+			}
+			token, _ := cmd.Flags().GetString("preview-token")
+			yes, _ := cmd.Flags().GetBool("yes")
+			dataDir := server.DataDir()
+			preview, err := hostsecurity.StoredPreview(dataDir, token)
+			if err != nil {
+				return err
+			}
+			packages := make([]string, 0, len(preview.Items))
+			for _, item := range preview.Items {
+				packages = append(packages, item.Name)
+			}
+			if !yes {
+				printServerHostPreview(cmd.ErrOrStderr(), preview)
+				confirmed, confirmErr := PromptConfirm(fmt.Sprintf("Apply %d package update(s) via %s on this host?", len(preview.Items), preview.Manager), false)
+				if confirmErr != nil || !confirmed {
+					return phelixerr.New(phelixerr.CodeInvalidArgument, "apply was not confirmed; rerun with --yes to skip the prompt")
+				}
+			}
+			ctx, cancel, err := serverUpdateContext(cmd)
+			if err != nil {
+				return err
+			}
+			defer cancel()
+			system, host, err := serverDetectHost(ctx)
+			if err != nil {
+				return err
+			}
+			result, err := hostsecurity.ApplyUpdates(ctx, system, host, packages, preview.Token, dataDir)
+			if err != nil {
+				return err
+			}
+			if *jsonOutput {
+				return machine.WriteEnvelope(machine.Success("", result))
+			}
+			return printServerHostApply(cmd, result)
+		},
+	}
+	sub.Flags().String("preview-token", "", "preview token to confirm (default: the newest stored preview)")
+	sub.Flags().Bool("yes", false, "apply without the interactive confirmation")
+	return sub
+}
+
+// newServerHostVerifyCommand builds the verify command: a fresh scan mapped
+// per requested package into resolved and remaining findings.
+func newServerHostVerifyCommand(jsonOutput *bool) *cobra.Command {
+	sub := &cobra.Command{
+		Use:           "verify",
+		Short:         "Re-scan this host and report which updated packages still have findings",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if *jsonOutput {
+				defer machine.EnterJSON()()
+			}
+			operationID, _ := cmd.Flags().GetString("operation-id")
+			if operationID == "" {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--operation-id is required: use the id printed by apply")
+			}
+			ctx, cancel, err := serverUpdateContext(cmd)
+			if err != nil {
+				return err
+			}
+			defer cancel()
+			store, err := hostsecurity.OpenStore(server.DataDir())
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			id, err := server.EnsureAgentID()
+			if err != nil {
+				return err
+			}
+			dataDir := server.DataDir()
+			scan, entries, err := hostsecurity.Verify(ctx, newServerHostSystem(), store, id, operationID, dataDir, serverIntelligence(dataDir))
+			if err != nil {
+				return err
+			}
+			result := serverVerifyResult{
+				OperationID: operationID, Status: hostsecurity.OperationStatusVerified,
+				ScanID: scan.ID, Coverage: scan.Coverage, RebootRequired: scan.RebootRequired,
+				StartedAt: scan.StartedAt, FinishedAt: scan.FinishedAt,
+				Verification: entries,
+			}
+			if *jsonOutput {
+				return machine.WriteEnvelope(machine.Success("", result))
+			}
+			return printServerHostVerify(cmd, result)
+		},
+	}
+	sub.Flags().String("operation-id", "", "operation id printed by apply (hso_...)")
+	return sub
+}
+
+// newServerHostRebootCommand builds the live reboot state command.
+func newServerHostRebootCommand(jsonOutput *bool) *cobra.Command {
+	sub := &cobra.Command{
+		Use:           "reboot-status",
+		Short:         "Show whether this host needs a restart and why",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if *jsonOutput {
+				defer machine.EnterJSON()()
+			}
+			ctx, cancel, err := serverUpdateContext(cmd)
+			if err != nil {
+				return err
+			}
+			defer cancel()
+			system, host, err := serverDetectHost(ctx)
+			if err != nil {
+				return err
+			}
+			state, known := hostsecurity.DetectReboot(ctx, system, host)
+			if !known {
+				reason := host.Reason
+				if reason == "" {
+					reason = "the distribution has no reboot detection support"
+				}
+				return phelixerr.New(phelixerr.CodeHostSecurityUnsupported, "reboot state is unavailable on this host: "+reason)
+			}
+			if *jsonOutput {
+				return machine.WriteEnvelope(machine.Success("", state))
+			}
+			return printServerHostReboot(cmd, state)
+		},
+	}
+	return sub
+}
+
+// serverVerifyResult is the machine view of one verification run.
+type serverVerifyResult struct {
+	OperationID    string                           `json:"operation_id"`
+	Status         string                           `json:"status"`
+	ScanID         string                           `json:"scan_id"`
+	Coverage       string                           `json:"coverage"`
+	RebootRequired bool                             `json:"reboot_required"`
+	StartedAt      time.Time                        `json:"started_at"`
+	FinishedAt     time.Time                        `json:"finished_at"`
+	Verification   []hostsecurity.VerificationEntry `json:"verification"`
+}
+
+// printServerHostPreview renders a preview for humans.
+func printServerHostPreview(w io.Writer, preview hostsecurity.Preview) error {
+	fmt.Fprintf(w, "Preview token\t%s\n", preview.Token)
+	fmt.Fprintf(w, "Manager\t%s\n", preview.Manager)
+	fmt.Fprintf(w, "Expires\t%s\n", preview.ExpiresAt.Format(time.RFC3339))
+	if preview.RebootRequired {
+		fmt.Fprintln(w, "Reboot\trequired after apply")
+	}
+	for _, warning := range preview.Warnings {
+		fmt.Fprintf(w, "Warning\t%s\n", warning)
+	}
+	for _, limitation := range preview.Limitations {
+		fmt.Fprintf(w, "Limitation\t%s\n", limitation)
+	}
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "PACKAGE\tFROM\tTO")
+	for _, item := range preview.Items {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", item.Name, item.CurrentVersion, item.TargetVersion)
+		for _, change := range item.DependencyChanges {
+			fmt.Fprintf(w, "  dependency\t%s\n", change)
+		}
+		for _, removal := range item.Removals {
+			fmt.Fprintf(w, "  removal\t%s\n", removal)
+		}
+	}
+	return nil
+}
+
+// printServerHostApply renders an apply result for humans.
+func printServerHostApply(cmd *cobra.Command, result hostsecurity.UpdateResult) error {
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "Operation\t%s\n", result.OperationID)
+	fmt.Fprintf(w, "Status\t%s\n", result.Status)
+	fmt.Fprintf(w, "Manager\t%s\n", result.Manager)
+	if result.Summary != "" {
+		fmt.Fprintf(w, "Summary\t%s\n", result.Summary)
+	}
+	if result.Error != "" {
+		fmt.Fprintf(w, "Error\t%s\n", result.Error)
+	}
+	if result.RebootRequired {
+		fmt.Fprintln(w, "Reboot\trequired; run phelix security server reboot-status for the reasons")
+	}
+	fmt.Fprintf(w, "Finished\t%s\n", result.FinishedAt.Format(time.RFC3339))
+	return w.Flush()
+}
+
+// printServerHostVerify renders the verification outcome for humans.
+func printServerHostVerify(cmd *cobra.Command, result serverVerifyResult) error {
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "Operation\t%s\n", result.OperationID)
+	fmt.Fprintf(w, "Status\t%s\n", result.Status)
+	fmt.Fprintf(w, "Scan\t%s\n", result.ScanID)
+	fmt.Fprintf(w, "Coverage\t%s\n", result.Coverage)
+	if result.RebootRequired {
+		fmt.Fprintln(w, "Reboot\trequired")
+	}
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "PACKAGE\tRESOLVED\tDETAIL")
+	for _, entry := range result.Verification {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", entry.Package, strconv.FormatBool(entry.Resolved), entry.Detail)
+	}
+	return w.Flush()
+}
+
+// printServerHostReboot renders the reboot state for humans.
+func printServerHostReboot(cmd *cobra.Command, state hostsecurity.RebootState) error {
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "Reboot required\t%s\n", strconv.FormatBool(state.Required))
+	if state.RunningKernel != "" {
+		fmt.Fprintf(w, "Running kernel\t%s\n", state.RunningKernel)
+	}
+	if state.LatestKernel != "" {
+		fmt.Fprintf(w, "Latest installed kernel\t%s\n", state.LatestKernel)
+	}
+	for _, reason := range state.Reasons {
+		fmt.Fprintf(w, "Reason\t%s\n", reason)
+	}
+	return w.Flush()
 }
 
 // serverHostConfigResult is the machine view of the local host consent

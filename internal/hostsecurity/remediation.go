@@ -264,9 +264,9 @@ func stateHashOf(entries [][2]string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// supportedRemediationManager reports whether the engine can drive the
+// SupportedRemediationManager reports whether the engine can drive the
 // host's package manager.
-func supportedRemediationManager(manager string) bool {
+func SupportedRemediationManager(manager string) bool {
 	switch manager {
 	case "apt", "dnf", "zypper", "apk", "pacman":
 		return true
@@ -307,13 +307,14 @@ func packageNames(packages []string) []string {
 	return out
 }
 
-// euidOf is the privilege seam; tests override it.
-var euidOf = os.Geteuid
+// PrivilegeProbe reports the effective uid for the privilege gate. Tests
+// replace it to exercise both sides of the gate.
+var PrivilegeProbe = os.Geteuid
 
 // requirePrivilege fails the operation before anything executes when the
 // process cannot mutate the package database. There is no auto-sudo.
 func requirePrivilege() error {
-	if euidOf() == 0 {
+	if PrivilegeProbe() == 0 {
 		return nil
 	}
 	return phelixerr.New(phelixerr.CodeHostSecurityPrivilege,
@@ -328,7 +329,7 @@ func PreviewUpdates(ctx context.Context, system System, host Host, packages []st
 	if err := validatePackageList(packages); err != nil {
 		return out, err
 	}
-	if !supportedRemediationManager(host.Manager) {
+	if !SupportedRemediationManager(host.Manager) {
 		return out, phelixerr.Newf(phelixerr.CodeHostSecurityUnsupported,
 			"package manager %q has no update preview adapter", host.Manager)
 	}
@@ -725,7 +726,7 @@ func ApplyUpdates(ctx context.Context, system System, host Host, packages []stri
 	if token == "" {
 		return result, phelixerr.New(phelixerr.CodeHostSecurityInvalid, "a preview token is required")
 	}
-	if !supportedRemediationManager(host.Manager) {
+	if !SupportedRemediationManager(host.Manager) {
 		return result, phelixerr.Newf(phelixerr.CodeHostSecurityUnsupported,
 			"package manager %q has no update adapter", host.Manager)
 	}
@@ -872,6 +873,48 @@ func isLockOutput(raw []byte) bool {
 		}
 	}
 	return false
+}
+
+// StoredPreview loads one durable preview by token; an empty token returns
+// the newest stored preview. Expiry is not enforced here: apply rechecks
+// it.
+func StoredPreview(dataDir, token string) (Preview, error) {
+	state, err := loadOperations(dataDir)
+	if err != nil {
+		return Preview{}, err
+	}
+	var newest *storedPreview
+	for i := range state.Previews {
+		preview := &state.Previews[i]
+		if token != "" {
+			if preview.Token == token {
+				return storedPreviewToPreview(preview), nil
+			}
+			continue
+		}
+		if newest == nil || preview.CreatedAt.After(newest.CreatedAt) {
+			newest = preview
+		}
+	}
+	if newest == nil {
+		return Preview{}, phelixerr.New(phelixerr.CodeHostSecurityNotFound,
+			"no stored preview found; run 'phelix security server preview' first")
+	}
+	return storedPreviewToPreview(newest), nil
+}
+
+// storedPreviewToPreview converts the durable preview record to its API
+// form.
+func storedPreviewToPreview(preview *storedPreview) Preview {
+	items := preview.Items
+	if items == nil {
+		items = []UpdateItem{}
+	}
+	return Preview{
+		Token: preview.Token, ExpiresAt: preview.ExpiresAt, Manager: preview.Manager,
+		Items: items, Warnings: []string{}, Limitations: previewLimitations(preview.Manager),
+		CreatedAt: preview.CreatedAt,
+	}
 }
 
 // Verify re-scans the host and maps each requested package's remaining

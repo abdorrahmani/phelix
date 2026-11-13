@@ -74,9 +74,9 @@ func remediationHost(manager string) Host {
 
 func runAsRoot(t *testing.T, uid int) {
 	t.Helper()
-	previous := euidOf
-	euidOf = func() int { return uid }
-	t.Cleanup(func() { euidOf = previous })
+	previous := PrivilegeProbe
+	PrivilegeProbe = func() int { return uid }
+	t.Cleanup(func() { PrivilegeProbe = previous })
 }
 
 func errorCode(t *testing.T, err error) phelixerr.Code {

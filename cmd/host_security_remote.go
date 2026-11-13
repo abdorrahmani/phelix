@@ -314,22 +314,153 @@ func remoteHostSecurityScanRun(req *pb.MonitorCommandRequest, dataDir string) *p
 	return &pb.MonitorCommandResult{Status: "success", HostSecurityScanRecord: hostSecurityCappedRecord(scan)}
 }
 
-// remoteHostSecurityUpdatePreview, remoteHostSecurityUpdateApply and
-// remoteHostSecurityUpdateVerify execute the package update engine; they
-// are only answerable when the engine is available on this host.
+// remoteHostSecurityUpdateContext bounds one remote update command. The
+// engine applies its own preview and apply budgets inside it.
+func remoteHostSecurityUpdateContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 20*time.Minute)
+}
+
+// remoteHostSecurityUpdateSystem detects the local host for the update
+// engine. A host whose package manager has no adapter fails with
+// HOST_SECURITY_UNSUPPORTED before anything executes.
+func remoteHostSecurityUpdateSystem() (hostsecurity.System, hostsecurity.Host, error) {
+	system := newServerHostSystem()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	host, err := system.Detect(ctx)
+	if err != nil {
+		return system, host, err
+	}
+	if host.Status != "supported" || !hostsecurity.SupportedRemediationManager(host.Manager) {
+		reason := host.Reason
+		if reason == "" {
+			reason = "the package manager has no update adapter"
+		}
+		return system, host, phelixerr.New(phelixerr.CodeHostSecurityUnsupported,
+			"package update operations are unavailable on this host: "+reason)
+	}
+	return system, host, nil
+}
+
+// remoteHostSecurityUpdatePreview runs the manager's native dry-run for the
+// requested packages and returns the durable preview for a later apply.
 func remoteHostSecurityUpdatePreview(req *pb.MonitorCommandRequest, dataDir string) *pb.MonitorCommandResult {
-	return securityCommandError(req, phelixerr.New(phelixerr.CodeHostSecurityUnsupported,
-		"package update operations are unavailable on this host"))
+	system, host, err := remoteHostSecurityUpdateSystem()
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	ctx, cancel := remoteHostSecurityUpdateContext()
+	defer cancel()
+	preview, err := hostsecurity.PreviewUpdates(ctx, system, host, req.GetHostSecurity().GetPackages(), dataDir)
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	return &pb.MonitorCommandResult{Status: "success", HostSecurityPreview: hostSecurityPreviewToProto(preview)}
 }
 
+// remoteHostSecurityUpdateApply executes one previewed update. The engine
+// enforces the privilege gate, the single active operation bound, and
+// preview revalidation before anything runs.
 func remoteHostSecurityUpdateApply(req *pb.MonitorCommandRequest, dataDir string) *pb.MonitorCommandResult {
-	return securityCommandError(req, phelixerr.New(phelixerr.CodeHostSecurityUnsupported,
-		"package update operations are unavailable on this host"))
+	opts := req.GetHostSecurity()
+	system, host, err := remoteHostSecurityUpdateSystem()
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	ctx, cancel := remoteHostSecurityUpdateContext()
+	defer cancel()
+	result, err := hostsecurity.ApplyUpdates(ctx, system, host, opts.GetPackages(), opts.GetPreviewToken(), dataDir)
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	return &pb.MonitorCommandResult{Status: "success", HostSecurityUpdate: hostSecurityUpdateToProto(result)}
 }
 
+// remoteHostSecurityUpdateVerify re-scans the host and reports each
+// requested package's remaining findings against the finished operation.
 func remoteHostSecurityUpdateVerify(req *pb.MonitorCommandRequest, dataDir string) *pb.MonitorCommandResult {
-	return securityCommandError(req, phelixerr.New(phelixerr.CodeHostSecurityUnsupported,
-		"package update operations are unavailable on this host"))
+	opts := req.GetHostSecurity()
+	id, err := server.EnsureAgentID()
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	store, err := hostSecurityOpenStore(dataDir)
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	defer store.Close()
+	system, host, err := remoteHostSecurityUpdateSystem()
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	ctx, cancel := remoteHostSecurityUpdateContext()
+	defer cancel()
+	scan, entries, err := hostsecurity.Verify(ctx, system, store, id, opts.GetOperationId(), dataDir, serverIntelligence(dataDir))
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	result := &pb.HostSecurityUpdateResult{
+		OperationId:    opts.GetOperationId(),
+		Status:         hostsecurity.OperationStatusVerified,
+		Manager:        host.Manager,
+		Summary:        "verified against scan " + scan.ID,
+		RebootRequired: scan.RebootRequired,
+		StartedAtMs:    timeMillis(scan.StartedAt),
+		FinishedAtMs:   timeMillis(scan.FinishedAt),
+	}
+	for _, entry := range entries {
+		result.Verification = append(result.Verification, &pb.HostSecurityVerificationEntry{
+			Package: entry.Package, Resolved: entry.Resolved, Detail: entry.Detail,
+		})
+	}
+	return &pb.MonitorCommandResult{
+		Status:                 "success",
+		HostSecurityScanRecord: hostSecurityCappedRecord(scan),
+		HostSecurityUpdate:     result,
+	}
+}
+
+// hostSecurityPreviewToProto converts a durable preview to the wire type.
+func hostSecurityPreviewToProto(preview hostsecurity.Preview) *pb.HostSecurityUpdatePreview {
+	out := &pb.HostSecurityUpdatePreview{
+		PreviewToken:   preview.Token,
+		ExpiresAtMs:    timeMillis(preview.ExpiresAt),
+		Manager:        preview.Manager,
+		Warnings:       preview.Warnings,
+		Limitations:    preview.Limitations,
+		RebootRequired: preview.RebootRequired,
+		CreatedAtMs:    timeMillis(preview.CreatedAt),
+	}
+	for _, item := range preview.Items {
+		out.Items = append(out.Items, &pb.HostSecurityUpdateItem{
+			Name:              item.Name,
+			CurrentVersion:    item.CurrentVersion,
+			TargetVersion:     item.TargetVersion,
+			DependencyChanges: item.DependencyChanges,
+			Removals:          item.Removals,
+		})
+	}
+	return out
+}
+
+// hostSecurityUpdateToProto converts an apply result to the wire type.
+func hostSecurityUpdateToProto(result hostsecurity.UpdateResult) *pb.HostSecurityUpdateResult {
+	out := &pb.HostSecurityUpdateResult{
+		OperationId:    result.OperationID,
+		Status:         result.Status,
+		Manager:        result.Manager,
+		Summary:        result.Summary,
+		Error:          result.Error,
+		RebootRequired: result.RebootRequired,
+		StartedAtMs:    timeMillis(result.StartedAt),
+		FinishedAtMs:   timeMillis(result.FinishedAt),
+	}
+	for _, entry := range result.Verification {
+		out.Verification = append(out.Verification, &pb.HostSecurityVerificationEntry{
+			Package: entry.Package, Resolved: entry.Resolved, Detail: entry.Detail,
+		})
+	}
+	return out
 }
 
 // hostSecurityStoreError maps a store miss to the host security not-found
