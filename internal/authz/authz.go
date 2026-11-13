@@ -79,7 +79,8 @@ const (
 	// scheduled job on demand. It is distinct from rebuild and scale because
 	// a job runs a command and exits; an operator policy should be able to
 	// allow scheduled workloads while keeping deployments manual.
-	ActionJob = "job"
+	ActionJob  = "job"
+	ActionHook = "hook"
 )
 
 // Decision effects. This is the complete vocabulary; there is no fourth
@@ -208,7 +209,7 @@ func (r Request) Validate() error {
 		return err
 	}
 	switch r.Action {
-	case ActionRebuild, ActionRollback, ActionMatrix, ActionSecurity, ActionScale, ActionJob:
+	case ActionRebuild, ActionRollback, ActionMatrix, ActionSecurity, ActionScale, ActionJob, ActionHook:
 	default:
 		return invalidf("unknown authorizable action %q", r.Action)
 	}

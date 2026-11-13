@@ -44,6 +44,7 @@ var expectedBuildCapabilities = []string{
 	CapabilityAutoscaling,
 	CapabilityScaling,
 	CapabilityJobManagement,
+	CapabilityLifecycleHooks,
 }
 
 func TestAgentCapabilities_ContainsEveryImplementedFeature(t *testing.T) {

@@ -443,8 +443,17 @@ func (c *Client) runMonitorStream() error {
 	} else {
 		c.replayPendingJobResults(jobResults)
 	}
+	if err := hookResults.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote hook ledger unavailable; hooks_run commands will fail closed: %v", err)
+	} else {
+		c.replayPendingHookResults(hookResults)
+	}
 
 	c.sendDeploymentSnapshots()
+
+	c.sendHookSnapshots()
+
+	c.sendHookExecutionResync()
 
 	c.sendHealthSnapshots()
 
@@ -494,6 +503,7 @@ func (c *Client) runMonitorStream() error {
 				continue
 			}
 			c.sendDeploymentSnapshots()
+			c.sendHookSnapshots()
 			c.sendMatrixSnapshots()
 			c.sendVersionSyncs()
 			c.sendSecuritySnapshots()
@@ -553,6 +563,11 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 			if isJobCommand(p.Command.GetType()) {
 				c.handleJobCommand(p.Command, jobResults)
+				continue
+			}
+
+			if isHookCommand(p.Command.GetType()) {
+				c.handleHookCommand(p.Command, hookResults)
 				continue
 			}
 
