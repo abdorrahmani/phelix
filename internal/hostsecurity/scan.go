@@ -5,11 +5,16 @@ import (
 	"errors"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/securityscore"
 	"github.com/abdorrahmani/phelix/internal/version"
 	"github.com/google/uuid"
 )
 
 func Collect(ctx context.Context, system System, store *Store, serverID string, progress func(string)) (Scan, error) {
+	return ScanHost(ctx, system, store, serverID, progress, nil)
+}
+
+func ScanHost(ctx context.Context, system System, store *Store, serverID string, progress func(string), intel *Intelligence) (Scan, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	scan := Scan{ID: uuid.NewString(), ServerID: serverID, Domain: "server", StartedAt: time.Now().UTC(), ScannerVersion: version.Version, MethodVersion: "host-inventory-v1", Status: "failed", Coverage: "unknown", Warnings: []string{}}
@@ -35,6 +40,44 @@ func Collect(ctx context.Context, system System, store *Store, serverID string, 
 		scan.Warnings = append(scan.Warnings, err.Error())
 		if errors.Is(err, context.Canceled) {
 			scan.Status = "cancelled"
+		}
+	}
+	if err == nil && h.Status == "supported" && intel != nil {
+		if progress != nil {
+			progress("Evaluating distribution advisories")
+		}
+		var complete bool
+		scan.Findings, scan.Sources, complete, err = intel.Match(ctx, system, h, packages)
+		scan.Status = "completed"
+		scan.MethodVersion = "host-match-v1"
+		scan.Warnings = nil
+		if err != nil {
+			scan.Warnings = append(scan.Warnings, err.Error())
+		}
+		if !complete {
+			scan.Status = "partial"
+			scan.Coverage = "partial"
+		} else {
+			scan.Coverage = "complete"
+		}
+		fresh := true
+		for _, source := range scan.Sources {
+			if source.Stale {
+				fresh = false
+			}
+			if source.Error != "" {
+				scan.Warnings = append(scan.Warnings, source.Name+": "+source.Error)
+			}
+		}
+		risks := []securityscore.Risk{}
+		scan.Counts = map[string]int{}
+		for _, finding := range scan.Findings {
+			risks = append(risks, finding.Risk)
+			scan.Counts[finding.Severity]++
+		}
+		scan.Score = securityscore.Calculate(risks, complete, fresh, scan.StartedAt, time.Now().UTC())
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			err = nil
 		}
 	}
 	scan.PackageCount = len(packages)

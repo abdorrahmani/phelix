@@ -1,6 +1,10 @@
 package hostsecurity
 
-import "time"
+import (
+	"time"
+
+	"github.com/abdorrahmani/phelix/internal/securityscore"
+)
 
 const MaxPackages = 100000
 
@@ -38,6 +42,12 @@ type Package struct {
 }
 
 type Scan struct {
+	Sources         []Source            `json:"sources"`
+	Score           securityscore.Score `json:"score"`
+	Findings        []Finding           `json:"findings,omitempty"`
+	Counts          map[string]int      `json:"counts"`
+	UnknownPackages int                 `json:"unknown_packages"`
+
 	ID             string    `json:"id"`
 	ServerID       string    `json:"server_id"`
 	Domain         string    `json:"domain"`
