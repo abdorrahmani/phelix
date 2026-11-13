@@ -433,6 +433,251 @@
       },
       "type": "object"
     },
+    "hooks": {
+      "properties": {
+        "post_build": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "continue_on_error": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "env": {},
+            "retries": {
+              "type": "integer"
+            },
+            "retry_interval": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "post_deploy": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "continue_on_error": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "env": {},
+            "retries": {
+              "type": "integer"
+            },
+            "retry_interval": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "post_rollback": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "continue_on_error": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "env": {},
+            "retries": {
+              "type": "integer"
+            },
+            "retry_interval": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "post_start": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "continue_on_error": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "env": {},
+            "retries": {
+              "type": "integer"
+            },
+            "retry_interval": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "pre_build": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "continue_on_error": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "env": {},
+            "retries": {
+              "type": "integer"
+            },
+            "retry_interval": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "pre_deploy": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "continue_on_error": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "env": {},
+            "retries": {
+              "type": "integer"
+            },
+            "retry_interval": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "pre_stop": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "continue_on_error": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "env": {},
+            "retries": {
+              "type": "integer"
+            },
+            "retry_interval": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "pre_traffic": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "continue_on_error": {
+              "type": "boolean"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "env": {},
+            "retries": {
+              "type": "integer"
+            },
+            "retry_interval": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "job": {
       "description": "The one-shot command a type: job runs. Required when type is job.",
       "properties": {
