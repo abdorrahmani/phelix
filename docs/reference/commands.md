@@ -508,6 +508,47 @@ phelix security                   # interactive menu (in a terminal; help otherw
   dashboard reaches the same operations remotely after the app opts in
   with `security.vulnerability.reporting: true`.
 
+## Server package security
+
+Inspect this server's operating system packages, evaluate them against
+distribution advisories, and review the risk score. Read-only: collection
+never refreshes repositories or changes installed packages. Full coverage
+and scoring semantics in [server package security](../guides/server-security.md).
+
+```bash
+phelix security server scan                  # snapshot packages and evaluate advisories
+phelix security server scan --full --json    # explicit full inventory, machine envelope
+phelix security server status                # latest scan: score, counts, coverage, warnings
+phelix security server status --scan-id <id> # one historical scan
+phelix security server report                # findings of the latest scan
+phelix security server report --severity high --state confirmed --limit 50
+phelix security server report --scan-id <id> --package openssl --json
+phelix security server inventory             # installed packages from the latest snapshot
+phelix security server inventory --package openssl --limit 100 --offset 0
+phelix security server history               # immutable scan records with score and coverage
+phelix security server config                # local reporting consent and scan cadence
+phelix security server config --reporting --interval 12h
+phelix security server config --no-reporting
+```
+
+- `--json` emits one machine envelope. Scans carry `sources` (per-source
+  provenance with retrieval time, digest, and staleness), `score`,
+  `counts`, `unknown_packages`, `coverage`, and `warnings`; `report`
+  carries the filtered findings with their own provenance plus
+  `total`, `limit`, `offset`. Empty stays empty.
+- `report` filters: `--severity` and `--state` match case-insensitively
+  and exactly, `--package` is a case-insensitive substring match; paging
+  uses `--limit` (1..500) and a nonnegative `--offset`.
+- `config` edits the local-only consent: reporting defaults to disabled,
+  the scan interval defaults to `24h` and accepts at least `1h`. Invalid
+  values are rejected before writing. There is no remote toggle.
+- Scheduled scans run inside `phelix monitor` while consent is enabled:
+  completion-anchored cadence, failure backoff from 15m doubling up to
+  the interval, and one host scan lock shared with manual scans.
+- Unsupported distributions, missing utilities, and incomplete advisory
+  coverage are reported explicitly; an unknown package is never reported
+  as clean.
+
 ## Other commands
 
 ```bash
