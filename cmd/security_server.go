@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -124,7 +125,86 @@ func newServerSecurityCommand() *cobra.Command {
 		}
 		root.AddCommand(sub)
 	}
+	root.AddCommand(newServerHostConfigCommand(&jsonOutput))
 	return root
+}
+
+// serverHostConfigResult is the machine view of the local host consent
+// configuration.
+type serverHostConfigResult struct {
+	Reporting    bool   `json:"reporting"`
+	ScanInterval string `json:"scan_interval"`
+	Updated      bool   `json:"updated"`
+}
+
+// newServerHostConfigCommand builds the consent configuration command. The
+// consent is local-only by design: it persists under the data directory and
+// never adds a remote toggle.
+func newServerHostConfigCommand(jsonOutput *bool) *cobra.Command {
+	sub := &cobra.Command{
+		Use:           "config",
+		Short:         "Show or edit local host reporting consent and scan cadence",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if *jsonOutput {
+				defer machine.EnterJSON()()
+			}
+			enable := cmd.Flags().Changed("reporting")
+			disable := cmd.Flags().Changed("no-reporting")
+			if enable && disable {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--reporting and --no-reporting are mutually exclusive")
+			}
+			interval, _ := cmd.Flags().GetString("interval")
+			dataDir := server.DataDir()
+			current, err := hostsecurity.LoadHostConfig(dataDir)
+			if err != nil {
+				return err
+			}
+			update := enable || disable || interval != ""
+			if update {
+				if enable {
+					current.Reporting = true
+				}
+				if disable {
+					current.Reporting = false
+				}
+				if interval != "" {
+					if _, err := hostsecurity.ValidateScanInterval(interval); err != nil {
+						return phelixerr.New(phelixerr.CodeInvalidArgument, err.Error())
+					}
+					current.ScanInterval = interval
+				}
+				if err := hostsecurity.SaveHostConfig(dataDir, current); err != nil {
+					return err
+				}
+				if current, err = hostsecurity.LoadHostConfig(dataDir); err != nil {
+					return err
+				}
+			}
+			result := serverHostConfigResult{Reporting: current.Reporting, ScanInterval: current.ScanInterval, Updated: update}
+			if *jsonOutput {
+				return machine.WriteEnvelope(machine.Success("", result))
+			}
+			return printServerHostConfig(cmd, result)
+		},
+	}
+	sub.Flags().Bool("reporting", false, "consent to local host security reporting")
+	sub.Flags().Bool("no-reporting", false, "revoke host security reporting consent")
+	sub.Flags().String("interval", "", "host scan cadence, e.g. 24h (minimum 1h)")
+	return sub
+}
+
+// printServerHostConfig renders the consent configuration for humans.
+func printServerHostConfig(cmd *cobra.Command, result serverHostConfigResult) error {
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "Host reporting\t%s\n", strconv.FormatBool(result.Reporting))
+	fmt.Fprintf(w, "Scan interval\t%s\n", result.ScanInterval)
+	if result.Updated {
+		fmt.Fprintln(w, "State\tupdated")
+	}
+	return w.Flush()
 }
 
 // serverReportResult is the report payload: the filtered findings plus the

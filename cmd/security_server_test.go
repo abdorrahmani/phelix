@@ -352,3 +352,66 @@ func TestServerSecurityReportWithoutScan(t *testing.T) {
 		t.Fatalf("expected not-found guidance, got %v", err)
 	}
 }
+
+func TestServerSecurityConfigCommand(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("PHELIX_DATA_DIR", dataDir)
+
+	out, err := runServerSecurity(t, "config", "--json")
+	if err != nil {
+		t.Fatalf("config show failed: %v", err)
+	}
+	env := decodeEnvelope(t, out)
+	raw, _ := json.Marshal(env.Result)
+	var result serverHostConfigResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("config result is not a config: %v (%s)", err, raw)
+	}
+	if result.Reporting || result.ScanInterval != "24h" || result.Updated {
+		t.Fatalf("unexpected defaults: %+v", result)
+	}
+
+	out, err = runServerSecurity(t, "config", "--json", "--reporting", "--interval", "6h")
+	if err != nil {
+		t.Fatalf("config update failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reporting || result.ScanInterval != "6h" || !result.Updated {
+		t.Fatalf("update not applied: %+v", result)
+	}
+	if !hostsecurity.HostReportingEnabled(dataDir) {
+		t.Fatal("consent not persisted under the data directory")
+	}
+
+	if _, err := runServerSecurity(t, "config", "--json", "--no-reporting"); err != nil {
+		t.Fatalf("revoke failed: %v", err)
+	}
+	if hostsecurity.HostReportingEnabled(dataDir) {
+		t.Fatal("consent not revoked")
+	}
+
+	_, err = runServerSecurity(t, "config", "--json", "--interval", "30m")
+	if err == nil || !strings.Contains(err.Error(), "at least 1h") {
+		t.Fatalf("expected interval validation error, got %v", err)
+	}
+	_, err = runServerSecurity(t, "config", "--json", "--reporting", "--no-reporting")
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected exclusive flags error, got %v", err)
+	}
+
+	cmd := newServerSecurityCommand()
+	var human bytes.Buffer
+	cmd.SetOut(&human)
+	cmd.SetErr(&human)
+	cmd.SetArgs([]string{"config"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human.String(), "Host reporting") || !strings.Contains(human.String(), "false") || !strings.Contains(human.String(), "6h") {
+		t.Fatalf("human config view incomplete: %q", human.String())
+	}
+}
