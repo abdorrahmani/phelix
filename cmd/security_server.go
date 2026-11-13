@@ -35,8 +35,9 @@ var newServerHostSystem = func() hostsecurity.System { return hostsecurity.Local
 
 // serverIntelligence builds the advisory intelligence used by server scans,
 // caching fetched sources under the data directory so repeated scans reuse
-// provenance-tracked snapshots.
-func serverIntelligence(dataDir string) *hostsecurity.Intelligence {
+// provenance-tracked snapshots. It is a var so tests can bind the advisory
+// sources to a local server.
+var serverIntelligence = func(dataDir string) *hostsecurity.Intelligence {
 	return &hostsecurity.Intelligence{
 		CacheDir: filepath.Join(dataDir, "host-security", "intel-cache"),
 		HTTP:     newServerIntelClient(),

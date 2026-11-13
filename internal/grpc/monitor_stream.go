@@ -406,6 +406,7 @@ func (c *Client) runMonitorStream() error {
 	matrixLedger := matrixResults
 	webhookLedger := webhookResults
 	securityLedger := securityResults
+	hostSecurityLedger := hostSecurityResults
 	executor := monitorStream.commandExecutor
 	if err := ledger.initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote rollback ledger unavailable; rollback commands will fail closed: %v", err)
@@ -426,6 +427,11 @@ func (c *Client) runMonitorStream() error {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote security ledger unavailable; mutating security commands will fail closed: %v", err)
 	} else {
 		c.replayPendingSecurityResults(securityLedger)
+	}
+	if err := hostSecurityLedger.initialize(); err != nil {
+		logs.ErrorFile("grpc", "[gRPC Monitor] remote host security ledger unavailable; mutating host security commands will fail closed: %v", err)
+	} else {
+		c.replayPendingHostSecurityResults(hostSecurityLedger)
 	}
 	if err := workerResults.initialize(); err != nil {
 		logs.ErrorFile("grpc", "[gRPC Monitor] remote worker ledger unavailable; worker commands will fail closed: %v", err)
@@ -463,12 +469,14 @@ func (c *Client) runMonitorStream() error {
 
 	c.sendSecuritySnapshots()
 
+	c.sendHostSecuritySnapshots()
+
 	heartbeat := time.NewTicker(agentHeartbeatInterval)
 	defer heartbeat.Stop()
 
 	recvErrCh := make(chan error, 1)
 	go func() {
-		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger, matrixLedger, webhookLedger, securityLedger)
+		recvErrCh <- c.monitorRecvLoop(stream, executor, ledger, matrixLedger, webhookLedger, securityLedger, hostSecurityLedger)
 	}()
 
 	ticker := time.NewTicker(monitorMetricsInterval)
@@ -507,6 +515,7 @@ func (c *Client) runMonitorStream() error {
 			c.sendMatrixSnapshots()
 			c.sendVersionSyncs()
 			c.sendSecuritySnapshots()
+			c.sendHostSecuritySnapshots()
 		case <-serverTicker.C:
 			if monitorStream.isPaused() {
 				continue
@@ -523,7 +532,7 @@ func (c *Client) runMonitorStream() error {
 
 // monitorRecvLoop reads MonitorControl messages pushed by the backend
 // (remote commands, keepalive pings) until the stream ends.
-func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger, matrixLedger *rollbackLedger, webhookLedger *rollbackLedger, securityLedger *rollbackLedger) error {
+func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, executor monitor.CommandExecutor, ledger *rollbackLedger, matrixLedger *rollbackLedger, webhookLedger *rollbackLedger, securityLedger *rollbackLedger, hostSecurityLedger *rollbackLedger) error {
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -548,6 +557,11 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 			if isSecurityCommand(p.Command.GetType()) {
 				c.handleSecurityCommand(p.Command, securityLedger)
+				continue
+			}
+
+			if isHostSecurityCommand(p.Command.GetType()) {
+				c.handleHostSecurityCommand(p.Command, hostSecurityLedger)
 				continue
 			}
 
@@ -580,6 +594,7 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 			c.handleMonitorPing(p.Ping)
 		case *pb.MonitorControl_SecurityResultAck:
 			acknowledgeSecurityResult(securityLedger, p.SecurityResultAck)
+			acknowledgeHostSecurityResult(hostSecurityLedger, p.SecurityResultAck)
 		}
 	}
 }

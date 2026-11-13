@@ -1,0 +1,261 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// HostSecurityCommandOptions carries the parameters of one host_security
+// command (MonitorCommandRequest.host_security = 18). Every field is
+// command-scoped and rejected when set on the wrong command.
+message HostSecurityCommandOptions {
+  // scan_detail: which scan
+  string scan_id = 1;
+  // report/inventory filter substring
+  string package = 2;
+  // report filter: critical|high|medium|low|informational|unknown
+  string severity = 3;
+  // report filter: confirmed|unverified|potential
+  string state = 4;
+  // report/detail findings paging
+  int32 findings_offset = 5;
+  // page size, max 100 (0 = default 20)
+  int32 limit = 6;
+  // history/inventory paging
+  int32 offset = 7;
+  // update_preview/update_apply targets (name or name=version, max 50)
+  repeated string packages = 8;
+  // update_apply: token from preview
+  string preview_token = 9;
+  // update_verify: which operation
+  string operation_id = 10;
+  // always 1
+  uint32 protocol_version = 11;
+}
+
+// HostSecurityRisk carries the prioritization signals behind one finding.
+message HostSecurityRisk {
+  // 0 when unknown
+  double cvss = 1;
+  bool has_cvss = 2;
+  double epss = 3;
+  bool has_epss = 4;
+  bool known_exploited = 5;
+  bool exploit_available = 6;
+  // confirmed|unverified|potential
+  string confidence = 7;
+  // critical|high|medium|low
+  string priority = 8;
+  double priority_points = 9;
+  repeated string priority_reasons = 10;
+}
+
+// HostSecuritySource is one advisory source a scan evaluated.
+message HostSecuritySource {
+  string name = 1;
+  string url = 2;
+  int64 retrieved_at_ms = 3;
+  int64 modified_at_ms = 4;
+  bool stale = 5;
+  string error = 6;
+  string digest = 7;
+}
+
+// HostSecurityContribution is one finding's contribution to the host score.
+message HostSecurityContribution {
+  string id = 1;
+  double points = 2;
+  string priority = 3;
+  repeated string reasons = 4;
+}
+
+// HostSecurityScore is the host's prioritization score.
+message HostSecurityScore {
+  // risk-v1
+  string version = 1;
+  // false when coverage incomplete: value is meaningless
+  bool has_value = 2;
+  // 0..100
+  int32 value = 3;
+  // healthy|needs_attention|high_risk|unknown
+  string status = 4;
+  int64 at_ms = 5;
+  repeated HostSecurityContribution breakdown = 6;
+  repeated string reasons = 7;
+}
+
+// HostSecurityFinding is one advisory evaluated against one installed
+// package, with the provenance needed to audit the disposition.
+message HostSecurityFinding {
+  // sha256(name:arch:cve)[:16]
+  string id = 1;
+  string package = 2;
+  string version = 3;
+  string cve = 4;
+  string advisory_id = 5;
+  string fixed_version = 6;
+  string affected_range = 7;
+  // confirmed|unverified|potential
+  string state = 8;
+  // critical|high|medium|low|informational|unknown
+  string severity = 9;
+  string reason = 10;
+  // source names, must exist in record sources
+  repeated string sources = 11;
+  repeated string references = 12;
+  int64 published_at_ms = 13;
+  int64 modified_at_ms = 14;
+  HostSecurityRisk risk = 15;
+}
+
+// HostSecurityScanRecord carries one host scan record; findings on the wire
+// are capped at 200 and findings_truncated marks a bounded answer.
+message HostSecurityScanRecord {
+  string scan_id = 1;
+  string server_id = 2;
+  // completed|partial|failed|cancelled
+  string status = 3;
+  // complete|partial|unknown
+  string coverage = 4;
+  // host-match-v1 or host-inventory-v1
+  string method_version = 5;
+  string scanner_version = 6;
+  string snapshot_id = 7;
+  int32 package_count = 8;
+  int32 unknown_packages = 9;
+  // severity -> count
+  map<string, int32> counts = 10;
+  repeated HostSecurityFinding findings = 11;
+  int32 findings_total = 12;
+  // wire cap 200
+  bool findings_truncated = 13;
+  repeated HostSecuritySource sources = 14;
+  HostSecurityScore score = 15;
+  repeated string warnings = 16;
+  int64 started_at_ms = 17;
+  int64 finished_at_ms = 18;
+  int64 duration_ms = 19;
+  bool reboot_required = 20;
+  repeated string reboot_reasons = 21;
+}
+
+// HostSecurityScanSummary is one history entry: a scan without findings.
+message HostSecurityScanSummary {
+  string scan_id = 1;
+  string status = 2;
+  string coverage = 3;
+  int32 package_count = 4;
+  int32 finding_count = 5;
+  map<string, int32> counts = 6;
+  HostSecurityScore score = 7;
+  int64 started_at_ms = 8;
+  int64 finished_at_ms = 9;
+  int64 duration_ms = 10;
+}
+
+// HostSecurityScanList is the history answer, newest first.
+message HostSecurityScanList {
+  repeated HostSecurityScanSummary records = 1;
+  int32 total = 2;
+  int32 offset = 3;
+  int32 limit = 4;
+}
+
+// HostSecurityPackageEntry is one installed package from a scan snapshot.
+message HostSecurityPackageEntry {
+  string name = 1;
+  string version = 2;
+  string release = 3;
+  string arch = 4;
+  string manager = 5;
+  string origin = 6;
+}
+
+// HostSecurityPackageList is the inventory answer, from one scan snapshot.
+message HostSecurityPackageList {
+  repeated HostSecurityPackageEntry packages = 1;
+  int32 total = 2;
+  int32 offset = 3;
+  int32 limit = 4;
+  string scan_id = 5;
+}
+
+// HostSecurityConfigState is the host_security_config answer: the local
+// consent state. Consent is local-only and never remotely toggleable.
+message HostSecurityConfigState {
+  bool reporting_enabled = 1;
+  // Go duration string
+  string scan_interval = 2;
+  bool scheduler_active = 3;
+}
+
+// HostSecurityUpdateItem is one package's planned update path.
+message HostSecurityUpdateItem {
+  string name = 1;
+  string current_version = 2;
+  string target_version = 3;
+  repeated string dependency_changes = 4;
+  repeated string removals = 5;
+}
+
+// HostSecurityUpdatePreview is the update_preview answer: the dry-run plan
+// a later update_apply confirms through its preview_token.
+message HostSecurityUpdatePreview {
+  string preview_token = 1;
+  // created + 30min
+  int64 expires_at_ms = 2;
+  string manager = 3;
+  repeated HostSecurityUpdateItem items = 4;
+  repeated string warnings = 5;
+  repeated string limitations = 6;
+  bool reboot_required = 7;
+  int64 created_at_ms = 8;
+}
+
+// HostSecurityVerificationEntry is one requested package's post-apply
+// verification outcome.
+message HostSecurityVerificationEntry {
+  string package = 1;
+  bool resolved = 2;
+  string detail = 3;
+}
+
+// HostSecurityUpdateResult is the update_apply answer: the terminal
+// operation record plus the verification evidence.
+message HostSecurityUpdateResult {
+  string operation_id = 1;
+  // succeeded|failed
+  string status = 2;
+  string manager = 3;
+  string summary = 4;
+  string error = 5;
+  repeated HostSecurityVerificationEntry verification = 6;
+  bool reboot_required = 7;
+  int64 started_at_ms = 8;
+  int64 finished_at_ms = 9;
+}
+
+// HostSecurityRebootState is the reboot_status answer: whether the host
+// needs a reboot and why.
+message HostSecurityRebootState {
+  bool required = 1;
+  repeated string reasons = 2;
+  string running_kernel = 3;
+  string latest_installed_kernel = 4;
+}
+
+// HostSecuritySnapshotSummary is the idempotent statement of the latest
+// completed host scan; pushed only when host reporting consent is enabled.
+message HostSecuritySnapshotSummary {
+  string scan_id = 1;
+  string status = 2;
+  string coverage = 3;
+  int32 package_count = 4;
+  int32 unknown_packages = 5;
+  map<string, int32> counts = 6;
+  HostSecurityScore score = 7;
+  repeated HostSecuritySource sources = 8;
+  int64 started_at_ms = 9;
+  int64 finished_at_ms = 10;
+  bool reboot_required = 11;
+  repeated string warnings = 12;
+}

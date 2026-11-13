@@ -13,6 +13,7 @@ import "internal/grpc/proto/webhook.proto";
 import "internal/grpc/proto/buildreport.proto";
 import "internal/grpc/proto/job.proto";
 import "internal/grpc/proto/hooks.proto";
+import "internal/grpc/proto/host_security.proto";
 
 // ============================================================================
 // Monitoring data messages
@@ -490,6 +491,11 @@ message MonitorCommandRequest {
 
   // Remote lifecycle hook options, carried by hooks_run only.
   HookOptions hooks = 17;
+
+  // Remote host security options, carried by host_security_* commands only.
+  // Every field is command-scoped and rejected when set on the wrong
+  // command. Consent is local-only: reporting is never toggled remotely.
+  HostSecurityCommandOptions host_security = 18;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -602,6 +608,17 @@ message MonitorCommandResult {
   HookExecutionState hook_execution = 35;
   repeated HookConfigEntry hook_configs = 36;
   repeated HookExecutionState hook_executions = 37;
+
+  // Remote host security results (additive; set on host_security_* command
+  // results, empty/absent otherwise. Older backends ignore them). Exactly
+  // one is populated per command.
+  HostSecurityScanRecord host_security_scan_record = 38;
+  HostSecurityScanList host_security_scan_list = 39;
+  HostSecurityConfigState host_security_config = 40;
+  HostSecurityPackageList host_security_inventory = 41;
+  HostSecurityUpdatePreview host_security_preview = 42;
+  HostSecurityUpdateResult host_security_update = 43;
+  HostSecurityRebootState host_security_reboot = 44;
 }
 
 // AutoscaleStatusState is the autoscale_status answer: what the agent's
@@ -731,6 +748,11 @@ message MonitorEvent {
     HookConfigSnapshot hook_config = 27;
     // hook_execution upserts one immutable hook attempt by execution_id.
     HookExecutionState hook_execution = 28;
+    // host_security_summary resyncs the latest completed host scan summary.
+    // The monitor daemon pushes it on every (re)connection and on the
+    // deployment resync tick, only when host reporting consent is enabled.
+    // An older backend ignores the unknown oneof case.
+    HostSecuritySnapshotSummary host_security_summary = 29;
   }
 }
 

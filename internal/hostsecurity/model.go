@@ -62,6 +62,8 @@ type Scan struct {
 	PackageCount   int       `json:"package_count"`
 	Coverage       string    `json:"coverage"`
 	Warnings       []string  `json:"warnings"`
+	RebootRequired bool      `json:"reboot_required"`
+	RebootReasons  []string  `json:"reboot_reasons,omitempty"`
 }
 
 type Page[T any] struct {

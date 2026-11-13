@@ -423,6 +423,13 @@ func runMonitor() error {
 	phelixgrpc.SetSecurityAuthorizer(remoteSecurityAuthorize)
 	phelixgrpc.SecuritySnapshotProvider = securitySnapshotsForConsentingApps
 
+	if err := phelixgrpc.InitializeHostSecurityLedger(); err != nil {
+		logs.Warning("monitor", "remote host security ledger unavailable; mutating host security commands will fail closed: %v", err)
+	}
+	phelixgrpc.SetHostSecurityHandler(RemoteHostSecurityCommand)
+	phelixgrpc.SetHostSecurityAuthorizer(remoteHostSecurityAuthorize)
+	phelixgrpc.HostSecuritySnapshotProvider = hostSecuritySnapshotForConsentingHost
+
 	c.Start()
 
 	if err := healthDaemon.Start(); err != nil {
@@ -517,6 +524,8 @@ func runMonitor() error {
 	phelixgrpc.WaitPendingAutoscaleCommands(phelixgrpc.AutoscaleCommandSettleTimeout())
 	phelixgrpc.WaitPendingJobCommands(phelixgrpc.JobCommandSettleTimeout())
 	phelixgrpc.WaitPendingHookCommands(phelixgrpc.HookCommandSettleTimeout())
+	phelixgrpc.WaitPendingSecurityCommands(phelixgrpc.SecurityCommandSettleTimeout())
+	phelixgrpc.WaitPendingHostSecurityCommands(phelixgrpc.HostSecurityCommandSettleTimeout())
 	phelixgrpc.StopMatrixSender(5 * time.Second)
 
 	cancelAutoscale()
