@@ -91,12 +91,18 @@ func newServerSecurityCommand() *cobra.Command {
 			var result any
 			switch name {
 			case "scan":
+				lock, lockErr := hostsecurity.AcquireHostScanLock(server.DataDir())
+				if lockErr != nil {
+					err = lockErr
+					break
+				}
 				progress := func(stage string) {
 					if !jsonOutput {
 						fmt.Fprintln(cmd.ErrOrStderr(), stage)
 					}
 				}
 				result, err = hostsecurity.ScanHost(ctx, newServerHostSystem(), store, id, progress, serverIntelligence(server.DataDir()))
+				lock.Release()
 			case "status":
 				result, err = store.Scan(ctx, id, scanID)
 			case "report":

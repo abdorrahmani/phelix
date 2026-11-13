@@ -90,6 +90,19 @@ func (s *Store) Scan(ctx context.Context, serverID, id string) (Scan, error) {
 	return scan, err
 }
 
+// LatestFinished returns the newest completed or partial scan record for a
+// server. The scheduler anchors its completion-anchored cadence on it.
+func (s *Store) LatestFinished(ctx context.Context, serverID string) (Scan, error) {
+	var raw []byte
+	err := s.DB.QueryRowContext(ctx, `SELECT record FROM host_scans WHERE server_id=? AND status IN ('completed','partial') ORDER BY started_at DESC,id DESC LIMIT 1`, serverID).Scan(&raw)
+	var scan Scan
+	if err != nil {
+		return scan, err
+	}
+	err = json.Unmarshal(raw, &scan)
+	return scan, err
+}
+
 func ValidatePage(limit, offset int) error {
 	if limit < 1 || limit > 500 || offset < 0 || offset > 1000000 {
 		return errors.New("limit must be 1..500 and offset 0..1000000")

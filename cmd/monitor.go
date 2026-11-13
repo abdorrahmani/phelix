@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/health"
+	"github.com/abdorrahmani/phelix/internal/hostsecurity"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/project"
@@ -69,6 +72,41 @@ func runSecurityScheduler(ctx context.Context) {
 			OSVBaseURL:  security.OSVBaseURL(),
 		}
 		_, err := security.RunScan(scanCtx, opts)
+		return err
+	}
+	scheduler.Log = func(level, format string, args ...any) {
+		if level == "warning" {
+			logs.Warning("security", format, args...)
+			return
+		}
+		logs.Info("security", format, args...)
+	}
+	scheduler.Run(ctx)
+}
+
+// runHostSecurityScheduler drives scheduled operating-system security scans
+// for this host. It runs only while host reporting consent is enabled,
+// coordinates with manual scans through the host scan lock, and emits scan
+// stage progress as plain stderr lines.
+func runHostSecurityScheduler(ctx context.Context) {
+	id, err := server.EnsureAgentID()
+	if err != nil {
+		logs.Warning("security", "host security scheduler unavailable: %v", err)
+		return
+	}
+	store, err := hostsecurity.OpenStore(server.DataDir())
+	if err != nil {
+		logs.Warning("security", "host security scheduler unavailable: %v", err)
+		return
+	}
+	defer store.Close()
+	scheduler := hostsecurity.NewScheduler(store, server.DataDir(), id)
+	scheduler.Scan = func(scanCtx context.Context) error {
+		progress := func(stage string) {
+			fmt.Fprintln(os.Stderr, stage)
+		}
+		intel := &hostsecurity.Intelligence{CacheDir: filepath.Join(server.DataDir(), "host-security", "intel-cache")}
+		_, err := hostsecurity.ScanHost(scanCtx, hostsecurity.LocalSystem(), store, id, progress, intel)
 		return err
 	}
 	scheduler.Log = func(level, format string, args ...any) {
@@ -344,6 +382,14 @@ func runMonitor() error {
 		runSecurityScheduler(securityCtx)
 	}()
 
+	hostSecurityCtx, cancelHostSecurity := context.WithCancel(context.Background())
+	defer cancelHostSecurity()
+	hostSecurityDone := make(chan struct{})
+	go func() {
+		defer close(hostSecurityDone)
+		runHostSecurityScheduler(hostSecurityCtx)
+	}()
+
 	jobCtx, cancelJobs := context.WithCancel(context.Background())
 	defer cancelJobs()
 	jobsDone := make(chan struct{})
@@ -448,6 +494,13 @@ func runMonitor() error {
 	case <-securityDone:
 	case <-time.After(10 * time.Second):
 		logs.Warning("security", "scheduler did not settle within the shutdown window")
+	}
+
+	cancelHostSecurity()
+	select {
+	case <-hostSecurityDone:
+	case <-time.After(10 * time.Second):
+		logs.Warning("security", "host scheduler did not settle within the shutdown window")
 	}
 
 	cancelJobs()
