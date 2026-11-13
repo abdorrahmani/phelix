@@ -1,0 +1,37 @@
+name: hooks-go
+port: 8080
+watching: disable
+health:
+  endpoints:
+    - name: default
+      path: /health
+      interval: 10s
+      retries: 3
+      mode: auto
+deploy:
+  strategy: blue-green
+hooks:
+  pre_build:
+    command: ["./scripts/pre-build.sh"]
+    timeout: 2m
+  post_build:
+    command: ["./scripts/post-build.sh"]
+  pre_deploy:
+    command: ["./scripts/pre-deploy.sh"]
+    timeout: 30s
+  post_start:
+    command: ["./scripts/post-start.sh"]
+    timeout: 30s
+  pre_traffic:
+    command: ["./scripts/pre-traffic.sh"]
+    timeout: 30s
+  post_deploy:
+    command: ["./scripts/post-deploy.sh"]
+    continue_on_error: true
+  pre_stop:
+    command: ["./scripts/pre-stop.sh"]
+    timeout: 20s
+    continue_on_error: true
+  post_rollback:
+    command: ["./scripts/post-rollback.sh"]
+    continue_on_error: true

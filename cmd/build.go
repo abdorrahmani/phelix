@@ -272,6 +272,12 @@ var BuildCmd = &cobra.Command{
 		tracker, flushTelemetry := classicTracker(id, name, buildPort, 0)
 		defer flushTelemetry()
 		op.setDeploymentID(tracker)
+		hookAdapter := newDeploymentHookRunner(name, id, currentDir, tracker.DeploymentID(), "classic", projCfg)
+		if err := runBuildHook(context.Background(), hookRunnerOf(hookAdapter), hookConfigOf(projCfg), project.HookPreBuild, 0, 0); err != nil {
+			tracker.Failed(err)
+			discardAppEntry(id, name)
+			return err
+		}
 
 		info, err := GetAppInfo(id)
 		if err != nil {
@@ -321,6 +327,11 @@ var BuildCmd = &cobra.Command{
 		buildVer := 0
 		if rec != nil {
 			buildVer = rec.Version
+		}
+		if err := runBuildHook(context.Background(), hookRunnerOf(hookAdapter), hookConfigOf(projCfg), project.HookPostBuild, buildVer, 0); err != nil {
+			tracker.Failed(err)
+			markBuildFailed(id)
+			return err
 		}
 		phelixgrpc.ReportBuildEventForApp(id, name, "classic", true, buildVer, buildTag, gitCommit, report, "")
 

@@ -58,6 +58,7 @@ type Config struct {
 	// without the section is never scheduled and manual scans decide their
 	// own defaults.
 	Security *SecurityConfig `yaml:"security,omitempty"`
+	Hooks    *HooksConfig    `yaml:"hooks,omitempty"`
 }
 
 // Load reads and validates phelix.yaml from dir. A missing file is reported as
@@ -115,6 +116,9 @@ func load(dir string, strict bool) (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Security.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Hooks.Validate(dir); err != nil {
 		return nil, err
 	}
 	return cfg, nil

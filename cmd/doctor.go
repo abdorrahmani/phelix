@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -208,6 +209,7 @@ func runDoctorChecks(dir string) []checkResult {
 	}
 
 	results = appendSecretsChecks(results, cfg)
+	results = appendHooksChecks(results, cfg, dir)
 
 	if cfg != nil && cfg.IsWorker() {
 		results = append(results, checkResult{
@@ -371,5 +373,43 @@ func appendSecretsChecks(results []checkResult, cfg *project.Config) []checkResu
 	err = deploy.InspectSecretCoverage(app.AppListItem{ID: info.ID, Name: info.Name, PID: info.PID, StartTicks: info.StartTicks, Status: info.Status, SecretEnvs: info.SecretEnvs})
 	state, reason := secrets.SecurityOf(info.ID)
 	results = append(results, checkResult{name: "Secrets security", pass: err == nil, detail: string(state), message: reason})
+	return results
+}
+
+func appendHooksChecks(results []checkResult, cfg *project.Config, dir string) []checkResult {
+	if cfg == nil || cfg.Hooks == nil {
+		return results
+	}
+	configured := cfg.Hooks.Configured()
+	if len(configured) == 0 {
+		return results
+	}
+	if err := cfg.Hooks.Validate(dir); err != nil {
+		results = append(results, checkResult{name: "Lifecycle hooks", detail: "invalid", message: "\n" + err.Error() + "\n"})
+		return results
+	}
+	var missing []string
+	for _, name := range configured {
+		hook := cfg.Hooks.Get(name)
+		if len(hook.Command) == 0 {
+			continue
+		}
+		command := hook.Command[0]
+		if strings.HasPrefix(command, "./") || strings.HasPrefix(command, "../") {
+			if _, err := os.Stat(filepath.Join(dir, command)); err != nil {
+				missing = append(missing, name+" ("+command+")")
+			}
+		}
+	}
+	if len(missing) > 0 {
+		results = append(results, checkResult{
+			name: "Lifecycle hooks", warn: true,
+			detail: fmt.Sprintf("%d configured, executable missing", len(configured)),
+			message: "\nThese hooks reference a project-relative executable that does not exist:\n  " +
+				strings.Join(missing, "\n  ") + "\n",
+		})
+		return results
+	}
+	results = append(results, checkResult{name: "Lifecycle hooks", pass: true, detail: fmt.Sprintf("%d configured", len(configured))})
 	return results
 }

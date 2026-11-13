@@ -71,7 +71,8 @@ const (
 	// CapabilityJobManagement: the agent implements remote job management
 	// (job_* MonitorStream commands reading and running the existing job
 	// engine, plus job lifecycle events).
-	CapabilityJobManagement = "job_management"
+	CapabilityJobManagement  = "job_management"
+	CapabilityLifecycleHooks = "lifecycle_hooks"
 	// CapabilityLogBatch: the agent batches monitor log entries into
 	// MonitorLogBatch events (log_batch oneof case) alongside the legacy
 	// per-line log_entry events, with bounded queueing and a dropped-lines

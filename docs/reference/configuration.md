@@ -397,6 +397,28 @@ gated by the `scale` authorization action.
 Workers and rolling services both accept the block. See
 [deployment architecture](../architecture/deployment.md#autoscaling-decision-engine-current-status).
 
+## Lifecycle hooks
+
+The optional `hooks` block runs commands at defined build, deploy, rollback and
+stop points. Each hook takes an argument array, a timeout, retries and a failure
+policy. Hooks without an explicit policy are critical except `post_deploy`,
+`post_rollback` and `pre_stop`, whose failures are reported without undoing a
+completed operation.
+
+```yaml
+hooks:
+  pre_deploy:
+    command: ["./bin/migrate", "up"]
+    timeout: 5m
+    retries: 2
+  post_deploy:
+    command: ["./scripts/notify"]
+    continue_on_error: true
+```
+
+See [Deployment Lifecycle Hooks](../guides/lifecycle-hooks.md) for ordering,
+environment variables, recovery and safe migration guidance.
+
 ## Validation
 
 The configuration is validated before it can affect a build or deploy. An invalid

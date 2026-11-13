@@ -143,6 +143,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 
 - [Simple Go application](examples/simple-go/): the minimal `PORT`-reading app.
 - [Simple Rust application](examples/simple-rust/): the same, in Rust (stdlib only).
+- [Lifecycle hooks (Go)](examples/hooks-go/): every deployment hook with runnable scripts.
 - [Blue-green deployment](examples/blue-green/): a zero-downtime deploy you can watch cut over.
 - [Docker runtime (Go)](examples/docker-go/): Phelix runs the app as a container.
 - [Docker runtime (Rust)](examples/docker-rust/): the same, in Rust.
@@ -172,6 +173,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Agent Execution Sessions](docs/guides/agent-sessions.md)
 - [Interactive Usage](docs/guides/interactive-usage.md)
 - [Zero-Downtime Deployments](docs/guides/zero-downtime-deployments.md)
+- [Deployment Lifecycle Hooks](docs/guides/lifecycle-hooks.md)
 - [Workers](docs/guides/workers.md)
 - [Jobs](docs/guides/jobs.md)
 - [Canary & Progressive Rollouts](docs/guides/canary-and-progressive-rollouts.md)

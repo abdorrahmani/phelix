@@ -116,6 +116,11 @@ var InitCmd = &cobra.Command{
 			if err := project.Save(dir, cfg); err != nil {
 				return err
 			}
+			if initHooksExample {
+				if err := appendHooksExample(dir); err != nil {
+					return err
+				}
+			}
 			fmt.Printf("%s Created %s (name: %s, type: worker, replicas: %d)\n",
 				color.GreenString("✓"), color.CyanString(project.FileName), cfg.Name, cfg.Deploy.Replicas)
 			fmt.Printf("  %s supervision: restart policy %s with jittered backoff; deploy with %s.\n",
@@ -172,6 +177,11 @@ var InitCmd = &cobra.Command{
 
 		if err := project.Save(dir, cfg); err != nil {
 			return err
+		}
+		if initHooksExample {
+			if err := appendHooksExample(dir); err != nil {
+				return err
+			}
 		}
 
 		// Diagnostic-only warning: a hardcoded port is not fatal here; doctor
@@ -248,9 +258,61 @@ func init() {
 	InitCmd.Flags().StringVar(&initDockerBuild, "docker-build", "", "Docker image-build strategy (docker runtime only): dockerfile (default) or compose")
 	InitCmd.Flags().StringVar(&initComposeService, "compose-service", "", "Compose service that builds this app's image (used with --docker-build compose; defaults to the app name)")
 	InitCmd.Flags().BoolVar(&initYes, "yes", false, "Overwrite an existing phelix.yaml without prompting")
+	InitCmd.Flags().BoolVar(&initHooksExample, "hooks-example", false, "Append a commented lifecycle hooks example to the generated phelix.yaml")
 }
 
 // inferProjectName uses the current directory name as the application name.
+var initHooksExample bool
+
+const hooksExample = `
+# Deployment lifecycle hooks (optional). Every hook is an argument array, never
+# a shell string. Timeouts, retries and failure policies are per hook.
+#
+# hooks:
+#   pre_build:
+#     command: ["./bin/migrate", "up"]
+#     timeout: 60s
+#     retries: 1
+#     retry_interval: 2s
+#     continue_on_error: false
+#   post_build:
+#     command: ["./scripts/validate-build.sh"]
+#     timeout: 30s
+#   pre_deploy:
+#     command: ["./scripts/check-database.sh"]
+#     timeout: 30s
+#   post_start:
+#     command: ["./bin/warm-cache"]
+#     timeout: 30s
+#   pre_traffic:
+#     command: ["./scripts/smoke-test.sh"]
+#     timeout: 60s
+#   post_deploy:
+#     command: ["./scripts/notify-deployment.sh"]
+#     timeout: 15s
+#     continue_on_error: true
+#   pre_stop:
+#     command: ["./scripts/graceful-shutdown.sh"]
+#     timeout: 20s
+#   post_rollback:
+#     command: ["./scripts/notify-rollback.sh"]
+#     timeout: 15s
+#     continue_on_error: true
+`
+
+func appendHooksExample(dir string) error {
+	path := filepath.Join(dir, project.FileName)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "open phelix.yaml", err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(hooksExample); err != nil {
+		return phelixerr.Wrap(phelixerr.CodeFilesystem, "write hooks example", err)
+	}
+	return nil
+}
+
 func inferProjectName() string {
 	dir, err := os.Getwd()
 	if err != nil {

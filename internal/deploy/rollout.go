@@ -203,6 +203,7 @@ type Rollout struct {
 	PortHandoff func(ctx context.Context, appName string, publicPort int) error
 	// Telemetry observes the rollout lifecycle. Optional: nil is silent.
 	Telemetry *Tracker
+	Hooks     LifecycleHooks
 	// stateStore is a test seam for deterministic persistence-failure
 	// coverage. Production leaves it nil and uses Store.
 	stateStore func(*DeployState) error
@@ -374,6 +375,11 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	targetVer := targetVersionFromSource(ro.Source)
 	ro.Telemetry.SetTargetVersion(targetVer)
 
+	if err := runHook(ctx, ro.Hooks, "pre_deploy", targetVer, state.ActiveVersion); err != nil {
+		ro.undoMigration(state, pre)
+		return ro.failf(err)
+	}
+
 	// 6. Start the canary on the inactive slot and gate it on the deploy-tier
 	// health check — traffic is never routed to it before this passes.
 	log.Stepf("starting canary instance on slot %s", canarySlot)
@@ -402,6 +408,15 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "rollout: persist canary instance state"))
 	}
 	ro.Telemetry.InstanceStarted(canarySlot, canaryInst.PID, port)
+
+	if err := runHook(ctx, ro.Hooks, "post_start", targetVer, state.ActiveVersion); err != nil {
+		stopHeldProcess(ctx, proc, grace)
+		canaryInst.Status = "failed"
+		canaryInst.PID = 0
+		ro.storeState(state)
+		ro.undoMigration(state, pre)
+		return ro.failf(err)
+	}
 
 	tierCfg := ro.healthCfg()
 	tier := selectDeployHealth(ctx, tierCfg, ro.AppName, hostPort(port), log, ro.Notifier)
@@ -494,6 +509,10 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		ro.Telemetry.RolloutAborted(canarySlot, canaryInst.Port,
 			truncateReason(reason.Error()), string(phelixerr.CodeOf(reason)))
 		return ro.failf(reason)
+	}
+
+	if err := runHook(ctx, ro.Hooks, "pre_traffic", targetVer, state.ActiveVersion); err != nil {
+		return abort(err, CanaryFailed, false)
 	}
 
 	// 8. Walk the steps.
@@ -668,6 +687,9 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 
 	// 10. The promotion is durable; the old stable instance can drain.
 	if oldInst != nil && (oldInst.PID > 0 || oldInst.ContainerID != "") {
+		if err := runHook(ctx, ro.Hooks, "pre_stop", targetVer, oldVersion); err != nil {
+			log.Warnf("pre_stop hook failed; the rollout is complete and the previous stable slot is left running: %v", err)
+		}
 		log.Stepf("draining previous stable slot %s (pid %d, grace %s)", oldSlot, oldInst.PID, grace)
 		ro.Telemetry.InstanceDraining(oldSlot, oldInst.PID)
 		stoppedPID := oldInst.PID
@@ -689,6 +711,7 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	log.Successf("%s rollout of %s complete: %s serves 100%% of traffic on slot %s",
 		ro.Plan.Strategy, ro.AppName, ver, canarySlot)
 	ro.Telemetry.Completed(fmt.Sprintf("%s promoted to 100%% of traffic on slot %s", ver, canarySlot))
+	_ = runHook(ctx, ro.Hooks, "post_deploy", targetVer, oldVersion)
 	return nil
 }
 

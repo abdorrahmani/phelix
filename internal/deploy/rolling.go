@@ -59,11 +59,15 @@ type Rolling struct {
 	// Telemetry observes the rollout lifecycle for the backend. Optional: a
 	// nil Tracker is silent and changes no deployment behaviour.
 	Telemetry *Tracker
+	Hooks     LifecycleHooks
 
 	// enrolled tracks whether the app has been registered with the proxy
 	// daemon during this deploy so the first healthy replica can Add instead
 	// of Switch-ing against an unknown app (which silently routes nothing).
 	enrolled bool
+
+	startHookDone   bool
+	trafficHookDone bool
 }
 
 // Deploy restarts replicas one at a time while keeping the replica currently
@@ -196,6 +200,21 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	targetVer := targetVersionFromSource(src)
 	r.Telemetry.SetTargetVersion(targetVer)
 
+	if err := runHook(ctx, r.Hooks, "pre_deploy", targetVer, state.ActiveVersion); err != nil {
+		if migrated {
+			r.undoMigration(state, pre, log)
+		}
+		return err
+	}
+	if hasLiveReplica(state.Replicas) {
+		if err := runHook(ctx, r.Hooks, "pre_stop", targetVer, state.ActiveVersion); err != nil {
+			if migrated {
+				r.undoMigration(state, pre, log)
+			}
+			return err
+		}
+	}
+
 	tierCfg := r.healthCfg()
 	// Shared tier resolution/warning with blue-green (internal/deploy/health.go).
 	tier := selectDeployHealth(ctx, tierCfg, r.AppName, firstPortAddr(state), log, r.Notifier)
@@ -263,6 +282,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 	state.Health.TierLabel = tier.String()
 	state.Health.HealthyAt = time.Now()
 	ver := targetVersionFromSource(src)
+	previousVer := state.ActiveVersion
 	state.ActiveVersion = ver
 	if r.atomicSecretRecovery {
 		if err := RestoreProxyRoute(ctx, state, r.ProxyClient, log); err != nil {
@@ -290,6 +310,7 @@ func (r *Rolling) Deploy(ctx context.Context) (errRet error) {
 
 	log.Successf("rolling deploy of %s complete: %d replicas updated", r.AppName, len(indices))
 	r.Telemetry.Completed(fmt.Sprintf("%d replicas updated", len(indices)))
+	_ = runHook(ctx, r.Hooks, "post_deploy", targetVer, previousVer)
 	return nil
 }
 
@@ -364,6 +385,15 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	if err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "start replica %s replacement", key)
 	}
+	if !r.startHookDone {
+		if err := runHook(ctx, r.Hooks, "post_start", targetVer, state.ActiveVersion); err != nil {
+			stopHeldProcess(ctx, proc, grace)
+			restoreReplica(state, key, old)
+			_ = r.persist(state)
+			return err
+		}
+		r.startHookDone = true
+	}
 	newPID := proc.PID()
 	inst := state.Replicas[key]
 	if oldPID > 0 {
@@ -410,6 +440,16 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 		state.Replicas[key] = candidate
 		state.Retiring = append(state.Retiring, old)
 		return nil
+	}
+
+	if !r.trafficHookDone {
+		if err := runHook(ctx, r.Hooks, "pre_traffic", targetVer, state.ActiveVersion); err != nil {
+			stopHeldProcess(ctx, proc, grace)
+			restoreReplica(state, key, old)
+			_ = r.persist(state)
+			return err
+		}
+		r.trafficHookDone = true
 	}
 
 	// 3. Membership swap FIRST: new instance in, old instance out.
@@ -745,4 +785,13 @@ func firstPortAddr(state *DeployState) string {
 		}
 	}
 	return "127.0.0.1:0"
+}
+
+func hasLiveReplica(replicas map[string]*Instance) bool {
+	for _, inst := range replicas {
+		if inst != nil && (inst.PID > 0 || inst.ContainerID != "") {
+			return true
+		}
+	}
+	return false
 }

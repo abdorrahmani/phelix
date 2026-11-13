@@ -100,6 +100,7 @@ type BlueGreen struct {
 	// Telemetry observes the deployment lifecycle for the backend. Optional:
 	// a nil Tracker is silent and changes no deployment behaviour.
 	Telemetry *Tracker
+	Hooks     LifecycleHooks
 }
 
 // Deploy performs one blue-green deployment. The sequence mirrors the project
@@ -222,13 +223,17 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeOf(err), err, "load env snapshot"))
 	}
 
+	targetVer := targetVersionFromSource(src)
+	if err := runHook(ctx, bg.Hooks, "pre_deploy", targetVer, state.ActiveVersion); err != nil {
+		return bg.failf(err)
+	}
+
 	// 4. Start the new instance on a free internal port.
 	log.Stepf("starting new instance on slot %s", inactive)
 	proc, port, err := bg.Launcher(ctx, binaryPath, envOverlay)
 	if err != nil {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "start instance failed"))
 	}
-	targetVer := targetVersionFromSource(src)
 	newInst := &Instance{
 		SecretEnvs:  phelixerr.SecretEnvNames(envOverlay),
 		Slot:        inactive,
@@ -253,6 +258,14 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	bg.storeState(state) // persist intermediate state so a crash here is observable
 	bg.Telemetry.SetTargetVersion(targetVer)
 	bg.Telemetry.InstanceStarted(inactive, newInst.PID, port)
+
+	if err := runHook(ctx, bg.Hooks, "post_start", targetVer, state.ActiveVersion); err != nil {
+		_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
+		newInst.Status = "failed"
+		newInst.PID = 0
+		bg.storeState(state)
+		return bg.failf(err)
+	}
 
 	// 5. Select the health tier for the new instance (shared with rolling).
 	tierCfg := bg.healthCfg()
@@ -291,6 +304,14 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	state.Health.TierLabel = tier.String()
 	state.Health.HealthyAt = time.Now()
 	bg.Telemetry.InstanceHealthy(inactive, newInst.PID, port)
+
+	if err := runHook(ctx, bg.Hooks, "pre_traffic", targetVer, state.ActiveVersion); err != nil {
+		_, _ = GracefulStop(ctx, proc, grace, bg.inFlight(bg.AppName))
+		newInst.Status = "failed"
+		newInst.PID = 0
+		bg.storeState(state)
+		return bg.failf(err)
+	}
 
 	// 7. Atomically switch the proxy to the new instance.
 	primary := proxy.Target{Host: hostPort(port), Label: inactive}
@@ -481,6 +502,9 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	if oldActive != "" {
 		if old := state.Slots[oldActive]; old != nil && (old.PID > 0 || old.ContainerID != "") {
+			if err := runHook(ctx, bg.Hooks, "pre_stop", targetVer, oldVersion); err != nil {
+				log.Warnf("pre_stop hook failed; the deployment is complete and the retired slot is left running: %v", err)
+			}
 			log.Stepf("gracefully stopping old slot %s (pid %d, grace %s)", oldActive, old.PID, grace)
 			bg.Telemetry.InstanceDraining(oldActive, old.PID)
 			// We no longer hold the process handle for the previous instance (it
@@ -511,6 +535,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	log.Successf("blue-green deploy of %s complete: active slot %s (pid %d, port %d)",
 		bg.AppName, inactive, newInst.PID, newInst.Port)
 	bg.Telemetry.Completed(fmt.Sprintf("active slot %s on port %d", inactive, newInst.Port))
+	_ = runHook(ctx, bg.Hooks, "post_deploy", targetVer, oldVersion)
 	return nil
 }
 
