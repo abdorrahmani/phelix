@@ -246,6 +246,13 @@ Shows the recorded rollback outcomes for one application, newest first.
 | `phelix log [<ID\|AppName>]` | Tail app logs (last 10 lines + live stream). No arg → Phelix's own logs. `--replica N` tails one worker replica's output instead. |
 | `phelix remove <ID\|AppName> [--purge]` | Stop and delete an app from management. For a worker app the replicas are stopped first. `--purge` also deletes `~/.phelix/apps/<Name>/` (version history, build artifacts, encrypted env snapshots). Irreversible. |
 | `phelix watch <ID\|AppName> [--disable]` | Enable (default) or disable backend monitoring for one app. See [Monitoring](../guides/monitoring.md). |
+| `phelix hooks list [<ID\|AppName>]` | List the lifecycle hooks configured for an app. `--json` for scripts. |
+| `phelix hooks status [<ID\|AppName>]` | Latest status per hook. |
+| `phelix hooks history [<ID\|AppName>]` | Execution history, newest first. Filter with `--hook`, `--status`, `--deployment` and `--limit`. |
+| `phelix hooks inspect <execution-id> [<ID\|AppName>]` | One execution with captured output. `--last` picks the newest. |
+
+See [Deployment Lifecycle Hooks](../guides/lifecycle-hooks.md) for configuration,
+ordering and failure semantics.
 
 ### `phelix log [<ID|AppName>] [flags]`
 
