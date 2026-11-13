@@ -12,6 +12,7 @@ import "internal/grpc/proto/matrix.proto";
 import "internal/grpc/proto/webhook.proto";
 import "internal/grpc/proto/buildreport.proto";
 import "internal/grpc/proto/job.proto";
+import "internal/grpc/proto/hooks.proto";
 
 // ============================================================================
 // Monitoring data messages
@@ -486,6 +487,9 @@ message MonitorCommandRequest {
   // Every field is command-scoped and rejected when set on another job
   // command. See job.proto.
   JobOptions job = 16;
+
+  // Remote lifecycle hook options, carried by hooks_run only.
+  HookOptions hooks = 17;
 }
 
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
@@ -591,6 +595,13 @@ message MonitorCommandResult {
   // job_log is the job_logs answer, bounded by the request's limit and
   // offset-paged through next_offset.
   JobLogChunk job_log = 34;
+
+  // Remote lifecycle hook results (additive). hook_execution is the terminal
+  // record of hooks_run; hook_configs and hook_executions are the optional
+  // query answers.
+  HookExecutionState hook_execution = 35;
+  repeated HookConfigEntry hook_configs = 36;
+  repeated HookExecutionState hook_executions = 37;
 }
 
 // AutoscaleStatusState is the autoscale_status answer: what the agent's
@@ -716,6 +727,10 @@ message MonitorEvent {
     // executor or scheduler. Observations only: the durable execution record
     // remains the source of truth and is re-read with job_history.
     JobLifecycleEvent job_event = 26;
+    // hook_config replaces one app's mirrored hook configuration.
+    HookConfigSnapshot hook_config = 27;
+    // hook_execution upserts one immutable hook attempt by execution_id.
+    HookExecutionState hook_execution = 28;
   }
 }
 

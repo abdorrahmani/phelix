@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package phelix;
+
+option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
+
+// Deployment lifecycle hook transport. The agent owns configuration,
+// execution, persistence and recovery; the backend mirrors the resolved
+// configuration and immutable attempts and relays an explicit run request.
+
+message HookOptions {
+  string name = 1;
+}
+
+message HookConfigEntry {
+  string name = 1;
+  repeated string command = 2;
+  string timeout = 3;
+  int32 retries = 4;
+  string retry_interval = 5;
+  bool continue_on_error = 6;
+  string working_dir = 7;
+  bool enabled = 8;
+}
+
+message HookConfigSnapshot {
+  string app_id = 1;
+  string app_name = 2;
+  repeated HookConfigEntry hooks = 3;
+}
+
+message HookExecutionState {
+  string execution_id = 1;
+  string app_id = 2;
+  string app_name = 3;
+  string deployment_id = 4;
+  string strategy = 5;
+  string hook = 6;
+  int32 attempt = 7;
+  int32 version = 8;
+  int32 previous_version = 9;
+  repeated string command = 10;
+  string working_dir = 11;
+  string status = 12;
+  int64 started_at = 13;
+  int64 finished_at = 14;
+  int64 duration_ms = 15;
+  int32 exit_code = 16;
+  bool has_exit_code = 17;
+  string stdout = 18;
+  string stderr = 19;
+  bool stdout_truncated = 20;
+  bool stderr_truncated = 21;
+  string failure_reason = 22;
+  int64 timeout_ms = 23;
+  bool continue_on_error = 24;
+  int32 owner_pid = 25;
+}
