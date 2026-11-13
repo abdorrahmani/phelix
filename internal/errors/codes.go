@@ -171,6 +171,7 @@ const (
 	CodeNetwork    Code = "NETWORK_ERROR"
 	CodeConnection Code = "CONNECTION_ERROR"
 	CodeTimeout    Code = "TIMEOUT"
+	CodeCancelled  Code = "CANCELLED"
 
 	// Self-update (phelix update).
 	CodeUpdateFailed Code = "UPDATE_FAILED"
