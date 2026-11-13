@@ -47,7 +47,9 @@ func ScanHost(ctx context.Context, system System, store *Store, serverID string,
 			progress("Evaluating distribution advisories")
 		}
 		var complete bool
-		scan.Findings, scan.Sources, complete, err = intel.Match(ctx, system, h, packages)
+		var unknown int
+		scan.Findings, scan.Sources, complete, unknown, err = intel.Match(ctx, system, h, packages)
+		scan.UnknownPackages = unknown
 		scan.Status = "completed"
 		scan.MethodVersion = "host-match-v1"
 		scan.Warnings = nil

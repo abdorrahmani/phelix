@@ -235,21 +235,22 @@ func finding(h Host, p Package, cve, advisory, fixed, severity, state, reason st
 	return f
 }
 
-func (i *Intelligence) Match(ctx context.Context, system System, h Host, packages []Package) ([]Finding, []Source, bool, error) {
+func (i *Intelligence) Match(ctx context.Context, system System, h Host, packages []Package) ([]Finding, []Source, bool, int, error) {
 	var findings []Finding
 	var sources []Source
+	var unknown int
 	var err error
 	switch h.ID {
 	case "debian":
-		findings, sources, err = i.debian(ctx, system, h, packages)
+		findings, sources, unknown, err = i.debian(ctx, system, h, packages)
 	case "ubuntu":
-		findings, sources, err = i.ubuntu(ctx, system, h, packages)
+		findings, sources, unknown, err = i.ubuntu(ctx, system, h, packages)
 	case "alpine":
-		findings, sources, err = i.alpine(ctx, system, h, packages)
+		findings, sources, unknown, err = i.alpine(ctx, system, h, packages)
 	case "arch":
-		findings, sources, err = i.arch(ctx, system, h, packages)
+		findings, sources, unknown, err = i.arch(ctx, system, h, packages)
 	default:
-		findings, sources, err = i.rpmAdvisories(ctx, system, h, packages)
+		findings, sources, unknown, err = i.rpmAdvisories(ctx, system, h, packages)
 	}
 	findings = deduplicate(findings)
 	sources = append(sources, i.enrich(ctx, findings)...)
@@ -268,7 +269,7 @@ func (i *Intelligence) Match(ctx context.Context, system System, h Host, package
 		}
 		return findings[a].ID < findings[b].ID
 	})
-	return findings, sources, complete, err
+	return findings, sources, complete, unknown, err
 }
 
 func deduplicate(findings []Finding) []Finding {

@@ -23,21 +23,22 @@ func packageSources(packages []Package) map[string][]Package {
 	return out
 }
 
-func (i *Intelligence) debian(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, error) {
+func (i *Intelligence) debian(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, int, error) {
 	raw, source, err := i.fetch(ctx, "debian", "https://security-tracker.debian.org/tracker/data/json")
 	if err != nil {
-		return nil, []Source{source}, err
+		return nil, []Source{source}, 0, err
 	}
 	release := h.Codename
 	if release == "" {
 		release = map[string]string{"10": "buster", "11": "bullseye", "12": "bookworm", "13": "trixie", "14": "forky"}[h.Version]
 	}
 	if release == "" {
-		return nil, []Source{source}, errors.New("Debian release is unknown")
+		return nil, []Source{source}, 0, errors.New("Debian release is unknown")
 	}
 	bySource := packageSources(packages)
 	out := []Finding{}
 	releaseSeen := false
+	covered := map[string]bool{}
 	err = decodeObject(raw, false, func(name string, record json.RawMessage) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -63,6 +64,9 @@ func (i *Intelligence) debian(ctx context.Context, s System, h Host, packages []
 				continue
 			}
 			releaseSeen = true
+			for _, p := range targets {
+				covered[p.Key] = true
+			}
 			if len(CVEs(cve)) != 1 {
 				continue
 			}
@@ -97,19 +101,28 @@ func (i *Intelligence) debian(ctx context.Context, s System, h Host, packages []
 	if err == nil && !releaseSeen {
 		err = errors.New("no Debian release-specific package coverage found")
 	}
-	return out, []Source{source}, err
+	unknown := 0
+	if err == nil {
+		for _, p := range packages {
+			if !covered[p.Key] {
+				unknown++
+			}
+		}
+	}
+	return out, []Source{source}, unknown, err
 }
 
-func (i *Intelligence) alpine(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, error) {
+func (i *Intelligence) alpine(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, int, error) {
 	parts := strings.Split(h.Version, ".")
 	if len(parts) < 2 {
-		return nil, nil, errors.New("Alpine release is unknown")
+		return nil, nil, 0, errors.New("Alpine release is unknown")
 	}
 	release := "v" + strings.Join(parts[:2], ".")
 	out := []Finding{}
 	sources := []Source{}
 	var failures []error
 	bySource := packageSources(packages)
+	covered := map[string]bool{}
 	for _, repo := range []string{"main", "community"} {
 		raw, source, err := i.fetch(ctx, "alpine-"+repo, "https://secdb.alpinelinux.org/"+release+"/"+repo+".json")
 		sources = append(sources, source)
@@ -136,10 +149,11 @@ func (i *Intelligence) alpine(ctx context.Context, s System, h Host, packages []
 		}
 		for _, entry := range data.Packages {
 			for _, p := range bySource[entry.Pkg.Name] {
+				covered[p.Key] = true
 				for fixed, ids := range entry.Pkg.Fixes {
 					comparison, e := CompareVersions(ctx, s.Runner, "apk", p.Version, fixed)
 					if e != nil {
-						return out, sources, e
+						return out, sources, 0, e
 					}
 					if comparison >= 0 {
 						continue
@@ -151,13 +165,22 @@ func (i *Intelligence) alpine(ctx context.Context, s System, h Host, packages []
 			}
 		}
 	}
-	return out, sources, errors.Join(failures...)
+	err := errors.Join(failures...)
+	unknown := 0
+	if err == nil {
+		for _, p := range packages {
+			if !covered[p.Key] {
+				unknown++
+			}
+		}
+	}
+	return out, sources, unknown, err
 }
 
-func (i *Intelligence) arch(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, error) {
+func (i *Intelligence) arch(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, int, error) {
 	raw, source, err := i.fetch(ctx, "arch", "https://security.archlinux.org/all.json")
 	if err != nil {
-		return nil, []Source{source}, err
+		return nil, []Source{source}, 0, err
 	}
 	var records []struct {
 		Name     string   `json:"name"`
@@ -169,22 +192,24 @@ func (i *Intelligence) arch(ctx context.Context, s System, h Host, packages []Pa
 		Issues   []string `json:"issues"`
 	}
 	if err = json.Unmarshal(raw, &records); err != nil {
-		return nil, []Source{source}, err
+		return nil, []Source{source}, 0, err
 	}
 	byName := map[string][]Package{}
 	for _, p := range packages {
 		byName[p.Name] = append(byName[p.Name], p)
 	}
 	out := []Finding{}
+	covered := map[string]bool{}
 	for _, record := range records {
 		for _, name := range record.Packages {
 			for _, p := range byName[name] {
+				covered[p.Key] = true
 				state := "confirmed"
 				reason := "Arch tracker identifies an affected package release"
 				if record.Fixed != "" {
 					c, e := CompareVersions(ctx, s.Runner, "pacman", p.Version, record.Fixed)
 					if e != nil {
-						return out, []Source{source}, e
+						return out, []Source{source}, 0, e
 					}
 					if c >= 0 {
 						continue
@@ -204,16 +229,24 @@ func (i *Intelligence) arch(ctx context.Context, s System, h Host, packages []Pa
 			}
 		}
 	}
-	return out, []Source{source}, nil
+	unknown := 0
+	if err == nil {
+		for _, p := range packages {
+			if !covered[p.Key] {
+				unknown++
+			}
+		}
+	}
+	return out, []Source{source}, unknown, nil
 }
 
-func (i *Intelligence) ubuntu(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, error) {
+func (i *Intelligence) ubuntu(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, int, error) {
 	raw, source, err := i.fetch(ctx, "ubuntu", "https://usn.ubuntu.com/usn-db/database.json.bz2")
 	if err != nil {
-		return nil, []Source{source}, err
+		return nil, []Source{source}, 0, err
 	}
 	if h.Codename == "" {
-		return nil, []Source{source}, errors.New("Ubuntu release codename is missing")
+		return nil, []Source{source}, 0, errors.New("Ubuntu release codename is missing")
 	}
 	byName := map[string][]Package{}
 	for _, p := range packages {
@@ -221,6 +254,7 @@ func (i *Intelligence) ubuntu(ctx context.Context, s System, h Host, packages []
 	}
 	out := []Finding{}
 	releaseSeen := false
+	covered := map[string]bool{}
 	err = decodeObject(raw, bytes.HasPrefix(raw, []byte("BZh")), func(id string, record json.RawMessage) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -243,6 +277,7 @@ func (i *Intelligence) ubuntu(ctx context.Context, s System, h Host, packages []
 		releaseSeen = true
 		for name, binary := range release.Binaries {
 			for _, p := range byName[name] {
+				covered[p.Key] = true
 				if binary.Version == "" {
 					continue
 				}
@@ -263,7 +298,15 @@ func (i *Intelligence) ubuntu(ctx context.Context, s System, h Host, packages []
 	if err == nil && !releaseSeen {
 		err = errors.New("Ubuntu notices do not cover this release")
 	}
-	return out, []Source{source}, err
+	unknown := 0
+	if err == nil {
+		for _, p := range packages {
+			if !covered[p.Key] {
+				unknown++
+			}
+		}
+	}
+	return out, []Source{source}, unknown, err
 }
 
 type rpmUpdate struct {
@@ -284,7 +327,7 @@ type rpmUpdate struct {
 	} `xml:"pkglist>collection>package"`
 }
 
-func (i *Intelligence) rpmAdvisories(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, error) {
+func (i *Intelligence) rpmAdvisories(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, int, error) {
 	dirs := []string{"var/cache/dnf", "var/cache/libdnf5"}
 	if h.Manager == "zypper" {
 		dirs = []string{"var/cache/zypp/raw"}
@@ -385,11 +428,11 @@ func (i *Intelligence) rpmAdvisories(ctx context.Context, s System, h Host, pack
 			return nil
 		})
 		if err != nil {
-			return out, sources, err
+			return out, sources, 0, err
 		}
 	}
 	if len(sources) == 0 {
-		return out, sources, fmt.Errorf("%s security repository metadata is unavailable; refresh native repository metadata before scanning", h.Manager)
+		return out, sources, 0, fmt.Errorf("%s security repository metadata is unavailable; refresh native repository metadata before scanning", h.Manager)
 	}
-	return out, sources, errors.New("cached repository metadata cannot establish complete current coverage")
+	return out, sources, 0, errors.New("cached repository metadata cannot establish complete current coverage")
 }
