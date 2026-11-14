@@ -297,9 +297,112 @@ func TestApplySingleActiveOperation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := ApplyUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, "token", dataDir)
+	live, err := acquireHostLock(operationsApplyLockPath(dataDir), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = releaseHostLock(live)
+		_ = live.Close()
+	})
+	_, err = ApplyUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, "token", dataDir)
 	if errorCode(t, err) != phelixerr.CodeHostSecurityInvalid {
 		t.Fatalf("active operation: %v", err)
+	}
+}
+
+func TestReclaimAbandonedOperationOnLoad(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := mutateOperations(dataDir, func(data *operationsFile) error {
+		data.Operations = append(data.Operations, storedOperation{OperationID: "hso_dead", Type: "update_apply", Status: OperationStatusExecuting, Packages: []string{"ssl"}, Manager: "apt", CreatedAt: time.Now().UTC().Add(-time.Hour), UpdatedAt: time.Now().UTC().Add(-time.Hour)})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := loadOperations(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Operations) != 1 || data.Operations[0].Status != OperationStatusFailed {
+		t.Fatalf("an abandoned operation must be reclaimed on load: %+v", data.Operations)
+	}
+	result := data.Operations[0].Result
+	if result == nil || result.Status != OperationStatusFailed || result.Error != abandonedOperationMessage ||
+		result.OperationID != "hso_dead" || result.Manager != "apt" || result.FinishedAt.IsZero() {
+		t.Fatalf("the reclaimed operation must carry the indeterminate marker: %+v", result)
+	}
+	disk, err := loadOperations(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disk.Operations[0].Status != OperationStatusFailed || disk.Operations[0].Result.Error != abandonedOperationMessage {
+		t.Fatalf("the reclaim must be persisted: %+v", disk.Operations[0])
+	}
+}
+
+func TestLiveExecutingOperationSurvivesLoad(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := mutateOperations(dataDir, func(data *operationsFile) error {
+		data.Operations = append(data.Operations, storedOperation{OperationID: "hso_live", Type: "update_apply", Status: OperationStatusExecuting, Packages: []string{"ssl"}, Manager: "apt", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	live, err := acquireHostLock(operationsApplyLockPath(dataDir), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = releaseHostLock(live)
+		_ = live.Close()
+	})
+	data, err := loadOperations(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Operations) != 1 || data.Operations[0].Status != OperationStatusExecuting {
+		t.Fatalf("an operation owned by a live process must not be reclaimed: %+v", data.Operations)
+	}
+}
+
+func TestApplyReclaimsAbandonedOperation(t *testing.T) {
+	runAsRoot(t, 0)
+	fixture := &aptFixture{}
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(fixture.run)
+	dataDir := t.TempDir()
+	if err := mutateOperations(dataDir, func(data *operationsFile) error {
+		data.Operations = append(data.Operations, storedOperation{OperationID: "hso_dead", Type: "update_apply", Status: OperationStatusExecuting, Packages: []string{"other"}, Manager: "apt", CreatedAt: time.Now().UTC().Add(-time.Hour), UpdatedAt: time.Now().UTC().Add(-time.Hour)})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := PreviewUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ApplyUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, preview.Token, dataDir)
+	if err != nil {
+		t.Fatalf("a lock-free executing record must not block the apply: %v", err)
+	}
+	if result.Status != OperationStatusSucceeded {
+		t.Fatalf("apply result: %+v", result)
+	}
+	state, loadErr := loadOperations(dataDir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	byID := map[string]storedOperation{}
+	for _, op := range state.Operations {
+		byID[op.OperationID] = op
+	}
+	dead, ok := byID["hso_dead"]
+	if !ok || dead.Status != OperationStatusFailed || dead.Result.Error != abandonedOperationMessage {
+		t.Fatalf("the abandoned operation must stay reclaimed: %+v", dead)
+	}
+	applied, ok := byID[result.OperationID]
+	if !ok || applied.Status != OperationStatusSucceeded {
+		t.Fatalf("the new operation must succeed: %+v", applied)
 	}
 }
 

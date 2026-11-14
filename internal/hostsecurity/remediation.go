@@ -123,13 +123,82 @@ func operationsLockPath(dataDir string) string {
 	return filepath.Join(dataDir, "host-security", "operations.lock")
 }
 
+// operationsApplyLockPath is the flock held while one update operation
+// executes. The kernel releases it when the process dies, so a free lock
+// proves that no live process is executing the recorded operation.
+func operationsApplyLockPath(dataDir string) string {
+	return filepath.Join(dataDir, "host-security", "apply.lock")
+}
+
+// acquireApplyLock takes the apply execution lock without blocking, creating
+// its directory when needed.
+func acquireApplyLock(dataDir string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(operationsApplyLockPath(dataDir)), 0700); err != nil {
+		return nil, err
+	}
+	return acquireHostLock(operationsApplyLockPath(dataDir), false)
+}
+
+// abandonedOperationMessage is the indeterminate marker persisted on a
+// reclaimed operation.
+const abandonedOperationMessage = "the agent terminated while the update was executing; its outcome is indeterminate"
+
 // operationsPath is the durable preview and operation store.
 func operationsPath(dataDir string) string {
 	return filepath.Join(dataDir, "host-security", operationsFileName)
 }
 
+// reclaimAbandonedOperations transitions executing operations to failed with
+// an indeterminate marker when the apply lock is free, mirroring the
+// scheduler's abandoned-scan recovery. A held lock means a live process owns
+// the executing records. It reports whether any record changed.
+func reclaimAbandonedOperations(data *operationsFile, dataDir string) bool {
+	executing := false
+	for i := range data.Operations {
+		if data.Operations[i].Status == OperationStatusExecuting {
+			executing = true
+			break
+		}
+	}
+	if !executing {
+		return false
+	}
+	lock, err := acquireApplyLock(dataDir)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_ = releaseHostLock(lock)
+		_ = lock.Close()
+	}()
+	now := time.Now().UTC()
+	changed := false
+	for i := range data.Operations {
+		op := &data.Operations[i]
+		if op.Status != OperationStatusExecuting {
+			continue
+		}
+		op.Status = OperationStatusFailed
+		op.UpdatedAt = now
+		if op.Result == nil {
+			op.Result = &UpdateResult{}
+		}
+		op.Result.OperationID = op.OperationID
+		op.Result.Status = OperationStatusFailed
+		op.Result.Manager = op.Manager
+		op.Result.Error = abandonedOperationMessage
+		if op.Result.StartedAt.IsZero() {
+			op.Result.StartedAt = op.CreatedAt
+		}
+		op.Result.FinishedAt = now
+		changed = true
+	}
+	return changed
+}
+
 // loadOperations reads the operations document; a missing file is an empty
-// store.
+// store. Executing operations abandoned by a dead process are reclaimed on
+// every load.
 func loadOperations(dataDir string) (operationsFile, error) {
 	data := operationsFile{Version: operationsVersion}
 	raw, err := os.ReadFile(operationsPath(dataDir))
@@ -144,6 +213,11 @@ func loadOperations(dataDir string) (operationsFile, error) {
 	}
 	if data.Version != operationsVersion {
 		return operationsFile{}, fmt.Errorf("unsupported host security operations store version %d", data.Version)
+	}
+	if reclaimAbandonedOperations(&data, dataDir) {
+		if err := saveOperations(dataDir, data); err != nil {
+			return operationsFile{}, err
+		}
 	}
 	return data, nil
 }
@@ -715,9 +789,12 @@ func applyCommand(manager string, items []UpdateItem) (string, []string) {
 	return "", nil
 }
 
-// ApplyUpdates executes one previewed update. It revalidates the captured
-// package state immediately before execution and fails closed on any
-// mismatch. Every terminal outcome is persisted before the caller sees it.
+// ApplyUpdates executes one previewed update. Operations abandoned by a dead
+// process are reclaimed before the active-operation check, the apply lock is
+// held from before the operation is recorded until its terminal outcome is
+// persisted, and the captured package state is revalidated immediately
+// before execution. Every terminal outcome is persisted before the caller
+// sees it.
 func ApplyUpdates(ctx context.Context, system System, host Host, packages []string, token string, dataDir string) (UpdateResult, error) {
 	result := UpdateResult{Manager: host.Manager, StartedAt: time.Now().UTC()}
 	if err := validatePackageList(packages); err != nil {
@@ -732,6 +809,19 @@ func ApplyUpdates(ctx context.Context, system System, host Host, packages []stri
 	}
 	if err := requirePrivilege(); err != nil {
 		return result, err
+	}
+	if _, err := loadOperations(dataDir); err != nil {
+		return result, err
+	}
+	execLock, lockErr := acquireApplyLock(dataDir)
+	if lockErr != nil && !errors.Is(lockErr, ErrHostScanLockHeld) {
+		return result, lockErr
+	}
+	if lockErr == nil {
+		defer func() {
+			_ = releaseHostLock(execLock)
+			_ = execLock.Close()
+		}()
 	}
 	ctx, cancel := context.WithTimeout(ctx, ApplyTimeout)
 	defer cancel()
