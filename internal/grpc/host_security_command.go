@@ -233,20 +233,21 @@ func validateHostSecurityCommand(req *pb.MonitorCommandRequest) error {
 
 	queryFields := opts.GetSeverity() != "" || opts.GetState() != "" || opts.GetPackage() != "" || opts.GetFindingsOffset() != 0
 	pagingFields := opts.GetLimit() != 0 || opts.GetOffset() != 0
+	offsetField := opts.GetOffset() != 0
 	targetFields := len(opts.GetPackages()) > 0 || opts.GetPreviewToken() != "" || opts.GetOperationId() != ""
 
 	switch req.GetType() {
 	case HostSecurityCommandReport:
-		if targetFields || opts.GetScanId() != "" || pagingFields {
-			return phelixerr.New(phelixerr.CodeHostSecurityInvalid, "host_security_report accepts only finding filters and findings_offset")
+		if targetFields || opts.GetScanId() != "" || offsetField {
+			return phelixerr.New(phelixerr.CodeHostSecurityInvalid, "host_security_report accepts only finding filters, findings_offset and limit")
 		}
 	case HostSecurityCommandHistory:
 		if targetFields || opts.GetScanId() != "" || queryFields {
 			return phelixerr.New(phelixerr.CodeHostSecurityInvalid, "host_security_history accepts only paging")
 		}
 	case HostSecurityCommandDetail:
-		if targetFields || pagingFields {
-			return phelixerr.New(phelixerr.CodeHostSecurityInvalid, "host_security_scan_detail accepts only scan_id, finding filters and findings_offset")
+		if targetFields || offsetField {
+			return phelixerr.New(phelixerr.CodeHostSecurityInvalid, "host_security_scan_detail accepts only scan_id, finding filters, findings_offset and limit")
 		}
 		if opts.GetScanId() == "" {
 			return phelixerr.New(phelixerr.CodeHostSecurityInvalid, "host_security_scan_detail requires host_security.scan_id")

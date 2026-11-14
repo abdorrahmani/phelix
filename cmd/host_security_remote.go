@@ -125,7 +125,10 @@ func hostSecurityPageBounds(opts *pb.HostSecurityCommandOptions) (int, int) {
 }
 
 // remoteHostSecurityReport returns the latest completed host scan with
-// filtered, paged findings.
+// filtered, paged findings: the page starts at findings_offset and carries
+// at most limit findings (0 = the default page size). findings_total stays
+// the count of all matched findings and findings_truncated marks an answer
+// that did not carry every matched finding.
 func remoteHostSecurityReport(req *pb.MonitorCommandRequest, dataDir string) *pb.MonitorCommandResult {
 	id, err := server.EnsureAgentID()
 	if err != nil {
@@ -149,7 +152,7 @@ func remoteHostSecurityReport(req *pb.MonitorCommandRequest, dataDir string) *pb
 	return &pb.MonitorCommandResult{
 		Status: "success",
 		HostSecurityScanRecord: hostSecurityRecordFromScan(scan, filtered, total,
-			page+len(filtered) < total),
+			len(filtered) < total),
 	}
 }
 
@@ -181,7 +184,10 @@ func remoteHostSecurityHistory(req *pb.MonitorCommandRequest, dataDir string) *p
 }
 
 // remoteHostSecurityDetail returns one stored host scan by id, with
-// filtered, paged findings.
+// filtered, paged findings: the page starts at findings_offset and carries
+// at most limit findings (0 = the default page size). findings_total stays
+// the count of all matched findings and findings_truncated marks an answer
+// that did not carry every matched finding.
 func remoteHostSecurityDetail(req *pb.MonitorCommandRequest, dataDir string) *pb.MonitorCommandResult {
 	id, err := server.EnsureAgentID()
 	if err != nil {
@@ -205,7 +211,7 @@ func remoteHostSecurityDetail(req *pb.MonitorCommandRequest, dataDir string) *pb
 	return &pb.MonitorCommandResult{
 		Status: "success",
 		HostSecurityScanRecord: hostSecurityRecordFromScan(scan, filtered, total,
-			page+len(filtered) < total),
+			len(filtered) < total),
 	}
 }
 

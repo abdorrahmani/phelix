@@ -189,6 +189,88 @@ func TestRemoteHostSecurity_ConsentGate(t *testing.T) {
 	}
 }
 
+// seedHostScanFindings stores one completed host scan with count synthetic
+// findings, for findings window tests.
+func seedHostScanFindings(t *testing.T, id string, count int, finishedAt time.Time) {
+	t.Helper()
+	store, err := hostsecurity.OpenStore(securityTestDataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	agentID, err := server.EnsureAgentID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := make([]hostsecurity.Finding, 0, count)
+	for i := 0; i < count; i++ {
+		findings = append(findings, hostsecurity.Finding{
+			ID: fmt.Sprintf("finding-%04d", i), Package: fmt.Sprintf("pkg-%04d", i), Version: "1.0.0",
+			CVE:        fmt.Sprintf("CVE-2024-%04d", i),
+			AdvisoryID: fmt.Sprintf("CVE-2024-%04d", i),
+			State:      "confirmed", Severity: "high", Reason: "fixture",
+		})
+	}
+	scan := hostsecurity.Scan{
+		ID: id, ServerID: agentID, Domain: "server", Status: "completed", Coverage: "complete",
+		MethodVersion: "host-match-v1", ScannerVersion: "test", SnapshotID: id + "-snapshot",
+		PackageCount: 1, UnknownPackages: 0, Counts: map[string]int{"high": count},
+		Findings:  findings,
+		Sources:   []hostsecurity.Source{{Name: "debian", URL: "https://fixture.invalid/tracker", RetrievedAt: finishedAt}},
+		StartedAt: finishedAt.Add(-time.Second), FinishedAt: finishedAt, DurationMS: 1000,
+		Warnings: []string{},
+	}
+	packages := []hostsecurity.Package{{Key: "pkg-0000", Name: "pkg-0000", Version: "1.0.0", Architecture: "amd64", Manager: "apt", Status: "installed", InventoryAt: finishedAt}}
+	if err := store.SaveScan(context.Background(), scan, packages); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRemoteHostSecurity_FindingsPageWindow pins the findings page window on
+// the remote report and detail answers: the page starts at findings_offset
+// and carries at most limit findings (0 = the default page size), while
+// findings_total stays the full matched count and findings_truncated marks
+// an answer that did not carry every matched finding.
+func TestRemoteHostSecurity_FindingsPageWindow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".phelix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostSecuritySetConsent(t, true)
+	seedHostScanFindings(t, "scan-window-0030", 30, time.Now().Add(-2*time.Minute))
+	seedHostScanFindings(t, "scan-window-0050", 50, time.Now().Add(-time.Minute))
+
+	report := RemoteHostSecurityCommand(hostSecurityRequest("w1", phelixgrpc.HostSecurityCommandReport, &pb.HostSecurityCommandOptions{Limit: 25, FindingsOffset: 0})).GetHostSecurityScanRecord()
+	if len(report.GetFindings()) != 25 || report.GetFindingsTotal() != 50 || !report.GetFindingsTruncated() {
+		t.Fatalf("report first page: sent=%d total=%d truncated=%v", len(report.GetFindings()), report.GetFindingsTotal(), report.GetFindingsTruncated())
+	}
+	if report.GetFindings()[0].GetId() != "finding-0000" || report.GetFindings()[24].GetId() != "finding-0024" {
+		t.Fatalf("report first page window wrong: first=%s last=%s", report.GetFindings()[0].GetId(), report.GetFindings()[24].GetId())
+	}
+	tail := RemoteHostSecurityCommand(hostSecurityRequest("w2", phelixgrpc.HostSecurityCommandReport, &pb.HostSecurityCommandOptions{Limit: 25, FindingsOffset: 25})).GetHostSecurityScanRecord()
+	if len(tail.GetFindings()) != 25 || tail.GetFindingsTotal() != 50 || tail.GetFindings()[0].GetId() != "finding-0025" {
+		t.Fatalf("report second page: sent=%d total=%d first=%s", len(tail.GetFindings()), tail.GetFindingsTotal(), tail.GetFindings()[0].GetId())
+	}
+
+	first := RemoteHostSecurityCommand(hostSecurityRequest("w3", phelixgrpc.HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scan-window-0030", Limit: 25, FindingsOffset: 0})).GetHostSecurityScanRecord()
+	if len(first.GetFindings()) != 25 || first.GetFindingsTotal() != 30 || !first.GetFindingsTruncated() {
+		t.Fatalf("detail first page: sent=%d total=%d truncated=%v", len(first.GetFindings()), first.GetFindingsTotal(), first.GetFindingsTruncated())
+	}
+	last := RemoteHostSecurityCommand(hostSecurityRequest("w4", phelixgrpc.HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scan-window-0030", Limit: 25, FindingsOffset: 25})).GetHostSecurityScanRecord()
+	if len(last.GetFindings()) != 5 || last.GetFindingsTotal() != 30 || !last.GetFindingsTruncated() {
+		t.Fatalf("detail last page: sent=%d total=%d truncated=%v", len(last.GetFindings()), last.GetFindingsTotal(), last.GetFindingsTruncated())
+	}
+	complete := RemoteHostSecurityCommand(hostSecurityRequest("w5", phelixgrpc.HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scan-window-0030", Limit: 100, FindingsOffset: 0})).GetHostSecurityScanRecord()
+	if len(complete.GetFindings()) != 30 || complete.GetFindingsTotal() != 30 || complete.GetFindingsTruncated() {
+		t.Fatalf("detail full page: sent=%d total=%d truncated=%v", len(complete.GetFindings()), complete.GetFindingsTotal(), complete.GetFindingsTruncated())
+	}
+	defaultPage := RemoteHostSecurityCommand(hostSecurityRequest("w6", phelixgrpc.HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scan-window-0030"})).GetHostSecurityScanRecord()
+	if len(defaultPage.GetFindings()) != 20 || defaultPage.GetFindingsTotal() != 30 {
+		t.Fatalf("detail default page: sent=%d total=%d", len(defaultPage.GetFindings()), defaultPage.GetFindingsTotal())
+	}
+}
+
 type fixtureRunnerFunc func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 func (f fixtureRunnerFunc) Run(ctx context.Context, name string, args ...string) ([]byte, error) {

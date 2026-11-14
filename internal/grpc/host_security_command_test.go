@@ -81,8 +81,17 @@ func TestValidateHostSecurityCommand(t *testing.T) {
 			req:  hostSecurityTestRequest("r1", HostSecurityCommandReport, &pb.HostSecurityCommandOptions{Severity: "high", State: "confirmed", Package: "ssl", FindingsOffset: 10}),
 		},
 		{
-			name:    "report with paging",
+			name: "report with the findings page size",
+			req:  hostSecurityTestRequest("r1", HostSecurityCommandReport, &pb.HostSecurityCommandOptions{Severity: "high", FindingsOffset: 10, Limit: 25}),
+		},
+		{
+			name:    "report with a page offset",
 			req:     hostSecurityTestRequest("r1", HostSecurityCommandReport, &pb.HostSecurityCommandOptions{Offset: 5}),
+			wantErr: true,
+		},
+		{
+			name:    "report over the page cap",
+			req:     hostSecurityTestRequest("r1", HostSecurityCommandReport, &pb.HostSecurityCommandOptions{Limit: 101}),
 			wantErr: true,
 		},
 		{
@@ -114,8 +123,22 @@ func TestValidateHostSecurityCommand(t *testing.T) {
 			req:  hostSecurityTestRequest("r1", HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scn", Severity: "high", FindingsOffset: 5}),
 		},
 		{
-			name:    "detail with paging",
-			req:     hostSecurityTestRequest("r1", HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scn", Limit: 20}),
+			name: "detail with the findings page size",
+			req:  hostSecurityTestRequest("r1", HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scn", FindingsOffset: 25, Limit: 25}),
+		},
+		{
+			name:    "detail with a page offset",
+			req:     hostSecurityTestRequest("r1", HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scn", Offset: 5}),
+			wantErr: true,
+		},
+		{
+			name:    "detail with a negative page size",
+			req:     hostSecurityTestRequest("r1", HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scn", Limit: -1}),
+			wantErr: true,
+		},
+		{
+			name:    "detail over the page cap",
+			req:     hostSecurityTestRequest("r1", HostSecurityCommandDetail, &pb.HostSecurityCommandOptions{ScanId: "scn", Limit: 101}),
 			wantErr: true,
 		},
 		{
