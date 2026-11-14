@@ -546,7 +546,8 @@ phelix security server reboot-status         # restart requirement, reasons, ker
   `total`, `limit`, `offset`. Empty stays empty.
 - `report` filters: `--severity` and `--state` match case-insensitively
   and exactly, `--package` is a case-insensitive substring match; paging
-  uses `--limit` (1..500) and a nonnegative `--offset`.
+  uses `--limit` (1..500) and a nonnegative `--offset`. `inventory`
+  `--package` uses the same case-insensitive substring match.
 - `config` edits the local-only consent: the reporting flag follows its
   value (`--reporting=true` grants, `--reporting=false` revokes like
   `--no-reporting`, both flags together are rejected), reporting defaults

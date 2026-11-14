@@ -137,6 +137,9 @@ func (s *Store) History(ctx context.Context, serverID string, limit, offset int)
 	return p, rows.Err()
 }
 
+// Inventory lists the packages of one snapshot. The search is a
+// case-insensitive substring match, aligned with the report --package
+// semantics.
 func (s *Store) Inventory(ctx context.Context, serverID, scanID, search string, limit, offset int) (Page[Package], error) {
 	p := Page[Package]{Items: []Package{}, Limit: limit, Offset: offset}
 	if err := ValidatePage(limit, offset); err != nil {
@@ -146,10 +149,10 @@ func (s *Store) Inventory(ctx context.Context, serverID, scanID, search string, 
 	if err != nil {
 		return p, err
 	}
-	if err = s.DB.QueryRowContext(ctx, `SELECT count(*) FROM host_packages WHERE snapshot_id=? AND instr(name,?)>0`, scan.SnapshotID, search).Scan(&p.Total); err != nil {
+	if err = s.DB.QueryRowContext(ctx, `SELECT count(*) FROM host_packages WHERE snapshot_id=? AND instr(lower(name),lower(?))>0`, scan.SnapshotID, search).Scan(&p.Total); err != nil {
 		return p, err
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT record FROM host_packages WHERE snapshot_id=? AND instr(name,?)>0 ORDER BY package_key LIMIT ? OFFSET ?`, scan.SnapshotID, search, limit, offset)
+	rows, err := s.DB.QueryContext(ctx, `SELECT record FROM host_packages WHERE snapshot_id=? AND instr(lower(name),lower(?))>0 ORDER BY package_key LIMIT ? OFFSET ?`, scan.SnapshotID, search, limit, offset)
 	if err != nil {
 		return p, err
 	}

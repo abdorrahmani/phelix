@@ -142,6 +142,14 @@ func TestPersistenceAndCancellation(t *testing.T) {
 	if err != nil || page.Total != 1 || len(page.Items) != 1 {
 		t.Fatalf("%+v %v", page, err)
 	}
+	mixed, err := store.Inventory(context.Background(), "test-server", "", "SSL", 1, 0)
+	if err != nil || mixed.Total != 1 || len(mixed.Items) != 1 {
+		t.Fatalf("inventory search must be case-insensitive: %+v %v", mixed, err)
+	}
+	absent, err := store.Inventory(context.Background(), "test-server", "", "openssl", 1, 0)
+	if err != nil || absent.Total != 0 || len(absent.Items) != 0 {
+		t.Fatalf("inventory search must stay a substring match: %+v %v", absent, err)
+	}
 	if _, err = store.Scan(context.Background(), "other-server", scan.ID); err == nil {
 		t.Fatal("cross-server scan read")
 	}
