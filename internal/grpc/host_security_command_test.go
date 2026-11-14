@@ -193,10 +193,10 @@ func (s *capturingHostSecurityStream) Send(event *pb.MonitorEvent) error {
 }
 
 // TestSendHostSecurityResult_WithholdsWithoutConsent pins the withholding
-// discipline: without reporting consent the host security payload is
-// stripped and the withholding markers tell the backend the answer was
-// suppressed; queries report the consent error, mutations keep their
-// terminal status. The config answer is never withheld.
+// discipline: without reporting consent the host security query answer is
+// delivered with its payload stripped and the withholding markers carry the
+// consent error, while a mutation result is never delivered in stripped
+// form. The config answer is never withheld.
 func TestSendHostSecurityResult_WithholdsWithoutConsent(t *testing.T) {
 	setupTestSession(t)
 
@@ -241,10 +241,10 @@ func TestSendHostSecurityResult_WithholdsWithoutConsent(t *testing.T) {
 	if err := sendHostSecurityResult(mutation); err != nil {
 		t.Fatalf("send mutation without consent: %v", err)
 	}
-	result = stream.events[len(stream.events)-1].GetCommandResult()
-	if result.GetHostSecurityScanRecord() != nil || !result.GetSecurityResultWithheld() ||
-		result.GetStatus() != "success" || result.GetErrorCode() != "" {
-		t.Fatalf("mutation must be withheld while keeping its status: %+v", result)
+	for _, event := range stream.events {
+		if event.GetCommandResult().GetRequestId() == "m1" {
+			t.Fatalf("a withheld mutation result must not be delivered in stripped form: %+v", event.GetCommandResult())
+		}
 	}
 
 	config := &pb.MonitorCommandResult{RequestId: "c1", Command: HostSecurityCommandConfig, Status: "success", HostSecurityConfig: &pb.HostSecurityConfigState{ReportingEnabled: false}}
@@ -254,6 +254,77 @@ func TestSendHostSecurityResult_WithholdsWithoutConsent(t *testing.T) {
 	result = stream.events[len(stream.events)-1].GetCommandResult()
 	if result.GetHostSecurityConfig() == nil || result.GetSecurityResultWithheld() {
 		t.Fatalf("the config answer must never be withheld: %+v", result)
+	}
+}
+
+// TestHostSecurityWithheldReplayKeepsEvidence pins the no-store discipline
+// for consent-withheld mutation results: consent flipped off between execute
+// and send delivers nothing, the durable ledger result keeps its payload
+// through every withheld replay, and restored consent replays the full
+// result.
+func TestHostSecurityWithheldReplayKeepsEvidence(t *testing.T) {
+	setupTestSession(t)
+
+	prev := monitorStream.stream
+	stream := &capturingHostSecurityStream{}
+	monitorStream.stream = stream
+	t.Cleanup(func() { monitorStream.stream = prev })
+
+	path := t.TempDir() + "/host-security-ledger.json"
+	ledger := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "indeterminate")
+	if err := ledger.initializeAt(path); err != nil {
+		t.Fatal(err)
+	}
+	req := hostSecurityTestRequest("req-evidence", HostSecurityCommandScanRun, nil)
+	if err := hostsecurity.SaveHostConfig(server.DataDir(), hostsecurity.HostConfig{Reporting: true, ScanInterval: "24h"}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, _, err := ledger.begin(req)
+	if err != nil || outcome != rollbackBeginExecute {
+		t.Fatalf("begin: %v %v", outcome, err)
+	}
+	result := finalizeHostSecurityResult(req, &pb.MonitorCommandResult{Status: "success", HostSecurityScanRecord: &pb.HostSecurityScanRecord{ScanId: "scan-evidence"}})
+	if err := ledger.complete(req.GetRequestId(), result); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if err := hostsecurity.SaveHostConfig(server.DataDir(), hostsecurity.HostConfig{Reporting: false, ScanInterval: "24h"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sendHostSecurityResult(result); err != nil {
+		t.Fatalf("withheld send: %v", err)
+	}
+	(&Client{}).replayPendingHostSecurityResults(ledger)
+	delivered := 0
+	for _, event := range stream.events {
+		if event.GetCommandResult().GetRequestId() == "req-evidence" {
+			delivered++
+		}
+	}
+	if delivered != 0 {
+		t.Fatal("a consent-withheld mutation result must not be delivered while consent is off")
+	}
+	pending, err := ledger.pendingResults()
+	if err != nil || len(pending) != 1 || pending[0].GetHostSecurityScanRecord().GetScanId() != "scan-evidence" {
+		t.Fatalf("the durable result must keep its payload: %+v %v", pending, err)
+	}
+
+	if err := hostsecurity.SaveHostConfig(server.DataDir(), hostsecurity.HostConfig{Reporting: true, ScanInterval: "24h"}); err != nil {
+		t.Fatal(err)
+	}
+	(&Client{}).replayPendingHostSecurityResults(ledger)
+	replayed := 0
+	for _, event := range stream.events {
+		got := event.GetCommandResult()
+		if got.GetRequestId() == "req-evidence" {
+			replayed++
+			if got.GetHostSecurityScanRecord().GetScanId() != "scan-evidence" || got.GetStatus() != "success" || got.GetSecurityResultWithheld() {
+				t.Fatalf("restored consent must replay the full result: %+v", got)
+			}
+		}
+	}
+	if replayed != 1 {
+		t.Fatalf("restored consent must replay exactly once, got %d", replayed)
 	}
 }
 

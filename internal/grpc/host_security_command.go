@@ -401,31 +401,36 @@ func finalizeHostSecurityResult(req *pb.MonitorCommandRequest, result *pb.Monito
 	return result
 }
 
-// sendHostSecurityResult delivers a host security result with the same
-// consent-withholding discipline as the application security results: when
-// reporting consent disappeared between execution and send, the payload is
-// stripped and the withholding markers tell the backend the answer was
-// suppressed rather than empty. The config answer is never withheld: it is
-// how the dashboard renders the disabled state.
+// sendHostSecurityResult delivers a host security result under the send-time
+// consent gate. A query answer is delivered with its payload stripped and
+// the withholding markers carry the consent error. A mutation result is
+// never delivered in stripped form: withholding it stores nothing over the
+// durable result, which stays pending in the ledger and replays in full once
+// consent returns, so a payload-bearing success can never be replaced by a
+// payload-stripped one. The config answer is never withheld: it is how the
+// dashboard renders the disabled state.
 func sendHostSecurityResult(result *pb.MonitorCommandResult) error {
-	if carriesHostSecurityPayload(result) && result.GetCommand() != HostSecurityCommandConfig &&
-		!hostsecurity.HostReportingEnabled(server.DataDir()) {
-		result = proto.Clone(result).(*pb.MonitorCommandResult)
-		result.HostSecurityScanRecord = nil
-		result.HostSecurityScanList = nil
-		result.HostSecurityInventory = nil
-		result.HostSecurityPreview = nil
-		result.HostSecurityUpdate = nil
-		result.HostSecurityReboot = nil
-		result.SecurityResultWithheld = true
-		result.SecurityConsentErrorCode = string(phelixerr.CodeHostSecurityConsentDisabled)
-		if !isMutatingHostSecurityCommand(result.GetCommand()) {
-			result.Status = "error"
-			result.ErrorCode = string(phelixerr.CodeHostSecurityConsentDisabled)
-			result.Error = "host security data is withheld by current local configuration"
-		}
+	if !carriesHostSecurityPayload(result) || result.GetCommand() == HostSecurityCommandConfig ||
+		hostsecurity.HostReportingEnabled(server.DataDir()) {
+		return sendCommandResultLogged(result)
 	}
-	return sendCommandResultLogged(result)
+	if isMutatingHostSecurityCommand(result.GetCommand()) {
+		logs.WarningFile("grpc", "[gRPC Host Security] mutation result request_id=%s stays pending while consent is disabled; it replays when consent returns", result.GetRequestId())
+		return nil
+	}
+	stripped := proto.Clone(result).(*pb.MonitorCommandResult)
+	stripped.HostSecurityScanRecord = nil
+	stripped.HostSecurityScanList = nil
+	stripped.HostSecurityInventory = nil
+	stripped.HostSecurityPreview = nil
+	stripped.HostSecurityUpdate = nil
+	stripped.HostSecurityReboot = nil
+	stripped.SecurityResultWithheld = true
+	stripped.SecurityConsentErrorCode = string(phelixerr.CodeHostSecurityConsentDisabled)
+	stripped.Status = "error"
+	stripped.ErrorCode = string(phelixerr.CodeHostSecurityConsentDisabled)
+	stripped.Error = "host security data is withheld by current local configuration"
+	return sendCommandResultLogged(stripped)
 }
 
 // carriesHostSecurityPayload reports whether the result carries host
