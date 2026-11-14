@@ -24,16 +24,18 @@ func ScanHost(ctx context.Context, system System, store *Store, serverID string,
 	h, err := system.Detect(ctx)
 	scan.Host = h
 	var packages []Package
+	var inventoryWarnings []string
 	if err == nil && h.Status == "supported" {
 		if progress != nil {
 			progress("Reading installed packages")
 		}
-		packages, scan.SnapshotID, err = system.Inventory(ctx, h, scan.StartedAt)
+		packages, scan.SnapshotID, inventoryWarnings, err = system.Inventory(ctx, h, scan.StartedAt)
 	} else if err == nil {
 		scan.Status = h.Status
 	}
 	if err == nil && h.Status == "supported" {
 		scan.Status = "inventoried"
+		scan.Warnings = append(scan.Warnings, inventoryWarnings...)
 		scan.Warnings = append(scan.Warnings, "Vulnerability intelligence has not been evaluated")
 		if state, known := DetectReboot(ctx, system, h); known {
 			scan.RebootRequired = state.Required
@@ -57,6 +59,7 @@ func ScanHost(ctx context.Context, system System, store *Store, serverID string,
 		scan.Status = "completed"
 		scan.MethodVersion = "host-match-v1"
 		scan.Warnings = nil
+		scan.Warnings = append(scan.Warnings, inventoryWarnings...)
 		if err != nil {
 			scan.Warnings = append(scan.Warnings, err.Error())
 		}

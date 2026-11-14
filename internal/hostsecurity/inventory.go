@@ -161,13 +161,27 @@ func splitList(value string) []string {
 	return strings.Split(value, ", ")
 }
 
-func (s System) Inventory(ctx context.Context, h Host, at time.Time) ([]Package, string, error) {
+// inventoryMalformedSkipRatioPercent is the share of malformed package
+// entries a scan tolerates before it fails closed instead of silently
+// reporting a fraction of the installed base. One malformed dpkg entry
+// (dpkg installs versions with illegal characters with only a warning) must
+// not break the scan; mass corruption must never pass as a clean inventory.
+const inventoryMalformedSkipRatioPercent = 10
+
+// Inventory reads the installed packages. A malformed entry (an illegal
+// name or version the manager itself tolerated at install time) is skipped
+// and reported as a warning while the remaining inventory proceeds, so one
+// bad entry cannot poison every future scan on the host. When the skipped
+// entries exceed the tolerated share, or nothing usable remains, the scan
+// fails closed instead of silently losing data.
+func (s System) Inventory(ctx context.Context, h Host, at time.Time) ([]Package, string, []string, error) {
 	if h.Status != "supported" {
-		return nil, "", fmt.Errorf("inventory %s: %s", h.Status, h.Reason)
+		return nil, "", nil, fmt.Errorf("inventory %s: %s", h.Status, h.Reason)
 	}
 	var packages []Package
 	var raw []byte
 	var err error
+	skipped := 0
 	switch h.Manager {
 	case "apt":
 		raw, err = s.Runner.Run(ctx, "dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\t${Origin}\t${Provides}\t${Depends}\n")
@@ -204,15 +218,16 @@ func (s System) Inventory(ctx context.Context, h Host, at time.Time) ([]Package,
 				var b []byte
 				b, err = s.read(filepath.Join("var/lib/pacman/local", entry.Name(), "desc"))
 				if err != nil {
-					return nil, "", fmt.Errorf("cannot read Pacman database: %w", err)
+					return nil, "", nil, fmt.Errorf("cannot read Pacman database: %w", err)
 				}
 				p, e := ParsePacman(b)
 				if e != nil {
-					return nil, "", e
+					skipped++
+					continue
 				}
 				packages = append(packages, p)
-				if len(packages) > MaxPackages {
-					return nil, "", errors.New("inventory exceeds package limit")
+				if len(packages)+skipped > MaxPackages {
+					return nil, "", nil, errors.New("inventory exceeds package limit")
 				}
 			}
 			if errors.Is(err, io.EOF) {
@@ -221,35 +236,51 @@ func (s System) Inventory(ctx context.Context, h Host, at time.Time) ([]Package,
 			}
 		}
 	default:
-		return nil, "", errors.New("unsupported package manager")
+		return nil, "", nil, errors.New("unsupported package manager")
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	if err = ctx.Err(); err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	if len(packages) == 0 {
-		return nil, "", errors.New("package database returned no installed packages")
+	if len(packages) == 0 && skipped == 0 {
+		return nil, "", nil, errors.New("package database returned no installed packages")
 	}
-	if len(packages) > MaxPackages {
-		return nil, "", errors.New("inventory exceeds package limit")
+	if len(packages)+skipped > MaxPackages {
+		return nil, "", nil, errors.New("inventory exceeds package limit")
 	}
-	for i, p := range packages {
-		packages[i], err = normalizePackage(p, h.Manager, at)
-		if err != nil {
-			return nil, "", err
+	kept := make([]Package, 0, len(packages))
+	for _, p := range packages {
+		normalized, e := normalizePackage(p, h.Manager, at)
+		if e != nil {
+			skipped++
+			continue
 		}
+		kept = append(kept, normalized)
 	}
+	total := len(kept) + skipped
+	tolerated := total * inventoryMalformedSkipRatioPercent / 100
+	if tolerated < 1 {
+		tolerated = 1
+	}
+	if skipped > 0 && (len(kept) == 0 || skipped > tolerated) {
+		return nil, "", nil, fmt.Errorf("%d of %d package entries are malformed; the inventory is untrustworthy", skipped, total)
+	}
+	var warnings []string
+	if skipped > 0 {
+		warnings = append(warnings, fmt.Sprintf("skipped %d malformed package entries", skipped))
+	}
+	packages = kept
 	sort.Slice(packages, func(i, j int) bool { return packages[i].Key < packages[j].Key })
 	hash := sha256.New()
 	for i, p := range packages {
 		if i > 0 && packages[i-1].Key == p.Key {
-			return nil, "", errors.New("duplicate package identity in inventory")
+			return nil, "", nil, errors.New("duplicate package identity in inventory")
 		}
 		p.InventoryAt = time.Time{}
 		data, _ := json.Marshal(p)
 		hash.Write(data)
 	}
-	return packages, hex.EncodeToString(hash.Sum(nil)), nil
+	return packages, hex.EncodeToString(hash.Sum(nil)), warnings, nil
 }

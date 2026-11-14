@@ -3,6 +3,7 @@ package hostsecurity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,7 +178,7 @@ func TestPersistenceAndCancellation(t *testing.T) {
 func TestSnapshotStableAndMissingDatabase(t *testing.T) {
 	s := fixtureSystem(t, "pacman")
 	h := Host{Status: "supported", Manager: "pacman"}
-	if _, _, err := s.Inventory(context.Background(), h, time.Now()); err == nil {
+	if _, _, _, err := s.Inventory(context.Background(), h, time.Now()); err == nil {
 		t.Fatal("missing db accepted")
 	}
 	path := filepath.Join(s.Root, "var/lib/pacman/local/openssl-1")
@@ -187,16 +188,70 @@ func TestSnapshotStableAndMissingDatabase(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "desc"), []byte("%NAME%\nopenssl\n%VERSION%\n1.0-1\n%ARCH%\nx86_64\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, a, err := s.Inventory(context.Background(), h, time.Now())
+	_, a, _, err := s.Inventory(context.Background(), h, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, b, err := s.Inventory(context.Background(), h, time.Now().Add(time.Hour))
+	_, b, _, err := s.Inventory(context.Background(), h, time.Now().Add(time.Hour))
 	if err != nil || a != b {
 		t.Fatalf("snapshot depends on clock: %v", err)
 	}
 	buffer := &boundedOutput{limit: 2}
 	if _, err := buffer.Write([]byte(strings.Repeat("a", 3))); err == nil {
 		t.Fatal("output bound ignored")
+	}
+}
+
+// TestInventorySkipsMalformedEntries pins the malformed-entry tolerance: one
+// illegal dpkg entry (dpkg installs such versions with only a warning) is
+// skipped with a scan warning while the rest of the inventory proceeds, but
+// mass corruption beyond the tolerated share still fails closed.
+func TestInventorySkipsMalformedEntries(t *testing.T) {
+	s := fixtureSystem(t, "debian")
+	h := Host{Status: "supported", Manager: "apt"}
+	raw := "ii \tssl\t1.0-1\tamd64\tssl\t1.0-1\t\t\t\n" +
+		"ii \tneon\t1.0-2\tamd64\tneon\t1.0-2\t\t\t\n" +
+		"ii \tbroken\t1.0 (beta)\tamd64\tbroken\t1.0 (beta)\t\t\t\n"
+	s.Runner = fakeRunner(func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(raw), nil
+	})
+	packages, hash, warnings, err := s.Inventory(context.Background(), h, time.Now())
+	if err != nil || len(packages) != 2 || hash == "" {
+		t.Fatalf("the scan must survive one malformed entry: %+v %q %v", packages, hash, err)
+	}
+	found := false
+	for _, name := range []string{"ssl", "neon"} {
+		for _, p := range packages {
+			if p.Name == name {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the healthy packages must be inventoried: %+v", packages)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "skipped 1 malformed package entries") {
+		t.Fatalf("the skipped entries must surface as a warning: %+v", warnings)
+	}
+
+	// Mass corruption fails closed: beyond the tolerated share the scan
+	// refuses to report a fraction of the installed base.
+	massive := raw
+	for i := 0; i < 10; i++ {
+		massive += fmt.Sprintf("ii \tbad%02d\t1.0 (beta)\tamd64\tbad%02d\t1.0 (beta)\t\t\t\n", i, i)
+	}
+	s.Runner = fakeRunner(func(context.Context, string, ...string) ([]byte, error) {
+		return []byte(massive), nil
+	})
+	if _, _, _, err = s.Inventory(context.Background(), h, time.Now()); err == nil {
+		t.Fatal("an inventory over the malformed share must fail closed")
+	}
+
+	// Everything malformed fails closed as well.
+	s.Runner = fakeRunner(func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("ii \tbroken\t1.0 (beta)\tamd64\tbroken\t1.0 (beta)\t\t\t\n"), nil
+	})
+	if _, _, _, err = s.Inventory(context.Background(), h, time.Now()); err == nil {
+		t.Fatal("a fully malformed inventory must fail closed")
 	}
 }
