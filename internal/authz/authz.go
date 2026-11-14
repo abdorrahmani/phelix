@@ -81,6 +81,14 @@ const (
 	// allow scheduled workloads while keeping deployments manual.
 	ActionJob  = "job"
 	ActionHook = "hook"
+	// ActionHostSecurity authorizes a remote host security mutation (a host
+	// scan run or a package update preview/apply/verify arriving over the
+	// monitoring stream). It is distinct from ActionSecurity because it
+	// mutates the HOST rather than an application: the target is this
+	// agent's stable identity, so a policy can allow host remediation while
+	// keeping application deployments manual. The gate follows the same
+	// planless rule as the other direct mutations.
+	ActionHostSecurity = "host_security"
 )
 
 // Decision effects. This is the complete vocabulary; there is no fourth
@@ -209,7 +217,7 @@ func (r Request) Validate() error {
 		return err
 	}
 	switch r.Action {
-	case ActionRebuild, ActionRollback, ActionMatrix, ActionSecurity, ActionScale, ActionJob, ActionHook:
+	case ActionRebuild, ActionRollback, ActionMatrix, ActionSecurity, ActionScale, ActionJob, ActionHook, ActionHostSecurity:
 	default:
 		return invalidf("unknown authorizable action %q", r.Action)
 	}

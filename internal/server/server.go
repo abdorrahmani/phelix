@@ -331,6 +331,10 @@ func GetAgentID() string {
 	return agentID
 }
 
+func EnsureAgentID() (string, error) {
+	return loadOrGenerateAgentID()
+}
+
 // GetServerID is retained for existing message fields. Its value is the
 // agent ID, not a host-derived machine ID. Backends must resolve it by
 // agent_id to their internal servers.id.

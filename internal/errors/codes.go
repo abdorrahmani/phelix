@@ -212,6 +212,24 @@ const (
 	CodeSecurityOutcomeUnknown       Code = "SECURITY_OUTCOME_UNKNOWN"
 	CodeSecurityResponseTooLarge     Code = "SECURITY_RESPONSE_TOO_LARGE"
 
+	// Host security remote-command codes. They travel verbatim in
+	// MonitorCommandResult.error_code; the backend maps each onto an HTTP
+	// status for its REST surface. CONSENT_DISABLED marks withholding, not
+	// an execution failure: the local consent state refuses to disclose
+	// host security data.
+	CodeHostSecurityUnsupported           Code = "HOST_SECURITY_UNSUPPORTED"
+	CodeHostSecurityBusy                  Code = "HOST_SECURITY_BUSY"
+	CodeHostSecurityInvalid               Code = "HOST_SECURITY_INVALID"
+	CodeHostSecurityNotFound              Code = "HOST_SECURITY_NOT_FOUND"
+	CodeHostSecurityPreviewExpired        Code = "HOST_SECURITY_PREVIEW_EXPIRED"
+	CodeHostSecurityPreviewStale          Code = "HOST_SECURITY_PREVIEW_STALE"
+	CodeHostSecurityExecFailed            Code = "HOST_SECURITY_EXEC_FAILED"
+	CodeHostSecurityConsentDisabled       Code = "HOST_SECURITY_CONSENT_DISABLED"
+	CodeHostSecurityScanRunning           Code = "HOST_SECURITY_SCAN_RUNNING"
+	CodeHostSecurityPrivilege             Code = "HOST_SECURITY_PRIVILEGE"
+	CodeHostSecurityCapabilityUnavailable Code = "HOST_SECURITY_CAPABILITY_UNAVAILABLE"
+	CodeHostSecurityTimeout               Code = "HOST_SECURITY_TIMEOUT"
+
 	// Remote command channel (MonitorStream). CodeUnimplemented marks a
 	// command type the agent cannot execute (e.g. rollback before a handler
 	// is wired); CodeUnavailable a capability temporarily not usable.

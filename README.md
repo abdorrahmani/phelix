@@ -191,6 +191,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 - [Webhooks](docs/guides/webhooks.md)
 - [Resource Limits](docs/guides/resource-limits.md)
 - [Security](docs/guides/security.md)
+- [Server package security](docs/guides/server-security.md)
 - [Troubleshooting](docs/guides/troubleshooting.md)
 - [Best Practices](docs/guides/best-practices.md)
 

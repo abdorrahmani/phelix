@@ -78,6 +78,11 @@ const (
 	// per-line log_entry events, with bounded queueing and a dropped-lines
 	// counter.
 	CapabilityLogBatch = "log_batch"
+	// CapabilityHostSecurity: the agent implements the remote host security
+	// surface (host_security_* MonitorStream commands): host scan queries and
+	// runs, package update preview/apply/verify, and reboot status. The
+	// backend may gate the host_security_* surface on it.
+	CapabilityHostSecurity = "host_security"
 )
 
 // agentCapabilities is the registry of capabilities this agent build

@@ -50,10 +50,9 @@ phelix security show <ID>       # one advisory, cache first
 phelix security config [app]    # show the effective settings and schedule
 ```
 
-Run without arguments in a terminal, the commands guide you: `phelix
-security` opens a menu, and `scan`, `report`, `history`, `show`, and
-`config` ask for a target application. Scripts and CI keep the exact
-non-interactive behavior.
+Run without arguments, `phelix security` prints its subcommand help, and
+in a terminal `scan`, `report`, and `config` ask for a target
+application. Scripts and CI keep the exact non-interactive behavior.
 
 Configuration edits preserve unrelated YAML, comments, and formatting,
 validate before writing, and serialize concurrent Phelix edits through a

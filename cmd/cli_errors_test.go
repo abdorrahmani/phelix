@@ -46,6 +46,20 @@ func TestExitCodeFor(t *testing.T) {
 		{"unauthorized", phelixerr.New(phelixerr.CodeUnauthorized, "nope"), ExitPermission},
 		{"gitsync", phelixerr.New(phelixerr.CodeGitSyncFailed, "git"), ExitBuild},
 		{"wrapped", phelixerr.Wrap(phelixerr.CodeBuildFailed, "wrap", errors.New("root")), ExitBuild},
+		// Host security codes reuse the category exit codes; the JSON
+		// envelope carries the specific HOST_SECURITY_* code.
+		{"hostsecuritynotfound", phelixerr.New(phelixerr.CodeHostSecurityNotFound, "unknown token"), ExitNotFound},
+		{"hostsecurityprivilege", phelixerr.New(phelixerr.CodeHostSecurityPrivilege, "root required"), ExitPermission},
+		{"hostsecurityconsent", phelixerr.New(phelixerr.CodeHostSecurityConsentDisabled, "withheld"), ExitPermission},
+		{"hostsecuritybusy", phelixerr.New(phelixerr.CodeHostSecurityBusy, "locked"), ExitFailure},
+		{"hostsecurityscanrunning", phelixerr.New(phelixerr.CodeHostSecurityScanRunning, "scan lock"), ExitFailure},
+		{"hostsecuritypreviewexpired", phelixerr.New(phelixerr.CodeHostSecurityPreviewExpired, "expired"), ExitFailure},
+		{"hostsecuritypreviewstale", phelixerr.New(phelixerr.CodeHostSecurityPreviewStale, "stale"), ExitFailure},
+		{"hostsecurityinvalid", phelixerr.New(phelixerr.CodeHostSecurityInvalid, "bad request"), ExitValidation},
+		{"hostsecurityunsupported", phelixerr.New(phelixerr.CodeHostSecurityUnsupported, "no adapter"), ExitValidation},
+		{"hostsecuritycapability", phelixerr.New(phelixerr.CodeHostSecurityCapabilityUnavailable, "no reboot state"), ExitValidation},
+		{"hostsecurityexecfailed", phelixerr.New(phelixerr.CodeHostSecurityExecFailed, "apt failed"), ExitFailure},
+		{"hostsecuritytimeout", phelixerr.New(phelixerr.CodeHostSecurityTimeout, "slow"), ExitTimeout},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
