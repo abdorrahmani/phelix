@@ -992,6 +992,28 @@ func ApplyUpdates(ctx context.Context, system System, host Host, packages []stri
 		return result, err
 	}
 
+	// The revalidation reads the package database inventory, so it holds the
+	// host scan lock: a concurrent scan cannot inventory a torn state and an
+	// in-flight scan cannot be raced. The lock is released before the manager
+	// transaction below, so a long apply never blocks scheduled scans; the
+	// verification scan after the apply takes the lock on its own.
+	scanLock, scanLockErr := TryAcquireHostScanLock(dataDir)
+	if errors.Is(scanLockErr, ErrHostScanLockHeld) {
+		err := phelixerr.New(phelixerr.CodeHostSecurityBusy,
+			"a host security scan is running on this host; retry the update after it completes")
+		if persistErr := finish(OperationStatusFailed, "", err.Error()); persistErr != nil {
+			return result, errors.Join(err, persistErr)
+		}
+		return result, err
+	}
+	if scanLockErr != nil {
+		if persistErr := finish(OperationStatusFailed, "", scanLockErr.Error()); persistErr != nil {
+			return result, errors.Join(scanLockErr, persistErr)
+		}
+		return result, scanLockErr
+	}
+	defer scanLock.Release()
+
 	versions, err := currentVersions(ctx, system, host.Manager, preview.Packages)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		// A package the manager no longer reports was removed or purged
@@ -1022,6 +1044,7 @@ func ApplyUpdates(ctx context.Context, system System, host Host, packages []stri
 	}
 
 	name, args := applyCommand(host.Manager, preview.Items)
+	scanLock.Release()
 	raw, runErr := system.Runner.Run(ctx, name, args...)
 	if runErr != nil {
 		message := phelixerr.Redact(runErr.Error())

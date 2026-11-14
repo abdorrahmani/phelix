@@ -525,6 +525,96 @@ func TestApplyRemovedPackageAnswersPreviewStale(t *testing.T) {
 	}
 }
 
+// TestApplyBusyScanLock pins the scan-lock interplay on the apply side: an
+// apply started while a scan holds the host scan lock fails closed with
+// HOST_SECURITY_BUSY before any command runs, so the revalidation can never
+// race a scan reading the package database.
+func TestApplyBusyScanLock(t *testing.T) {
+	runAsRoot(t, 0)
+	fixture := &aptFixture{}
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(fixture.run)
+	dataDir := t.TempDir()
+	preview, err := PreviewUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.commands = nil
+	held, err := TryAcquireHostScanLock(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(held.Release)
+	_, err = ApplyUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, preview.Token, dataDir)
+	if errorCode(t, err) != phelixerr.CodeHostSecurityBusy {
+		t.Fatalf("an apply under a held scan lock must fail closed with busy: %v", err)
+	}
+	if len(fixture.commands) != 0 {
+		t.Fatalf("no command may run under a held scan lock: %v", fixture.commands)
+	}
+	state, loadErr := loadOperations(dataDir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(state.Operations) != 1 || state.Operations[0].Status != OperationStatusFailed {
+		t.Fatalf("the refused apply must persist its failed operation: %+v", state.Operations)
+	}
+}
+
+// TestApplyHoldsScanLockForRevalidation pins the inventory-sensitive window:
+// during the revalidation the apply holds the host scan lock, so a scan_run
+// started in that window is refused by the held scan lock; once the window
+// ends the lock is released and the apply completes.
+func TestApplyHoldsScanLockForRevalidation(t *testing.T) {
+	runAsRoot(t, 0)
+	fixture := &aptFixture{}
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(fixture.run)
+	dataDir := t.TempDir()
+	preview, err := PreviewUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revalidating := make(chan struct{})
+	release := make(chan struct{})
+	blocked := false
+	system.Runner = fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "dpkg-query" && len(args) >= 3 && args[len(args)-1] == "ssl" && !blocked {
+			blocked = true
+			close(revalidating)
+			<-release
+		}
+		return fixture.run(ctx, name, args...)
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := ApplyUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, preview.Token, dataDir)
+		done <- err
+	}()
+	select {
+	case <-revalidating:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the apply never reached its revalidation window")
+	}
+	if _, err := TryAcquireHostScanLock(dataDir); !errors.Is(err, ErrHostScanLockHeld) {
+		close(release)
+		t.Fatalf("a scan_run during the revalidation window must be refused by the held scan lock: %v", err)
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the apply must complete once the window ends: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the apply never finished")
+	}
+	if !fixture.applied {
+		t.Fatal("the update must execute after revalidation")
+	}
+}
+
 func TestApplySuccessAndVerifiedRemediation(t *testing.T) {
 	runAsRoot(t, 0)
 	fixture := &aptFixture{}
