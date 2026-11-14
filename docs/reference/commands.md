@@ -491,7 +491,7 @@ phelix security show GHSA-...     # one advisory, from cache or OSV.dev
 phelix security config myapp      # effective settings and schedule
 phelix security config myapp --set-enabled true --set-scan-interval 12h --set-fail-threshold medium
 phelix security config myapp --set-enabled false
-phelix security                   # interactive menu (in a terminal; help otherwise)
+phelix security                   # the subcommand help (scan, report, history, show, config)
 ```
 
 - `--json` emits one machine envelope with the scan record, the resolved
