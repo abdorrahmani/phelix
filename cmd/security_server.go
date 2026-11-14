@@ -467,10 +467,26 @@ func newServerHostConfigCommand(jsonOutput *bool) *cobra.Command {
 			if *jsonOutput {
 				defer machine.EnterJSON()()
 			}
-			enable := cmd.Flags().Changed("reporting")
-			disable := cmd.Flags().Changed("no-reporting")
-			if enable && disable {
+			// The reporting consent follows the flag VALUE, not just its
+			// presence: --reporting=true grants, --reporting=false revokes
+			// exactly like --no-reporting, and passing both forms together
+			// is rejected because the intent is ambiguous.
+			reportingChanged := cmd.Flags().Changed("reporting")
+			noReportingChanged := cmd.Flags().Changed("no-reporting")
+			if reportingChanged && noReportingChanged {
 				return phelixerr.New(phelixerr.CodeInvalidArgument, "--reporting and --no-reporting are mutually exclusive")
+			}
+			enable := false
+			disable := false
+			if reportingChanged {
+				if value, _ := cmd.Flags().GetBool("reporting"); value {
+					enable = true
+				} else {
+					disable = true
+				}
+			}
+			if noReportingChanged {
+				disable = true
 			}
 			interval, _ := cmd.Flags().GetString("interval")
 			dataDir := server.DataDir()
@@ -506,7 +522,7 @@ func newServerHostConfigCommand(jsonOutput *bool) *cobra.Command {
 			return printServerHostConfig(cmd, result)
 		},
 	}
-	sub.Flags().Bool("reporting", false, "consent to local host security reporting")
+	sub.Flags().Bool("reporting", false, "consent to local host security reporting; --reporting=false revokes consent")
 	sub.Flags().Bool("no-reporting", false, "revoke host security reporting consent")
 	sub.Flags().String("interval", "", "host scan cadence, e.g. 24h (minimum 1h)")
 	return sub

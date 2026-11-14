@@ -402,6 +402,76 @@ func TestServerSecurityConfigCommand(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected exclusive flags error, got %v", err)
 	}
+	_, err = runServerSecurity(t, "config", "--json", "--reporting=false", "--no-reporting")
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected --reporting=false with --no-reporting to be rejected, got %v", err)
+	}
+
+	// The reporting flag follows its value: --reporting=false revokes,
+	// --reporting=true grants, and neither flag leaves the state alone.
+	out, err = runServerSecurity(t, "config", "--json", "--reporting=true")
+	if err != nil {
+		t.Fatalf("config --reporting=true failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reporting || !result.Updated {
+		t.Fatalf("--reporting=true must grant consent: %+v", result)
+	}
+	if !hostsecurity.HostReportingEnabled(dataDir) {
+		t.Fatal("--reporting=true consent not persisted")
+	}
+
+	out, err = runServerSecurity(t, "config", "--json", "--reporting=false")
+	if err != nil {
+		t.Fatalf("config --reporting=false failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Reporting || !result.Updated {
+		t.Fatalf("--reporting=false must revoke consent: %+v", result)
+	}
+	if hostsecurity.HostReportingEnabled(dataDir) {
+		t.Fatal("--reporting=false consent not revoked")
+	}
+
+	// Neither flag leaves the existing state untouched.
+	out, err = runServerSecurity(t, "config", "--json", "--interval", "12h")
+	if err != nil {
+		t.Fatalf("interval-only config failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Reporting {
+		t.Fatalf("an interval-only update must not grant reporting consent: %+v", result)
+	}
+	if result.ScanInterval != "12h" || !result.Updated {
+		t.Fatalf("interval-only update not applied: %+v", result)
+	}
+
+	// A naturally typed --reporting=false revokes even when consent is
+	// already disabled: the command must succeed and stay disabled.
+	out, err = runServerSecurity(t, "config", "--json", "--reporting=false")
+	if err != nil {
+		t.Fatalf("idempotent revoke failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Reporting {
+		t.Fatalf("--reporting=false must keep consent disabled: %+v", result)
+	}
 
 	cmd := newServerSecurityCommand()
 	var human bytes.Buffer
@@ -411,7 +481,7 @@ func TestServerSecurityConfigCommand(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(human.String(), "Host reporting") || !strings.Contains(human.String(), "false") || !strings.Contains(human.String(), "6h") {
+	if !strings.Contains(human.String(), "Host reporting") || !strings.Contains(human.String(), "false") || !strings.Contains(human.String(), "12h") {
 		t.Fatalf("human config view incomplete: %q", human.String())
 	}
 }

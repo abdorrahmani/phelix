@@ -547,9 +547,12 @@ phelix security server reboot-status         # restart requirement, reasons, ker
 - `report` filters: `--severity` and `--state` match case-insensitively
   and exactly, `--package` is a case-insensitive substring match; paging
   uses `--limit` (1..500) and a nonnegative `--offset`.
-- `config` edits the local-only consent: reporting defaults to disabled,
-  the scan interval defaults to `24h` and accepts at least `1h`. Invalid
-  values are rejected before writing. There is no remote toggle.
+- `config` edits the local-only consent: the reporting flag follows its
+  value (`--reporting=true` grants, `--reporting=false` revokes like
+  `--no-reporting`, both flags together are rejected), reporting defaults
+  to disabled, the scan interval defaults to `24h` and accepts at least
+  `1h`. Invalid values are rejected before writing. There is no remote
+  toggle.
 - Scheduled scans run inside `phelix monitor` while consent is enabled:
   completion-anchored cadence, failure backoff from 15m doubling up to
   the interval, and one host scan lock shared with manual scans.
