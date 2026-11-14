@@ -527,7 +527,9 @@ phelix security server inventory             # installed packages from the lates
 phelix security server inventory --package openssl --limit 100 --offset 0
 phelix security server history               # immutable scan records with score and coverage
 phelix security server config                # local reporting consent and scan cadence
-phelix security server config --reporting --interval 12h
+phelix security server config --host-reporting --host-scan-interval 12h
+                                             # the shorter spellings --reporting and --interval are equivalents
+phelix security server config --host-reporting=false
 phelix security server config --no-reporting
 phelix security server preview --package openssl --package libssl3=1.2.3
                                              # manager dry-run; stores a preview token (nothing installed)

@@ -481,7 +481,13 @@ type serverHostConfigResult struct {
 
 // newServerHostConfigCommand builds the consent configuration command. The
 // consent is local-only by design: it persists under the data directory and
-// never adds a remote toggle.
+// never adds a remote toggle. The consent flags exist in two spellings that
+// mean the same thing: --reporting and --host-reporting for the consent
+// itself, --interval and --host-scan-interval for the cadence. The consent
+// follows the flag value, not just its presence: --reporting=true grants,
+// --reporting=false revokes exactly like --no-reporting. Combining two
+// spellings of one intent, or a consent spelling with --no-reporting, is
+// rejected because the intent is ambiguous.
 func newServerHostConfigCommand(jsonOutput *bool) *cobra.Command {
 	sub := &cobra.Command{
 		Use:           "config",
@@ -493,19 +499,29 @@ func newServerHostConfigCommand(jsonOutput *bool) *cobra.Command {
 			if *jsonOutput {
 				defer machine.EnterJSON()()
 			}
-			// The reporting consent follows the flag VALUE, not just its
-			// presence: --reporting=true grants, --reporting=false revokes
-			// exactly like --no-reporting, and passing both forms together
-			// is rejected because the intent is ambiguous.
 			reportingChanged := cmd.Flags().Changed("reporting")
+			hostReportingChanged := cmd.Flags().Changed("host-reporting")
 			noReportingChanged := cmd.Flags().Changed("no-reporting")
-			if reportingChanged && noReportingChanged {
-				return phelixerr.New(phelixerr.CodeInvalidArgument, "--reporting and --no-reporting are mutually exclusive")
+			if reportingChanged && hostReportingChanged {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--reporting and --host-reporting are the same option; pass only --host-reporting")
+			}
+			if (reportingChanged || hostReportingChanged) && noReportingChanged {
+				grant := "--reporting"
+				if hostReportingChanged {
+					grant = "--host-reporting"
+				}
+				return phelixerr.Newf(phelixerr.CodeInvalidArgument, "%s and --no-reporting are mutually exclusive", grant)
 			}
 			enable := false
 			disable := false
-			if reportingChanged {
-				if value, _ := cmd.Flags().GetBool("reporting"); value {
+			if reportingChanged || hostReportingChanged {
+				var value bool
+				if hostReportingChanged {
+					value, _ = cmd.Flags().GetBool("host-reporting")
+				} else {
+					value, _ = cmd.Flags().GetBool("reporting")
+				}
+				if value {
 					enable = true
 				} else {
 					disable = true
@@ -515,6 +531,13 @@ func newServerHostConfigCommand(jsonOutput *bool) *cobra.Command {
 				disable = true
 			}
 			interval, _ := cmd.Flags().GetString("interval")
+			hostInterval, _ := cmd.Flags().GetString("host-scan-interval")
+			if cmd.Flags().Changed("interval") && cmd.Flags().Changed("host-scan-interval") {
+				return phelixerr.New(phelixerr.CodeInvalidArgument, "--interval and --host-scan-interval are the same option; pass only --host-scan-interval")
+			}
+			if interval == "" {
+				interval = hostInterval
+			}
 			dataDir := server.DataDir()
 			current, err := hostsecurity.LoadHostConfig(dataDir)
 			if err != nil {
@@ -548,9 +571,11 @@ func newServerHostConfigCommand(jsonOutput *bool) *cobra.Command {
 			return printServerHostConfig(cmd, result)
 		},
 	}
-	sub.Flags().Bool("reporting", false, "consent to local host security reporting; --reporting=false revokes consent")
-	sub.Flags().Bool("no-reporting", false, "revoke host security reporting consent")
-	sub.Flags().String("interval", "", "host scan cadence, e.g. 24h (minimum 1h)")
+	sub.Flags().Bool("host-reporting", false, "consent to local host security reporting; --host-reporting=false revokes consent (same as --reporting)")
+	sub.Flags().Bool("reporting", false, "consent to local host security reporting; --reporting=false revokes consent (same as --host-reporting)")
+	sub.Flags().Bool("no-reporting", false, "revoke host security reporting consent (same as --host-reporting=false)")
+	sub.Flags().String("host-scan-interval", "", "host scan cadence, e.g. 24h (minimum 1h; same as --interval)")
+	sub.Flags().String("interval", "", "host scan cadence, e.g. 24h (minimum 1h; same as --host-scan-interval)")
 	return sub
 }
 

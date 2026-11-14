@@ -65,14 +65,14 @@ Reporting consent and the scan cadence are local-only settings; there is no remo
 
 ```bash
 phelix security server config                          # show current consent
-phelix security server config --reporting              # consent to scheduled scans
-phelix security server config --reporting=false        # revoke consent (same as --no-reporting)
+phelix security server config --host-reporting         # consent to scheduled scans
+phelix security server config --host-reporting=false   # revoke consent (same as --no-reporting)
 phelix security server config --no-reporting           # revoke consent
-phelix security server config --interval 12h           # cadence, minimum 1h
+phelix security server config --host-scan-interval 12h # cadence, minimum 1h
 phelix security server config --json
 ```
 
-The consent follows the value: `--reporting=true` grants, `--reporting=false` revokes exactly like `--no-reporting`, and passing both flags in one command is rejected. The defaults are reporting disabled and a 24 hour cadence. An interval below 1 hour is rejected. Consent is persisted in `host-security/config.json` under the Phelix data directory.
+The consent and cadence flags exist in two spellings that mean the same thing: `--host-reporting` and `--reporting` for the consent, `--host-scan-interval` and `--interval` for the cadence. The examples use the host-prefixed forms, which match what the dashboard banner suggests. The consent follows the value: `--host-reporting=true` grants, `--host-reporting=false` revokes exactly like `--no-reporting`, and passing two spellings of the same intent in one command is rejected. The defaults are reporting disabled and a 24 hour cadence. An interval below 1 hour is rejected. Consent is persisted in `host-security/config.json` under the Phelix data directory.
 
 While `phelix monitor` runs and consent is enabled, it schedules host scans on that cadence. The schedule is completion-anchored: the next run is the latest finished scan plus the interval, so restarts and downtime never stack missed runs. A failed scheduled scan retries after 15 minutes, doubling per consecutive failure up to the interval. Scheduled and manual scans share one host scan lock, so they never overlap; a manual scan defers the scheduled round, and its completion re-anchors the cadence. A monitor process that died mid-scan is reclaimed at startup and the scan is never recorded as successful.
 

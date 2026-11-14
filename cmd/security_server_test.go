@@ -485,3 +485,83 @@ func TestServerSecurityConfigCommand(t *testing.T) {
 		t.Fatalf("human config view incomplete: %q", human.String())
 	}
 }
+
+// TestServerSecurityConfigHostSpelling pins the host-prefixed flag
+// spellings the dashboard banner suggests: --host-reporting follows its
+// value like --reporting, --host-scan-interval feeds the same cadence
+// validation, and combining the two spellings of one intent is rejected.
+func TestServerSecurityConfigHostSpelling(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("PHELIX_DATA_DIR", dataDir)
+
+	out, err := runServerSecurity(t, "config", "--json", "--host-reporting")
+	if err != nil {
+		t.Fatalf("config --host-reporting failed: %v", err)
+	}
+	env := decodeEnvelope(t, out)
+	raw, _ := json.Marshal(env.Result)
+	var result serverHostConfigResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reporting || !result.Updated {
+		t.Fatalf("--host-reporting must grant consent: %+v", result)
+	}
+	if !hostsecurity.HostReportingEnabled(dataDir) {
+		t.Fatal("--host-reporting consent not persisted")
+	}
+
+	out, err = runServerSecurity(t, "config", "--json", "--host-reporting=false")
+	if err != nil {
+		t.Fatalf("config --host-reporting=false failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Reporting || !result.Updated {
+		t.Fatalf("--host-reporting=false must revoke consent: %+v", result)
+	}
+	if hostsecurity.HostReportingEnabled(dataDir) {
+		t.Fatal("--host-reporting=false consent not revoked")
+	}
+
+	out, err = runServerSecurity(t, "config", "--json", "--host-scan-interval", "12h")
+	if err != nil {
+		t.Fatalf("config --host-scan-interval failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ScanInterval != "12h" || !result.Updated {
+		t.Fatalf("--host-scan-interval not applied: %+v", result)
+	}
+	if result.Reporting {
+		t.Fatalf("--host-scan-interval alone must not grant consent: %+v", result)
+	}
+
+	_, err = runServerSecurity(t, "config", "--json", "--host-scan-interval", "30m")
+	if err == nil || !strings.Contains(err.Error(), "at least 1h") {
+		t.Fatalf("expected --host-scan-interval validation error, got %v", err)
+	}
+
+	_, err = runServerSecurity(t, "config", "--json", "--host-reporting", "--no-reporting")
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected --host-reporting with --no-reporting to be rejected, got %v", err)
+	}
+	_, err = runServerSecurity(t, "config", "--json", "--host-reporting=false", "--no-reporting")
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected --host-reporting=false with --no-reporting to be rejected, got %v", err)
+	}
+	_, err = runServerSecurity(t, "config", "--json", "--host-reporting", "--reporting")
+	if err == nil || !strings.Contains(err.Error(), "--host-reporting") {
+		t.Fatalf("expected --host-reporting with --reporting to be rejected, got %v", err)
+	}
+	_, err = runServerSecurity(t, "config", "--json", "--interval", "6h", "--host-scan-interval", "12h")
+	if err == nil || !strings.Contains(err.Error(), "--host-scan-interval") {
+		t.Fatalf("expected --interval with --host-scan-interval to be rejected, got %v", err)
+	}
+}
