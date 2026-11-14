@@ -120,6 +120,59 @@ func TestRemoteHostSecurityRemediation(t *testing.T) {
 	}
 }
 
+// TestRemoteHostSecurityUpdateVerifyUnresolved pins the wire verification
+// status: when the verification scan still finds advisories for a requested
+// package, the wire status stays "succeeded" (the apply completed) instead
+// of fabricating "verified", and the entries carry the remaining findings.
+func TestRemoteHostSecurityUpdateVerifyUnresolved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".phelix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostSecuritySetConsent(t, true)
+	server := remediationAdvisoryServer(t, "3.0-1")
+	_, system := remediationFixtureSystem(t)
+	prevSystem := newServerHostSystem
+	newServerHostSystem = func() hostsecurity.System { return system }
+	t.Cleanup(func() { newServerHostSystem = prevSystem })
+	prevIntel := serverIntelligence
+	serverIntelligence = func(dataDir string) *hostsecurity.Intelligence {
+		return &hostsecurity.Intelligence{
+			CacheDir: filepath.Join(securityTestDataDir(), "host-security", "intel-cache"),
+			HTTP:     &http.Client{Transport: serverRedirectTransport{server}},
+		}
+	}
+	t.Cleanup(func() { serverIntelligence = prevIntel })
+	prevProbe := hostsecurity.PrivilegeProbe
+	hostsecurity.PrivilegeProbe = func() int { return 0 }
+	t.Cleanup(func() { hostsecurity.PrivilegeProbe = prevProbe })
+
+	preview := RemoteHostSecurityCommand(hostSecurityRequest("up1", phelixgrpc.HostSecurityCommandUpdatePreview,
+		&pb.HostSecurityCommandOptions{Packages: []string{"ssl"}, ProtocolVersion: 1}))
+	if preview.GetStatus() != "success" {
+		t.Fatalf("preview: %+v", preview)
+	}
+	apply := RemoteHostSecurityCommand(hostSecurityRequest("ua1", phelixgrpc.HostSecurityCommandUpdateApply,
+		&pb.HostSecurityCommandOptions{Packages: []string{"ssl"}, PreviewToken: preview.GetHostSecurityPreview().GetPreviewToken(), ProtocolVersion: 1}))
+	if apply.GetStatus() != "success" {
+		t.Fatalf("apply: %+v", apply)
+	}
+	verify := RemoteHostSecurityCommand(hostSecurityRequest("uv1", phelixgrpc.HostSecurityCommandUpdateVerify,
+		&pb.HostSecurityCommandOptions{OperationId: apply.GetHostSecurityUpdate().GetOperationId(), ProtocolVersion: 1}))
+	if verify.GetStatus() != "success" {
+		t.Fatalf("verify: %+v", verify)
+	}
+	verifyWire := verify.GetHostSecurityUpdate()
+	if verifyWire.GetStatus() != "succeeded" {
+		t.Fatalf("an unresolved entry must keep the wire status at succeeded: %+v", verifyWire)
+	}
+	if len(verifyWire.GetVerification()) != 1 || verifyWire.GetVerification()[0].GetResolved() ||
+		!strings.Contains(verifyWire.GetVerification()[0].GetDetail(), "CVE-2024-10001") {
+		t.Fatalf("the remaining findings must travel in the entries: %+v", verifyWire.GetVerification())
+	}
+}
+
 // TestRemoteHostSecurityUpdateUnsupported pins the unsupported-host path for
 // the update commands: a host without a supported package manager answers
 // HOST_SECURITY_UNSUPPORTED instead of executing anything.

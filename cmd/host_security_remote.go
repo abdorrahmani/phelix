@@ -401,7 +401,7 @@ func remoteHostSecurityUpdateVerify(req *pb.MonitorCommandRequest, dataDir strin
 	}
 	result := &pb.HostSecurityUpdateResult{
 		OperationId:    opts.GetOperationId(),
-		Status:         hostsecurity.OperationStatusVerified,
+		Status:         verificationStatus(entries),
 		Manager:        host.Manager,
 		Summary:        "verified against scan " + scan.ID,
 		RebootRequired: scan.RebootRequired,

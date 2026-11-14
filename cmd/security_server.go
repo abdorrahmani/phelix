@@ -299,7 +299,7 @@ func newServerHostVerifyCommand(jsonOutput *bool) *cobra.Command {
 				return err
 			}
 			result := serverVerifyResult{
-				OperationID: operationID, Status: hostsecurity.OperationStatusVerified,
+				OperationID: operationID, Status: verificationStatus(entries),
 				ScanID: scan.ID, Coverage: scan.Coverage, RebootRequired: scan.RebootRequired,
 				StartedAt: scan.StartedAt, FinishedAt: scan.FinishedAt,
 				Verification: entries,
@@ -350,6 +350,23 @@ func newServerHostRebootCommand(jsonOutput *bool) *cobra.Command {
 		},
 	}
 	return sub
+}
+
+// verificationStatus resolves the verification result status. "verified" is
+// reported only when every requested package resolved; otherwise the status
+// stays the apply's "succeeded" and the per-package entries carry the
+// remaining findings, so neither the CLI nor the wire ever fabricates a
+// clean verification out of unresolved findings.
+func verificationStatus(entries []hostsecurity.VerificationEntry) string {
+	if len(entries) == 0 {
+		return hostsecurity.OperationStatusSucceeded
+	}
+	for _, entry := range entries {
+		if !entry.Resolved {
+			return hostsecurity.OperationStatusSucceeded
+		}
+	}
+	return hostsecurity.OperationStatusVerified
 }
 
 // serverVerifyResult is the machine view of one verification run.
@@ -420,6 +437,15 @@ func printServerHostVerify(cmd *cobra.Command, result serverVerifyResult) error 
 	fmt.Fprintf(w, "Coverage\t%s\n", result.Coverage)
 	if result.RebootRequired {
 		fmt.Fprintln(w, "Reboot\trequired")
+	}
+	unresolved := 0
+	for _, entry := range result.Verification {
+		if !entry.Resolved {
+			unresolved++
+		}
+	}
+	if unresolved > 0 {
+		fmt.Fprintf(w, "Unresolved\t%d of %d requested package(s) still have findings\n", unresolved, len(result.Verification))
 	}
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "PACKAGE\tRESOLVED\tDETAIL")

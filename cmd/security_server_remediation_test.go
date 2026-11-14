@@ -325,3 +325,112 @@ func TestServerSecurityApplyNeedsStoredPreview(t *testing.T) {
 		t.Fatalf("apply without a stored preview: %v", err)
 	}
 }
+
+// TestServerSecurityVerifyUnresolvedFindings pins the verification status
+// contract: when the verification scan still finds advisories for a
+// requested package, the verify result must not fabricate a "verified"
+// status. The status stays "succeeded" (the apply completed), the entries
+// carry the remaining findings, and the human output names the unresolved
+// packages clearly.
+func TestServerSecurityVerifyUnresolvedFindings(t *testing.T) {
+	server := remediationAdvisoryServer(t, "3.0-1")
+	dataDir := t.TempDir()
+	t.Setenv("PHELIX_DATA_DIR", dataDir)
+	fixture, system := remediationFixtureSystem(t)
+	installRemediationSeams(t, fixture, system, server)
+
+	out, err := runServerSecurity(t, "preview", "--json", "--package", "ssl")
+	if err != nil {
+		t.Fatalf("preview failed: %v", err)
+	}
+	env := decodeEnvelope(t, out)
+	raw, _ := json.Marshal(env.Result)
+	var preview hostsecurity.Preview
+	if err := json.Unmarshal(raw, &preview); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runServerSecurity(t, "apply", "--json", "--preview-token", preview.Token, "--yes")
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	var result hostsecurity.UpdateResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err = runServerSecurity(t, "verify", "--json", "--operation-id", result.OperationID)
+	if err != nil {
+		t.Fatalf("verify failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	var verified serverVerifyResult
+	if err := json.Unmarshal(raw, &verified); err != nil {
+		t.Fatal(err)
+	}
+	if verified.Status != "succeeded" {
+		t.Fatalf("an unresolved entry must keep the status at succeeded: %+v", verified)
+	}
+	if len(verified.Verification) != 1 || verified.Verification[0].Resolved ||
+		!strings.Contains(verified.Verification[0].Detail, "CVE-2024-10001") {
+		t.Fatalf("the remaining findings must stay in the entries: %+v", verified.Verification)
+	}
+
+	// The human output needs its own operation: verifying twice is refused.
+	out, err = runServerSecurity(t, "preview", "--json", "--package", "ssl")
+	if err != nil {
+		t.Fatalf("second preview failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	var renewed hostsecurity.Preview
+	if err := json.Unmarshal(raw, &renewed); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runServerSecurity(t, "apply", "--json", "--preview-token", renewed.Token, "--yes")
+	if err != nil {
+		t.Fatalf("second apply failed: %v", err)
+	}
+	env = decodeEnvelope(t, out)
+	raw, _ = json.Marshal(env.Result)
+	var renewedResult hostsecurity.UpdateResult
+	if err := json.Unmarshal(raw, &renewedResult); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newServerSecurityCommand()
+	var human strings.Builder
+	cmd.SetOut(&human)
+	cmd.SetErr(&human)
+	cmd.SetArgs([]string{"verify", "--operation-id", renewedResult.OperationID})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human.String(), "Unresolved") || !strings.Contains(human.String(), "1 of 1 requested package(s) still have findings") {
+		t.Fatalf("human verify must name the unresolved packages: %q", human.String())
+	}
+	if !strings.Contains(human.String(), "remaining findings: CVE-2024-10001") {
+		t.Fatalf("human verify must show the remaining findings: %q", human.String())
+	}
+}
+
+// TestVerificationStatus pins the status resolver: "verified" only when
+// every requested package resolved, otherwise the apply's "succeeded".
+func TestVerificationStatus(t *testing.T) {
+	allResolved := []hostsecurity.VerificationEntry{{Package: "ssl", Resolved: true, Detail: "no remaining findings for this package"}}
+	if got := verificationStatus(allResolved); got != "verified" {
+		t.Fatalf("a fully resolved verification must stay verified: %q", got)
+	}
+	partial := []hostsecurity.VerificationEntry{
+		{Package: "ssl", Resolved: true, Detail: "no remaining findings for this package"},
+		{Package: "neon", Resolved: false, Detail: "remaining findings: CVE-2024-10003"},
+	}
+	if got := verificationStatus(partial); got != "succeeded" {
+		t.Fatalf("an unresolved entry must keep the status at succeeded: %q", got)
+	}
+	if got := verificationStatus(nil); got != "succeeded" {
+		t.Fatalf("an entryless verification must not claim verified: %q", got)
+	}
+}
