@@ -573,6 +573,12 @@ func TestRPMAdvisoriesFindingPath(t *testing.T) {
 		`<update type="security" id="FEDORA-2026-ccc"><severity>moderate</severity>` +
 		`<references><reference type="bugzilla" id="CVE-2024-90003" href="https://secure.example/gz"/></references>` +
 		`<pkglist><collection><package name="gzpkg" version="2.0" release="1.fc40" epoch="0" arch="x86_64"/></collection></pkglist></update>` +
+		`<update type="security" id="FEDORA-2026-ddd"><severity>important</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-90004" href="https://secure.example/imp"/></references>` +
+		`<pkglist><collection><package name="imppkg" version="2.0" release="1.fc40" epoch="0" arch="x86_64"/></collection></pkglist></update>` +
+		`<update type="security" id="FEDORA-2026-eee"><severity>unspecified</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-90005" href="https://secure.example/unk"/></references>` +
+		`<pkglist><collection><package name="unkpkg" version="2.0" release="1.fc40" epoch="0" arch="x86_64"/></collection></pkglist></update>` +
 		`</updates>`
 	gzDir := filepath.Join(root, "var/cache/dnf", "repo-other")
 	if err := os.MkdirAll(gzDir, 0700); err != nil {
@@ -596,6 +602,8 @@ func TestRPMAdvisoriesFindingPath(t *testing.T) {
 		{Key: "openssl:x86_64@1:3.0.7-27.el9", Name: "openssl", Version: "1:3.0.7-27.el9", Architecture: "x86_64"},
 		{Key: "patched:x86_64@1:3.0.9-1.el9", Name: "patched", Version: "1:3.0.9-1.el9", Architecture: "x86_64"},
 		{Key: "gzpkg:x86_64@1.0-1.fc40", Name: "gzpkg", Version: "1.0-1.fc40", Architecture: "x86_64"},
+		{Key: "imppkg:x86_64@1.0-1.fc40", Name: "imppkg", Version: "1.0-1.fc40", Architecture: "x86_64"},
+		{Key: "unkpkg:x86_64@1.0-1.fc40", Name: "unkpkg", Version: "1.0-1.fc40", Architecture: "x86_64"},
 	}
 	findings, sources, _, err := (&Intelligence{}).rpmAdvisories(context.Background(), system, Host{ID: "fedora", Version: "40", Manager: "dnf", Status: "supported"}, packages)
 	if err == nil {
@@ -619,6 +627,15 @@ func TestRPMAdvisoriesFindingPath(t *testing.T) {
 	}
 	if got := byPackage["gzpkg"]; len(got) != 1 || got[0].CVE != "CVE-2024-90003" || got[0].FixedVersion != "2.0-1.fc40" {
 		t.Fatalf("the gzipped updateinfo must be parsed: %+v", got)
+	}
+	if byPackage["gzpkg"][0].Severity != "medium" {
+		t.Fatalf("the rpm moderate severity must land on the medium vocabulary: %+v", byPackage["gzpkg"][0])
+	}
+	if got := byPackage["imppkg"]; len(got) != 1 || got[0].Severity != "high" {
+		t.Fatalf("the rpm important severity must land on the high vocabulary: %+v", got)
+	}
+	if got := byPackage["unkpkg"]; len(got) != 1 || got[0].Severity != "unknown" {
+		t.Fatalf("an off-vocabulary rpm severity must stay unknown: %+v", got)
 	}
 	for _, f := range findings {
 		if f.CVE == "CVE-2024-90002" {

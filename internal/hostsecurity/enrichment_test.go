@@ -43,10 +43,10 @@ func TestEnrichGitHubSeverityKeepsDistributionSeverity(t *testing.T) {
 	}
 }
 
-func TestNormalizeGitHubSeverity(t *testing.T) {
-	for value, want := range map[string]string{"LOW": "low", "Moderate": "medium", "HIGH": "high", "critical": "critical", "": "unknown", "severe": "unknown"} {
-		if got := normalizeGitHubSeverity(value); got != want {
-			t.Fatalf("normalizeGitHubSeverity(%q) = %q, want %q", value, got, want)
+func TestNormalizeAdvisorySeverity(t *testing.T) {
+	for value, want := range map[string]string{"LOW": "low", "Moderate": "medium", "HIGH": "high", "critical": "critical", "IMPORTANT": "high", "": "unknown", "severe": "unknown"} {
+		if got := normalizeAdvisorySeverity(value); got != want {
+			t.Fatalf("normalizeAdvisorySeverity(%q) = %q, want %q", value, got, want)
 		}
 	}
 }

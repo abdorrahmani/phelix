@@ -463,7 +463,7 @@ func (i *Intelligence) rpmAdvisories(ctx context.Context, s System, h Host, pack
 						}
 						for _, ref := range update.References {
 							for _, cve := range CVEs(ref.ID) {
-								f := finding(h, p, cve, update.ID, version, update.Severity, "potential", "cached repository advisory requires current repository verification", source)
+								f := finding(h, p, cve, update.ID, version, normalizeAdvisorySeverity(update.Severity), "potential", "cached repository advisory requires current repository verification", source)
 								if link := safeURL(ref.Href); link != "" {
 									f.References = append(f.References, link)
 								}
