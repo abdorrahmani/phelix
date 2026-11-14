@@ -23,6 +23,62 @@ func packageSources(packages []Package) map[string][]Package {
 	return out
 }
 
+// debianRelease is one release-specific advisory entry from the tracker.
+type debianRelease struct {
+	Status  string `json:"status"`
+	Fixed   string `json:"fixed_version"`
+	Urgency string `json:"urgency"`
+}
+
+// versionComparable reports whether a feed-supplied fixed version is a real
+// Debian-family version the comparator accepts. Debian versions start with
+// a digit, so the "0" placeholder and word values never reach a comparison.
+func versionComparable(value string) bool {
+	return value != "" && value != "0" && digit(value[0]) && packageVersion.MatchString(value)
+}
+
+// debianSeverity normalizes the tracker urgency onto the scan severity
+// vocabulary.
+func debianSeverity(urgency string) string {
+	severity := strings.TrimSuffix(urgency, "**")
+	if severity == "unimportant" {
+		severity = "low"
+	}
+	return severity
+}
+
+// debianVerdict resolves one tracker entry into the scan action it supports.
+// An empty state means the package is not affected and no finding is due.
+// Comparisons run only for recognized statuses carrying a real fixed
+// version; the no-fix placeholder and unknown vocabulary degrade to an
+// unverified finding and never reach the comparator.
+func debianVerdict(status debianRelease, release string) (state, reason string, compare bool) {
+	switch status.Status {
+	case "not-affected":
+		return "", "", false
+	case "resolved":
+		if status.Fixed == "0" {
+			return "", "", false
+		}
+		if versionComparable(status.Fixed) {
+			return "confirmed", "installed Debian source version is below the release-specific fixed version", true
+		}
+		return "unverified", "Debian tracker resolution carries no usable fixed version", false
+	case "open", "undetermined":
+		if status.Fixed == "0" {
+			return "unverified", "Debian tracker reports the source package affected with no fixed version available for " + release, false
+		}
+		if versionComparable(status.Fixed) {
+			return "confirmed", "installed Debian source version is below the release-specific fixed version", true
+		}
+		if status.Fixed == "" && status.Status == "open" {
+			return "confirmed", "Debian tracker marks this source package open for " + release, false
+		}
+		return "unverified", "Debian tracker cannot establish an affected version", false
+	}
+	return "unverified", "Debian tracker status is outside the recognized vocabulary", false
+}
+
 func (i *Intelligence) debian(ctx context.Context, s System, h Host, packages []Package) ([]Finding, []Source, int, error) {
 	raw, source, err := i.fetch(ctx, "debian", "https://security-tracker.debian.org/tracker/data/json")
 	if err != nil {
@@ -48,12 +104,8 @@ func (i *Intelligence) debian(ctx context.Context, s System, h Host, packages []
 			return nil
 		}
 		var advisories map[string]struct {
-			Description string `json:"description"`
-			Releases    map[string]struct {
-				Status  string `json:"status"`
-				Fixed   string `json:"fixed_version"`
-				Urgency string `json:"urgency"`
-			} `json:"releases"`
+			Description string                   `json:"description"`
+			Releases    map[string]debianRelease `json:"releases"`
 		}
 		if err := json.Unmarshal(record, &advisories); err != nil {
 			return err
@@ -70,13 +122,13 @@ func (i *Intelligence) debian(ctx context.Context, s System, h Host, packages []
 			if len(CVEs(cve)) != 1 {
 				continue
 			}
-			if status.Fixed == "0" {
+			state, reason, compare := debianVerdict(status, release)
+			if state == "" {
 				continue
 			}
-			for _, p := range targets {
-				state := "confirmed"
-				reason := "Debian tracker marks this source package open for " + release
-				if status.Fixed != "" {
+			severity := debianSeverity(status.Urgency)
+			if compare {
+				for _, p := range targets {
 					comparison, e := CompareVersions(ctx, s.Runner, "apt", p.SourceVersion, status.Fixed)
 					if e != nil {
 						return e
@@ -84,16 +136,12 @@ func (i *Intelligence) debian(ctx context.Context, s System, h Host, packages []
 					if comparison >= 0 {
 						continue
 					}
-					reason = "installed Debian source version is below the release-specific fixed version"
-				} else if status.Status != "open" {
-					state = "unverified"
-					reason = "Debian tracker cannot establish an affected version"
+					out = append(out, finding(h, p, cve, cve, status.Fixed, severity, "confirmed", reason, source))
 				}
-				severity := strings.TrimSuffix(status.Urgency, "**")
-				if severity == "unimportant" {
-					severity = "low"
-				}
-				out = append(out, finding(h, p, cve, cve, status.Fixed, severity, state, reason, source))
+				continue
+			}
+			for _, p := range targets {
+				out = append(out, finding(h, p, cve, cve, "", severity, state, reason, source))
 			}
 		}
 		return nil
@@ -277,10 +325,10 @@ func (i *Intelligence) ubuntu(ctx context.Context, s System, h Host, packages []
 		releaseSeen = true
 		for name, binary := range release.Binaries {
 			for _, p := range byName[name] {
-				covered[p.Key] = true
-				if binary.Version == "" {
+				if !versionComparable(binary.Version) {
 					continue
 				}
+				covered[p.Key] = true
 				c, e := CompareVersions(ctx, s.Runner, "apt", p.Version, binary.Version)
 				if e != nil {
 					return e

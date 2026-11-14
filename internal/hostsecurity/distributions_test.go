@@ -145,6 +145,83 @@ func TestUbuntuUnknownPackages(t *testing.T) {
 	}
 }
 
+func TestDebianFixedVersionVocabulary(t *testing.T) {
+	tracker := map[string]any{
+		"openzero":      map[string]any{"CVE-2024-20001": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "open", "fixed_version": "0", "urgency": "high"}}}},
+		"resolvedzero":  map[string]any{"CVE-2024-20002": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "resolved", "fixed_version": "0", "urgency": "high"}}}},
+		"notaffected":   map[string]any{"CVE-2024-20003": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "not-affected", "fixed_version": "", "urgency": "high"}}}},
+		"wordfix":       map[string]any{"CVE-2024-20004": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "open", "fixed_version": "not-affected", "urgency": "medium"}}}},
+		"strangestatus": map[string]any{"CVE-2024-20005": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "mysterious", "fixed_version": "2.0-1", "urgency": "low"}}}},
+		"comparable":    map[string]any{"CVE-2024-20006": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "open", "fixed_version": "2.0-1", "urgency": "high**"}}}},
+	}
+	raw, err := json.Marshal(tracker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intel := &Intelligence{CacheDir: t.TempDir()}
+	primeCache(t, intel, "https://security-tracker.debian.org/tracker/data/json", raw)
+	packages := []Package{}
+	for _, name := range []string{"openzero", "resolvedzero", "notaffected", "wordfix", "strangestatus", "comparable"} {
+		packages = append(packages, Package{Key: name + ":amd64@1.0-1", Name: name, Version: "1.0-1", SourceVersion: "1.0-1", Architecture: "amd64", Source: name})
+	}
+	findings, _, unknown, err := intel.debian(context.Background(), System{}, Host{ID: "debian", Version: "12", Status: "supported"}, packages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown != 0 {
+		t.Fatalf("unknown = %d, want 0: every source has a release entry", unknown)
+	}
+	byPackage := map[string][]Finding{}
+	for _, f := range findings {
+		byPackage[f.Package] = append(byPackage[f.Package], f)
+	}
+	if got := byPackage["openzero"]; len(got) != 1 || got[0].State != "unverified" || got[0].Severity != "high" ||
+		got[0].FixedVersion != "" || got[0].AffectedRange != "distribution advisory status" {
+		t.Fatalf("open with fixed 0 must yield one unverified finding without a comparison: %+v", got)
+	}
+	if got := byPackage["resolvedzero"]; len(got) != 0 {
+		t.Fatalf("resolved with fixed 0 is not affected and must stay silent: %+v", got)
+	}
+	if got := byPackage["notaffected"]; len(got) != 0 {
+		t.Fatalf("not-affected must stay silent: %+v", got)
+	}
+	if got := byPackage["wordfix"]; len(got) != 1 || got[0].State != "unverified" || got[0].FixedVersion != "" {
+		t.Fatalf("a word fixed_version must never reach the comparator: %+v", got)
+	}
+	if got := byPackage["strangestatus"]; len(got) != 1 || got[0].State != "unverified" {
+		t.Fatalf("an unknown status must degrade to unverified without a comparison: %+v", got)
+	}
+	if got := byPackage["comparable"]; len(got) != 1 || got[0].State != "confirmed" || got[0].Severity != "high" || got[0].FixedVersion != "2.0-1" {
+		t.Fatalf("a real fixed version must compare: %+v", got)
+	}
+}
+
+func TestUbuntuEmptyBinaryVersionIsUnknown(t *testing.T) {
+	database, err := json.Marshal(map[string]any{"6969-1": map[string]any{
+		"cves":     []string{"CVE-2024-20007"},
+		"releases": map[string]any{"noble": map[string]any{"binaries": map[string]any{"ssl": map[string]any{"version": ""}, "settled": map[string]any{"version": "2.0-1"}}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intel := &Intelligence{CacheDir: t.TempDir()}
+	primeCache(t, intel, "https://usn.ubuntu.com/usn-db/database.json.bz2", database)
+	packages := []Package{
+		{Key: "ssl:amd64@1.0-1", Name: "ssl", Version: "1.0-1", Architecture: "amd64", Source: "ssl"},
+		{Key: "settled:amd64@2.0-1", Name: "settled", Version: "2.0-1", Architecture: "amd64", Source: "settled"},
+	}
+	findings, _, unknown, err := intel.ubuntu(context.Background(), System{}, Host{ID: "ubuntu", Version: "24.04", Codename: "noble", Status: "supported"}, packages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("no notice carries a usable vulnerable encoding: %+v", findings)
+	}
+	if unknown != 1 {
+		t.Fatalf("unknown = %d, want 1: the empty binary version leaves the package undetermined", unknown)
+	}
+}
+
 func TestRPMAdvisoriesZeroUnknown(t *testing.T) {
 	intel := &Intelligence{CacheDir: t.TempDir()}
 	packages := []Package{{Key: "openssl:x86_64@1:3.0.7-27.el9", Name: "openssl", Version: "1:3.0.7-27.el9", Architecture: "x86_64", Source: "openssl"}}
