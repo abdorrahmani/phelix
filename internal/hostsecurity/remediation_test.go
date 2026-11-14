@@ -554,6 +554,59 @@ func TestApplySuccessAndVerifiedRemediation(t *testing.T) {
 	}
 }
 
+func TestVerifyHeldScanLock(t *testing.T) {
+	runAsRoot(t, 0)
+	fixture := &aptFixture{}
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(fixture.run)
+	dataDir := t.TempDir()
+	preview, err := PreviewUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ApplyUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, preview.Token, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	intel := &Intelligence{CacheDir: t.TempDir(), Offline: true}
+	primeTracker(t, intel, map[string]any{
+		"ssl":  map[string]any{"CVE-2024-10001": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "resolved", "fixed_version": "2.0-1", "urgency": "high"}}}},
+		"neon": map[string]any{"CVE-2024-10003": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "resolved", "fixed_version": "1.0-1", "urgency": "low"}}}},
+	})
+	held, err := TryAcquireHostScanLock(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = Verify(context.Background(), system, store, "test-server", result.OperationID, dataDir, intel)
+	if errorCode(t, err) != phelixerr.CodeHostSecurityScanRunning {
+		t.Fatalf("verify under a held scan lock must report busy: %v", err)
+	}
+	state, loadErr := loadOperations(dataDir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if state.Operations[0].Status != OperationStatusSucceeded || state.Operations[0].Result.Status != OperationStatusSucceeded {
+		t.Fatalf("a busy verification must not touch the operation: %+v", state.Operations[0])
+	}
+	held.Release()
+	scan, entries, err := Verify(context.Background(), system, store, "test-server", result.OperationID, dataDir, intel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !entries[0].Resolved || scan.Coverage != "complete" {
+		t.Fatalf("verification after the lock is released: scan %+v entries %+v", scan, entries)
+	}
+	state, loadErr = loadOperations(dataDir)
+	if loadErr != nil || state.Operations[0].Status != OperationStatusVerified {
+		t.Fatalf("released verification must complete: %+v %v", state.Operations[0], loadErr)
+	}
+}
+
 func TestApplyLockOutputDetection(t *testing.T) {
 	runAsRoot(t, 0)
 	fixture := &aptFixture{}

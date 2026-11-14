@@ -1009,7 +1009,9 @@ func storedPreviewToPreview(preview *storedPreview) Preview {
 
 // Verify re-scans the host and maps each requested package's remaining
 // findings. The fresh scan record is the only verification evidence: exit
-// codes never verify an operation.
+// codes never verify an operation. The verification scan runs under the
+// non-blocking host scan lock; a held lock skips the live scan and reports
+// busy, leaving the operation free for a later retry.
 func Verify(ctx context.Context, system System, store *Store, serverID, operationID, dataDir string, intel *Intelligence) (Scan, []VerificationEntry, error) {
 	entries := []VerificationEntry{}
 	empty := Scan{}
@@ -1034,6 +1036,16 @@ func Verify(ctx context.Context, system System, store *Store, serverID, operatio
 		return empty, entries, phelixerr.New(phelixerr.CodeHostSecurityInvalid,
 			"the operation has not finished; verification needs a terminal apply result")
 	}
+
+	lock, lockErr := TryAcquireHostScanLock(dataDir)
+	if errors.Is(lockErr, ErrHostScanLockHeld) {
+		return empty, entries, phelixerr.New(phelixerr.CodeHostSecurityScanRunning,
+			"a host security scan is already running; retry verification after it completes")
+	}
+	if lockErr != nil {
+		return empty, entries, lockErr
+	}
+	defer lock.Release()
 
 	scan, scanErr := ScanHost(ctx, system, store, serverID, nil, intel)
 	if scanErr != nil {
