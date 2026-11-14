@@ -246,16 +246,20 @@ func finding(h Host, p Package, cve, advisory, fixed, severity, state, reason st
 	return f
 }
 
-// Coverage degradation bounds: a loaded coverage set that claims the release
-// but omits this many installed packages degrades the scan to partial.
+// Unknown-package warning bounds: a loaded coverage set that claims the
+// release but omits this many installed packages records an informational
+// warning. The count never gates match completeness: advisory sources only
+// list packages with recorded issues, so a large unknown count is expected
+// on a quiet system.
 const (
 	coverageUnknownRatioPercent  = 5
 	coverageUnknownAbsoluteBound = 50
 )
 
 // coverageDegraded reports whether the unknown-package count crosses the
-// degradation bounds: over the absolute bound, or over the ratio of the
-// installed packages.
+// informational warning bounds: over the absolute bound, or over the ratio
+// of the installed packages. The name keeps the historical threshold
+// vocabulary; the count only warns, it never degrades coverage.
 func coverageDegraded(total, unknown int) bool {
 	if unknown <= 0 {
 		return false
@@ -302,8 +306,10 @@ func (i *Intelligence) Match(ctx context.Context, system System, h Host, package
 		}
 	}
 	if err == nil && coverageDegraded(len(packages), unknown) {
-		complete = false
-		sources = append(sources, Source{Name: "coverage", Error: fmt.Sprintf("%d of %d installed packages are absent from the loaded distribution coverage; their vulnerability status is unknown", unknown, len(packages))})
+		// Informational only: advisory sources list just the packages
+		// with recorded issues, so absent packages are expected and the
+		// count never gates match completeness.
+		sources = append(sources, Source{Name: "coverage", Error: fmt.Sprintf("%d of %d installed packages are absent from the loaded distribution coverage; the count is informational because advisory sources only list packages with recorded issues", unknown, len(packages))})
 	}
 	for n := range findings {
 		findings[n].Priority = securityscore.Prioritize(findings[n].Risk)

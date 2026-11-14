@@ -558,7 +558,9 @@ phelix security server reboot-status         # restart requirement, reasons, ker
   the interval, and one host scan lock shared with manual scans.
 - Unsupported distributions, missing utilities, and incomplete advisory
   coverage are reported explicitly; an unknown package is never reported
-  as clean.
+  as clean. The `unknown_packages` count is informational: advisory
+  sources only list packages with recorded issues, so a large count is
+  expected and never degrades coverage or the score.
 - `preview` accepts 1 to 50 targets (`name` or `name=version`) and runs
   the manager's native dry-run: `apt-get -s install`, `dnf -q --assumeno
   upgrade`, `zypper -q --non-interactive update --dry-run`, `apk -s

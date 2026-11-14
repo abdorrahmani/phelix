@@ -38,11 +38,13 @@ A scan evaluates every installed package against the advisory coverage set for i
 
 Coverage is reported per scan and is never inferred:
 
-- `complete` means the coverage set was loaded, searched, and every finding it produced is confirmed. Debian, Ubuntu, Alpine, and Arch reach this state.
+- `complete` means the release advisory source was loaded and processed successfully: fetched over HTTPS with a bounded redirect chain and digest-verified caching and freshness checking (or reused from a cache that passed those checks), searched against the inventory, and every finding it produced is confirmed. Debian, Ubuntu, Alpine, and Arch reach this state.
 - `partial` means the coverage set could not be fully established (fetch failure, release mismatch, cached-only RPM metadata) or a finding is not confirmed.
 - `unknown` means advisories were not evaluated at all, for example on an inventory-only record produced before this feature or after a failed match.
 
-A package the loaded coverage set does not contain is counted in `unknown_packages` and is not clean: its status could not be determined. Debian, Ubuntu, Alpine, and Arch trackers only carry packages with recorded issues, so most packages on a quiet system are legitimately unknown, and a scan of a patched system still reports a large unknown count. RPM-family scans always report zero unknown packages because cached updateinfo is not a complete coverage set by design; their findings are `potential` until the current repository state is verified.
+Packages absent from an advisory source are expected, not a coverage failure: advisory trackers only list packages with recorded issues, so most packages on a quiet system are legitimately absent, and a scan of a patched system still reports a large unknown count. Each absent package is counted in `unknown_packages`, and that count is informational: it never degrades coverage or blanks the score, and the scan records a warning when it crosses a threshold. An unknown package is still not a clean package: its status could not be determined. RPM-family scans always report zero unknown packages because cached updateinfo is not a complete coverage set by design; their findings are `potential` until the current repository state is verified.
+
+Integrity of an advisory feed rests on the transport mitigations: HTTPS-only fetching, a bounded redirect chain and response size, digest-verified caching, and staleness marking. Those mitigations, together with the scan-age and stale-intelligence penalties, still apply to the score; a hostile or tampered feed is bounded by them, never trusted blindly.
 
 Findings carry per-finding provenance (`sources`) and the scan carries scan-level sources with retrieval time, digest, and staleness. Warnings list source errors verbatim; nothing is fabricated.
 

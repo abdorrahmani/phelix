@@ -375,7 +375,7 @@ func TestScanHostUnknownPackagesWiring(t *testing.T) {
 	}
 }
 
-func TestScanHostCoverageDegradationWarning(t *testing.T) {
+func TestScanHostUnknownPackagesWarningStaysInformational(t *testing.T) {
 	names := coverageFixtureNames(5)
 	intel := &Intelligence{CacheDir: t.TempDir()}
 	primeCache(t, intel, "https://security-tracker.debian.org/tracker/data/json", coverageFixtureTracker(t, names[:3], nil))
@@ -402,17 +402,20 @@ func TestScanHostCoverageDegradationWarning(t *testing.T) {
 	if scan.UnknownPackages != 2 {
 		t.Fatalf("scan.UnknownPackages = %d, want 2", scan.UnknownPackages)
 	}
-	if scan.Coverage != "partial" || scan.Status != "partial" {
-		t.Fatalf("a 2 of 5 unknown ratio must degrade the scan: status %q coverage %q", scan.Status, scan.Coverage)
+	// The unknown count is informational: it must never gate match
+	// completeness, because advisory sources only list packages with
+	// recorded issues and a realistic host is mostly absent from them.
+	if scan.Coverage != "complete" || scan.Status != "completed" {
+		t.Fatalf("an unknown count must not degrade coverage: status %q coverage %q", scan.Status, scan.Coverage)
 	}
 	named := false
 	for _, source := range scan.Sources {
-		if source.Name == "coverage" && strings.Contains(source.Error, "absent from the loaded distribution coverage") {
+		if source.Name == "coverage" && strings.Contains(source.Error, "the count is informational") {
 			named = true
 		}
 	}
 	if !named {
-		t.Fatalf("the degradation must be named in the sources: %+v", scan.Sources)
+		t.Fatalf("the unknown count must be named in the sources as informational: %+v", scan.Sources)
 	}
 	found := false
 	for _, warning := range scan.Warnings {
@@ -421,23 +424,26 @@ func TestScanHostCoverageDegradationWarning(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("the degradation must reach the scan warnings: %v", scan.Warnings)
+		t.Fatalf("the unknown count must reach the scan warnings: %v", scan.Warnings)
 	}
-	if scan.Score.Status != "unknown" || scan.Score.Value != nil {
-		t.Fatalf("a degraded scan must not claim a score value: %+v", scan.Score)
+	// A realistic mixed fixture still carries a score value: stale-intel
+	// and scan-age penalties apply, but the unknown count alone never
+	// blanks the score.
+	if scan.Score.Value == nil || scan.Score.Status == "unknown" {
+		t.Fatalf("an informationally warned scan must still score: %+v", scan.Score)
 	}
 }
 
-func TestMatchCoverageDegradationBounds(t *testing.T) {
+func TestMatchUnknownWarningBounds(t *testing.T) {
 	cases := []struct {
-		name     string
-		total    int
-		absent   int
-		degraded bool
+		name    string
+		total   int
+		absent  int
+		warning bool
 	}{
-		{name: "below both bounds", total: 50, absent: 2, degraded: false},
-		{name: "over the ratio bound", total: 5, absent: 2, degraded: true},
-		{name: "over the absolute bound", total: 1021, absent: 51, degraded: true},
+		{name: "below both bounds", total: 50, absent: 2, warning: false},
+		{name: "over the ratio bound", total: 5, absent: 2, warning: true},
+		{name: "over the absolute bound", total: 1021, absent: 51, warning: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -456,8 +462,9 @@ func TestMatchCoverageDegradationBounds(t *testing.T) {
 			if unknown != tc.absent {
 				t.Fatalf("unknown = %d, want %d", unknown, tc.absent)
 			}
-			if complete == tc.degraded {
-				t.Fatalf("complete = %v, want %v", complete, !tc.degraded)
+			// The warning threshold never changes match completeness.
+			if !complete {
+				t.Fatal("an unknown count above the warning bounds must stay complete")
 			}
 			warned := false
 			for _, source := range sources {
@@ -465,13 +472,13 @@ func TestMatchCoverageDegradationBounds(t *testing.T) {
 					warned = true
 				}
 			}
-			if warned != tc.degraded {
-				t.Fatalf("coverage warning = %v, want %v", warned, tc.degraded)
+			if warned != tc.warning {
+				t.Fatalf("coverage warning = %v, want %v", warned, tc.warning)
 			}
 		})
 	}
 	if coverageDegraded(0, 0) {
-		t.Fatal("an empty inventory is not degraded")
+		t.Fatal("an empty inventory is not warned")
 	}
 	if !coverageDegraded(1021, 51) || coverageDegraded(1021, 50) {
 		t.Fatal("the absolute bound is exclusive at 50")
