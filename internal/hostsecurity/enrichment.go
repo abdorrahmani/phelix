@@ -70,7 +70,7 @@ func (i *Intelligence) enrich(ctx context.Context, findings []Finding) []Source 
 							f.References = append(f.References, link)
 						}
 						if f.Severity == "unknown" {
-							f.Severity = r.Severity
+							f.Severity = normalizeGitHubSeverity(r.Severity)
 						}
 					}
 				case "nvd":
@@ -187,4 +187,21 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeGitHubSeverity maps the GitHub advisory severity vocabulary onto
+// the finding severity vocabulary; anything unmapped stays unknown so no
+// off-vocabulary value is ever stored.
+func normalizeGitHubSeverity(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return "low"
+	case "moderate":
+		return "medium"
+	case "high":
+		return "high"
+	case "critical":
+		return "critical"
+	}
+	return "unknown"
 }
