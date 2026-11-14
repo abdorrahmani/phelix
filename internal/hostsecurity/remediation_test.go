@@ -883,3 +883,33 @@ func TestApplyLockOutputDetection(t *testing.T) {
 		t.Fatalf("lock output: %v", err)
 	}
 }
+
+// TestPreviewBusyLockOutput pins the preview classification of a dry-run
+// refused by a held package manager lock: the apt lock-held output fixture
+// through the preview path must answer HOST_SECURITY_BUSY like the apply
+// path, never HOST_SECURITY_EXEC_FAILED.
+func TestPreviewBusyLockOutput(t *testing.T) {
+	runAsRoot(t, 0)
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "apt-get" {
+			return []byte("E: Could not get lock /var/lib/dpkg/lock-frontend - open (11: Resource temporarily unavailable)\n"), errors.New("apt-get failed")
+		}
+		return []byte("ssl\tii \t1.0-1\n"), nil
+	})
+	_, err := PreviewUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, t.TempDir())
+	if errorCode(t, err) != phelixerr.CodeHostSecurityBusy {
+		t.Fatalf("a lock-held dry-run must answer busy: %v", err)
+	}
+	nonLock := fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "apt-get" {
+			return []byte("E: Unable to locate package ssl\n"), errors.New("apt-get failed")
+		}
+		return []byte("ssl\tii \t1.0-1\n"), nil
+	})
+	system.Runner = nonLock
+	_, err = PreviewUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, t.TempDir())
+	if errorCode(t, err) != phelixerr.CodeHostSecurityExecFailed {
+		t.Fatalf("a dry-run failure without lock evidence must stay an execution failure: %v", err)
+	}
+}

@@ -484,6 +484,10 @@ func PreviewUpdates(ctx context.Context, system System, host Host, packages []st
 	name, args := previewCommand(host.Manager, targets)
 	raw, err := system.Runner.Run(ctx, name, args...)
 	if err != nil {
+		if isLockOutput(raw) {
+			return out, phelixerr.New(phelixerr.CodeHostSecurityBusy,
+				"the package manager database is locked by another process; nothing was removed or waited out")
+		}
 		return out, phelixerr.Wrap(phelixerr.CodeHostSecurityExecFailed, "the package manager dry-run failed", err)
 	}
 	items, warnings := parsePreview(host.Manager, targets, versions, raw)
