@@ -711,13 +711,31 @@ func currentVersions(ctx context.Context, system System, manager string, package
 			}
 		}
 	case "apk":
+		// apk prints one "<name>-<version>" entry per match. A requested
+		// name may prefix another requested name ("x" and "x-dev"), so
+		// every entry is claimed by the longest requested name it
+		// extends: the shorter name falls back to the entry that is
+		// uniquely its own. A name left with several entries keeps the
+		// first version-shaped remainder, so an unrequested sibling name
+		// cannot pollute the result.
+		claimed := map[string][]string{}
 		for _, line := range strings.Split(string(raw), "\n") {
 			entry := strings.TrimRight(line, "\r")
+			if entry == "" {
+				continue
+			}
+			best := ""
 			for _, prefix := range packages {
-				if strings.HasPrefix(entry, prefix+"-") {
-					out[prefix] = strings.TrimPrefix(entry, prefix+"-")
+				if strings.HasPrefix(entry, prefix+"-") && len(prefix) > len(best) {
+					best = prefix
 				}
 			}
+			if best != "" {
+				claimed[best] = append(claimed[best], entry)
+			}
+		}
+		for name, entries := range claimed {
+			out[name] = strings.TrimPrefix(versionShapedEntry(entries, name), name+"-")
 		}
 	case "pacman":
 		currentName := ""
@@ -738,6 +756,18 @@ func currentVersions(ctx context.Context, system System, manager string, package
 		}
 	}
 	return out, nil
+}
+
+// versionShapedEntry returns the first entry whose remainder after
+// "name-" starts with a digit, the shape of a real apk version, falling
+// back to the last entry when none does.
+func versionShapedEntry(entries []string, name string) string {
+	for _, entry := range entries {
+		if remainder := strings.TrimPrefix(entry, name+"-"); remainder != "" && digit(remainder[0]) {
+			return entry
+		}
+	}
+	return entries[len(entries)-1]
 }
 
 // managerLockPaths lists the lock files whose flock evidence marks a busy

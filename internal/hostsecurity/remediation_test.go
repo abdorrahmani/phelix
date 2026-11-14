@@ -791,6 +791,32 @@ func TestLockHeldProbeNeverCreatesLockFile(t *testing.T) {
 	}
 }
 
+func TestCurrentVersionsAPKPrefixCollision(t *testing.T) {
+	system := System{Runner: fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "apk" {
+			return []byte("x-1.0-r0\nx-dev-1.0-r0\n"), nil
+		}
+		return nil, errors.New("unexpected command " + name)
+	})}
+	versions, err := currentVersions(context.Background(), system, "apk", []string{"x", "x-dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versions["x"] != "1.0-r0" {
+		t.Fatalf("x must keep its own entry: %+v", versions)
+	}
+	if versions["x-dev"] != "1.0-r0" {
+		t.Fatalf("x-dev must not be swallowed by the x prefix: %+v", versions)
+	}
+	single, err := currentVersions(context.Background(), system, "apk", []string{"x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if single["x"] != "1.0-r0" {
+		t.Fatalf("a lone request must resolve from its exact entry: %+v", single)
+	}
+}
+
 func TestApplyLockOutputDetection(t *testing.T) {
 	runAsRoot(t, 0)
 	fixture := &aptFixture{}
