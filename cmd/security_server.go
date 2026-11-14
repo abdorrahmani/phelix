@@ -561,9 +561,20 @@ type serverReportResult struct {
 
 // buildServerReport filters one scan's findings with the report flags and
 // assembles the payload. Empty filters pass everything through; the scan's
-// own fields are copied verbatim.
+// own fields are copied verbatim. Collections copied from a stored record
+// are normalized so the report JSON keeps empty collections empty, never
+// null.
 func buildServerReport(scan hostsecurity.Scan, severity, state, pkg string, limit, offset int) serverReportResult {
 	filtered, total := filterServerFindings(scan.Findings, severity, state, pkg, limit, offset)
+	if scan.Counts == nil {
+		scan.Counts = map[string]int{}
+	}
+	if scan.Warnings == nil {
+		scan.Warnings = []string{}
+	}
+	if scan.Sources == nil {
+		scan.Sources = []hostsecurity.Source{}
+	}
 	return serverReportResult{
 		ScanID:          scan.ID,
 		Status:          scan.Status,

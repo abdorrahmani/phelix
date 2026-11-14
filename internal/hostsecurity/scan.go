@@ -17,7 +17,7 @@ func Collect(ctx context.Context, system System, store *Store, serverID string, 
 func ScanHost(ctx context.Context, system System, store *Store, serverID string, progress func(string), intel *Intelligence) (Scan, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	scan := Scan{ID: uuid.NewString(), ServerID: serverID, Domain: "server", StartedAt: time.Now().UTC(), ScannerVersion: version.Version, MethodVersion: "host-inventory-v1", Status: "failed", Coverage: "unknown", Warnings: []string{}}
+	scan := Scan{ID: uuid.NewString(), ServerID: serverID, Domain: "server", StartedAt: time.Now().UTC(), ScannerVersion: version.Version, MethodVersion: "host-inventory-v1", Status: "failed", Coverage: "unknown", Sources: []Source{}, Counts: map[string]int{}, Warnings: []string{}}
 	if progress != nil {
 		progress("Detecting operating system")
 	}
@@ -85,6 +85,17 @@ func ScanHost(ctx context.Context, system System, store *Store, serverID string,
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			err = nil
 		}
+	}
+	// The scan JSON contract keeps empty collections empty, never null:
+	// matchers may return nil slices, so normalize before persisting.
+	if scan.Sources == nil {
+		scan.Sources = []Source{}
+	}
+	if scan.Counts == nil {
+		scan.Counts = map[string]int{}
+	}
+	if scan.Warnings == nil {
+		scan.Warnings = []string{}
 	}
 	scan.PackageCount = len(packages)
 	scan.FinishedAt = time.Now().UTC()

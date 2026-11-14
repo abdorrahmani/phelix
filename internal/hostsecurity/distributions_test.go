@@ -338,6 +338,61 @@ func coverageFixtureNames(total int) []string {
 	return names
 }
 
+func TestScanJSONKeepsEmptyCollectionsEmpty(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "dpkg-query" {
+			return []byte("ii \tssl\t1.0-1\tamd64\tssl\t1.0-1\t\t\t\n"), nil
+		}
+		return []byte("1.0"), nil
+	})
+	inventoried, err := Collect(context.Background(), system, store, "srv", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(inventoried)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, nullField := range []string{`"sources":null`, `"counts":null`, `"warnings":null`} {
+		if strings.Contains(string(raw), nullField) {
+			t.Fatalf("scan JSON must keep empty collections empty, got %s: %s", nullField, raw)
+		}
+	}
+
+	// A match-path scan with nothing to warn about serializes warnings as
+	// an empty array, matching the guide example.
+	intel := &Intelligence{CacheDir: t.TempDir()}
+	primeCache(t, intel, "https://security-tracker.debian.org/tracker/data/json", coverageFixtureTracker(t, []string{"ssl"}, nil))
+	system.Runner = fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "dpkg-query" {
+			return []byte("ii \tssl\t1.0-1\tamd64\tssl\t1.0-1\t\t\t\n"), nil
+		}
+		return []byte("1.0"), nil
+	})
+	matched, err := ScanHost(context.Background(), system, store, "srv", nil, intel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(matched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"warnings":[]`) {
+		t.Fatalf("a quiet scan must serialize an empty warnings array: %s", raw)
+	}
+	for _, nullField := range []string{`"sources":null`, `"counts":null`, `"warnings":null`} {
+		if strings.Contains(string(raw), nullField) {
+			t.Fatalf("scan JSON must keep empty collections empty, got %s: %s", nullField, raw)
+		}
+	}
+}
+
 func TestScanHostUnknownPackagesWiring(t *testing.T) {
 	names := coverageFixtureNames(50)
 	intel := &Intelligence{CacheDir: t.TempDir()}
