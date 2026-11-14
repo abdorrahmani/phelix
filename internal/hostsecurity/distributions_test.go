@@ -5,10 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -234,27 +235,47 @@ func TestRPMAdvisoriesZeroUnknown(t *testing.T) {
 	}
 }
 
-func TestScanHostUnknownPackagesWiring(t *testing.T) {
-	tracker := map[string]any{
-		"ssl":     map[string]any{"CVE-2024-10001": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "open", "fixed_version": "", "urgency": "high"}}}},
-		"phantom": map[string]any{"CVE-2024-10002": map[string]any{"releases": map[string]any{"bullseye": map[string]any{"status": "open", "fixed_version": ""}}}},
+// coverageFixtureTracker builds a Debian tracker body that marks the named
+// sources resolved at the fixture install version (clean) and the named open
+// sources affected without a fix.
+func coverageFixtureTracker(t *testing.T, covered, open []string) []byte {
+	t.Helper()
+	tracker := map[string]any{}
+	for _, name := range covered {
+		tracker[name] = map[string]any{"CVE-2024-30000": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "resolved", "fixed_version": "1.0-1", "urgency": "low"}}}}
+	}
+	for _, name := range open {
+		tracker[name] = map[string]any{"CVE-2024-30001": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "open", "fixed_version": "", "urgency": "high"}}}}
 	}
 	raw, err := json.Marshal(tracker)
 	if err != nil {
 		t.Fatal(err)
 	}
-	intel := &Intelligence{CacheDir: t.TempDir()}
-	primeCache(t, intel, "https://security-tracker.debian.org/tracker/data/json", raw)
-	enrichment := httptest.NewServer(unavailableHandler{})
-	defer enrichment.Close()
-	intel.URLs = map[string]string{}
-	for _, key := range []string{"osv-CVE-2024-10001", "github-CVE-2024-10001", "nvd-CVE-2024-10001", "cisa-kev", "epss"} {
-		intel.URLs[key] = enrichment.URL
+	return raw
+}
+
+// coverageFixturePackages names total fixture packages: the first named
+// count get installed inventory entries.
+func coverageFixtureNames(total int) []string {
+	names := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		names = append(names, fmt.Sprintf("pkg%03d", i))
 	}
+	return names
+}
+
+func TestScanHostUnknownPackagesWiring(t *testing.T) {
+	names := coverageFixtureNames(50)
+	intel := &Intelligence{CacheDir: t.TempDir()}
+	primeCache(t, intel, "https://security-tracker.debian.org/tracker/data/json", coverageFixtureTracker(t, names[1:48], []string{"pkg000"}))
 	system := fixtureSystem(t, "debian")
 	system.Runner = fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		if name == "dpkg-query" {
-			return []byte("ii \tssl\t1.0-1\tamd64\tssl\t1.0-1\t\t\t\nii \tgone\t2.0-1\tamd64\tgone\t2.0-1\t\t\t\nii \tphantom\t3.0-1\tamd64\tphantom\t3.0-1\t\t\t\n"), nil
+			var b strings.Builder
+			for _, pkg := range names {
+				fmt.Fprintf(&b, "ii \t%s\t1.0-1\tamd64\t%s\t1.0-1\t\t\t\n", pkg, pkg)
+			}
+			return []byte(b.String()), nil
 		}
 		return []byte("1.0"), nil
 	})
@@ -272,5 +293,116 @@ func TestScanHostUnknownPackagesWiring(t *testing.T) {
 	}
 	if scan.Coverage != "complete" || len(scan.Findings) != 1 || scan.Counts["high"] != 1 {
 		t.Fatalf("unexpected scan: status %q coverage %q findings %d counts %v", scan.Status, scan.Coverage, len(scan.Findings), scan.Counts)
+	}
+	for _, warning := range scan.Warnings {
+		if strings.Contains(warning, "coverage") {
+			t.Fatalf("a scan below the degradation bounds must not warn: %v", scan.Warnings)
+		}
+	}
+}
+
+func TestScanHostCoverageDegradationWarning(t *testing.T) {
+	names := coverageFixtureNames(5)
+	intel := &Intelligence{CacheDir: t.TempDir()}
+	primeCache(t, intel, "https://security-tracker.debian.org/tracker/data/json", coverageFixtureTracker(t, names[:3], nil))
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "dpkg-query" {
+			var b strings.Builder
+			for _, pkg := range names {
+				fmt.Fprintf(&b, "ii \t%s\t1.0-1\tamd64\t%s\t1.0-1\t\t\t\n", pkg, pkg)
+			}
+			return []byte(b.String()), nil
+		}
+		return []byte("1.0"), nil
+	})
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	scan, err := ScanHost(context.Background(), system, store, "srv", nil, intel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scan.UnknownPackages != 2 {
+		t.Fatalf("scan.UnknownPackages = %d, want 2", scan.UnknownPackages)
+	}
+	if scan.Coverage != "partial" || scan.Status != "partial" {
+		t.Fatalf("a 2 of 5 unknown ratio must degrade the scan: status %q coverage %q", scan.Status, scan.Coverage)
+	}
+	named := false
+	for _, source := range scan.Sources {
+		if source.Name == "coverage" && strings.Contains(source.Error, "absent from the loaded distribution coverage") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("the degradation must be named in the sources: %+v", scan.Sources)
+	}
+	found := false
+	for _, warning := range scan.Warnings {
+		if strings.HasPrefix(warning, "coverage: ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the degradation must reach the scan warnings: %v", scan.Warnings)
+	}
+	if scan.Score.Status != "unknown" || scan.Score.Value != nil {
+		t.Fatalf("a degraded scan must not claim a score value: %+v", scan.Score)
+	}
+}
+
+func TestMatchCoverageDegradationBounds(t *testing.T) {
+	cases := []struct {
+		name     string
+		total    int
+		absent   int
+		degraded bool
+	}{
+		{name: "below both bounds", total: 50, absent: 2, degraded: false},
+		{name: "over the ratio bound", total: 5, absent: 2, degraded: true},
+		{name: "over the absolute bound", total: 1021, absent: 51, degraded: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			names := coverageFixtureNames(tc.total)
+			covered := names[:tc.total-tc.absent]
+			intel := &Intelligence{CacheDir: t.TempDir()}
+			primeCache(t, intel, "https://security-tracker.debian.org/tracker/data/json", coverageFixtureTracker(t, covered, nil))
+			packages := []Package{}
+			for _, name := range names {
+				packages = append(packages, Package{Key: name + ":amd64@1.0-1", Name: name, Version: "1.0-1", SourceVersion: "1.0-1", Architecture: "amd64", Source: name})
+			}
+			_, sources, complete, unknown, err := intel.Match(context.Background(), System{}, Host{ID: "debian", Version: "12", Status: "supported"}, packages)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unknown != tc.absent {
+				t.Fatalf("unknown = %d, want %d", unknown, tc.absent)
+			}
+			if complete == tc.degraded {
+				t.Fatalf("complete = %v, want %v", complete, !tc.degraded)
+			}
+			warned := false
+			for _, source := range sources {
+				if source.Name == "coverage" {
+					warned = true
+				}
+			}
+			if warned != tc.degraded {
+				t.Fatalf("coverage warning = %v, want %v", warned, tc.degraded)
+			}
+		})
+	}
+	if coverageDegraded(0, 0) {
+		t.Fatal("an empty inventory is not degraded")
+	}
+	if !coverageDegraded(1021, 51) || coverageDegraded(1021, 50) {
+		t.Fatal("the absolute bound is exclusive at 50")
+	}
+	if !coverageDegraded(19, 1) || coverageDegraded(20, 1) {
+		t.Fatal("the ratio bound is exclusive at 5 percent")
 	}
 }

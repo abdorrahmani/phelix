@@ -235,6 +235,23 @@ func finding(h Host, p Package, cve, advisory, fixed, severity, state, reason st
 	return f
 }
 
+// Coverage degradation bounds: a loaded coverage set that claims the release
+// but omits this many installed packages degrades the scan to partial.
+const (
+	coverageUnknownRatioPercent  = 5
+	coverageUnknownAbsoluteBound = 50
+)
+
+// coverageDegraded reports whether the unknown-package count crosses the
+// degradation bounds: over the absolute bound, or over the ratio of the
+// installed packages.
+func coverageDegraded(total, unknown int) bool {
+	if unknown <= 0 {
+		return false
+	}
+	return unknown > coverageUnknownAbsoluteBound || unknown*100 > total*coverageUnknownRatioPercent
+}
+
 func (i *Intelligence) Match(ctx context.Context, system System, h Host, packages []Package) ([]Finding, []Source, bool, int, error) {
 	var findings []Finding
 	var sources []Source
@@ -259,6 +276,10 @@ func (i *Intelligence) Match(ctx context.Context, system System, h Host, package
 		if f.State != "confirmed" {
 			complete = false
 		}
+	}
+	if err == nil && coverageDegraded(len(packages), unknown) {
+		complete = false
+		sources = append(sources, Source{Name: "coverage", Error: fmt.Sprintf("%d of %d installed packages are absent from the loaded distribution coverage; their vulnerability status is unknown", unknown, len(packages))})
 	}
 	for n := range findings {
 		findings[n].Priority = securityscore.Prioritize(findings[n].Risk)
