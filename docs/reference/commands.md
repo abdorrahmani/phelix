@@ -529,6 +529,14 @@ phelix security server history               # immutable scan records with score
 phelix security server config                # local reporting consent and scan cadence
 phelix security server config --reporting --interval 12h
 phelix security server config --no-reporting
+phelix security server preview --package openssl --package libssl3=1.2.3
+                                             # manager dry-run; stores a preview token (nothing installed)
+phelix security server apply --preview-token <token>
+                                             # print the preview, confirm, install the previewed updates
+phelix security server apply --yes           # newest stored preview without the prompt
+phelix security server verify --operation-id <id>
+                                             # fresh scan; per-package resolved or remaining CVEs
+phelix security server reboot-status         # restart requirement, reasons, kernel releases
 ```
 
 - `--json` emits one machine envelope. Scans carry `sources` (per-source
@@ -548,6 +556,38 @@ phelix security server config --no-reporting
 - Unsupported distributions, missing utilities, and incomplete advisory
   coverage are reported explicitly; an unknown package is never reported
   as clean.
+- `preview` accepts 1 to 50 targets (`name` or `name=version`) and runs
+  the manager's native dry-run: `apt-get -s install`, `dnf -q --assumeno
+  upgrade`, `zypper -q --non-interactive update --dry-run`, `apk -s
+  upgrade`, or `pacman --print-format "%n %v" -Su`. The stored token is
+  32 hex characters, valid 30 minutes, and binds the captured package
+  state. apt simulation is a resolver dry-run, not a transaction plan
+  from the resolver lock; pacman cannot simulate dependency conflicts or
+  package removals, and cannot install a pinned older version; apply
+  installs latest available.
+- `apply` requires root before anything runs (no auto-sudo), refuses
+  while a package manager lock is held (`HOST_SECURITY_BUSY`, locks are
+  never removed or waited out) or another update operation is active,
+  and revalidates every previewed version immediately before execution:
+  drift since the preview fails as `HOST_SECURITY_PREVIEW_STALE`. One
+  manager command per operation for the previewed packages only, never
+  a broad upgrade; the outcome is persisted with an `hso_` operation id
+  and the exit code never certifies success by itself.
+- `verify` runs a fresh full scan and reports each requested package as
+  resolved or with its remaining CVEs. The fresh scan is the only
+  verification evidence. Operation ids come from `apply`.
+- `reboot-status` reports the restart requirement with explicit reasons:
+  the Debian/Ubuntu restart marker and its package list, the running
+  kernel versus the newest installed kernel package (dpkg linux-image,
+  rpm kernel, pacman linux), and on Alpine an explicit limitation that
+  apk cannot establish the state. Nothing reboots the host
+  automatically.
+- Remote scans and remediation flow through `phelix monitor`: every
+  command except the configuration query requires local reporting
+  consent and mutations are ledger-replayed after reconnects. Error
+  codes such as `HOST_SECURITY_CONSENT_DISABLED`, `HOST_SECURITY_BUSY`,
+  `HOST_SECURITY_PREVIEW_EXPIRED`, and `HOST_SECURITY_PREVIEW_STALE`
+  travel verbatim to the control plane.
 
 ## Other commands
 
