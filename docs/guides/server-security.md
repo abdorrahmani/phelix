@@ -34,7 +34,7 @@ Full distribution version strings, epochs, architecture, source packages, and mu
 
 ## Vulnerability matching and coverage
 
-A scan evaluates every installed package against the advisory coverage set for its distribution. Sources are fetched over HTTPS with a bounded redirect chain and response size, retried a few times with backoff, and cached under the `host-security/intel-cache` directory of the Phelix data directory. A cached source younger than 6 hours is reused as is; older than 24 hours it is marked stale and the score records the staleness. Enrichment of individual CVEs (OSV.dev, GitHub advisories, NVD, the CISA KEV catalog, EPSS) is capped at 25 CVEs per scan, and the EPSS batch query at 100 CVEs; beyond the caps the missing risk factors stay unknown and a warning is recorded.
+A scan evaluates every installed package against the advisory coverage set for its distribution. Sources are fetched over HTTPS with a bounded redirect chain and response size, retried a few times with backoff, and cached under the `host-security/intel-cache` directory of the Phelix data directory. A cached source younger than 6 hours is reused as is; older than 24 hours it is marked stale and the score records the staleness. Enrichment of individual CVEs (OSV.dev, GitHub advisories, NVD, the CISA KEV catalog, EPSS) is capped at 25 CVEs per scan, and the EPSS batch query at 100 CVEs; beyond the caps the missing risk factors stay unknown and a warning is recorded. The enrichment phase also runs inside its own bounded time budget derived from the scan timeout: when the budget expires on a host where those providers are unreachable, enrichment stops cleanly, the distribution findings stand as they are, the scan completes with a warning source instead of failing, and the unpopulated risk factors stay unknown.
 
 Coverage is reported per scan and is never inferred:
 
@@ -188,7 +188,7 @@ The `report` result is a filtered view: `scan_id`, `status`, `coverage`, `score`
 
 - RPM-family coverage is partial by design: findings come from cached repository updateinfo metadata, are reported as `potential`, and require refreshing the native repository metadata before a scan. Refresh native metadata with the distribution's own tools; Phelix does not run package managers.
 - Arch advisory matching requires the `vercmp` utility for version comparisons; the inventory itself does not.
-- Enrichment caps apply per scan: 25 CVEs receive OSV, GitHub, and NVD enrichment, and the EPSS query batches at most 100 CVEs. Findings beyond the caps keep unknown risk factors, and a warning names the shortfall.
+- Enrichment caps apply per scan: 25 CVEs receive OSV, GitHub, and NVD enrichment, and the EPSS query batches at most 100 CVEs. Findings beyond the caps keep unknown risk factors, and a warning names the shortfall. The enrichment phase has its own time budget; on a host where enrichment providers are unreachable the scan still completes, with the missing risk factors left unknown.
 - A finding is only as current as the coverage set: cached advisory data older than 24 hours marks the score stale rather than pretending the data is fresh.
 - An unknown package is not a clean package. Only `complete` coverage with no findings supports a clean statement, and even then only for the evaluated distribution and release.
 - Update operations mutate the package database and require root; preview never installs anything and never needs privileges. Apply scope is the previewed packages only, one manager command per operation, never a distribution upgrade.

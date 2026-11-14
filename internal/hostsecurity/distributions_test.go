@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,6 +233,79 @@ func TestRPMAdvisoriesZeroUnknown(t *testing.T) {
 	}
 	if unknown != 0 {
 		t.Fatalf("unknown = %d, want 0 when no coverage set was loaded", unknown)
+	}
+}
+
+// blockedHandler holds every request until the request context is
+// cancelled, standing in for an unreachable enrichment provider on a
+// firewalled host.
+type blockedHandler struct{}
+
+func (blockedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	<-r.Context().Done()
+}
+
+func TestScanHostEnrichmentBudgetExpiresCleanly(t *testing.T) {
+	tracker := map[string]any{
+		"ssl": map[string]any{"CVE-2024-10001": map[string]any{"releases": map[string]any{"bookworm": map[string]any{"status": "open", "fixed_version": "", "urgency": "high"}}}},
+	}
+	raw, err := json.Marshal(tracker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intel := &Intelligence{CacheDir: t.TempDir(), EnrichmentBudget: 50 * time.Millisecond}
+	primeCache(t, intel, "https://security-tracker.debian.org/tracker/data/json", raw)
+	blocked := httptest.NewServer(blockedHandler{})
+	defer blocked.Close()
+	intel.URLs = map[string]string{}
+	for _, key := range []string{"osv-CVE-2024-10001", "github-CVE-2024-10001", "nvd-CVE-2024-10001", "cisa-kev", "epss"} {
+		intel.URLs[key] = blocked.URL
+	}
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "dpkg-query" {
+			return []byte("ii \tssl\t1.0-1\tamd64\tssl\t1.0-1\t\t\t\n"), nil
+		}
+		return []byte("1.0"), nil
+	})
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	scan, err := ScanHost(context.Background(), system, store, "srv", nil, intel)
+	if err != nil {
+		t.Fatalf("an enrichment budget expiry must not fail the scan: %v", err)
+	}
+	if scan.Status != "completed" || scan.Coverage != "complete" {
+		t.Fatalf("scan status %q coverage %q, want completed/complete", scan.Status, scan.Coverage)
+	}
+	if len(scan.Findings) != 1 || scan.Findings[0].Severity != "high" || scan.Findings[0].State != "confirmed" {
+		t.Fatalf("distribution findings must stand unchanged: %+v", scan.Findings)
+	}
+	warned := false
+	for _, source := range scan.Sources {
+		if source.Name == "enrichment" && source.Error == "enrichment budget exceeded" {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("the budget expiry must be recorded as a warning source: %+v", scan.Sources)
+	}
+	found := false
+	for _, warning := range scan.Warnings {
+		if warning == "enrichment: enrichment budget exceeded" {
+			found = true
+		}
+		if strings.Contains(warning, "deadline") || strings.Contains(warning, "context") {
+			t.Fatalf("no DeadlineExceeded error may reach the warnings: %v", scan.Warnings)
+		}
+	}
+	if !found {
+		t.Fatalf("the enrichment warning must reach the scan warnings: %v", scan.Warnings)
+	}
+	if scan.Score.Value == nil || scan.Score.Status != "needs_attention" {
+		t.Fatalf("the scan must still carry a score: %+v", scan.Score)
 	}
 }
 

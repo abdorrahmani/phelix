@@ -54,12 +54,23 @@ type Finding struct {
 	Priority      securityscore.Contribution `json:"priority"`
 }
 
+// defaultEnrichmentBudget bounds the whole enrichment phase of one scan so
+// unreachable enrichment providers can never consume the scan's own time
+// budget.
+const defaultEnrichmentBudget = 90 * time.Second
+
 type Intelligence struct {
 	CacheDir string
 	HTTP     *http.Client
 	Offline  bool
 	URLs     map[string]string
 	Now      func() time.Time
+	// EnrichmentBudget bounds the total enrichment phase (per-CVE
+	// providers, KEV, EPSS) of one scan, derived from the scan context.
+	// Zero uses the default. When it expires enrichment stops cleanly:
+	// the distribution findings stand as they are and the scan records a
+	// warning instead of failing.
+	EnrichmentBudget time.Duration
 }
 
 func (i *Intelligence) now() time.Time {
@@ -270,7 +281,20 @@ func (i *Intelligence) Match(ctx context.Context, system System, h Host, package
 		findings, sources, unknown, err = i.rpmAdvisories(ctx, system, h, packages)
 	}
 	findings = deduplicate(findings)
-	sources = append(sources, i.enrich(ctx, findings)...)
+	budget := i.EnrichmentBudget
+	if budget <= 0 {
+		budget = defaultEnrichmentBudget
+	}
+	enrichCtx, cancelEnrichment := context.WithTimeout(ctx, budget)
+	sources = append(sources, i.enrich(enrichCtx, findings)...)
+	budgetExhausted := errors.Is(enrichCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	cancelEnrichment()
+	if budgetExhausted {
+		// Enrichment is additive risk context: when its own budget runs
+		// out the distribution findings stand as they are and the scan
+		// records the shortfall instead of failing.
+		sources = append(sources, Source{Name: "enrichment", Error: "enrichment budget exceeded"})
+	}
 	complete := err == nil
 	for _, f := range findings {
 		if f.State != "confirmed" {
