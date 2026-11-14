@@ -70,6 +70,27 @@ Suggested commands are **informational only** — Phelix never executes them for
 you, and every rendered string (including captured compiler output) passes through
 the same secret redactor as the rest of the error path.
 
+## Host security command codes
+
+The `phelix security server` commands and the remote host security channel
+report these codes. Exit codes follow the shared category table in
+[exit codes](exit-codes.md); the JSON envelope carries the specific code.
+
+| Code | Meaning |
+|---|---|
+| `HOST_SECURITY_CONSENT_DISABLED` | local reporting consent is disabled, so the remote command was withheld (local-only consent; no remote command can change it) |
+| `HOST_SECURITY_UNSUPPORTED` | the host's package manager has no scanner or update adapter |
+| `HOST_SECURITY_CAPABILITY_UNAVAILABLE` | the host cannot establish the requested capability, for example the reboot state |
+| `HOST_SECURITY_INVALID` | the request or its preview binding is invalid (empty or oversized package list, mismatched package set, still-executing operation) |
+| `HOST_SECURITY_NOT_FOUND` | the requested preview token or operation id is unknown |
+| `HOST_SECURITY_PREVIEW_EXPIRED` | the preview token passed its 30 minute validity; run a new preview |
+| `HOST_SECURITY_PREVIEW_STALE` | the package state drifted since the preview; run a new preview |
+| `HOST_SECURITY_BUSY` | a package manager lock or another executing update blocks the operation; locks are never removed or waited out |
+| `HOST_SECURITY_SCAN_RUNNING` | a host security scan holds the host scan lock; retry after it completes |
+| `HOST_SECURITY_PRIVILEGE` | the operation requires root; Phelix never escalates privileges on its own |
+| `HOST_SECURITY_EXEC_FAILED` | a package manager command failed; the redacted output travels with the error |
+| `HOST_SECURITY_TIMEOUT` | the operation exceeded its time budget |
+
 ## Related
 
 - [Exit codes](exit-codes.md) — the exit-code table this maps onto.

@@ -123,7 +123,8 @@ func ExitCodeFor(err error) int {
 		return ExitPermission
 	case phelixerr.CodeNotFound, phelixerr.CodeVersionNotFound,
 		phelixerr.CodeRollbackTargetNotFound, phelixerr.CodeSecretNotFound,
-		phelixerr.CodeScanNotFound, phelixerr.CodeSecurityConfigMissing:
+		phelixerr.CodeScanNotFound, phelixerr.CodeSecurityConfigMissing,
+		phelixerr.CodeHostSecurityNotFound:
 		return ExitNotFound
 	case phelixerr.CodeBuildFailed, phelixerr.CodeToolchainNotFound,
 		phelixerr.CodeBuildTimeout, phelixerr.CodeUnsupportedProject,
@@ -158,6 +159,28 @@ func ExitCodeFor(err error) int {
 		return ExitDocker
 	case phelixerr.CodeSecurityFindings:
 		return ExitSecurity
+	// Host security codes reuse the established category exit codes; the
+	// JSON envelope carries the specific HOST_SECURITY_* code. A held
+	// lock or expired/stale preview is a retryable conflict in the
+	// SESSION_CONFLICT sense: repeating can help, nothing mutated, and
+	// the JSON code distinguishes which wait or refresh is needed.
+	case phelixerr.CodeHostSecurityBusy, phelixerr.CodeHostSecurityScanRunning,
+		phelixerr.CodeHostSecurityPreviewExpired, phelixerr.CodeHostSecurityPreviewStale:
+		return ExitFailure
+	case phelixerr.CodeHostSecurityInvalid, phelixerr.CodeHostSecurityUnsupported,
+		phelixerr.CodeHostSecurityCapabilityUnavailable:
+		// The request or the host capability was refused before anything
+		// mutated: an execution-side validation result, not a bad command
+		// line (exit 2) and not a not-found (12).
+		return ExitValidation
+	case phelixerr.CodeHostSecurityPrivilege, phelixerr.CodeHostSecurityConsentDisabled:
+		// Withheld consent is a refusal at the permission boundary, not
+		// an execution failure.
+		return ExitPermission
+	case phelixerr.CodeHostSecurityExecFailed:
+		return ExitFailure
+	case phelixerr.CodeHostSecurityTimeout:
+		return ExitTimeout
 	case phelixerr.CodeTimeout:
 		return ExitTimeout
 	case phelixerr.CodeEncryption:
