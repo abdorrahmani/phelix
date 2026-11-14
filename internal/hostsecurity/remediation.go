@@ -993,6 +993,15 @@ func ApplyUpdates(ctx context.Context, system System, host Host, packages []stri
 	}
 
 	versions, err := currentVersions(ctx, system, host.Manager, preview.Packages)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		// A package the manager no longer reports was removed or purged
+		// since the preview. The miss is revalidation input, not a query
+		// failure: the missing versions feed the state hash and the
+		// mismatch below answers HOST_SECURITY_PREVIEW_STALE instead of a
+		// hard execution failure. The apply still fails closed.
+		versions = map[string]string{}
+		err = nil
+	}
 	if err != nil {
 		if persistErr := finish(OperationStatusFailed, "", err.Error()); persistErr != nil {
 			return result, errors.Join(err, persistErr)

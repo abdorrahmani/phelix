@@ -484,6 +484,47 @@ func TestApplyStalePreview(t *testing.T) {
 	}
 }
 
+// TestApplyRemovedPackageAnswersPreviewStale pins the revalidation contract
+// for a package removed or purged after the preview: the manager's version
+// query fails for the missing package, the miss feeds the state hash as a
+// mismatch, and the apply answers HOST_SECURITY_PREVIEW_STALE instead of
+// HOST_SECURITY_EXEC_FAILED. Nothing executes and the operation is
+// persisted failed.
+func TestApplyRemovedPackageAnswersPreviewStale(t *testing.T) {
+	runAsRoot(t, 0)
+	fixture := &aptFixture{}
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(fixture.run)
+	dataDir := t.TempDir()
+	preview, err := PreviewUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	system.Runner = fakeRunner(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "dpkg-query" && len(args) >= 3 && args[len(args)-1] == "ssl" {
+			// The package is gone: dpkg-query exits 1 for a purged name.
+			return nil, errors.New("dpkg-query failed; check utility availability, permissions and package database health")
+		}
+		return fixture.run(ctx, name, args...)
+	})
+	_, err = ApplyUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, preview.Token, dataDir)
+	if errorCode(t, err) != phelixerr.CodeHostSecurityPreviewStale {
+		t.Fatalf("a removed previewed package must answer preview stale: %v", err)
+	}
+	for _, command := range fixture.commands {
+		if strings.HasPrefix(command, "env") {
+			t.Fatalf("executed against a removed package: %v", fixture.commands)
+		}
+	}
+	state, loadErr := loadOperations(dataDir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(state.Operations) != 1 || state.Operations[0].Status != OperationStatusFailed {
+		t.Fatalf("persisted operations: %+v", state.Operations)
+	}
+}
+
 func TestApplySuccessAndVerifiedRemediation(t *testing.T) {
 	runAsRoot(t, 0)
 	fixture := &aptFixture{}
