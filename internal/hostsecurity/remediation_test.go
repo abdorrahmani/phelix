@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -306,8 +307,15 @@ func TestApplySingleActiveOperation(t *testing.T) {
 		_ = live.Close()
 	})
 	_, err = ApplyUpdates(context.Background(), system, remediationHost("apt"), []string{"ssl"}, "token", dataDir)
-	if errorCode(t, err) != phelixerr.CodeHostSecurityInvalid {
-		t.Fatalf("active operation: %v", err)
+	if errorCode(t, err) != phelixerr.CodeHostSecurityBusy {
+		t.Fatalf("a held apply lock must fail closed with busy: %v", err)
+	}
+	state, loadErr := loadOperations(dataDir)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(state.Operations) != 1 || state.Operations[0].OperationID != "hso_active" {
+		t.Fatalf("the refused apply must not touch the ledger: %+v", state.Operations)
 	}
 }
 
@@ -604,6 +612,122 @@ func TestVerifyHeldScanLock(t *testing.T) {
 	state, loadErr = loadOperations(dataDir)
 	if loadErr != nil || state.Operations[0].Status != OperationStatusVerified {
 		t.Fatalf("released verification must complete: %+v %v", state.Operations[0], loadErr)
+	}
+}
+
+// serializedRunner answers one apt host with canned output and a mutex so
+// concurrent goroutines can drive it without racing on the command log.
+type serializedRunner struct {
+	mu      sync.Mutex
+	applied bool
+}
+
+func (r *serializedRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case name == "dpkg-query" && len(args) >= 3 && args[len(args)-1] == "linux-image*":
+		return []byte("linux-image-6.1.0-18-amd64\tii \t6.1.0-18\n"), nil
+	case name == "dpkg-query" && len(args) == 2:
+		ssl := "1.0-1"
+		if r.applied {
+			ssl = "2.0-1"
+		}
+		return []byte("ii \tssl\t" + ssl + "\tamd64\tssl\t" + ssl + "\t\t\t\n"), nil
+	case name == "dpkg-query" && len(args) >= 3:
+		version := "1.0-1"
+		if r.applied {
+			version = "2.0-1"
+		}
+		return []byte("ssl\tii\t" + version + "\n"), nil
+	case name == "uname" && len(args) == 1 && args[0] == "-r":
+		return []byte("6.1.0-18-amd64\n"), nil
+	case name == "apt-get" && len(args) >= 2 && args[0] == "-s":
+		return []byte("Inst ssl [1.0-1] (2.0-1 Debian:12/bookworm)\nConf ssl (2.0-1 Debian:12/bookworm)\n"), nil
+	case name == "env" && len(args) >= 3 && args[1] == "apt-get":
+		r.applied = true
+		return []byte(""), nil
+	}
+	return []byte("1.0\n"), nil
+}
+
+func TestConcurrentPreviewsAndApplyLockSerialization(t *testing.T) {
+	runAsRoot(t, 0)
+	runner := &serializedRunner{}
+	system := fixtureSystem(t, "debian")
+	system.Runner = fakeRunner(runner.run)
+	dataDir := t.TempDir()
+	host := remediationHost("apt")
+
+	// A simulated live apply holds the execution lock across its whole
+	// operation.
+	live, err := acquireApplyLock(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Concurrent previews must all persist: the operations lock spans
+	// each read-modify-write, so no update is ever lost.
+	const writers = 8
+	tokens := make([]string, writers)
+	errs := make([]error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			preview, err := PreviewUpdates(context.Background(), system, host, []string{"ssl"}, dataDir)
+			tokens[i], errs[i] = preview.Token, err
+		}(i)
+	}
+	wg.Wait()
+	state, err := loadOperations(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for i := range errs {
+		if errs[i] != nil {
+			t.Fatalf("preview %d failed: %v", i, errs[i])
+		}
+		seen[tokens[i]] = true
+	}
+	if len(seen) != writers || len(state.Previews) != writers {
+		t.Fatalf("lost updates under concurrency: %d distinct tokens, %d stored previews", len(seen), len(state.Previews))
+	}
+
+	// While the apply lock is held, an apply must fail closed with busy
+	// instead of proceeding alongside the live operation.
+	_, err = ApplyUpdates(context.Background(), system, host, []string{"ssl"}, tokens[0], dataDir)
+	if errorCode(t, err) != phelixerr.CodeHostSecurityBusy {
+		t.Fatalf("a held apply lock must fail closed with busy: %v", err)
+	}
+	if runner.applied {
+		t.Fatal("nothing may execute while the apply lock is held elsewhere")
+	}
+	busyState, err := loadOperations(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range busyState.Operations {
+		if op.Status == OperationStatusExecuting {
+			t.Fatalf("the refused apply must not leave an executing record: %+v", busyState.Operations)
+		}
+	}
+
+	// Releasing the lock lets the same apply proceed.
+	if err := releaseHostLock(live); err != nil {
+		t.Fatal(err)
+	}
+	if err := live.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ApplyUpdates(context.Background(), system, host, []string{"ssl"}, tokens[0], dataDir)
+	if err != nil {
+		t.Fatalf("the apply must proceed once the lock is free: %v", err)
+	}
+	if result.Status != OperationStatusSucceeded {
+		t.Fatalf("apply result: %+v", result)
 	}
 }
 

@@ -196,10 +196,11 @@ func reclaimAbandonedOperations(data *operationsFile, dataDir string) bool {
 	return changed
 }
 
-// loadOperations reads the operations document; a missing file is an empty
-// store. Executing operations abandoned by a dead process are reclaimed on
-// every load.
-func loadOperations(dataDir string) (operationsFile, error) {
+// loadOperationsFile reads and validates the operations document without
+// taking any lock. Callers that only read must use loadOperations, and
+// callers that mutate must use mutateOperations, so the whole transaction
+// stays inside the operations lock.
+func loadOperationsFile(dataDir string) (operationsFile, error) {
 	data := operationsFile{Version: operationsVersion}
 	raw, err := os.ReadFile(operationsPath(dataDir))
 	if errors.Is(err, os.ErrNotExist) {
@@ -214,28 +215,12 @@ func loadOperations(dataDir string) (operationsFile, error) {
 	if data.Version != operationsVersion {
 		return operationsFile{}, fmt.Errorf("unsupported host security operations store version %d", data.Version)
 	}
-	if reclaimAbandonedOperations(&data, dataDir) {
-		if err := saveOperations(dataDir, data); err != nil {
-			return operationsFile{}, err
-		}
-	}
 	return data, nil
 }
 
-// saveOperations atomically persists the operations document under an
-// exclusive flock so concurrent daemon processes cannot interleave writes.
-func saveOperations(dataDir string, data operationsFile) error {
-	if err := os.MkdirAll(filepath.Dir(operationsPath(dataDir)), 0o700); err != nil {
-		return err
-	}
-	lock, err := acquireHostLock(operationsLockPath(dataDir), true)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = releaseHostLock(lock)
-		_ = lock.Close()
-	}()
+// saveOperationsFile atomically persists the operations document without
+// taking any lock; the caller must already hold the operations lock.
+func saveOperationsFile(dataDir string, data operationsFile) error {
 	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
@@ -263,17 +248,86 @@ func saveOperations(dataDir string, data operationsFile) error {
 	return nil
 }
 
-// mutateOperations runs one read-modify-write transaction over the durable
-// operations store.
-func mutateOperations(dataDir string, mutate func(*operationsFile) error) error {
-	data, err := loadOperations(dataDir)
+// operationsGuard holds the operations lock for one read-modify-write
+// transaction over the durable operations store.
+type operationsGuard struct {
+	lock *os.File
+}
+
+func acquireOperationsGuard(dataDir string) (*operationsGuard, error) {
+	if err := os.MkdirAll(filepath.Dir(operationsPath(dataDir)), 0o700); err != nil {
+		return nil, err
+	}
+	lock, err := acquireHostLock(operationsLockPath(dataDir), true)
+	if err != nil {
+		return nil, err
+	}
+	return &operationsGuard{lock: lock}, nil
+}
+
+func (g *operationsGuard) release() {
+	_ = releaseHostLock(g.lock)
+	_ = g.lock.Close()
+}
+
+// loadOperations reads the operations document; a missing file is an empty
+// store. Executing operations abandoned by a dead process are reclaimed on
+// every load. The reclaim and the read run under the operations lock so a
+// concurrent mutation cannot be lost between them.
+func loadOperations(dataDir string) (operationsFile, error) {
+	guard, err := acquireOperationsGuard(dataDir)
+	if err != nil {
+		return operationsFile{}, err
+	}
+	defer guard.release()
+	data, err := loadOperationsFile(dataDir)
+	if err != nil {
+		return operationsFile{}, err
+	}
+	if reclaimAbandonedOperations(&data, dataDir) {
+		if err := saveOperationsFile(dataDir, data); err != nil {
+			return operationsFile{}, err
+		}
+	}
+	return data, nil
+}
+
+// saveOperations atomically persists the operations document under an
+// exclusive flock so concurrent daemon processes cannot interleave writes.
+func saveOperations(dataDir string, data operationsFile) error {
+	guard, err := acquireOperationsGuard(dataDir)
 	if err != nil {
 		return err
+	}
+	defer guard.release()
+	return saveOperationsFile(dataDir, data)
+}
+
+// mutateOperations runs one read-modify-write transaction over the durable
+// operations store. The operations lock is held across the entire
+// load->mutate->save critical section, so concurrent writers can never lose
+// each other's updates. The abandoned-operation reclaim runs inside the
+// same critical section; its apply-lock probe is non-blocking, so it can
+// never deadlock against a live apply holding that lock.
+func mutateOperations(dataDir string, mutate func(*operationsFile) error) error {
+	guard, err := acquireOperationsGuard(dataDir)
+	if err != nil {
+		return err
+	}
+	defer guard.release()
+	data, err := loadOperationsFile(dataDir)
+	if err != nil {
+		return err
+	}
+	if reclaimAbandonedOperations(&data, dataDir) {
+		if err := saveOperationsFile(dataDir, data); err != nil {
+			return err
+		}
 	}
 	if err := mutate(&data); err != nil {
 		return err
 	}
-	return saveOperations(dataDir, data)
+	return saveOperationsFile(dataDir, data)
 }
 
 // pruneLocked drops expired previews and the oldest terminal operations
@@ -814,15 +868,20 @@ func ApplyUpdates(ctx context.Context, system System, host Host, packages []stri
 		return result, err
 	}
 	execLock, lockErr := acquireApplyLock(dataDir)
-	if lockErr != nil && !errors.Is(lockErr, ErrHostScanLockHeld) {
+	if lockErr != nil {
+		if errors.Is(lockErr, ErrHostScanLockHeld) {
+			// Fail closed: another process is executing an update and
+			// its outcome is not yet known. Proceeding here could run a
+			// second manager transaction against a stale preview.
+			return result, phelixerr.New(phelixerr.CodeHostSecurityBusy,
+				"another update operation is executing on this host; wait for it to finish")
+		}
 		return result, lockErr
 	}
-	if lockErr == nil {
-		defer func() {
-			_ = releaseHostLock(execLock)
-			_ = execLock.Close()
-		}()
-	}
+	defer func() {
+		_ = releaseHostLock(execLock)
+		_ = execLock.Close()
+	}()
 	ctx, cancel := context.WithTimeout(ctx, ApplyTimeout)
 	defer cancel()
 
