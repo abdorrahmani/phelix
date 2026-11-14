@@ -71,7 +71,9 @@ func LoadHostConfig(dataDir string) (HostConfig, error) {
 }
 
 // SaveHostConfig validates and persists the consent configuration with
-// restrictive file permissions.
+// restrictive file permissions. The write is atomic (temp file, fsync,
+// rename) like the other persisted host-security files, so a crash can
+// never leave a truncated consent file that would fail closed readers.
 func SaveHostConfig(dataDir string, cfg HostConfig) error {
 	if _, err := ValidateScanInterval(cfg.ScanInterval); err != nil {
 		return err
@@ -84,10 +86,29 @@ func SaveHostConfig(dataDir string, cfg HostConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, raw, 0600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "config-*")
+	if err != nil {
 		return err
 	}
-	return os.Chmod(path, 0600)
+	name := tmp.Name()
+	if _, err := tmp.Write(raw); err == nil {
+		err = tmp.Sync()
+	}
+	closeErr := tmp.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Chmod(name, 0600)
+	}
+	if err == nil {
+		err = os.Rename(name, path)
+	}
+	if err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 // HostReportingEnabled reports whether the operator consented to host

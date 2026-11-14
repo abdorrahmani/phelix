@@ -93,3 +93,43 @@ func TestHostConfigPathUnderDataDir(t *testing.T) {
 		t.Fatalf("path %s, want %s", got, want)
 	}
 }
+
+func TestSaveHostConfigAtomicWrite(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := SaveHostConfig(dataDir, HostConfig{Reporting: true, ScanInterval: "6h"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(HostConfigPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := HostConfig{Reporting: false, ScanInterval: "12h"}
+	if err := SaveHostConfig(dataDir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadHostConfig(dataDir)
+	if err != nil || loaded.Reporting || loaded.ScanInterval != "12h" {
+		t.Fatalf("atomic replacement not readable: %+v %v", loaded, err)
+	}
+	// The rename must replace the file: no temp fragments may linger in
+	// the consent directory.
+	entries, err := os.ReadDir(filepath.Join(dataDir, "host-security"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "config.json" {
+			t.Fatalf("atomic save left a stray file behind: %s", entry.Name())
+		}
+	}
+	second, err := os.Stat(HostConfigPath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.ModTime().After(first.ModTime()) && os.SameFile(first, second) {
+		t.Fatal("the save must replace the file instead of rewriting it in place")
+	}
+	if second.Mode().Perm() != 0600 {
+		t.Fatalf("replaced config file mode not restrictive: %v", second.Mode())
+	}
+}
