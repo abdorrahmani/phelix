@@ -546,6 +546,95 @@ func TestMatchUnknownWarningBounds(t *testing.T) {
 	}
 }
 
+// TestRPMAdvisoriesEpochlessAdvisory pins the missing-epoch semantics: an
+// advisory package without the epoch attribute compares at the installed
+// epoch, so an installed epoch-2 package still matches a newer advisory
+// version-release instead of reading as already fixed.
+func TestRPMAdvisoriesEpochlessAdvisory(t *testing.T) {
+	root := t.TempDir()
+	updateinfo := `<?xml version="1.0"?><updates>` +
+		`<update type="security" id="RHSA-2026-111"><severity>important</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-91001" href="https://secure.example/e1"/></references>` +
+		`<pkglist><collection>` +
+		`<package name="epochless" version="3.0.7" release="28.el9" arch="x86_64"/>` +
+		`<package name="epochold" version="3.0.6" release="20.el9" arch="x86_64"/>` +
+		`</collection></pkglist></update>` +
+		`<update type="security" id="RHSA-2026-112"><severity>low</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-91002" href="https://secure.example/e2"/></references>` +
+		`<pkglist><collection><package name="epochzero" version="3.0.9" release="1.el9" epoch="0" arch="x86_64"/></collection></pkglist></update>` +
+		`</updates>`
+	dir := filepath.Join(root, "var/cache/zypp/raw", "repo-main")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "updateinfo.xml"), []byte(updateinfo), 0600); err != nil {
+		t.Fatal(err)
+	}
+	packages := []Package{
+		{Key: "epochless:x86_64@2:3.0.7-27.el9", Name: "epochless", Version: "2:3.0.7-27.el9", Architecture: "x86_64"},
+		{Key: "epochold:x86_64@2:3.0.7-27.el9", Name: "epochold", Version: "2:3.0.7-27.el9", Architecture: "x86_64"},
+		{Key: "epochzero:x86_64@2:3.0.8-1.el9", Name: "epochzero", Version: "2:3.0.8-1.el9", Architecture: "x86_64"},
+	}
+	findings, _, _, err := (&Intelligence{}).rpmAdvisories(context.Background(), System{Root: root}, Host{ID: "opensuse", Version: "15", Manager: "zypper", Status: "supported"}, packages)
+	if err == nil {
+		t.Fatal("cached repository metadata must never claim complete coverage")
+	}
+	byPackage := map[string][]Finding{}
+	for _, f := range findings {
+		byPackage[f.Package] = append(byPackage[f.Package], f)
+	}
+	if got := byPackage["epochless"]; len(got) != 1 || got[0].CVE != "CVE-2024-91001" || got[0].FixedVersion != "3.0.7-28.el9" {
+		t.Fatalf("an epochless advisory must match an installed epoch-2 package at the installed epoch: %+v", got)
+	}
+	if got := byPackage["epochold"]; len(got) != 0 {
+		t.Fatalf("an installed package above the advisory version-release must stay silent: %+v", got)
+	}
+	if got := byPackage["epochzero"]; len(got) != 0 {
+		t.Fatalf("an explicit epoch 0 advisory must not match an installed epoch-2 package: %+v", got)
+	}
+}
+
+// TestRPMAdvisoriesNoarchPackages pins the architecture matching: a noarch
+// advisory package applies to every installed architecture while an
+// arch-specific advisory package keeps its exact match.
+func TestRPMAdvisoriesNoarchPackages(t *testing.T) {
+	root := t.TempDir()
+	updateinfo := `<?xml version="1.0"?><updates>` +
+		`<update type="security" id="FEDORA-2026-201"><severity>moderate</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-91003" href="https://secure.example/n1"/></references>` +
+		`<pkglist><collection><package name="noarchpkg" version="2.0" release="2.fc40" epoch="0" arch="noarch"/></collection></pkglist></update>` +
+		`<update type="security" id="FEDORA-2026-202"><severity>low</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-91004" href="https://secure.example/n2"/></references>` +
+		`<pkglist><collection><package name="archpkg" version="2.0" release="2.fc40" epoch="0" arch="aarch64"/></collection></pkglist></update>` +
+		`</updates>`
+	dir := filepath.Join(root, "var/cache/dnf", "repo-main")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "updateinfo.xml"), []byte(updateinfo), 0600); err != nil {
+		t.Fatal(err)
+	}
+	packages := []Package{
+		{Key: "noarchpkg:x86_64@1.0-1.fc40", Name: "noarchpkg", Version: "1.0-1.fc40", Architecture: "x86_64"},
+		{Key: "noarchpkg:aarch64@1.0-1.fc40", Name: "noarchpkg", Version: "1.0-1.fc40", Architecture: "aarch64"},
+		{Key: "archpkg:x86_64@1.0-1.fc40", Name: "archpkg", Version: "1.0-1.fc40", Architecture: "x86_64"},
+	}
+	findings, _, _, err := (&Intelligence{}).rpmAdvisories(context.Background(), System{Root: root}, Host{ID: "fedora", Version: "40", Manager: "dnf", Status: "supported"}, packages)
+	if err == nil {
+		t.Fatal("cached repository metadata must never claim complete coverage")
+	}
+	byPackage := map[string][]Finding{}
+	for _, f := range findings {
+		byPackage[f.Package] = append(byPackage[f.Package], f)
+	}
+	if got := byPackage["noarchpkg"]; len(got) != 2 || got[0].CVE != "CVE-2024-91003" {
+		t.Fatalf("a noarch advisory package must apply to every installed architecture: %+v", got)
+	}
+	if got := byPackage["archpkg"]; len(got) != 0 {
+		t.Fatalf("an arch-specific advisory package must keep its exact arch match: %+v", got)
+	}
+}
+
 // TestRPMAdvisoriesFindingPath parses one updateinfo.xml end to end: the
 // security type filter, epoch handling, the .xml.gz variant, and the
 // potential state that keeps RPM findings honest.

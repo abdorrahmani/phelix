@@ -357,6 +357,16 @@ func (i *Intelligence) ubuntu(ctx context.Context, s System, h Host, packages []
 	return out, []Source{source}, unknown, err
 }
 
+// installedVersionRelease strips a leading epoch prefix from an installed
+// rpm version, leaving the version-release pair the comparator needs when
+// the advisory epoch matches the installed one.
+func installedVersionRelease(version string) string {
+	if idx := strings.Index(version, ":"); idx > 0 {
+		return version[idx+1:]
+	}
+	return version
+}
+
 type rpmUpdate struct {
 	Type       string `xml:"type,attr"`
 	ID         string `xml:"id,attr"`
@@ -447,14 +457,23 @@ func (i *Intelligence) rpmAdvisories(ctx context.Context, s System, h Host, pack
 				}
 				for _, fixed := range update.Packages {
 					for _, p := range byName[fixed.Name] {
-						if fixed.Arch != "" && fixed.Arch != p.Architecture {
+						if fixed.Arch != "" && fixed.Arch != "noarch" && fixed.Arch != p.Architecture {
 							continue
 						}
+						installed := p.Version
 						version := fixed.Version + "-" + fixed.Release
-						if fixed.Epoch != "" && fixed.Epoch != "0" {
+						switch {
+						case fixed.Epoch == "":
+							// The advisory package omits the epoch attribute:
+							// treat it as matching the installed epoch, so the
+							// comparison runs on the version-release pair and a
+							// missing attribute never reads as epoch 0 against
+							// an installed epoch>0 package.
+							installed = installedVersionRelease(installed)
+						case fixed.Epoch != "0":
 							version = fixed.Epoch + ":" + version
 						}
-						c, e := CompareVersions(ctx, s.Runner, h.Manager, p.Version, version)
+						c, e := CompareVersions(ctx, s.Runner, h.Manager, installed, version)
 						if e != nil {
 							return e
 						}
