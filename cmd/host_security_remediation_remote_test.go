@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -145,5 +146,34 @@ func TestRemoteHostSecurityUpdateUnsupported(t *testing.T) {
 		&pb.HostSecurityCommandOptions{Packages: []string{"ssl"}, ProtocolVersion: 1}))
 	if got.GetErrorCode() != "HOST_SECURITY_UNSUPPORTED" {
 		t.Fatalf("unsupported host preview: %+v", got)
+	}
+}
+
+// TestHostSecurityCappedRecordTruncatesFindings pins the wire cap: a scan
+// beyond the cap keeps its first findings in order, marks the record
+// truncated, and reports the true total; a scan under the cap stays intact.
+func TestHostSecurityCappedRecordTruncatesFindings(t *testing.T) {
+	scan := hostsecurity.Scan{ID: "s1", ServerID: "srv", Status: "completed", Coverage: "complete", Warnings: []string{}, Counts: map[string]int{}, Sources: []hostsecurity.Source{}, Findings: []hostsecurity.Finding{}}
+	for i := 0; i < hostSecurityFindingsWireCap+50; i++ {
+		scan.Findings = append(scan.Findings, hostsecurity.Finding{ID: fmt.Sprintf("f%03d", i), CVE: fmt.Sprintf("CVE-2026-%04d", i), Package: "ssl", Severity: "high", State: "confirmed"})
+	}
+	record := hostSecurityCappedRecord(scan)
+	if len(record.Findings) != hostSecurityFindingsWireCap {
+		t.Fatalf("the wire record must cap findings at %d, got %d", hostSecurityFindingsWireCap, len(record.Findings))
+	}
+	if !record.FindingsTruncated {
+		t.Fatal("the capped record must carry the truncation flag")
+	}
+	if record.FindingsTotal != int32(len(scan.Findings)) {
+		t.Fatalf("the capped record must report the true total %d, got %d", len(scan.Findings), record.FindingsTotal)
+	}
+	if record.Findings[0].GetId() != scan.Findings[0].ID || record.Findings[hostSecurityFindingsWireCap-1].GetId() != scan.Findings[hostSecurityFindingsWireCap-1].ID {
+		t.Fatal("the kept findings must preserve the scan's order")
+	}
+	small := scan
+	small.Findings = scan.Findings[:10]
+	uncapped := hostSecurityCappedRecord(small)
+	if uncapped.FindingsTruncated || len(uncapped.Findings) != 10 || uncapped.FindingsTotal != 10 {
+		t.Fatalf("a scan under the cap must stay intact: %+v", uncapped.FindingsTotal)
 	}
 }

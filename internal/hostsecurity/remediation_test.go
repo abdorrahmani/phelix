@@ -817,6 +817,48 @@ func TestCurrentVersionsAPKPrefixCollision(t *testing.T) {
 	}
 }
 
+func TestPruneLockedRetention(t *testing.T) {
+	now := time.Now().UTC()
+	data := &operationsFile{Version: operationsVersion}
+	data.Previews = append(data.Previews,
+		storedPreview{Token: "expired", ExpiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-2 * PreviewTTL)},
+		storedPreview{Token: "live", ExpiresAt: now.Add(time.Minute), CreatedAt: now},
+	)
+	for i := 0; i < maxStoredOperations; i++ {
+		data.Operations = append(data.Operations, storedOperation{OperationID: fmt.Sprintf("hso_%03d", i), Type: "update_apply", Status: OperationStatusSucceeded, CreatedAt: now, UpdatedAt: now})
+	}
+	data.Operations = append(data.Operations, storedOperation{OperationID: "hso_exec", Type: "update_apply", Status: OperationStatusExecuting, CreatedAt: now, UpdatedAt: now})
+	pruneLocked(data, now)
+
+	if len(data.Previews) != 1 || data.Previews[0].Token != "live" {
+		t.Fatalf("expired previews must be pruned and live previews kept: %+v", data.Previews)
+	}
+	terminal, executing := 0, 0
+	executingSurvived, oldestPruned := false, true
+	for _, op := range data.Operations {
+		if op.Status == OperationStatusExecuting {
+			executing++
+			if op.OperationID == "hso_exec" {
+				executingSurvived = true
+			}
+			continue
+		}
+		terminal++
+		if op.OperationID == "hso_000" {
+			oldestPruned = false
+		}
+	}
+	if terminal+executing != maxStoredOperations {
+		t.Fatalf("the retention cap must hold: %d terminal + %d executing", terminal, executing)
+	}
+	if !executingSurvived {
+		t.Fatal("an executing operation must never be pruned")
+	}
+	if !oldestPruned {
+		t.Fatal("the oldest terminal operations must be pruned first")
+	}
+}
+
 func TestApplyLockOutputDetection(t *testing.T) {
 	runAsRoot(t, 0)
 	fixture := &aptFixture{}

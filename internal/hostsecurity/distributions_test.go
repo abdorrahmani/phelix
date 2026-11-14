@@ -1,10 +1,13 @@
 package hostsecurity
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -540,5 +543,163 @@ func TestMatchUnknownWarningBounds(t *testing.T) {
 	}
 	if !coverageDegraded(19, 1) || coverageDegraded(20, 1) {
 		t.Fatal("the ratio bound is exclusive at 5 percent")
+	}
+}
+
+// TestRPMAdvisoriesFindingPath parses one updateinfo.xml end to end: the
+// security type filter, epoch handling, the .xml.gz variant, and the
+// potential state that keeps RPM findings honest.
+func TestRPMAdvisoriesFindingPath(t *testing.T) {
+	root := t.TempDir()
+	updateinfo := `<?xml version="1.0"?><updates>` +
+		`<update type="security" id="FEDORA-2026-aaa"><severity>high</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-90001" href="http://insecure.example/cve"/><reference type="bugzilla" id="CVE-2024-90001" href="https://secure.example/cve"/></references>` +
+		`<pkglist><collection>` +
+		`<package name="openssl" version="3.0.7" release="28.el9" epoch="1" arch="x86_64"/>` +
+		`<package name="patched" version="3.0.7" release="28.el9" epoch="0" arch="x86_64"/>` +
+		`</collection></pkglist></update>` +
+		`<update type="bugfix" id="FEDORA-2026-bbb"><severity>low</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-90002" href="https://secure.example/bug"/></references>` +
+		`<pkglist><collection><package name="openssl" version="3.0.7" release="28.el9" epoch="0" arch="x86_64"/></collection></pkglist></update>` +
+		`</updates>`
+	dir := filepath.Join(root, "var/cache/dnf", "repo-main")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "updateinfo.xml"), []byte(updateinfo), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gzUpdate := `<?xml version="1.0"?><updates>` +
+		`<update type="security" id="FEDORA-2026-ccc"><severity>moderate</severity>` +
+		`<references><reference type="bugzilla" id="CVE-2024-90003" href="https://secure.example/gz"/></references>` +
+		`<pkglist><collection><package name="gzpkg" version="2.0" release="1.fc40" epoch="0" arch="x86_64"/></collection></pkglist></update>` +
+		`</updates>`
+	gzDir := filepath.Join(root, "var/cache/dnf", "repo-other")
+	if err := os.MkdirAll(gzDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write([]byte(gzUpdate)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gzDir, "updateinfo.xml.gz"), buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	system := System{Root: root, Runner: fakeRunner(func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("dnf version comparison must not need a runner")
+	})}
+	packages := []Package{
+		{Key: "openssl:x86_64@1:3.0.7-27.el9", Name: "openssl", Version: "1:3.0.7-27.el9", Architecture: "x86_64"},
+		{Key: "patched:x86_64@1:3.0.9-1.el9", Name: "patched", Version: "1:3.0.9-1.el9", Architecture: "x86_64"},
+		{Key: "gzpkg:x86_64@1.0-1.fc40", Name: "gzpkg", Version: "1.0-1.fc40", Architecture: "x86_64"},
+	}
+	findings, sources, _, err := (&Intelligence{}).rpmAdvisories(context.Background(), system, Host{ID: "fedora", Version: "40", Manager: "dnf", Status: "supported"}, packages)
+	if err == nil {
+		t.Fatal("cached repository metadata must never claim complete coverage")
+	}
+	byPackage := map[string][]Finding{}
+	for _, f := range findings {
+		byPackage[f.Package] = append(byPackage[f.Package], f)
+	}
+	if got := byPackage["openssl"]; len(got) != 2 || got[0].CVE != "CVE-2024-90001" || got[0].FixedVersion != "1:3.0.7-28.el9" ||
+		got[0].State != "potential" || got[0].Severity != "high" || got[0].AdvisoryID != "FEDORA-2026-aaa" || got[1].AdvisoryID != "FEDORA-2026-aaa" {
+		t.Fatalf("the epoch-dominant security advisory must produce one potential finding per reference: %+v", got)
+	}
+	for _, ref := range byPackage["openssl"][0].References {
+		if strings.Contains(ref, "insecure.example") {
+			t.Fatalf("an insecure reference URL must be dropped: %v", byPackage["openssl"][0].References)
+		}
+	}
+	if got := byPackage["patched"]; len(got) != 0 {
+		t.Fatalf("a package at or above the fix must stay silent: %+v", got)
+	}
+	if got := byPackage["gzpkg"]; len(got) != 1 || got[0].CVE != "CVE-2024-90003" || got[0].FixedVersion != "2.0-1.fc40" {
+		t.Fatalf("the gzipped updateinfo must be parsed: %+v", got)
+	}
+	for _, f := range findings {
+		if f.CVE == "CVE-2024-90002" {
+			t.Fatal("a bugfix advisory must be filtered out")
+		}
+	}
+	if len(sources) < 2 {
+		t.Fatalf("each parsed updateinfo file is a source: %+v", sources)
+	}
+}
+
+// seedStaleCache writes a cache entry whose retrieval time is past the
+// freshness window so fetch must go to the network before falling back.
+func seedStaleCache(t *testing.T, intel *Intelligence, address string, body []byte) {
+	t.Helper()
+	sum := sha256.Sum256([]byte(address))
+	digest := sha256.Sum256(body)
+	cached := struct {
+		Source Source
+		Body   []byte
+	}{Source: Source{Name: "fixture", URL: address, RetrievedAt: time.Now().UTC().Add(-48 * time.Hour), Digest: hex.EncodeToString(digest[:])}, Body: body}
+	raw, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(intel.CacheDir, hex.EncodeToString(sum[:])+".json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFetchFallsBackToStaleCacheOnFetchFailure(t *testing.T) {
+	intel := &Intelligence{CacheDir: t.TempDir()}
+	address := "https://fixture.invalid/tracker"
+	body := []byte(`{"cached":true}`)
+	notFound := httptest.NewServer(http.NotFoundHandler())
+	defer notFound.Close()
+	// The cache is keyed by the resolved address, so the stale entry must
+	// be seeded under the URL the fetch will actually request.
+	intel.URLs = map[string]string{"debian": notFound.URL}
+	seedStaleCache(t, intel, notFound.URL, body)
+	got, source, err := intel.fetch(context.Background(), "debian", address)
+	if err != nil {
+		t.Fatalf("a failed refresh must fall back to the verified cache: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("the cached body must be served: %s", got)
+	}
+	if !source.Stale || source.Error == "" {
+		t.Fatalf("the fallback must be marked stale with the fetch error: %+v", source)
+	}
+}
+
+func TestFetchRetries429WithRetryAfter(t *testing.T) {
+	intel := &Intelligence{CacheDir: t.TempDir()}
+	address := "https://fixture.invalid/epss"
+	attempts := 0
+	body := []byte(`{"data":[]}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, "slow down", http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+	intel.URLs = map[string]string{"epss": server.URL}
+	start := time.Now()
+	got, source, err := intel.fetch(context.Background(), "epss", address)
+	if err != nil {
+		t.Fatalf("a 429 with Retry-After must be retried: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("the retried body must be served: %s", got)
+	}
+	if elapsed := time.Since(start); elapsed < 1500*time.Millisecond {
+		t.Fatalf("the Retry-After hint must be honored before the retry: %v", elapsed)
+	}
+	if source.Digest == "" || source.RetrievedAt.IsZero() {
+		t.Fatalf("the successful refresh must carry provenance: %+v", source)
 	}
 }
