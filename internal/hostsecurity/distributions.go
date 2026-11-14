@@ -359,7 +359,7 @@ func (i *Intelligence) ubuntu(ctx context.Context, s System, h Host, packages []
 
 type rpmUpdate struct {
 	Type       string `xml:"type,attr"`
-	ID         string `xml:"id"`
+	ID         string `xml:"id,attr"`
 	Severity   string `xml:"severity"`
 	References []struct {
 		Type string `xml:"type,attr"`
