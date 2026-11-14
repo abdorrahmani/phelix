@@ -295,7 +295,12 @@ func (s *Scheduler) tryScan(ctx context.Context, interval time.Duration, now tim
 
 	state, err := loadHostSchedule(s.DataDir)
 	if err != nil {
-		s.log("warning", "host security: could not record the scan start: %v", err)
+		// Fail the round closed: an unreadable schedule file may still
+		// hold a pending failure retry or an in-flight marker, and
+		// saving a zeroed state over it would destroy that record. The
+		// next readable round resumes the cadence.
+		s.log("warning", "host security: schedule state unreadable, skipping this round: %v", err)
+		return
 	}
 	state.Running = true
 	if err := saveHostSchedule(s.DataDir, state); err != nil {
@@ -303,9 +308,12 @@ func (s *Scheduler) tryScan(ctx context.Context, interval time.Duration, now tim
 	}
 
 	scanErr := s.Scan(ctx)
-	state, stateErr := loadHostSchedule(s.DataDir)
-	if stateErr != nil {
-		state = hostSchedule{}
+	if fresh, stateErr := loadHostSchedule(s.DataDir); stateErr != nil {
+		// Keep the in-memory state: zeroing it would discard the
+		// failure counter and retry anchor persisted before the scan.
+		s.log("warning", "host security: could not reload the schedule state: %v", stateErr)
+	} else {
+		state = fresh
 	}
 	state.Running = false
 	if scanErr != nil {

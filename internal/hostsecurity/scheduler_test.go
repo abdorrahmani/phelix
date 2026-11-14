@@ -221,6 +221,60 @@ func TestHostScheduler_RecoverMarksAbandonedOnStartup(t *testing.T) {
 	}
 }
 
+func TestHostScheduler_UnreadableScheduleSkipsRound(t *testing.T) {
+	f := newHostSchedulerFixture(t)
+	corrupt := []byte("{not json at all")
+	if err := os.WriteFile(hostSchedulePath(f.dataDir), corrupt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.tick(t)
+	if f.scanCalls != 0 {
+		t.Fatalf("an unreadable schedule file must skip the round: %d", f.scanCalls)
+	}
+	raw, err := os.ReadFile(hostSchedulePath(f.dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(corrupt) {
+		t.Fatalf("the skipped round must not overwrite the schedule file with zeros: %q", raw)
+	}
+}
+
+func TestHostScheduler_PostScanReloadFailurePreservesBackoff(t *testing.T) {
+	f := newHostSchedulerFixture(t)
+	if err := SaveHostConfig(f.dataDir, HostConfig{Reporting: true, ScanInterval: "1h"}); err != nil {
+		t.Fatal(err)
+	}
+	past := f.base.Add(-time.Minute).Format(time.RFC3339)
+	if err := saveHostSchedule(f.dataDir, hostSchedule{Failures: 3, NextRunAt: past}); err != nil {
+		t.Fatal(err)
+	}
+	f.scanErr = errors.New("inventory unavailable")
+	previous := f.scheduler.Scan
+	f.scheduler.Scan = func(ctx context.Context) error {
+		// The scan corrupts the schedule file before failing, so the
+		// post-scan reload cannot succeed.
+		if err := os.WriteFile(hostSchedulePath(f.dataDir), []byte("garbage"), 0600); err != nil {
+			t.Error(err)
+		}
+		return previous(ctx)
+	}
+	f.tick(t)
+	if f.scanCalls != 1 {
+		t.Fatalf("a due round must run: %d", f.scanCalls)
+	}
+	state := f.schedule()
+	if state.Failures != 4 {
+		t.Fatalf("the preserved failure count must increment: %+v", state)
+	}
+	if state.NextRunAt != f.base.Add(15*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("the retry anchor must survive the reload failure: %+v", state)
+	}
+	if state.Running {
+		t.Fatalf("the in-flight marker must be cleared: %+v", state)
+	}
+}
+
 func TestHostScanLockSerialization(t *testing.T) {
 	dataDir := t.TempDir()
 	if got, want := hostScanLockPath(dataDir), dataDir+"/host-security/scan.lock"; got != want {
