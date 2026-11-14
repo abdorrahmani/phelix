@@ -7,11 +7,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"google.golang.org/protobuf/proto"
 )
@@ -33,6 +35,18 @@ const (
 	rollbackLedgerFile     = "remote-rollback-ledger.json"
 	ledgerStateInProgress  = "in_progress"
 	ledgerStateComplete    = "complete"
+	// indeterminateResultMarker is the stable fragment of the restart answer
+	// indeterminateResult composes. It identifies indeterminate entries on
+	// disk without a schema change, including ones written by older agents.
+	indeterminateResultMarker = "agent restarted while the command was in progress"
+	// indeterminateResultTTL bounds how long an undelivered indeterminate
+	// result may occupy a ledger slot. The backend acknowledges recorded
+	// outcomes, including the indeterminate restart answers, so a live
+	// backend drains its own entries; the TTL is the safety valve for a
+	// backend that never acknowledges: without it, indeterminate entries
+	// accumulated across restarts would eventually saturate the window and
+	// permanently refuse every new mutation ("ledger window full").
+	indeterminateResultTTL = 7 * 24 * time.Hour
 )
 
 // rollbackLedgerEntry is one durably-recorded remote command. Command records
@@ -76,6 +90,10 @@ type rollbackLedger struct {
 	// indeterminateNote extends the restart message with command-type-specific
 	// guidance (e.g. where a matrix run's state lives).
 	indeterminateNote string
+	// indeterminateTTL is the safety-valve age bound for undelivered
+	// indeterminate results; zero uses indeterminateResultTTL. Tests
+	// override it to age entries quickly.
+	indeterminateTTL time.Duration
 }
 
 // The remote rollback transport compiled into this build (this ledger plus
@@ -92,6 +110,7 @@ func newRollbackLedger(path string, max int, fallbackCommand, indeterminateNote 
 		pending:           make(map[string]bool),
 		fallbackCommand:   fallbackCommand,
 		indeterminateNote: indeterminateNote,
+		indeterminateTTL:  indeterminateResultTTL,
 	}
 }
 
@@ -139,17 +158,20 @@ func (l *rollbackLedger) initialize() error {
 		return err
 	}
 	changed := false
-	now := time.Now().UnixMilli()
+	now := time.Now()
 	for _, id := range l.order {
 		e := l.entries[id]
 		if e.State != ledgerStateInProgress {
 			continue
 		}
 		e.State = ledgerStateComplete
-		e.UpdatedAt = now
+		e.UpdatedAt = now.UnixMilli()
 		e.Result = l.indeterminateResult(e)
 		e.Delivered = false
 		l.pending[id] = true
+		changed = true
+	}
+	if l.sweepExpiredIndeterminateLocked(now) {
 		changed = true
 	}
 	if changed {
@@ -303,6 +325,15 @@ func (l *rollbackLedger) pendingResults() ([]*pb.MonitorCommandResult, error) {
 	if !l.ready || l.err != nil {
 		return nil, l.unavailableLocked()
 	}
+	if l.sweepExpiredIndeterminateLocked(time.Now()) {
+		// The valve fired during a live connection: persist the drop so a
+		// restart cannot resurrect the dropped entries. A failed persist
+		// leaves the in-memory drop standing and is retried on the next
+		// reconnect; it never wedges the ledger.
+		if err := l.persistLocked(); err != nil {
+			logs.ErrorFile("grpc", "[gRPC Ledger] could not persist the indeterminate result sweep: %v", err)
+		}
+	}
 	out := make([]*pb.MonitorCommandResult, 0, len(l.pending))
 	for _, id := range l.order {
 		if l.pending[id] {
@@ -310,6 +341,44 @@ func (l *rollbackLedger) pendingResults() ([]*pb.MonitorCommandResult, error) {
 		}
 	}
 	return out, nil
+}
+
+// isIndeterminateResult reports whether a recorded terminal result is the
+// indeterminate restart answer. The marker travels in the error text, so
+// entries written by older agents are recognized without a schema change.
+func isIndeterminateResult(result *pb.MonitorCommandResult) bool {
+	return result != nil && strings.Contains(result.GetError(), indeterminateResultMarker)
+}
+
+// sweepExpiredIndeterminateLocked drops undelivered indeterminate results
+// older than the indeterminate TTL and reports whether anything changed.
+// Only restart answers the backend never acknowledged are dropped: a real
+// outcome recorded in the ledger is evidence and is never aged out, and
+// delivered entries are inert. Recent indeterminate entries stay pending so
+// the replay contract is untouched. Caller holds l.mu.
+func (l *rollbackLedger) sweepExpiredIndeterminateLocked(now time.Time) bool {
+	ttl := l.indeterminateTTL
+	if ttl <= 0 {
+		ttl = indeterminateResultTTL
+	}
+	changed := false
+	kept := l.order[:0]
+	for _, id := range l.order {
+		e := l.entries[id]
+		if e != nil && e.State == ledgerStateComplete && !e.Delivered && isIndeterminateResult(e.Result) {
+			if age := now.Sub(time.UnixMilli(e.UpdatedAt)); age > ttl {
+				delete(l.entries, id)
+				delete(l.pending, id)
+				logs.WarningFile("grpc", "[gRPC Ledger] dropped the undelivered indeterminate %s result request_id=%s after %s without an acknowledgement",
+					l.commandNoun(e), id, age.Round(time.Hour))
+				changed = true
+				continue
+			}
+		}
+		kept = append(kept, id)
+	}
+	l.order = kept
+	return changed
 }
 
 func (l *rollbackLedger) markDelivered(requestID string) error {
@@ -465,7 +534,7 @@ func (l *rollbackLedger) indeterminateResult(e *rollbackLedgerEntry) *pb.Monitor
 	if command == "" {
 		command = l.fallbackCommand
 	}
-	message := "agent restarted while the command was in progress; outcome is indeterminate and the command was not re-executed"
+	message := indeterminateResultMarker + "; outcome is indeterminate and the command was not re-executed"
 	if l.indeterminateNote != "" {
 		message += "; " + l.indeterminateNote
 	}

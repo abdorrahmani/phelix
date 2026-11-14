@@ -1,9 +1,15 @@
 package grpc
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/hostsecurity"
 	"github.com/abdorrahmani/phelix/internal/server"
@@ -374,4 +380,210 @@ func TestHostSecurityLedgerPaths(t *testing.T) {
 	if time.Duration(0) >= HostSecurityCommandSettleTimeout() {
 		t.Fatal("the settle timeout must be positive")
 	}
+}
+
+// TestHostSecurityIndeterminateAckFreesSlot pins the recovery contract for
+// an agent restart during a mutation: the in-progress entry becomes a
+// complete undelivered indeterminate result that replays once, the backend
+// records that outcome and acknowledges it, and the acknowledgement frees
+// the ledger slot so the entry can never wedge the window. Acks for
+// in-progress entries are ignored safely, so the replay of a recorded
+// result can never be corrupted by a stale ack.
+func TestHostSecurityIndeterminateAckFreesSlot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "host-security-ledger.json")
+	ledger := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "reconcile with a host_security_config or host_security_scan_detail command")
+	if err := ledger.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	req := hostSecurityTestRequest("req-indeterminate", HostSecurityCommandScanRun, nil)
+	if _, _, err := ledger.begin(req); err != nil {
+		t.Fatal(err)
+	}
+
+	// The agent restarts: a fresh ledger over the same file converts the
+	// in-progress entry into a complete undelivered indeterminate result.
+	restarted := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "reconcile with a host_security_config or host_security_scan_detail command")
+	if err := restarted.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := restarted.pendingResults()
+	if err != nil || len(pending) != 1 || pending[0].GetRequestId() != req.GetRequestId() {
+		t.Fatalf("the indeterminate result must replay after the restart: %+v %v", pending, err)
+	}
+	if pending[0].GetErrorCode() != string(phelixerr.CodeUnavailable) || pending[0].GetCommand() != HostSecurityCommandScanRun {
+		t.Fatalf("the restart answer must be an UNAVAILABLE result for the original command: %+v", pending[0])
+	}
+	outcome, replay, err := restarted.begin(req)
+	if err != nil || outcome != rollbackBeginReplay || replay.GetErrorCode() != string(phelixerr.CodeUnavailable) {
+		t.Fatalf("a retry must replay the indeterminate answer without re-executing: %v %v %v", outcome, replay, err)
+	}
+
+	// markDelivered refuses an entry that is not complete, so a stale ack
+	// racing a live execution can never corrupt the in-progress record.
+	if err := ledger.markDelivered(req.GetRequestId()); err == nil {
+		t.Fatal("markDelivered must refuse an entry that is not complete")
+	}
+	pending, err = restarted.pendingResults()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("the refused ack must leave the indeterminate result pending: %+v %v", pending, err)
+	}
+
+	// The backend records the indeterminate outcome and acknowledges it.
+	acknowledgeHostSecurityResult(restarted, &pb.SecurityResultAck{RequestId: req.GetRequestId(), Command: HostSecurityCommandScanRun})
+	pending, err = restarted.pendingResults()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("the acknowledgement must free the ledger slot: %+v %v", pending, err)
+	}
+
+	// The freed slot stays a durable dedup identity: no replay after another
+	// restart, and the request still replays its recorded answer.
+	afterAck := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "")
+	if err := afterAck.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = afterAck.pendingResults()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("the ack must survive a restart: %+v %v", pending, err)
+	}
+	outcome, replay, err = afterAck.begin(req)
+	if err != nil || outcome != rollbackBeginReplay || replay.GetErrorCode() != string(phelixerr.CodeUnavailable) {
+		t.Fatalf("the ack must keep the dedup identity: %v %v %v", outcome, replay, err)
+	}
+
+	// The freed entry stays evictable: a full window evicts it instead of
+	// wedging future mutations.
+	acknowledged := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "")
+	if err := acknowledged.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < rollbackLedgerCapacity; i++ {
+		fill := hostSecurityTestRequest(fmt.Sprintf("fill-%04d", i), HostSecurityCommandScanRun, nil)
+		outcome, _, err := acknowledged.begin(fill)
+		if err != nil || outcome != rollbackBeginExecute {
+			t.Fatalf("the window must admit new mutations after the ack: %d %v %v", i, outcome, err)
+		}
+	}
+}
+
+// TestHostSecurityIndeterminateTTLValve pins the safety valve: an ancient
+// undelivered indeterminate entry is dropped from the ledger with the
+// recent indeterminate entries, real recorded outcomes, and delivered
+// entries untouched, so a backend that never acknowledges cannot wedge the
+// agent permanently.
+func TestHostSecurityIndeterminateTTLValve(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "host-security-ledger.json")
+	seed := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "")
+	if err := seed.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	ancient := hostSecurityTestRequest("req-ancient", HostSecurityCommandScanRun, nil)
+	recent := hostSecurityTestRequest("req-recent", HostSecurityCommandScanRun, nil)
+	outcome := hostSecurityTestRequest("req-outcome", HostSecurityCommandScanRun, nil)
+	acked := hostSecurityTestRequest("req-acked", HostSecurityCommandScanRun, nil)
+	for _, req := range []*pb.MonitorCommandRequest{ancient, recent, outcome, acked} {
+		if o, _, err := seed.begin(req); err != nil || o != rollbackBeginExecute {
+			t.Fatalf("begin %s: %v %v", req.GetRequestId(), o, err)
+		}
+	}
+	result := finalizeHostSecurityResult(outcome, &pb.MonitorCommandResult{Status: "success"})
+	if err := seed.complete(outcome.GetRequestId(), result); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.complete(acked.GetRequestId(), finalizeHostSecurityResult(acked, &pb.MonitorCommandResult{Status: "success"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.markDelivered(acked.GetRequestId()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The restart converts the two in-progress entries into indeterminate
+	// results, then the file is aged: only the ancient indeterminate entry
+	// crosses the valve.
+	restarted := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "")
+	if err := restarted.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	ancientAt := time.Now().Add(-8 * 24 * time.Hour).UnixMilli()
+	if err := ageLedgerEntry(path, ancient.GetRequestId(), ancientAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := ageLedgerEntry(path, outcome.GetRequestId(), ancientAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := ageLedgerEntry(path, acked.GetRequestId(), ancientAt); err != nil {
+		t.Fatal(err)
+	}
+
+	valve := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "")
+	if err := valve.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	valve.mu.Lock()
+	_, ancientGone := valve.entries[ancient.GetRequestId()]
+	_, recentKept := valve.entries[recent.GetRequestId()]
+	_, outcomeKept := valve.entries[outcome.GetRequestId()]
+	_, ackedKept := valve.entries[acked.GetRequestId()]
+	pendingAncient := valve.pending[ancient.GetRequestId()]
+	valve.mu.Unlock()
+	if ancientGone {
+		t.Fatal("the ancient undelivered indeterminate entry must be dropped")
+	}
+	if !recentKept || !pendingRecent(valve, recent.GetRequestId()) {
+		t.Fatal("a recent indeterminate entry must stay pending")
+	}
+	if !outcomeKept {
+		t.Fatal("a recorded real outcome must never be aged out")
+	}
+	if !ackedKept {
+		t.Fatal("a delivered entry must never be aged out")
+	}
+	if pendingAncient {
+		t.Fatal("the dropped entry must leave the replay queue")
+	}
+
+	// The drop is durable: another restart does not resurrect it.
+	again := newRollbackLedger(path, rollbackLedgerCapacity, "host_security", "")
+	if err := again.initialize(); err != nil {
+		t.Fatal(err)
+	}
+	again.mu.Lock()
+	_, resurrected := again.entries[ancient.GetRequestId()]
+	again.mu.Unlock()
+	if resurrected {
+		t.Fatal("the valve drop must survive a restart")
+	}
+}
+
+func pendingRecent(ledger *rollbackLedger, requestID string) bool {
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	return ledger.pending[requestID]
+}
+
+// ageLedgerEntry rewrites one entry's updated_at timestamp in the ledger
+// file so tests can age it past the valve.
+func ageLedgerEntry(path, requestID string, updatedAt int64) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var disk rollbackLedgerFileData
+	if err := json.Unmarshal(raw, &disk); err != nil {
+		return err
+	}
+	found := false
+	for _, entry := range disk.Entries {
+		if entry != nil && entry.RequestID == requestID {
+			entry.UpdatedAt = updatedAt
+			found = true
+		}
+	}
+	if !found {
+		return errors.New("entry not found in ledger file: " + requestID)
+	}
+	data, err := json.Marshal(disk)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
