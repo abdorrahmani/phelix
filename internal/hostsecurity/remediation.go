@@ -770,20 +770,20 @@ var managerLockPatterns = []string{
 	"failed to lock database",
 }
 
-// lockHeld probes the manager's lock files without blocking. A missing or
-// unreadable lock file cannot prove a busy package database. The probe
-// never removes a lock and never waits for one.
+// lockHeld probes the manager's lock files without blocking and without
+// ever creating one: the probe opens read-only, so a missing lock file
+// stays missing. A missing or unreadable lock file cannot prove a busy
+// package database. The probe never removes a lock and never waits for
+// one. It is best-effort by design: dpkg, apt, and rpm guard their
+// databases with fcntl locks the flock probe cannot observe, so the
+// post-hoc manager output matching (isLockOutput) remains the reliable
+// signal.
 func lockHeld(system System, manager string) bool {
 	for _, path := range managerLockPaths(manager) {
-		lock, err := acquireHostLock(filepath.Join(system.Root, path), false)
-		if errors.Is(err, ErrHostScanLockHeld) {
+		held, err := probeHostLock(filepath.Join(system.Root, path))
+		if err == nil && held {
 			return true
 		}
-		if err != nil {
-			continue
-		}
-		_ = releaseHostLock(lock)
-		_ = lock.Close()
 	}
 	return false
 }

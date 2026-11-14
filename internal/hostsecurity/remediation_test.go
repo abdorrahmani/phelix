@@ -731,6 +731,32 @@ func TestConcurrentPreviewsAndApplyLockSerialization(t *testing.T) {
 	}
 }
 
+func TestLockHeldProbeNeverCreatesLockFile(t *testing.T) {
+	system := fixtureSystem(t, "debian")
+	lockPath := filepath.Join(system.Root, "var/lib/pacman/db.lck")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if lockHeld(system, "pacman") {
+		t.Fatal("a missing lock file cannot prove a busy package database")
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatal("the lock probe must never create a missing manager lock file")
+	}
+	held, err := acquireHostLock(lockPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !lockHeld(system, "pacman") {
+		t.Fatal("a held manager lock must be detected")
+	}
+	_ = releaseHostLock(held)
+	_ = held.Close()
+	if lockHeld(system, "pacman") {
+		t.Fatal("a released manager lock must not report busy")
+	}
+}
+
 func TestApplyLockOutputDetection(t *testing.T) {
 	runAsRoot(t, 0)
 	fixture := &aptFixture{}
