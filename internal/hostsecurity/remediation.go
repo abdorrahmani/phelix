@@ -1091,9 +1091,13 @@ func Verify(ctx context.Context, system System, store *Store, serverID, operatio
 	if operation == nil {
 		return empty, entries, phelixerr.New(phelixerr.CodeHostSecurityNotFound, "operation is unknown")
 	}
-	if operation.Status != OperationStatusSucceeded && operation.Status != OperationStatusFailed {
+	switch operation.Status {
+	case OperationStatusExecuting:
 		return empty, entries, phelixerr.New(phelixerr.CodeHostSecurityInvalid,
-			"the operation has not finished; verification needs a terminal apply result")
+			"the operation is still executing; verification needs a terminal apply result")
+	case OperationStatusVerified:
+		return empty, entries, phelixerr.New(phelixerr.CodeHostSecurityInvalid,
+			fmt.Sprintf("the operation has already been verified (status %s); run a new apply before verifying again", operation.Status))
 	}
 
 	lock, lockErr := TryAcquireHostScanLock(dataDir)

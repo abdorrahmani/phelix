@@ -560,6 +560,40 @@ func TestApplySuccessAndVerifiedRemediation(t *testing.T) {
 	if _, _, err := Verify(context.Background(), system, store, "test-server", "hso_missing", dataDir, intel); errorCode(t, err) != phelixerr.CodeHostSecurityNotFound {
 		t.Fatalf("unknown operation: %v", err)
 	}
+	_, _, err = Verify(context.Background(), system, store, "test-server", result.OperationID, dataDir, intel)
+	if err == nil || !strings.Contains(err.Error(), "already been verified") {
+		t.Fatalf("re-verifying a verified operation must name its state clearly: %v", err)
+	}
+}
+
+func TestVerifyRefusesExecutingOperation(t *testing.T) {
+	runAsRoot(t, 0)
+	dataDir := t.TempDir()
+	if err := mutateOperations(dataDir, func(data *operationsFile) error {
+		data.Operations = append(data.Operations, storedOperation{OperationID: "hso_running", Type: "update_apply", Status: OperationStatusExecuting, Packages: []string{"ssl"}, Manager: "apt", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A live process holds the execution lock, so the load inside Verify
+	// cannot reclaim the executing record.
+	live, err := acquireApplyLock(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = releaseHostLock(live)
+		_ = live.Close()
+	})
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, _, err = Verify(context.Background(), System{}, store, "srv", "hso_running", dataDir, nil)
+	if err == nil || !strings.Contains(err.Error(), "still executing") {
+		t.Fatalf("verifying an executing operation must name its state clearly: %v", err)
+	}
 }
 
 func TestVerifyHeldScanLock(t *testing.T) {
