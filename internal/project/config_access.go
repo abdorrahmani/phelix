@@ -2,7 +2,9 @@ package project
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 
@@ -66,7 +68,14 @@ func checkConfigWriteAccess(current, proposed []byte, denied []ConfigDeniedPath)
 
 func decodeConfigAccess(raw []byte) (map[string]any, error) {
 	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := rejectAdditionalDocuments(decoder, FileName); err != nil {
 		return nil, err
 	}
 	if len(doc.Content) == 0 {

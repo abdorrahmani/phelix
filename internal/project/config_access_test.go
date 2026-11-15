@@ -124,14 +124,16 @@ func TestConfigAccessEnforcesLockedSaveAndCreationDefaults(t *testing.T) {
 
 func TestConfigAccessRejectsAmbiguousProtectedReads(t *testing.T) {
 	for path, raw := range map[string]string{
-		"hooks.*.env": "hooks: {pre_build: {env: {TOKEN: private}}}\nhooks: {}\n",
-		"security":    "security: {vulnerability: {enabled: true}}\nsecurity: null\n",
-		"health":      "health: {endpoints: [{name: private, path: /private}]}\nhealth: null\n",
-		"secrets":     "secrets: {imports: [{secret: private, env: TOKEN}]}\nsecrets: null\n",
+		"hooks.*.env.multidoc": "name: public\n---\nhooks: {pre_build: {env: {TOKEN: private}}}\n",
+		"hooks.*.env":          "hooks: {pre_build: {env: {TOKEN: private}}}\nhooks: {}\n",
+		"security":             "security: {vulnerability: {enabled: true}}\nsecurity: null\n",
+		"health":               "health: {endpoints: [{name: private, path: /private}]}\nhealth: null\n",
+		"secrets":              "secrets: {imports: [{secret: private, env: TOKEN}]}\nsecrets: null\n",
 	} {
 		t.Run(path, func(t *testing.T) {
-			if err := CheckConfigReadAccess([]byte(raw), []ConfigDeniedPath{{Path: path, Message: "view permission required"}}); err == nil {
-				t.Fatal("duplicate key exposed protected source")
+			deniedPath := strings.TrimSuffix(path, ".multidoc")
+			if err := CheckConfigReadAccess([]byte(raw), []ConfigDeniedPath{{Path: deniedPath, Message: "view permission required"}}); err == nil {
+				t.Fatal("ambiguous document exposed protected source")
 			}
 			if err := CheckConfigReadAccess([]byte(raw), nil); err != nil {
 				t.Fatal("owner cannot repair invalid configuration")
