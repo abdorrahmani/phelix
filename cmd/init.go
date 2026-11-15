@@ -63,36 +63,7 @@ var InitCmd = &cobra.Command{
 			// Malformed existing file — overwrite path below fixes it.
 		}
 
-		cfg := &project.Config{
-			Name: initName,
-			Port: initPort,
-			// Watching defaults to disabled: a fresh project must not send
-			// monitoring data to the backend until the user opts in (via this
-			// file or `phelix watch`).
-			Watching: project.WatchingDisable,
-			// Generate a complete, working example: one default health
-			// endpoint and the classic strategy. Every generated field is
-			// supported and validated by project.Load.
-			Health: &project.HealthConfig{
-				Endpoints: []project.HealthEndpoint{
-					{Name: "default", Path: "/health", Interval: "10s", Retries: 3, Mode: "auto"},
-				},
-			},
-			Deploy: &project.DeployConfig{Strategy: project.StrategyClassic},
-		}
-
-		if initType == project.TypeWorker {
-			cfg.Type = project.TypeWorker
-			// A worker has no port and no endpoint probes; the supervision
-			// defaults document themselves in the generated file.
-			cfg.Port = 0
-			cfg.Health = &project.HealthConfig{Mode: project.WorkerHealthProcess}
-			cfg.Process = &project.ProcessConfig{}
-			cfg.Deploy = &project.DeployConfig{
-				Strategy: project.StrategyClassic,
-				Replicas: 1,
-			}
-		}
+		cfg := project.InitialConfig(initName, initType, initPort)
 
 		if cfg.Name == "" {
 			cfg.Name = inferProjectName()
@@ -301,16 +272,7 @@ const hooksExample = `
 `
 
 func appendHooksExample(dir string) error {
-	path := filepath.Join(dir, project.FileName)
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "open phelix.yaml", err)
-	}
-	defer file.Close()
-	if _, err := file.WriteString(hooksExample); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeFilesystem, "write hooks example", err)
-	}
-	return nil
+	return project.AppendContent(dir, hooksExample)
 }
 
 func inferProjectName() string {

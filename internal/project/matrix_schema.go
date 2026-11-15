@@ -300,6 +300,12 @@ func (m *MatrixConfig) MatrixProfile() *matrix.Profile {
 // replaced (or appended). A missing file is created with just the matrix
 // section; a malformed existing file is an error, never overwritten.
 func SaveMatrixConfig(dir string, mc *MatrixConfig) error {
+	release, err := acquireConfigLock(dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if mc == nil {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "cannot save a nil matrix config")
 	}
@@ -308,7 +314,11 @@ func SaveMatrixConfig(dir string, mc *MatrixConfig) error {
 	}
 	path := filepath.Join(dir, FileName)
 
-	raw, err := os.ReadFile(path)
+	content, err := readProjectContent(dir, 0)
+	raw := content.Content
+	if err == nil && !content.Exists {
+		err = os.ErrNotExist
+	}
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
@@ -318,7 +328,7 @@ func SaveMatrixConfig(dir string, mc *MatrixConfig) error {
 		if merr != nil {
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode matrix config", merr)
 		}
-		return os.WriteFile(path, append([]byte(matrixConfigHeader()), body...), 0o644)
+		return writeConfigAtomic(path, append([]byte(matrixConfigHeader()), body...), content)
 	}
 
 	var doc yaml.Node
@@ -361,7 +371,7 @@ func SaveMatrixConfig(dir string, mc *MatrixConfig) error {
 	if cerr := enc.Close(); cerr != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
 	}
-	return os.WriteFile(path, []byte(buf.String()), 0o644)
+	return writeConfigAtomic(path, []byte(buf.String()), content)
 }
 
 func matrixConfigHeader() string {

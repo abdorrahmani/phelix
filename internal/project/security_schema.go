@@ -174,6 +174,12 @@ func (s *SecurityConfig) validate() error {
 
 // SaveSecurityConfig updates scan settings while preserving local reporting consent.
 func SaveSecurityConfig(dir string, sc *SecurityConfig) error {
+	release, err := acquireConfigLock(dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if sc == nil {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "cannot save a nil security config")
 	}
@@ -185,7 +191,11 @@ func SaveSecurityConfig(dir string, sc *SecurityConfig) error {
 	}
 	path := filepath.Join(dir, FileName)
 
-	raw, err := os.ReadFile(path)
+	content, err := readProjectContent(dir, 0)
+	raw := content.Content
+	if err == nil && !content.Exists {
+		err = os.ErrNotExist
+	}
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
@@ -196,7 +206,7 @@ func SaveSecurityConfig(dir string, sc *SecurityConfig) error {
 		if merr != nil {
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode security config", merr)
 		}
-		return writeProjectConfigAtomic(path, append([]byte(projectConfigHeader()), body...))
+		return writeConfigAtomic(path, append([]byte(projectConfigHeader()), body...), content)
 	}
 	if _, err := decodeConfig(raw, path, false); err != nil {
 		return err
@@ -250,5 +260,5 @@ func SaveSecurityConfig(dir string, sc *SecurityConfig) error {
 	if cerr := enc.Close(); cerr != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
 	}
-	return writeProjectConfigAtomic(path, []byte(buf.String()))
+	return writeConfigAtomic(path, []byte(buf.String()), content)
 }

@@ -98,30 +98,38 @@ func load(dir string, strict bool) (*Config, error) {
 	if !strict {
 		warnUnknownKeys(path, raw)
 	}
-	if cfg.Port != 0 {
-		if err := port.Validate(cfg.Port); err != nil {
-			return nil, phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "%s has an invalid port", path)
-		}
-	}
-	if err := cfg.validate(); err != nil {
-		return nil, err
-	}
-	if err := cfg.Matrix.validate(); err != nil {
-		return nil, err
-	}
-	if err := cfg.Webhook.validate(); err != nil {
-		return nil, err
-	}
-	if err := cfg.Secrets.validate(); err != nil {
-		return nil, err
-	}
-	if err := cfg.Security.validate(); err != nil {
-		return nil, err
-	}
-	if err := cfg.Hooks.Validate(dir); err != nil {
+	if err := validateConfig(dir, cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+func validateConfig(dir string, cfg *Config) error {
+	path := filepath.Join(dir, FileName)
+	if cfg.Port != 0 {
+		if err := port.Validate(cfg.Port); err != nil {
+			return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "%s has an invalid port", path)
+		}
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	if err := cfg.Matrix.validate(); err != nil {
+		return err
+	}
+	if err := cfg.Webhook.validate(); err != nil {
+		return err
+	}
+	if err := cfg.Secrets.validate(); err != nil {
+		return err
+	}
+	if err := cfg.Security.validate(); err != nil {
+		return err
+	}
+	if err := cfg.Hooks.Validate(dir); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Exists reports whether phelix.yaml is present in dir.
@@ -132,13 +140,23 @@ func Exists(dir string) bool {
 
 // Save writes cfg to dir/phelix.yaml.
 func Save(dir string, cfg *Config) error {
+	release, err := acquireConfigLock(dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	raw, err := yaml.Marshal(cfg)
 	if err != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", err)
 	}
 	header := fmt.Sprintf("# Phelix project configuration.\n# CLI flags override these values (e.g. --port).\n")
 	path := filepath.Join(dir, FileName)
-	if err := os.WriteFile(path, append([]byte(header), raw...), 0o644); err != nil {
+	current, err := readProjectContent(dir, 0)
+	if err != nil {
+		return err
+	}
+	if err := writeConfigAtomic(path, append([]byte(header), raw...), current); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to write %s", path)
 	}
 	return nil
