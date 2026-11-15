@@ -123,3 +123,10 @@ func TestRemoteConfigTaskHonorsPolicies(t *testing.T) {
 		t.Fatalf("invalid validation policy acknowledgement: %+v", validation)
 	}
 }
+
+func TestRemoteConfigMissingDirectoryHasReadableError(t *testing.T) {
+	result := executeManagedAppConfigTask(&app.AppInfo{Name: "demo"}, &phelixgrpc.AppConfigTask{RequestID: "missing", Command: phelixgrpc.AppConfigCommandRead})
+	if result.Status != "error" || !strings.Contains(result.Error, "could not be accessed safely") {
+		t.Fatalf("missing directory error: %+v", result)
+	}
+}

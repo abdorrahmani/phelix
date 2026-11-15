@@ -65,9 +65,11 @@ func executeManagedAppConfigTask(info *app.AppInfo, task *phelixgrpc.AppConfigTa
 		result.InitialContent = string(task.InitialContent)
 	}
 
-	result.Error = strings.ReplaceAll(result.Error, directory, "[application]")
-	for i := range result.Problems {
-		result.Problems[i].Message = strings.ReplaceAll(result.Problems[i].Message, directory, "[application]")
+	if directory != "" {
+		result.Error = strings.ReplaceAll(result.Error, directory, "[application]")
+		for i := range result.Problems {
+			result.Problems[i].Message = strings.ReplaceAll(result.Problems[i].Message, directory, "[application]")
+		}
 	}
 	return result
 }
