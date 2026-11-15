@@ -182,7 +182,7 @@ func appConfigFailure(task *phelixgrpc.AppConfigTask, err error) phelixgrpc.AppC
 	result := phelixgrpc.AppConfigResult{
 		RequestID: task.RequestID,
 		Status:    "error",
-		Error:     phelixerr.Redact(err.Error()),
+		Error:     configDiagnosticMessage(err),
 		ErrorCode: string(phelixerr.CodeOf(err)),
 	}
 	if errors.Is(err, project.ErrConfigConflict) {
@@ -202,7 +202,7 @@ var configProblemPath = regexp.MustCompile(`(?:health|deploy|process|schedule|jo
 var configProblemPosition = regexp.MustCompile(`(?:phelix\.yaml:|line )([0-9]+)(?::([0-9]+))?`)
 
 func configProblems(raw []byte, err error) []phelixgrpc.AppConfigProblem {
-	message := phelixerr.Redact(err.Error())
+	message := configDiagnosticMessage(err)
 	problem := phelixgrpc.AppConfigProblem{Message: message, Severity: "error"}
 	if match := configProblemPosition.FindStringSubmatch(message); match != nil {
 		problem.Line, _ = strconv.Atoi(match[1])
@@ -250,4 +250,12 @@ func configMappingValue(node *yaml.Node, key string) *yaml.Node {
 
 func appConfigAccessPolicy(task *phelixgrpc.AppConfigTask) project.ConfigAccessPolicy {
 	return project.ConfigAccessPolicy{ReadDeniedPaths: task.ReadDeniedPaths, WriteDeniedPaths: task.WriteDeniedPaths, InitialContent: task.InitialContent}
+}
+
+func configDiagnosticMessage(err error) string {
+	message := phelixerr.Redact(err.Error())
+	if len(message) > 4096 {
+		return strings.ToValidUTF8(message[:4096], "") + "..."
+	}
+	return message
 }

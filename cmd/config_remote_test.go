@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,5 +129,19 @@ func TestRemoteConfigMissingDirectoryHasReadableError(t *testing.T) {
 	result := executeManagedAppConfigTask(&app.AppInfo{Name: "demo"}, &phelixgrpc.AppConfigTask{RequestID: "missing", Command: phelixgrpc.AppConfigCommandRead})
 	if result.Status != "error" || !strings.Contains(result.Error, "could not be accessed safely") {
 		t.Fatalf("missing directory error: %+v", result)
+	}
+}
+
+func TestConfigDiagnosticsBoundLargeMessages(t *testing.T) {
+	err := phelixerr.New(phelixerr.CodeConfiguration, "webhook.secret_env: "+strings.Repeat("<", 512<<10))
+	problems := configProblems(nil, err)
+	if len(problems[0].Message) > 4099 || problems[0].Path != "webhook.secret_env" {
+		t.Fatalf("oversized diagnostic: length=%d path=%s", len(problems[0].Message), problems[0].Path)
+	}
+	task := &phelixgrpc.AppConfigTask{RequestID: "bounded"}
+	result := appConfigFailure(task, err)
+	raw, encodeErr := json.Marshal(result)
+	if encodeErr != nil || len(raw) > 64<<10 {
+		t.Fatalf("oversized failure response length=%d err=%v", len(raw), encodeErr)
 	}
 }
