@@ -17,16 +17,13 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // DefaultSocketPath returns the path to the proxy control unix socket under
 // the user's ~/.phelix directory. It matches the existing health/app layout.
 func DefaultSocketPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".phelix", "proxy.sock"), nil
+	return filepath.Join(server.DataDir(), "proxy.sock"), nil
 }
 
 // Op is the kind of control message exchanged over the socket.
@@ -95,11 +92,7 @@ type proxyPersistFile struct {
 
 // DefaultStatePath returns the path of the proxy daemon's persistence file.
 func DefaultStatePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".phelix", "proxy-state.json"), nil
+	return filepath.Join(server.DataDir(), "proxy-state.json"), nil
 }
 
 // Daemon hosts one Proxy per enrolled app plus the control socket.

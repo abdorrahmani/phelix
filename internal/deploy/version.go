@@ -14,6 +14,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // appNameRe keeps an app name to a single safe path component. The name
@@ -153,12 +154,7 @@ func appDataDir(appName string) (string, error) {
 		return "", err
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(home, ".phelix", "apps", appName), nil
+	return filepath.Join(server.DataDir(), "apps", appName), nil
 }
 
 func versionsPath(appName string) (string, error) {

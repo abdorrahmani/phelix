@@ -19,6 +19,7 @@ import (
 func TestDaemon_RestoresEnrollmentAfterRestart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
 
 	blue := newTaggedBackend(t, "blue")
 	defer blue.Close()

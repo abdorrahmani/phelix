@@ -13,6 +13,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/secrets"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // Worker lifecycle commands shared by the CLI: start, stop, restart, scale and
@@ -438,11 +439,7 @@ func WorkerAlivePIDs(state *DeployState) []int {
 // scanned from the app data directory. Read-only and manager-free, so the
 // supervisor can call it from any goroutine.
 func WorkerAppNames() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	entries, err := os.ReadDir(filepath.Join(home, ".phelix", "apps"))
+	entries, err := os.ReadDir(filepath.Join(server.DataDir(), "apps"))
 	if err != nil {
 		return nil
 	}

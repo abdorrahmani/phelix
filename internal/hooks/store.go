@@ -11,6 +11,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 const DefaultRetention = 200
@@ -34,14 +35,10 @@ func NewStore(appName string) *Store {
 
 // Dir returns the hook data directory for the app.
 func (s *Store) Dir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", phelixerr.Wrap(phelixerr.CodeFilesystem, "hooks: resolve home directory", err)
-	}
 	if s.AppName == "" {
 		return "", phelixerr.New(phelixerr.CodeInvalidArgument, "hooks: store requires an app name")
 	}
-	return filepath.Join(home, ".phelix", "apps", s.AppName, "hooks"), nil
+	return filepath.Join(server.DataDir(), "apps", s.AppName, "hooks"), nil
 }
 
 func (s *Store) executionsDir() (string, error) {

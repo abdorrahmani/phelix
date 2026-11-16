@@ -16,6 +16,7 @@ import (
 func TestDaemon_BackendMembershipIdempotentAndUnique(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
 
 	prim := newTaggedBackend(t, "replica-0")
 	defer prim.Close()
@@ -82,6 +83,7 @@ func TestDaemon_BackendMembershipIdempotentAndUnique(t *testing.T) {
 func TestDaemon_ReportsProtocolVersion(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
 	socket := filepath.Join(home, "proxy.sock")
 	d := NewDaemon(socket)
 	if err := d.Run(); err != nil {

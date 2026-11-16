@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/deploy"
 )
 
 // PauseState is the runtime pause/resume intent for one app's autoscaler,
@@ -22,11 +24,11 @@ type PauseState struct {
 // pausePath returns the app's autoscale runtime-state file, following the
 // same per-app directory convention as deploy.json.
 func pausePath(app string) (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := deploy.AppDataDir(app)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".phelix", "apps", app, "autoscale.json"), nil
+	return filepath.Join(dir, "autoscale.json"), nil
 }
 
 // LoadPauseState returns the app's pause state. A missing file is the zero
