@@ -3,10 +3,16 @@ package phelixerr
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var credentialPattern = regexp.MustCompile(
 	`(?i:sk-|pk-|gh[pous]_|xox[bp]-|AKIA|ASIA|eyJ|Bearer |X-API-Key|apikey=|password=|token=|secret=)[a-zA-Z0-9._-]*`)
+
+var credentialPrefixes = []string{
+	"sk-", "pk-", "ghp_", "gho_", "ghu_", "ghs_", "xoxb-", "xoxp-",
+	"akia", "asia", "eyj", "bearer ", "x-api-key", "apikey=", "password=", "token=", "secret=",
+}
 
 // urlCredentialPattern matches credentials embedded in connection-string
 // URLs — the shape application logs most commonly leak (DATABASE_URL and
@@ -31,7 +37,29 @@ func Redact(s string) string {
 		return s
 	}
 	out := applyRegisteredValues(s)
-	out = credentialPattern.ReplaceAllString(out, "***")
+	lower := strings.ToLower(out)
+	for _, prefix := range credentialPrefixes {
+		idx := 0
+		for {
+			pos := strings.Index(lower[idx:], prefix)
+			if pos < 0 {
+				break
+			}
+			if strings.IndexFunc(out, func(r rune) bool { return r >= utf8.RuneSelf }) >= 0 {
+				out = credentialPattern.ReplaceAllString(out, "***")
+				lower = strings.ToLower(out)
+				break
+			}
+			pos += idx
+			end := pos + len(prefix)
+			for end < len(out) && (isTokenChar(out[end]) || strings.ContainsRune("._-", rune(out[end]))) {
+				end++
+			}
+			out = out[:pos] + "***" + out[end:]
+			lower = strings.ToLower(out)
+			idx = pos + 3
+		}
+	}
 	if strings.Contains(out, "://") {
 		out = urlCredentialPattern.ReplaceAllString(out, "$1$2:***@")
 	}
@@ -56,4 +84,8 @@ func RedactCause(err error) string {
 		lines = append(lines, "  root cause: "+Redact(inner.Error()))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func isTokenChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
