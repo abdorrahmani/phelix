@@ -25,6 +25,7 @@ type AppConfigTask struct {
 	RequestID        string                     `json:"request_id"`
 	Command          string                     `json:"command"`
 	AppName          string                     `json:"app_name"`
+	OwnerAccess      bool                       `json:"owner_access,omitempty"`
 	WorkloadType     string                     `json:"workload_type,omitempty"`
 	Content          string                     `json:"content,omitempty"`
 	ExpectedRevision string                     `json:"expected_revision,omitempty"`

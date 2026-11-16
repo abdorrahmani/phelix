@@ -35,20 +35,19 @@ func RemoteAppConfigCommand(req *pb.MonitorCommandRequest) {
 		return
 	}
 
-	info, err := GetAppInfo(task.AppName)
+	info, err := resolveConfigAppInfo(task.AppName)
 	if err != nil {
 		submitAppConfigResult(appConfigFailure(task, err), req.GetRequestId())
 		return
 	}
-	manager := app.Manager.(*app.AppManager)
-	manager.Lock.Lock()
-	name, directory, publicPort := info.Name, info.Directory, info.Port
-	manager.Lock.Unlock()
-	result := executeManagedAppConfigTask(&app.AppInfo{Name: name, Directory: directory, Port: publicPort}, task)
+	result := executeManagedAppConfigTask(info, task)
 	submitAppConfigResult(result, req.GetRequestId())
 }
 
 func executeManagedAppConfigTask(info *app.AppInfo, task *phelixgrpc.AppConfigTask) phelixgrpc.AppConfigResult {
+	if err := checkSharedConfigAccess(info, task.OwnerAccess); err != nil {
+		return appConfigFailure(task, err)
+	}
 	name, directory, publicPort := info.Name, info.Directory, info.Port
 	if task.WorkloadType == "" {
 		if state, err := deploy.Load(name); err == nil && state.Mode == deploy.ModeWorker {
@@ -258,4 +257,76 @@ func configDiagnosticMessage(err error) string {
 		return strings.ToValidUTF8(message[:4096], "") + "..."
 	}
 	return message
+}
+
+func resolveConfigAppInfo(identifier string) (*app.AppInfo, error) {
+	manager, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return nil, phelixerr.New(phelixerr.CodeServer, "application registry is unavailable")
+	}
+	manager.Lock.Lock()
+	defer manager.Lock.Unlock()
+	snapshot := func(key string, info *app.AppInfo) *app.AppInfo {
+		id := info.ID
+		if id == "" {
+			id = key
+		}
+		return &app.AppInfo{ID: id, Name: info.Name, Directory: info.Directory, Port: info.Port}
+	}
+	if info, exists := manager.Apps[identifier]; exists && info != nil {
+		return snapshot(identifier, info), nil
+	}
+	var matched *app.AppInfo
+	for key, info := range manager.Apps {
+		if info == nil || info.Name != identifier {
+			continue
+		}
+		if matched != nil {
+			return nil, phelixerr.New(phelixerr.CodePermissionDenied, "application name is ambiguous; target its stable application ID")
+		}
+		matched = snapshot(key, info)
+	}
+	if matched == nil {
+		return nil, phelixerr.New(phelixerr.CodeNotFound, "application was not found on the selected server")
+	}
+	return matched, nil
+}
+
+func checkSharedConfigAccess(info *app.AppInfo, owner bool) error {
+	if owner {
+		return nil
+	}
+	manager, ok := app.Manager.(*app.AppManager)
+	if !ok {
+		return phelixerr.New(phelixerr.CodeServer, "application registry is unavailable")
+	}
+	manager.Lock.Lock()
+	directories := make([]string, 0, len(manager.Apps))
+	for key, other := range manager.Apps {
+		if other == nil {
+			continue
+		}
+		id := other.ID
+		if id == "" {
+			id = key
+		}
+		if id != info.ID {
+			directories = append(directories, other.Directory)
+		}
+	}
+	manager.Lock.Unlock()
+	target, err := os.Stat(info.Directory)
+	if err != nil {
+		return nil
+	}
+	for _, directory := range directories {
+		other, err := os.Stat(directory)
+		if err != nil {
+			continue
+		}
+		if os.SameFile(target, other) {
+			return phelixerr.New(phelixerr.CodePermissionDenied, "this project directory is shared by applications; only its owner can manage the shared configuration")
+		}
+	}
+	return nil
 }

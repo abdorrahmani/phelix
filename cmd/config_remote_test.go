@@ -6,6 +6,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -143,5 +144,94 @@ func TestConfigDiagnosticsBoundLargeMessages(t *testing.T) {
 	raw, encodeErr := json.Marshal(result)
 	if encodeErr != nil || len(raw) > 64<<10 {
 		t.Fatalf("oversized failure response length=%d err=%v", len(raw), encodeErr)
+	}
+}
+
+func TestRemoteConfigSharedDirectoryRequiresOwner(t *testing.T) {
+	dir := t.TempDir()
+	source := []byte("name: shared\nport: 8080\n")
+	if err := os.WriteFile(filepath.Join(dir, project.FileName), source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := app.Manager.(*app.AppManager)
+	manager.Lock.Lock()
+	original := manager.Apps
+	manager.Apps = map[string]*app.AppInfo{
+		"first-id":  {ID: "first-id", Name: "first", Directory: dir, Port: 8080},
+		"second-id": {ID: "second-id", Name: "second", Directory: dir, Port: 8080},
+	}
+	manager.Lock.Unlock()
+	t.Cleanup(func() { manager.Lock.Lock(); manager.Apps = original; manager.Lock.Unlock() })
+	info, err := resolveConfigAppInfo("first-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{phelixgrpc.AppConfigCommandRead, phelixgrpc.AppConfigCommandValidate, phelixgrpc.AppConfigCommandCreate, phelixgrpc.AppConfigCommandSave} {
+		task := &phelixgrpc.AppConfigTask{RequestID: "shared", AppName: "first-id", Command: command, Content: "name: changed\n", ExpectedRevision: project.ContentRevision(source)}
+		denied := executeManagedAppConfigTask(info, task)
+		if denied.Status != "error" || denied.ErrorCode != "PERMISSION_DENIED" || denied.Content != "" {
+			t.Fatalf("nonowner shared operation %s: %+v", command, denied)
+		}
+	}
+	task := &phelixgrpc.AppConfigTask{RequestID: "owner", AppName: "first-id", Command: phelixgrpc.AppConfigCommandRead, OwnerAccess: true}
+	allowed := executeManagedAppConfigTask(info, task)
+	if allowed.Status != "success" || allowed.Content != string(source) {
+		t.Fatalf("owner shared read: %+v", allowed)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, project.FileName))
+	if err != nil || string(after) != string(source) {
+		t.Fatalf("denied operation changed shared file: %q %v", after, err)
+	}
+	ownerSave := &phelixgrpc.AppConfigTask{RequestID: "owner-save", AppName: "first-id", Command: phelixgrpc.AppConfigCommandSave, OwnerAccess: true, Content: "name: shared\nport: 9090\n", ExpectedRevision: project.ContentRevision(source)}
+	if saved := executeManagedAppConfigTask(info, ownerSave); saved.Status != "success" || !saved.Changed {
+		t.Fatalf("owner shared save: %+v", saved)
+	}
+	if runtime.GOOS != "windows" {
+		alias := filepath.Join(t.TempDir(), "shared-alias")
+		if err := os.Symlink(dir, alias); err != nil {
+			t.Fatal(err)
+		}
+		manager.Lock.Lock()
+		manager.Apps["second-id"].Directory = alias
+		manager.Lock.Unlock()
+		task.OwnerAccess = false
+		if result := executeManagedAppConfigTask(info, task); result.Status != "error" || result.Content != "" {
+			t.Fatalf("directory alias bypassed isolation: %+v", result)
+		}
+	}
+	secondDir := t.TempDir()
+	manager.Lock.Lock()
+	manager.Apps["second-id"].Directory = secondDir
+	manager.Lock.Unlock()
+	task.OwnerAccess = false
+	unique := executeManagedAppConfigTask(info, task)
+	if unique.Status != "success" {
+		t.Fatalf("unique directory denied: %+v", unique)
+	}
+	manager.Lock.Lock()
+	manager.Apps["second-id"].Directory = filepath.Join(secondDir, "missing")
+	manager.Lock.Unlock()
+	if result := executeManagedAppConfigTask(info, task); result.Status != "success" {
+		t.Fatalf("unavailable unrelated project blocked unique configuration: %+v", result)
+	}
+
+}
+
+func TestRemoteConfigIdentityRejectsAmbiguousNames(t *testing.T) {
+	firstDir, secondDir := t.TempDir(), t.TempDir()
+	manager := app.Manager.(*app.AppManager)
+	manager.Lock.Lock()
+	original := manager.Apps
+	manager.Apps = map[string]*app.AppInfo{
+		"first-id":  {ID: "first-id", Name: "duplicate", Directory: firstDir},
+		"second-id": {ID: "second-id", Name: "duplicate", Directory: secondDir},
+	}
+	manager.Lock.Unlock()
+	t.Cleanup(func() { manager.Lock.Lock(); manager.Apps = original; manager.Lock.Unlock() })
+	if info, err := resolveConfigAppInfo("duplicate"); err == nil || info != nil {
+		t.Fatalf("ambiguous name selected an application: %+v %v", info, err)
+	}
+	if info, err := resolveConfigAppInfo("first-id"); err != nil || info.ID != "first-id" {
+		t.Fatalf("stable application identity rejected: %+v %v", info, err)
 	}
 }
