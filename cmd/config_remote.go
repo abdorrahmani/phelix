@@ -35,7 +35,7 @@ func RemoteAppConfigCommand(req *pb.MonitorCommandRequest) {
 		return
 	}
 
-	info, err := resolveConfigAppInfo(task.AppName)
+	info, err := resolveConfigAppInfo(task.AppName, task.LookupByName)
 	if err != nil {
 		submitAppConfigResult(appConfigFailure(task, err), req.GetRequestId())
 		return
@@ -259,7 +259,7 @@ func configDiagnosticMessage(err error) string {
 	return message
 }
 
-func resolveConfigAppInfo(identifier string) (*app.AppInfo, error) {
+func resolveConfigAppInfo(identifier string, lookupByName bool) (*app.AppInfo, error) {
 	manager, ok := app.Manager.(*app.AppManager)
 	if !ok {
 		return nil, phelixerr.New(phelixerr.CodeServer, "application registry is unavailable")
@@ -273,7 +273,7 @@ func resolveConfigAppInfo(identifier string) (*app.AppInfo, error) {
 		}
 		return &app.AppInfo{ID: id, Name: info.Name, Directory: info.Directory, Port: info.Port}
 	}
-	if info, exists := manager.Apps[identifier]; exists && info != nil {
+	if info, exists := manager.Apps[identifier]; exists && info != nil && !lookupByName {
 		return snapshot(identifier, info), nil
 	}
 	var matched *app.AppInfo

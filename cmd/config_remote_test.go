@@ -162,7 +162,7 @@ func TestRemoteConfigSharedDirectoryRequiresOwner(t *testing.T) {
 	}
 	manager.Lock.Unlock()
 	t.Cleanup(func() { manager.Lock.Lock(); manager.Apps = original; manager.Lock.Unlock() })
-	info, err := resolveConfigAppInfo("first-id")
+	info, err := resolveConfigAppInfo("first-id", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,10 +228,31 @@ func TestRemoteConfigIdentityRejectsAmbiguousNames(t *testing.T) {
 	}
 	manager.Lock.Unlock()
 	t.Cleanup(func() { manager.Lock.Lock(); manager.Apps = original; manager.Lock.Unlock() })
-	if info, err := resolveConfigAppInfo("duplicate"); err == nil || info != nil {
+	if info, err := resolveConfigAppInfo("duplicate", false); err == nil || info != nil {
 		t.Fatalf("ambiguous name selected an application: %+v %v", info, err)
 	}
-	if info, err := resolveConfigAppInfo("first-id"); err != nil || info.ID != "first-id" {
+	if info, err := resolveConfigAppInfo("first-id", false); err != nil || info.ID != "first-id" {
 		t.Fatalf("stable application identity rejected: %+v %v", info, err)
+	}
+}
+
+func TestRemoteConfigLegacyNameCannotSelectAnotherApplicationID(t *testing.T) {
+	firstDir, secondDir := t.TempDir(), t.TempDir()
+	manager := app.Manager.(*app.AppManager)
+	manager.Lock.Lock()
+	original := manager.Apps
+	manager.Apps = map[string]*app.AppInfo{
+		"first-id": {ID: "first-id", Name: "other-id", Directory: firstDir},
+		"other-id": {ID: "other-id", Name: "second", Directory: secondDir},
+	}
+	manager.Lock.Unlock()
+	t.Cleanup(func() { manager.Lock.Lock(); manager.Apps = original; manager.Lock.Unlock() })
+	legacy, err := resolveConfigAppInfo("other-id", true)
+	if err != nil || legacy.ID != "first-id" {
+		t.Fatalf("legacy name selected the wrong application: %+v %v", legacy, err)
+	}
+	stable, err := resolveConfigAppInfo("other-id", false)
+	if err != nil || stable.ID != "other-id" {
+		t.Fatalf("stable application ID rejected: %+v %v", stable, err)
 	}
 }
