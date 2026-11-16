@@ -228,7 +228,7 @@ func TestRemoteConfigIdentityRejectsAmbiguousNames(t *testing.T) {
 	}
 	manager.Lock.Unlock()
 	t.Cleanup(func() { manager.Lock.Lock(); manager.Apps = original; manager.Lock.Unlock() })
-	if info, err := resolveConfigAppInfo("duplicate", false); err == nil || info != nil {
+	if info, err := resolveConfigAppInfo("duplicate", true); err == nil || info != nil {
 		t.Fatalf("ambiguous name selected an application: %+v %v", info, err)
 	}
 	if info, err := resolveConfigAppInfo("first-id", false); err != nil || info.ID != "first-id" {
@@ -254,5 +254,19 @@ func TestRemoteConfigLegacyNameCannotSelectAnotherApplicationID(t *testing.T) {
 	stable, err := resolveConfigAppInfo("other-id", false)
 	if err != nil || stable.ID != "other-id" {
 		t.Fatalf("stable application ID rejected: %+v %v", stable, err)
+	}
+}
+
+func TestRemoteConfigMissingStableIDCannotSelectApplicationName(t *testing.T) {
+	manager := app.Manager.(*app.AppManager)
+	manager.Lock.Lock()
+	original := manager.Apps
+	manager.Apps = map[string]*app.AppInfo{
+		"other-id": {ID: "other-id", Name: "missing-id", Directory: t.TempDir()},
+	}
+	manager.Lock.Unlock()
+	t.Cleanup(func() { manager.Lock.Lock(); manager.Apps = original; manager.Lock.Unlock() })
+	if info, err := resolveConfigAppInfo("missing-id", false); err == nil || info != nil || phelixerr.CodeOf(err) != phelixerr.CodeNotFound {
+		t.Fatalf("missing stable ID selected another application: %+v %v", info, err)
 	}
 }

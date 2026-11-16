@@ -273,8 +273,11 @@ func resolveConfigAppInfo(identifier string, lookupByName bool) (*app.AppInfo, e
 		}
 		return &app.AppInfo{ID: id, Name: info.Name, Directory: info.Directory, Port: info.Port}
 	}
-	if info, exists := manager.Apps[identifier]; exists && info != nil && !lookupByName {
-		return snapshot(identifier, info), nil
+	if !lookupByName {
+		if info, exists := manager.Apps[identifier]; exists && info != nil {
+			return snapshot(identifier, info), nil
+		}
+		return nil, phelixerr.New(phelixerr.CodeNotFound, "application was not found on the selected server")
 	}
 	var matched *app.AppInfo
 	for key, info := range manager.Apps {
