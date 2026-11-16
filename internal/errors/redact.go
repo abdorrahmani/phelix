@@ -5,33 +5,8 @@ import (
 	"strings"
 )
 
-// credentialPatterns are conservative, well-known shapes of credentials and
-// tokens that must never appear in rendered error or log output. Redaction is
-// applied by the CLI renderer (and is available to logging helpers) so that
-// even in --debug mode, where root causes are shown, secrets stay hidden.
-//
-// This is intentionally a bounded, deterministic list — it is not a general
-// entropy detector. The first line of defence is that Phelix-authored error
-// messages never embed secrets at all; redaction is a second, coarse net.
-// The scanner keys ("token", "key", "secret", "password", "authorization")
-// are case-insensitive.
-var credentialPatterns = []string{
-	"sk-",          // OpenAI-style API keys
-	"pk-",          // publishable/stripe-style keys
-	"ghp_", "gho_", // GitHub personal access tokens
-	"ghu_", "ghs_", // GitHub user/server tokens
-	"xoxb-", "xoxp-", // Slack tokens
-	"AKIA",      // AWS access key id prefix
-	"ASIA",      // AWS temporary access key prefix
-	"eyJ",       // JWT header base64 (long strings later truncated)
-	"Bearer ",   // Authorization: Bearer <token>
-	"X-API-Key", // header name (value trimming handled below)
-	"apiKey=",
-	"apikey=",
-	"password=",
-	"token=",
-	"secret=",
-}
+var credentialPattern = regexp.MustCompile(
+	`(?i:sk-|pk-|gh[pous]_|xox[bp]-|AKIA|ASIA|eyJ|Bearer |X-API-Key|apikey=|password=|token=|secret=)[a-zA-Z0-9._-]*`)
 
 // urlCredentialPattern matches credentials embedded in connection-string
 // URLs — the shape application logs most commonly leak (DATABASE_URL and
@@ -56,40 +31,13 @@ func Redact(s string) string {
 		return s
 	}
 	out := applyRegisteredValues(s)
-	for _, pat := range credentialPatterns {
-		idx := 0
-		lowPat := strings.ToLower(pat)
-		lowOut := strings.ToLower(out)
-		for {
-			pos := strings.Index(lowOut[idx:], lowPat)
-			if pos < 0 {
-				break
-			}
-			pos += idx
-			end := pos + len(pat)
-			// Every credential shape consumes the token that follows it, not
-			// just the prefix: "sk-abc-123" must not survive with its key
-			// body readable. The value character class is the one the key=
-			// markers already used (token chars plus URL/base64 separators),
-			// so hyphenated API keys, underscored tokens and JWT bodies are
-			// masked in full.
-			j := end
-			for j < len(out) && (isTokenChar(out[j]) || out[j] == '.' || out[j] == '-' || out[j] == '_') {
-				j++
-			}
-			end = j
-			out = out[:pos] + "***" + out[end:]
-			lowOut = strings.ToLower(out)
-			idx = pos + 3
-			if idx >= len(out) {
-				break
-			}
-		}
+	out = credentialPattern.ReplaceAllString(out, "***")
+	if strings.Contains(out, "://") {
+		out = urlCredentialPattern.ReplaceAllString(out, "$1$2:***@")
 	}
-	// Connection-string URLs: keep scheme://user: but mask the password.
-	out = urlCredentialPattern.ReplaceAllString(out, "$1$2:***@")
-	// PEM private-key blocks: drop the entire key body.
-	out = pemPrivateKeyPattern.ReplaceAllString(out, "-----BEGIN PRIVATE KEY-----[REDACTED]")
+	if strings.Contains(out, "PRIVATE KEY-----") {
+		out = pemPrivateKeyPattern.ReplaceAllString(out, "-----BEGIN PRIVATE KEY-----[REDACTED]")
+	}
 	return out
 }
 
@@ -108,8 +56,4 @@ func RedactCause(err error) string {
 		lines = append(lines, "  root cause: "+Redact(inner.Error()))
 	}
 	return strings.Join(lines, "\n")
-}
-
-func isTokenChar(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
