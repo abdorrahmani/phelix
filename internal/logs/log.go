@@ -42,8 +42,8 @@ func NewGenericLogCollector(maxLines, coldLines int) *GenericLogCollector {
 // output.
 func (c *GenericLogCollector) Collect(key, path string, mapper func(string) LogEntry) ([]LogEntry, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	rs := c.readers[key]
-	c.mu.Unlock()
 
 	if rs == nil {
 		f, err := openLog(path)
@@ -61,9 +61,7 @@ func (c *GenericLogCollector) Collect(key, path string, mapper func(string) LogE
 			rs.lastPos = off
 		}
 
-		c.mu.Lock()
 		c.readers[key] = rs
-		c.mu.Unlock()
 	}
 
 	if err := c.maybeReopen(rs, path); err != nil {
@@ -87,8 +85,7 @@ func (c *GenericLogCollector) Collect(key, path string, mapper func(string) LogE
 			return nil, err
 		}
 
-		pos, _ := rs.file.Seek(0, io.SeekCurrent)
-		rs.lastPos = pos
+		rs.lastPos += int64(len(line))
 
 		out = append(out, mapper(trimTrailingNewline(line)))
 		lines++
@@ -133,7 +130,7 @@ func (c *GenericLogCollector) maybeReopen(rs *readerState, path string) error {
 		// Same inode. If it shrank underneath us (e.g. a truncate), clamp the
 		// position so reads don't start past EOF.
 		if rs.lastPos > info.Size() {
-			rs.lastPos = info.Size()
+			rs.lastPos = 0
 		}
 		return nil
 	}
