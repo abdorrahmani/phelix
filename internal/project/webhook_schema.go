@@ -45,6 +45,12 @@ func (w *WebhookConfig) Validate() error { return w.validate() }
 // A nil config removes nothing — use a zero-value config with enabled=false
 // to persist an explicit disabled state.
 func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
+	release, err := acquireConfigLock(dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	if wc == nil {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "cannot save a nil webhook config")
 	}
@@ -53,7 +59,11 @@ func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
 	}
 	path := filepath.Join(dir, FileName)
 
-	raw, err := os.ReadFile(path)
+	content, err := readProjectContent(dir, 0)
+	raw := content.Content
+	if err == nil && !content.Exists {
+		err = os.ErrNotExist
+	}
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to read %s", path)
@@ -63,7 +73,7 @@ func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
 		if merr != nil {
 			return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode webhook config", merr)
 		}
-		return writeProjectConfigAtomic(path, append([]byte(projectConfigHeader()), body...))
+		return writeConfigAtomic(path, append([]byte(projectConfigHeader()), body...), content)
 	}
 
 	var doc yaml.Node
@@ -105,36 +115,7 @@ func SaveWebhookConfig(dir string, wc *WebhookConfig) error {
 	if cerr := enc.Close(); cerr != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
 	}
-	return writeProjectConfigAtomic(path, []byte(buf.String()))
-}
-
-// writeWebhookConfig keeps readers from seeing an incomplete configuration.
-func writeProjectConfigAtomic(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".phelix-config-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	defer f.Close()
-	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if err := f.Chmod(mode); err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return writeConfigAtomic(path, []byte(buf.String()), content)
 }
 
 func projectConfigHeader() string {

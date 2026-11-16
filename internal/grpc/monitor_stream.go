@@ -545,6 +545,11 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 
 		switch p := msg.Payload.(type) {
 		case *pb.MonitorControl_Command:
+			if IsAppConfigCommand(p.Command.GetType()) {
+				c.handleAppConfigCommand(p.Command)
+				continue
+			}
+
 			if isMatrixCommand(p.Command.GetType()) {
 				c.handleMatrixCommand(p.Command, matrixLedger)
 				continue

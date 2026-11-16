@@ -617,8 +617,18 @@ func (c *Config) DeployComposeService() string {
 // `phelix init`'s job, not a runtime toggle's. A malformed file is an error
 // and is never modified.
 func SetWatching(dir string, enabled bool) error {
+	release, err := acquireConfigLock(dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	path := filepath.Join(dir, FileName)
-	raw, err := os.ReadFile(path)
+	content, err := readProjectContent(dir, 0)
+	raw := content.Content
+	if err == nil && !content.Exists {
+		err = os.ErrNotExist
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return phelixerr.Newf(phelixerr.CodeNotFound, "%s not found in %s", FileName, dir)
@@ -667,7 +677,7 @@ func SetWatching(dir string, enabled bool) error {
 	if cerr := enc.Close(); cerr != nil {
 		return phelixerr.Wrap(phelixerr.CodeConfiguration, "failed to encode config", cerr)
 	}
-	if werr := os.WriteFile(path, []byte(buf.String()), 0o644); werr != nil {
+	if werr := writeConfigAtomic(path, []byte(buf.String()), content); werr != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, werr, "failed to write %s", path)
 	}
 	return nil

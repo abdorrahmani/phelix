@@ -415,6 +415,7 @@ func runMonitor() error {
 	phelixgrpc.SetMatrixAuthorizer(remoteMatrixAuthorize)
 
 	phelixgrpc.SetWebhookHandler(RemoteWebhookCommand)
+	phelixgrpc.SetAppConfigHandler(RemoteAppConfigCommand)
 
 	if err := phelixgrpc.InitializeSecurityLedger(); err != nil {
 		logs.Warning("monitor", "remote security ledger unavailable; mutating security commands will fail closed: %v", err)
@@ -526,6 +527,7 @@ func runMonitor() error {
 	phelixgrpc.WaitPendingHookCommands(phelixgrpc.HookCommandSettleTimeout())
 	phelixgrpc.WaitPendingSecurityCommands(phelixgrpc.SecurityCommandSettleTimeout())
 	phelixgrpc.WaitPendingHostSecurityCommands(phelixgrpc.HostSecurityCommandSettleTimeout())
+	phelixgrpc.WaitPendingAppConfigCommands(5 * time.Second)
 	phelixgrpc.StopMatrixSender(5 * time.Second)
 
 	cancelAutoscale()
