@@ -198,6 +198,7 @@ Runnable, dependency-free starter projects under [`examples/`](examples/):
 ### Reference
 - [CLI Commands](docs/reference/commands.md)
 - [Configuration (`phelix.yaml`)](docs/reference/configuration.md)
+- [Dashboard Configuration Management](docs/configuration-management.md)
 - [Environment Variables](docs/reference/environment.md)
 - [Data Directory](docs/reference/data-directory.md)
 - [Error Codes](docs/reference/error-codes.md)

@@ -6,10 +6,16 @@ server. The owning monitor agent must be connected. Viewing the page requires
 application viewing permission; creating or saving a file requires permission
 to manage application settings.
 
-If the file is missing, choose **Create configuration** to prepare a draft using
+Additional permissions still apply to health, security, environment references,
+webhooks, hooks, scheduled jobs, and autoscaling. Restricted fields appear as
+read-only controls. If a file contains data the viewer cannot access, the full
+document is withheld. Applications sharing one project directory require the
+application owner to use remote configuration management.
+
+If the file is missing, choose **Prepare configuration** to prepare a draft using
 the CLI's initialization defaults and the managed application's identity. Review
-the draft and select **Save** to create the file. Opening the page never creates
-a file.
+the draft and select **Create configuration** to create the file. Opening the
+page never creates a file.
 
 ## Editing
 
@@ -27,6 +33,11 @@ builder. Unknown fields and their nested values remain in the document.
 Comments are retained where the YAML editing library can preserve them;
 formatting may normalize whitespace and indentation. Invalid YAML stays in the
 editor until corrected and cannot be saved.
+
+Shared YAML anchors and inherited merge values can affect several settings.
+When a visual edit would change another value through an alias, use the YAML
+editor to make the change explicitly. Long lists are presented in pages of 25
+items; paging never changes the document.
 
 ## Validation and saving
 
@@ -53,6 +64,10 @@ Saving changes the project's file. Builds and rebuilds read it using their
 existing configuration resolution rules, including explicit CLI flag overrides.
 Saving alone does not restart or deploy the application. Existing commands that
 edit configuration share the file lock with dashboard saves.
+
+External file editors must honor the same lock for strict simultaneous-write
+protection. Dashboard saves check the file again before replacement, but an
+external writer that ignores the lock can still race with replacement.
 
 The document limit is 512 KiB. Remote configuration operations reject symbolic
 links and unsafe YAML structures. Security reporting consent remains a local
