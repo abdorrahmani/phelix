@@ -10,11 +10,13 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 
 	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/server"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 )
@@ -55,6 +57,13 @@ func ReadAdapter() (net.Conn, *pb.CommandRequest, error) {
 	var owner unix.Stat_t
 	if err := unix.Fstat(4, &owner); err != nil || owner.Mode&unix.S_IFMT != unix.S_IFREG {
 		return nil, nil, fmt.Errorf("private Controller ownership descriptor invalid")
+	}
+	var expected unix.Stat_t
+	if err := unix.Lstat(filepath.Join(server.DataDir(), "controller.lock"), &expected); err != nil || owner.Dev != expected.Dev || owner.Ino != expected.Ino {
+		return nil, nil, fmt.Errorf("private Controller ownership descriptor does not match persistent state")
+	}
+	if err := unix.Flock(4, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return nil, nil, fmt.Errorf("private Controller ownership descriptor is not the active ownership lease")
 	}
 	unix.CloseOnExec(4)
 	file := os.NewFile(3, "controller-adapter")

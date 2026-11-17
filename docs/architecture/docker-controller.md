@@ -230,3 +230,6 @@ Each completed phase is tested, reviewed and committed locally. No push.
 Real Docker tests use isolated networks, state and uniquely labelled resources.
 Record exact executed commands and failures. A skip is never a pass. Final report
 must separate implemented behavior from unresolved issues and untested behavior.
+
+Completed validation and operational limits are recorded in
+[docker-controller-validation.md](docker-controller-validation.md).
