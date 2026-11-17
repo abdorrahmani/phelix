@@ -355,6 +355,14 @@ func init() {
 		"Output machine-readable JSON (stdout carries only the result envelope; progress moves to stderr)")
 	RebuildCmd.Flags().StringVar(&rebuildRequestKey, "request-key", "",
 		"Idempotency key: retrying with the same key and same inputs replays the recorded result instead of executing again; reusing a key with different inputs fails with IDEMPOTENCY_CONFLICT")
+	for _, name := range []string{"strategy", "blue-green", "replicas", "canary", "port", "tag", "source-dir", "auto-rollback", "args", "json", "request-key"} {
+		if DeployCmd.Flags().Lookup(name) == nil {
+			if flag := RebuildCmd.Flags().Lookup(name); flag != nil {
+				DeployCmd.Flags().AddFlag(flag)
+			}
+		}
+	}
+
 }
 
 // runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a

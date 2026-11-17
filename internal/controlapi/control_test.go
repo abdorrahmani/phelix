@@ -178,6 +178,33 @@ func TestUnixUnauthorizedPeer(t *testing.T) {
 	}
 }
 
+func TestSocketGroupPermissionsStillRequireAuthorizedPeer(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	server, err := Listen(socket, []uint32{uint32(os.Getuid())}, &Service{}, os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	file, err := os.Stat(socket)
+	if err != nil || file.Mode().Perm() != 0660 {
+		t.Fatal(file, err)
+	}
+	parent, err := os.Stat(filepath.Dir(socket))
+	if err != nil || parent.Mode().Perm() != 0750 {
+		t.Fatal(parent, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	connection, client, err := Connect(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := client.Health(ctx, &pb.Empty{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInterruptedOperationRecovery(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "id.json"), []byte(`{"id":"id","state":"RUNNING"}`), 0600)

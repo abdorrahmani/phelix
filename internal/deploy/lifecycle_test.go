@@ -26,6 +26,15 @@ func selfBinary(t *testing.T) string {
 	return exe
 }
 
+func waitForTestExec(t *testing.T, command *exec.Cmd) {
+	t.Helper()
+	if _, err := processex.WaitIdentity(context.Background(), command.Process.Pid, command.Path); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("test child did not execute its binary", err)
+	}
+}
+
 // spawnSleeper starts a real `sleep` child and returns it with its recorded
 // Instance so tests can exercise identity-verified stopping end to end.
 func spawnSleeper(t *testing.T) (*exec.Cmd, *Instance) {
@@ -34,6 +43,7 @@ func spawnSleeper(t *testing.T) (*exec.Cmd, *Instance) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sleep: %v", err)
 	}
+	waitForTestExec(t, cmd)
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()

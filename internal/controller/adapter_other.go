@@ -19,6 +19,6 @@ func ReadAdapter() (net.Conn, *pb.CommandRequest, error) {
 func WriteMessage(io.Writer, proto.Message) error {
 	return fmt.Errorf("Controller adapters currently require Linux")
 }
-func ExecuteAdapter(context.Context, *pb.CommandRequest, func(string, bool)) (int, error) {
+func (c *Controller) ExecuteAdapter(context.Context, *pb.CommandRequest, func(string, bool)) (int, error) {
 	return 1, fmt.Errorf("Controller adapters currently require Linux")
 }

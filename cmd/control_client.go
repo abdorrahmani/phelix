@@ -21,7 +21,7 @@ func managedCommand(command *cobra.Command) bool {
 		command = command.Parent()
 	}
 	switch command.Name() {
-	case "build", "rebuild", "deploy", "rollback", "start", "stop", "restart", "remove", "status", "list", "log", "watch", "scale", "autoscale", "job", "hooks", "env", "secrets", "health", "proxy", "matrix", "operation", "inspect", "plan", "authz", "context", "session", "security", "webhook", "build-report", "deployment-report", "config":
+	case "build", "dockerize", "rebuild", "deploy", "rollback", "start", "stop", "restart", "remove", "status", "list", "log", "watch", "scale", "autoscale", "job", "hooks", "env", "secrets", "health", "proxy", "matrix", "operation", "inspect", "plan", "authz", "context", "session", "security", "webhook", "build-report", "deployment-report", "config":
 		return true
 	}
 	return false
@@ -138,9 +138,19 @@ func runControlClient(command *cobra.Command, args []string) error {
 			return nil
 		case pb.OperationState_FAILED, pb.OperationState_CANCELLED, pb.OperationState_INTERRUPTED:
 			if record.Error != nil {
-				return phelixerr.New(phelixerr.Code(record.Error.Code), record.Error.Message)
+				return &controlOperationError{record}
 			}
 			return phelixerr.New(phelixerr.CodeProcessFailed, "Controller operation failed")
 		}
 	}
+}
+
+type controlOperationError struct{ result *pb.Operation }
+
+func (e *controlOperationError) Error() string { return e.result.Error.Message }
+func (e *controlOperationError) Unwrap() error {
+	return phelixerr.New(phelixerr.Code(e.result.Error.Code), e.result.Error.Message)
+}
+func (e *controlOperationError) RenderedError() (string, int) {
+	return e.result.Error.Display, int(e.result.ExitCode)
 }

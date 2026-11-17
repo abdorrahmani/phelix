@@ -126,6 +126,7 @@ func startChildInstance(t *testing.T, slot string, ver int) *childProcInstance {
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot start child process: %v", err)
 	}
+	waitForTestExec(t, cmd)
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, "ok")

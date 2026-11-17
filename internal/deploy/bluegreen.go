@@ -524,7 +524,6 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			}
 			old.Status = "stopped"
 			old.PID = 0
-			old.ContainerID = ""
 			bg.Telemetry.InstanceStopped(oldActive, stoppedPID, drainOutcome(report))
 		}
 	}

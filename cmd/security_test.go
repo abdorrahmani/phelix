@@ -28,6 +28,7 @@ func runPhelixSecurity(t *testing.T, home, dir, osvURL string, args ...string) (
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	prepareControlTest(t, cmd)
 	err := cmd.Run()
 	code := 0
 	if err != nil {

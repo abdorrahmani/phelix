@@ -610,6 +610,9 @@ func restoreDeployedApps() {
 			logs.Warning("monitor", "cannot refresh endpoints for %s: %v", info.Name, err)
 			continue
 		}
+		if err := deploy.RecoverDockerLogs(context.Background(), state); err != nil {
+			logs.Warning("monitor", "cannot recover Docker logs for %s: %v", info.Name, err)
+		}
 		if err := runDeployAwareStart(info); err != nil {
 			logs.Warning("monitor", "failed to restore deployment for %s: %v", info.Name, err)
 		}

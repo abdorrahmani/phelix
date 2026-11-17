@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,57 @@ func TestOwnerReleaseAndDuplicate(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "controller.lock")); err != nil {
 		t.Fatal("lock inode removed", err)
 	}
+}
+
+func TestOwnershipSurvivesParentReleaseUntilAdapterExits(t *testing.T) {
+	if os.Getenv("PHELIX_OWNER_TEST_HELPER") == "1" {
+		file := os.NewFile(3, "inherited-owner")
+		defer file.Close()
+		if _, err := file.Stat(); err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout.Write([]byte{1})
+		io.Copy(io.Discard, os.Stdin)
+		return
+	}
+	directory := t.TempDir()
+	owner, err := Acquire(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	child := exec.Command(os.Args[0], "-test.run=^TestOwnershipSurvivesParentReleaseUntilAdapterExits$")
+	child.Env = append(os.Environ(), "PHELIX_OWNER_TEST_HELPER=1")
+	child.ExtraFiles = []*os.File{owner.file}
+	input, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer child.Process.Kill()
+	if _, err := io.ReadFull(output, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	owner.Close()
+	if duplicate, err := Acquire(directory); err == nil {
+		duplicate.Close()
+		t.Fatal("ownership released while adapter still running")
+	}
+	input.Close()
+	if err := child.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Acquire(directory)
+	if err != nil {
+		t.Fatal("ownership not released after adapter exits", err)
+	}
+	restarted.Close()
 }
 
 func TestMigrationRepeatAndConflict(t *testing.T) {

@@ -43,7 +43,9 @@ func AppLogTargets(a app.AppListItem) []logs.AppLogTarget {
 			continue
 		}
 		target := base
-		if state.Mode == deploy.ModeWorker {
+		if inst.ContainerID != "" {
+			target.Path = deploy.DockerLogFilePath(inst.ContainerID)
+		} else if state.Mode == deploy.ModeWorker {
 			target.Path = deploy.WorkerLogFilePath(home, inst.BinaryPath, slot)
 		} else {
 			if inst.Port <= 0 {

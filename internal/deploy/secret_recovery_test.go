@@ -37,6 +37,7 @@ func TestSecretRecoveryChecksRealProcesses(t *testing.T) {
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
+			waitForTestExec(t, cmd)
 			defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 			state := &DeployState{AppName: name, AppID: txnTestAppID, Mode: ModeRolling}
 			if accepted {
@@ -374,6 +375,7 @@ func TestRollingSecretFailureRestoresPreviousFleet(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		waitForTestExec(t, cmd)
 		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 		id, err := processex.Identity(cmd.Process.Pid)
 		if err != nil {
@@ -408,6 +410,7 @@ func TestRollingSecretFailureRestoresPreviousFleet(t *testing.T) {
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
+			waitForTestExec(t, cmd)
 			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 			return &engineProc{cmd: cmd}, listener.Addr().(*net.TCPAddr).Port, nil
 		}}
@@ -547,6 +550,7 @@ func TestAcceptedRecoveryRetriesOrphansAfterSecretCommit(t *testing.T) {
 	if err := orphan.Start(); err != nil {
 		t.Fatal(err)
 	}
+	waitForTestExec(t, orphan)
 	defer func() { _ = orphan.Process.Kill(); _ = orphan.Wait() }()
 	if err := secrets.CommitTxn(txnTestAppID); err != nil {
 		t.Fatal(err)
@@ -593,6 +597,7 @@ func TestAutomaticSecretRollbackAcceptsRestoredFleetTogether(t *testing.T) {
 				if err := cmd.Start(); err != nil {
 					t.Fatal(err)
 				}
+				waitForTestExec(t, cmd)
 				t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 				return cmd
 			}

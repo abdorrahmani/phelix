@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -417,7 +418,8 @@ func (w *Worker) deployClassic(ctx context.Context, state *DeployState, binaryPa
 // mode a passing probe, within the startup window.
 func (w *Worker) waitForReady(ctx context.Context, state *DeployState, inst *Instance, env []string) error {
 	if w.Health.Mode != WorkerGateExec {
-		if !WorkerInstanceAlive(inst) {
+		identity, err := processex.WaitIdentity(ctx, inst.PID, inst.BinaryPath)
+		if err != nil || inst.StartTicks != 0 && identity.StartTime != inst.StartTicks {
 			return phelixerr.Newf(phelixerr.CodeInstanceStartFailed,
 				"worker replica %s exited during startup", inst.Slot)
 		}

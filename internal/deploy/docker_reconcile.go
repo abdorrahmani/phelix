@@ -94,7 +94,7 @@ func reconcileOrphanContainers(ctx context.Context, appName string, known map[st
 			continue
 		}
 		if _, rmErr := run(ctx, "rm", "-f", id); rmErr != nil {
-			return removed, rmErr
+			continue
 		}
 		removed = append(removed, id)
 	}

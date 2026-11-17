@@ -701,6 +701,8 @@ type Metrics struct {
 	RestartCount  uint32                 `protobuf:"varint,10,opt,name=restart_count,json=restartCount,proto3" json:"restart_count,omitempty"`
 	Health        string                 `protobuf:"bytes,11,opt,name=health,proto3" json:"health,omitempty"`
 	ExitCode      int32                  `protobuf:"varint,12,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	Pid           int32                  `protobuf:"varint,13,opt,name=pid,proto3" json:"pid,omitempty"`
+	ApplicationId string                 `protobuf:"bytes,14,opt,name=application_id,json=applicationId,proto3" json:"application_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -819,6 +821,20 @@ func (x *Metrics) GetExitCode() int32 {
 	return 0
 }
 
+func (x *Metrics) GetPid() int32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *Metrics) GetApplicationId() string {
+	if x != nil {
+		return x.ApplicationId
+	}
+	return ""
+}
+
 type QueryResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Applications  []*Application         `protobuf:"bytes,1,rep,name=applications,proto3" json:"applications,omitempty"`
@@ -893,6 +909,7 @@ type CommandRequest struct {
 	Directory      string                 `protobuf:"bytes,2,opt,name=directory,proto3" json:"directory,omitempty"`
 	Input          []byte                 `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`
 	TimeoutSeconds int64                  `protobuf:"varint,4,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	Caller         string                 `protobuf:"bytes,5,opt,name=caller,proto3" json:"caller,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -955,10 +972,18 @@ func (x *CommandRequest) GetTimeoutSeconds() int64 {
 	return 0
 }
 
+func (x *CommandRequest) GetCaller() string {
+	if x != nil {
+		return x.Caller
+	}
+	return ""
+}
+
 type Error struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
 	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Display       string                 `protobuf:"bytes,3,opt,name=display,proto3" json:"display,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1003,6 +1028,13 @@ func (x *Error) GetCode() string {
 func (x *Error) GetMessage() string {
 	if x != nil {
 		return x.Message
+	}
+	return ""
+}
+
+func (x *Error) GetDisplay() string {
+	if x != nil {
+		return x.Display
 	}
 	return ""
 }
@@ -1309,7 +1341,7 @@ const file_internal_controlapi_proto_control_proto_rawDesc = "" +
 	"to_version\x18\x02 \x01(\x05R\ttoVersion\x12\x0e\n" +
 	"\x02at\x18\x03 \x01(\tR\x02at\x12\x18\n" +
 	"\asuccess\x18\x04 \x01(\bR\asuccess\x12\x16\n" +
-	"\x06reason\x18\x05 \x01(\tR\x06reason\"\x81\x03\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\"\xba\x03\n" +
 	"\aMetrics\x12!\n" +
 	"\fcontainer_id\x18\x01 \x01(\tR\vcontainerId\x12\x1f\n" +
 	"\vcpu_percent\x18\x02 \x01(\x01R\n" +
@@ -1328,20 +1360,24 @@ const file_internal_controlapi_proto_control_proto_rawDesc = "" +
 	"\rrestart_count\x18\n" +
 	" \x01(\rR\frestartCount\x12\x16\n" +
 	"\x06health\x18\v \x01(\tR\x06health\x12\x1b\n" +
-	"\texit_code\x18\f \x01(\x05R\bexitCode\"\xfc\x01\n" +
+	"\texit_code\x18\f \x01(\x05R\bexitCode\x12\x10\n" +
+	"\x03pid\x18\r \x01(\x05R\x03pid\x12%\n" +
+	"\x0eapplication_id\x18\x0e \x01(\tR\rapplicationId\"\xfc\x01\n" +
 	"\rQueryResponse\x12B\n" +
 	"\fapplications\x18\x01 \x03(\v2\x1e.phelix.control.v1.ApplicationR\fapplications\x126\n" +
 	"\bversions\x18\x02 \x03(\v2\x1a.phelix.control.v1.VersionR\bversions\x129\n" +
 	"\ahistory\x18\x03 \x03(\v2\x1f.phelix.control.v1.HistoryEntryR\ahistory\x124\n" +
-	"\ametrics\x18\x04 \x03(\v2\x1a.phelix.control.v1.MetricsR\ametrics\"\x81\x01\n" +
+	"\ametrics\x18\x04 \x03(\v2\x1a.phelix.control.v1.MetricsR\ametrics\"\x99\x01\n" +
 	"\x0eCommandRequest\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12\x1c\n" +
 	"\tdirectory\x18\x02 \x01(\tR\tdirectory\x12\x14\n" +
 	"\x05input\x18\x03 \x01(\fR\x05input\x12'\n" +
-	"\x0ftimeout_seconds\x18\x04 \x01(\x03R\x0etimeoutSeconds\"5\n" +
+	"\x0ftimeout_seconds\x18\x04 \x01(\x03R\x0etimeoutSeconds\x12\x16\n" +
+	"\x06caller\x18\x05 \x01(\tR\x06caller\"O\n" +
 	"\x05Error\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\x85\x02\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x18\n" +
+	"\adisplay\x18\x03 \x01(\tR\adisplay\"\x85\x02\n" +
 	"\tOperation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x127\n" +
 	"\x05state\x18\x02 \x01(\x0e2!.phelix.control.v1.OperationStateR\x05state\x12 \n" +

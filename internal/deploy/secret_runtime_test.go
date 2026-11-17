@@ -23,6 +23,7 @@ func TestCoverageRetainsRuntimeUntilInstanceStops(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	waitForTestExec(t, cmd)
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 	info := app.AppListItem{ID: txnTestAppID, Name: "coverage", PID: cmd.Process.Pid, Status: "running", SecretEnvs: []string{"DB"}}
 	if err := RefreshSecretCoverage(info); err != nil {
@@ -134,6 +135,7 @@ func TestProbeUsesRunningCredentialsAfterStoreRotation(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	waitForTestExec(t, cmd)
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 	env, release, err := RuntimeEnvOverlay(&Instance{PID: cmd.Process.Pid, SecretEnvs: []string{"DB"}}, txnTestAppID)
 	if err != nil {

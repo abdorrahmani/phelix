@@ -59,6 +59,7 @@ func TestCLISecretClassicLifecycle(t *testing.T) {
 		command := exec.CommandContext(ctx, cli, args...)
 		command.Dir = projectDir
 		command.Env = append(os.Environ(), "HOME="+home, "PHELIX_DATA_DIR="+dataDir, "GOCACHE="+filepath.Join(root, "cache"))
+		prepareControlTest(t, command)
 		command.Stdin = strings.NewReader(input)
 		output, err := command.CombinedOutput()
 		for _, value := range []string{oldValue, newValue} {
@@ -138,7 +139,7 @@ http.ListenAndServe("127.0.0.1:"+os.Getenv("PORT"), nil)
 	mustRun("", "secrets", "list", "--json")
 	mustRun("", "stop", name)
 	if err := filepath.WalkDir(dataDir, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		if err != nil || entry.IsDir() || !entry.Type().IsRegular() {
 			return err
 		}
 		if strings.Contains(path, string(filepath.Separator)+"builds"+string(filepath.Separator)) {

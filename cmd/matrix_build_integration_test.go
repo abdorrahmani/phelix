@@ -69,6 +69,7 @@ matrix:
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	prepareControlTest(t, cmd)
 	err := cmd.Run()
 	code := 0
 	if err != nil {

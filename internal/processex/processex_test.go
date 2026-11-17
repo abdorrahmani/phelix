@@ -1,11 +1,33 @@
 package processex
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
 	"time"
 )
+
+func TestWaitIdentityRequiresExpectedExecutable(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	identity, err := WaitIdentity(context.Background(), cmd.Process.Pid, cmd.Path)
+	if err != nil || !Matches(identity) || identity.StartTime == 0 {
+		t.Fatal("spawn did not acquire its executable identity", identity, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := WaitIdentity(ctx, cmd.Process.Pid, "/invalid/executable"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("different executable was accepted", err)
+	}
+	if !Alive(cmd.Process.Pid) {
+		t.Fatal("identity check modified the process")
+	}
+}
 
 func TestParseStatStarttime(t *testing.T) {
 	line := "1234 (my app (v2) worker) S 1 1234 1234 0 -1 4194560 100 0 0 0 5 2 0 0 20 0 1 0 " +

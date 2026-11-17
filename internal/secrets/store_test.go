@@ -397,7 +397,7 @@ func TestMissingKeyDoesNotReplaceStoredCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyPath := filepath.Join(root, ".phelix", "master.key")
+	keyPath := filepath.Join(root, "data", "master.key")
 	if err := os.Remove(keyPath); err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestNewAppCannotReplaceMissingMasterKey(t *testing.T) {
 	if _, err := Set(testAppID, "db", "existing-credential"); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".phelix", "master.key")
+	path := filepath.Join(root, "data", "master.key")
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}

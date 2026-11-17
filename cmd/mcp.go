@@ -80,7 +80,7 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 	// Diagnostics only — never stdout (that carries the JSON-RPC protocol).
 	fmt.Fprintf(os.Stderr, "phelix mcp: serving on stdio (pid %d)\n", os.Getpid())
 
-	srv := phelixmcp.New(cmdServices{}, phelixmcp.Options{})
+	srv := phelixmcp.New(controlMCPServices{}, phelixmcp.Options{})
 	if err := srv.Run(ctx); err != nil {
 		if ctx.Err() != nil {
 			return nil // signalled / client gone: a clean shutdown
@@ -88,6 +88,12 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		return phelixerr.Wrap(phelixerr.CodeUnknown, "mcp server terminated", err)
 	}
 	return nil
+}
+
+func SetControlCaller(caller string) {
+	if caller == "mcp" {
+		authzGate.Authenticator = authz.LocalMCPAuthenticator{}
+	}
 }
 
 // cmdServices implements internal/mcp.Services against the real command logic.

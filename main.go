@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
+	"github.com/abdorrahmani/phelix/internal/app"
 	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
 	"github.com/abdorrahmani/phelix/internal/controller"
-	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/server"
 	"os"
 	"os/signal"
 	"syscall"
@@ -114,14 +115,23 @@ func main() {
 			controller.WriteMessage(conn, &pb.Error{Code: "INVALID_ARGUMENT", Message: "Controller source directory unavailable"})
 			return
 		}
+		id, identityErr := server.EnsureAgentID()
+		if identityErr != nil || id != os.Getenv("PHELIX_CONTROLLER_ID") {
+			controller.WriteMessage(conn, &pb.Error{Code: "CONFIGURATION", Message: "Controller identity is unavailable or changed"})
+			return
+		}
+		if err := app.Manager.LoadState(); err != nil {
+			result, exit := cmd.ControlErrorResult(err, false)
+			controller.WriteMessage(conn, result)
+			os.Exit(exit)
+		}
 		rootCmd.SetArgs(request.Argv)
+		cmd.SetControlCaller(request.Caller)
 		err = rootCmd.Execute()
 		result := &pb.Error{}
 		exit := 0
 		if err != nil {
-			result.Code = string(phelixerr.CodeOf(err))
-			result.Message = phelixerr.Redact(err.Error())
-			exit = cmd.RenderError(err, cmd.Debug)
+			result, exit = cmd.ControlErrorResult(err, cmd.Debug)
 		}
 		controller.WriteMessage(conn, result)
 		conn.Close()

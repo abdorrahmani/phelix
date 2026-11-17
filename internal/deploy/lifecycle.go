@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -170,13 +172,21 @@ func instancesServing(s *DeployState) []*Instance {
 // it to keep the application lifecycle record consistent with the deployment
 // instead of maintaining two independent, drifting notions of "running".
 func DecideLifecycle(state *DeployState) LifecycleDecision {
+	return decideLifecycle(state, InstanceAlive)
+}
+
+func DecideLifecycleContext(ctx context.Context, state *DeployState) LifecycleDecision {
+	return decideLifecycle(state, func(instance *Instance) bool { return InstanceAliveContext(ctx, instance) })
+}
+
+func decideLifecycle(state *DeployState, alive func(*Instance) bool) LifecycleDecision {
 	if state == nil {
 		return LifecycleDecision{}
 	}
 	serving := instancesServing(state)
 	d := LifecycleDecision{Desired: len(serving), PublicPort: state.PublicPort}
 	for _, inst := range serving {
-		if !InstanceAlive(inst) {
+		if !alive(inst) {
 			continue
 		}
 		if d.PID == 0 {
@@ -321,6 +331,7 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 		grace = DefaultGracePeriod
 	}
 
+	var failures []error
 	stopAll := func(instances map[string]*Instance) {
 		for _, inst := range instances {
 			if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
@@ -333,6 +344,10 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 			}
 			log.Stepf("stopping %s instance %s (grace %s)", state.AppName, instanceRef(inst), grace)
 			report := stopInstance(ctx, inst, grace, 0)
+			if !report.Exited {
+				failures = append(failures, fmt.Errorf("cannot confirm instance %s stopped", instanceRef(inst)))
+				continue
+			}
 			if report.ForceKilled {
 				log.Warnf("instance %s ignored SIGTERM; SIGKILL applied", instanceRef(inst))
 			}
@@ -342,6 +357,9 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 	}
 	stopAll(state.Slots)
 	stopAll(state.Replicas)
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
 
 	if err := Store(state); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: persist teardown state for %s", state.AppName)

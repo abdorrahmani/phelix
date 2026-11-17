@@ -200,9 +200,11 @@ func runRebuildExec(spec *rebuildSpec, op *opRun) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  %s Checking toolchain...\n", color.BlueString("→"))
-	if err := toolchain.EnsureTool(lang, Confirm); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
+	if projCfg.DeployRuntime() != project.RuntimeDocker {
+		fmt.Fprintf(out, "  %s Checking toolchain...\n", color.BlueString("→"))
+		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
+		}
 	}
 
 	fmt.Fprintf(out, "%s Rebuilding application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID))

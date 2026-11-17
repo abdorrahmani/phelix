@@ -166,7 +166,14 @@ func (m *Operations) run(ctx context.Context, job *operation, request *pb.Comman
 	exit, err := m.executor(ctx, request, func(output string, stderr bool) {
 		job.mu.Lock()
 		defer job.mu.Unlock()
-		job.notifyLocked(phelixerr.Redact(output), stderr)
+		output = phelixerr.Redact(output)
+		for len(output) > 8192 {
+			job.notifyLocked(output[:8192], stderr)
+			output = output[8192:]
+		}
+		if output != "" {
+			job.notifyLocked(output, stderr)
+		}
 	})
 	m.finish(job, exit, err)
 }
@@ -204,6 +211,9 @@ func (m *Operations) finish(job *operation, exit int, err error) {
 			err = fmt.Errorf("operation failed with exit code %d", exit)
 		}
 		job.record.Error = &pb.Error{Code: string(phelixerr.CodeOf(err)), Message: phelixerr.Redact(err.Error())}
+		if rendered, ok := err.(interface{ Display() string }); ok {
+			job.record.Error.Display = phelixerr.Redact(rendered.Display())
+		}
 	}
 	job.record.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := m.persist(job.record); err != nil {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/health"
 )
 
 // dockerishProc is a Process that carries a ContainerID, so StartDeployment's
@@ -18,6 +19,32 @@ import (
 type dockerishProc struct {
 	selfProc
 	cid string
+}
+
+func TestBlueGreenRetainsDrainedContainerIdentity(t *testing.T) {
+	resetHome(t)
+	withIdentityRunner(t, (&scriptedDocker{running: "true"}).runner())
+	launcher := &dockerHTTPLauncher{cid: "old-container"}
+	defer launcher.close()
+	bg := &BlueGreen{
+		AppName: "docker-drain", AppID: "app", Builder: stubBuilder("/bin/true"),
+		Launcher: launcher.Launch, ProxyClient: &fakeProxyClient{alive: true},
+		HealthProvider: func(string) *health.DeployTierConfig { return fastHealth() },
+		GracePeriod:    200 * time.Millisecond,
+	}
+	if err := bg.Deploy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldSlot := mustLoad(t, bg.AppName).ActiveSlot
+	launcher.cid = "new-container"
+	if err := bg.Deploy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state := mustLoad(t, bg.AppName)
+	old := state.Slots[oldSlot]
+	if old.Status != "stopped" || old.ContainerID != "old-container" || old.PID != 0 {
+		t.Fatal("drain discarded container identity needed for logs and cleanup", old)
+	}
 }
 
 func (d *dockerishProc) ContainerID() string { return d.cid }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 
 	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -51,6 +52,11 @@ func ReadMessage(reader io.Reader, message proto.Message) error {
 }
 
 func ReadAdapter() (net.Conn, *pb.CommandRequest, error) {
+	var owner unix.Stat_t
+	if err := unix.Fstat(4, &owner); err != nil || owner.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, nil, fmt.Errorf("private Controller ownership descriptor invalid")
+	}
+	unix.CloseOnExec(4)
 	file := os.NewFile(3, "controller-adapter")
 	if file == nil {
 		return nil, nil, fmt.Errorf("private Controller descriptor missing")
@@ -85,7 +91,7 @@ func ReadAdapter() (net.Conn, *pb.CommandRequest, error) {
 	return conn, request, nil
 }
 
-func ExecuteAdapter(ctx context.Context, request *pb.CommandRequest, progress func(string, bool)) (int, error) {
+func (c *Controller) ExecuteAdapter(ctx context.Context, request *pb.CommandRequest, progress func(string, bool)) (int, error) {
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return 1, err
@@ -99,7 +105,8 @@ func ExecuteAdapter(ctx context.Context, request *pb.CommandRequest, progress fu
 		return 1, err
 	}
 	command := exec.CommandContext(ctx, executable, AdapterArgument)
-	command.ExtraFiles = []*os.File{child}
+	command.ExtraFiles = []*os.File{child, c.owner.file}
+	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGINT}
 	command.Stdin = bytes.NewReader(request.Input)
 	command.Cancel = func() error { return command.Process.Signal(os.Interrupt) }
 	stdout, err := command.StdoutPipe()
@@ -145,10 +152,18 @@ func ExecuteAdapter(ctx context.Context, request *pb.CommandRequest, progress fu
 		return 1, fmt.Errorf("Controller adapter ended without a result: %w", responseErr)
 	}
 	if response.Code != "" {
-		return command.ProcessState.ExitCode(), phelixerr.New(phelixerr.Code(response.Code), response.Message)
+		return command.ProcessState.ExitCode(), &adapterError{response}
 	}
 	if waitErr != nil {
 		return command.ProcessState.ExitCode(), waitErr
 	}
 	return 0, nil
 }
+
+type adapterError struct{ record *pb.Error }
+
+func (e *adapterError) Error() string { return e.record.Message }
+func (e *adapterError) Unwrap() error {
+	return phelixerr.New(phelixerr.Code(e.record.Code), e.record.Message)
+}
+func (e *adapterError) Display() string { return e.record.Display }

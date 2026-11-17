@@ -44,6 +44,7 @@ func TestRolling_ShrinkDrainsSurplusInstance(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("spawn parked helper: %v", err)
 	}
+	waitForTestExec(t, cmd)
 	childPID := cmd.Process.Pid
 	t.Cleanup(func() {
 		_ = stdinW.Close() // EOF ends the helper even without a signal

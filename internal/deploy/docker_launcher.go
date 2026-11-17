@@ -130,12 +130,12 @@ func DockerLauncherForApp(appName, network string) InstanceLauncher {
 			return nil, 0, err
 		}
 		values := phelixerr.SecretValuesInEnv(env)
-		if len(values) == 0 {
-			return proc, port, nil
-		}
 		if err := captureDockerOutput(proc, imageRef, port, env); err != nil {
 			stopHeldProcess(context.Background(), proc, 3*time.Second)
 			return nil, 0, err
+		}
+		if len(values) == 0 {
+			return proc, port, nil
 		}
 		release := phelixerr.AcquireSecretValues(values)
 		go func() {
@@ -154,7 +154,7 @@ func DockerLauncherForApp(appName, network string) InstanceLauncher {
 
 // captureDockerOutput sends container output through the same detached drain as native apps.
 func captureDockerOutput(proc Process, imageRef string, port int, env []string) error {
-	file, err := openInstanceLog(imageRef, port)
+	file, err := openDockerLog(containerIDOf(proc))
 	if err != nil {
 		return err
 	}
@@ -549,6 +549,7 @@ func isDockerNotRunning(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "no such container") ||
+		strings.Contains(s, "no such object") ||
 		strings.Contains(s, "is not running") ||
 		strings.Contains(s, "is not paused")
 }

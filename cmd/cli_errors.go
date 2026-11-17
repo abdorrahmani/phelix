@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
+	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/errreport"
 	"github.com/abdorrahmani/phelix/internal/machine"
@@ -29,7 +32,28 @@ func RenderError(err error, debug bool) int {
 	if err == nil {
 		return ExitOK
 	}
+	var rendered interface{ RenderedError() (string, int) }
+	if errors.As(err, &rendered) {
+		display, exit := rendered.RenderedError()
+		if display != "" {
+			fmt.Fprint(errOut, phelixerr.Redact(display))
+			return exit
+		}
+	}
 	return renderCLIError(err, debug)
+}
+
+func ControlErrorResult(err error, debug bool) (*pb.Error, int) {
+	var display bytes.Buffer
+	previous := errOut
+	errOut = &display
+	defer func() { errOut = previous }()
+	exit := RenderError(err, debug)
+	code := phelixerr.CodeOf(err)
+	if isUsageError(err) {
+		code = phelixerr.CodeInvalidArgument
+	}
+	return &pb.Error{Code: string(code), Message: phelixerr.Redact(err.Error()), Display: phelixerr.Redact(display.String())}, exit
 }
 
 // CLI exit codes. These are part of the CLI's external contract for scripts,

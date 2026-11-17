@@ -59,7 +59,7 @@ func TestDockerSecretLifecycle(t *testing.T) {
 	if !matched {
 		t.Fatal("container changed multiline credential bytes")
 	}
-	path := instanceLogPath(os.Getenv("HOME"), image, port)
+	path := DockerLogFilePath(containerID)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		data, err := os.ReadFile(path)

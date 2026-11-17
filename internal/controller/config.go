@@ -16,6 +16,8 @@ type SourceMount struct {
 }
 
 type Config struct {
+	SocketUID     *int          `yaml:"socket_uid"`
+	SocketGID     *int          `yaml:"socket_gid"`
 	Socket        string        `yaml:"socket"`
 	AllowedUIDs   []uint32      `yaml:"allowed_uids"`
 	Mode          string        `yaml:"mode"`
@@ -52,6 +54,12 @@ func LoadConfig() (Config, error) {
 	}
 	if c.Mode == "container" && c.Network == "" {
 		return c, fmt.Errorf("container mode requires a shared Docker network")
+	}
+	if c.SocketUID != nil && *c.SocketUID < 0 {
+		return c, fmt.Errorf("socket_uid must be nonnegative")
+	}
+	if c.SocketGID != nil && *c.SocketGID < 0 {
+		return c, fmt.Errorf("socket_gid must be nonnegative")
 	}
 	if c.MaxOperations < 1 || c.MaxOperations > 128 {
 		return c, fmt.Errorf("max_operations must be between 1 and 128")

@@ -97,7 +97,8 @@ func DefaultStatePath() (string, error) {
 
 // Daemon hosts one Proxy per enrolled app plus the control socket.
 type Daemon struct {
-	socketPath string
+	skipRestore bool
+	socketPath  string
 
 	mu      sync.Mutex
 	proxies map[string]*Proxy // keyed by AppName
@@ -127,7 +128,9 @@ func NewDaemon(socketPath string) *Daemon {
 // their last-known targets reinstated, so backend instances (which kept
 // running while the daemon was down) are reachable again immediately.
 func (d *Daemon) Run() error {
-	d.restoreState()
+	if !d.skipRestore {
+		d.restoreState()
+	}
 
 	_ = os.Remove(d.socketPath) // best-effort: clear any stale socket
 	if err := os.MkdirAll(filepath.Dir(d.socketPath), 0o755); err != nil {
@@ -828,4 +831,10 @@ func EnsureDaemon(ctx context.Context, phelixBin string, wait time.Duration) err
 		time.Sleep(100 * time.Millisecond)
 	}
 	return phelixerr.Newf(phelixerr.CodeTimeout, "proxy: daemon did not become reachable on %s within %s", socket, wait)
+}
+
+func NewControllerDaemon(socketPath string) *Daemon {
+	daemon := NewDaemon(socketPath)
+	daemon.skipRestore = true
+	return daemon
 }

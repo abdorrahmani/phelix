@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -23,6 +24,9 @@ import (
 )
 
 func validateControlCommand(root *cobra.Command, cfg controller.Config, request *pb.CommandRequest) (bool, error) {
+	if request.Caller != "" && request.Caller != "mcp" {
+		return false, fmt.Errorf("unsupported management caller")
+	}
 	if len(request.Argv) == 0 || len(request.Argv) > 256 {
 		return false, fmt.Errorf("management command required")
 	}
@@ -35,10 +39,18 @@ func validateControlCommand(root *cobra.Command, cfg controller.Config, request 
 	if err != nil || !managedCommand(command) {
 		return false, fmt.Errorf("command is not available through the management API")
 	}
+	if strings.Contains(command.CommandPath(), "proxy stop") {
+		return false, fmt.Errorf("proxy lifecycle belongs to Controller; stop or restart the Controller service")
+	}
+	for _, argument := range request.Argv {
+		if argument == "--foreground" && command.Name() == "proxy" {
+			return false, fmt.Errorf("run phelix controller to supervise the proxy")
+		}
+	}
 	if request.Directory == "" {
 		request.Directory = server.DataDir()
 	}
-	if command.Name() == "build" || command.Name() == "rebuild" || command.Name() == "deploy" || command.Name() == "apply" || command.Name() == "retry" {
+	if command.Name() == "build" || command.Name() == "dockerize" || command.Name() == "rebuild" || command.Name() == "deploy" || command.Name() == "apply" || command.Name() == "retry" {
 		source, err := cfg.SourcePath(request.Directory)
 		if err != nil {
 			return false, err
@@ -68,25 +80,39 @@ func validateControlCommand(root *cobra.Command, cfg controller.Config, request 
 			request.Argv[i+1] = source
 		}
 	}
-	cancellable := command.Name() == "log" || command.Name() == "logs" || command.Name() == "rebuild"
+	cancellable := command.Name() == "log" || command.Name() == "logs" || command.Name() == "rebuild" || command.Name() == "build"
 	return cancellable, nil
 }
 
 func startControlService(command *cobra.Command, owner *controller.Controller) (func(), error) {
-	operations, err := controlapi.NewOperations(context.Background(), filepath.Join(server.DataDir(), "controller-operations"), owner.Config.MaxOperations, controller.ExecuteAdapter)
+	operations, err := controlapi.NewOperations(context.Background(), filepath.Join(server.DataDir(), "controller-operations"), owner.Config.MaxOperations, owner.ExecuteAdapter)
 	if err != nil {
 		return nil, err
 	}
+	var validationMu sync.Mutex
 	service := &controlapi.Service{
 		Operations:   operations,
 		InfoResponse: &pb.ControllerInfo{AgentId: owner.Identity, ServerId: owner.Identity, Mode: owner.Config.Mode, Version: version.Version, Socket: owner.Config.Socket},
 		Validate: func(request *pb.CommandRequest) (bool, error) {
+			validationMu.Lock()
+			defer validationMu.Unlock()
 			return validateControlCommand(command.Root(), owner.Config, request)
 		},
 		QueryHandler: queryControl,
 	}
 	uids := append([]uint32{0, uint32(os.Getuid())}, owner.Config.AllowedUIDs...)
-	listener, err := controlapi.Listen(owner.Config.Socket, uids, service)
+	var socketUID []int
+	if owner.Config.SocketUID != nil {
+		socketUID = append(socketUID, *owner.Config.SocketUID)
+		uids = append(uids, uint32(*owner.Config.SocketUID))
+	}
+	if owner.Config.SocketGID != nil {
+		if len(socketUID) == 0 {
+			socketUID = append(socketUID, os.Getuid())
+		}
+		socketUID = append(socketUID, *owner.Config.SocketGID)
+	}
+	listener, err := controlapi.Listen(owner.Config.Socket, uids, service, socketUID...)
 	if err != nil {
 		operations.Close()
 		return nil, err
@@ -95,7 +121,7 @@ func startControlService(command *cobra.Command, owner *controller.Controller) (
 }
 
 func queryControl(ctx context.Context, request *pb.QueryRequest) (*pb.QueryResponse, error) {
-	if request.Kind == pb.QueryKind_QUERY_UNSPECIFIED {
+	if request.Kind < pb.QueryKind_APPLICATIONS || request.Kind > pb.QueryKind_METRICS {
 		return nil, status.Error(codes.InvalidArgument, "query kind required")
 	}
 	if err := ctx.Err(); err != nil {
@@ -118,7 +144,7 @@ func queryControl(ctx context.Context, request *pb.QueryRequest) (*pb.QueryRespo
 			model.Runtime = state.Runtime
 			model.Strategy = string(state.Mode)
 			model.Version = int32(state.ActiveVersion)
-			model.Status = deploy.DecideLifecycle(state).Status
+			model.Status = deploy.DecideLifecycleContext(ctx, state).Status
 			for _, group := range []map[string]*deploy.Instance{state.Slots, state.Replicas} {
 				for _, instance := range group {
 					if instance != nil {
@@ -126,6 +152,9 @@ func queryControl(ctx context.Context, request *pb.QueryRequest) (*pb.QueryRespo
 					}
 				}
 			}
+		}
+		if state == nil && item.PID > 0 {
+			model.Instances = append(model.Instances, &pb.Instance{Slot: "classic", Pid: int32(item.PID), Status: item.Status, Endpoint: fmt.Sprintf("127.0.0.1:%d", item.Port)})
 		}
 		response.Applications = append(response.Applications, model)
 		if request.Kind == pb.QueryKind_VERSIONS {
@@ -151,6 +180,9 @@ func queryControl(ctx context.Context, request *pb.QueryRequest) (*pb.QueryRespo
 	}
 	if request.Application != "" && len(response.Applications) == 0 {
 		return nil, status.Error(codes.NotFound, "application not found")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return response, nil
 }

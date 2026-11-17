@@ -66,11 +66,35 @@ type Server struct {
 	once     sync.Once
 }
 
-func Listen(socket string, allowedUIDs []uint32, service *Service) (*Server, error) {
+func Listen(socket string, allowedUIDs []uint32, service *Service, ownership ...int) (*Server, error) {
 	if !filepath.IsAbs(socket) {
 		return nil, fmt.Errorf("control socket must be absolute")
 	}
 	if err := os.MkdirAll(filepath.Dir(socket), 0700); err != nil {
+		return nil, err
+	}
+	parent, err := os.Lstat(filepath.Dir(socket))
+	if err != nil || !parent.IsDir() || parent.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("control socket parent must be a real directory")
+	}
+	directoryMode, socketMode := os.FileMode(0700), os.FileMode(0600)
+	uid, gid := os.Getuid(), -1
+	if len(ownership) > 0 {
+		uid = ownership[0]
+	}
+	if len(ownership) > 1 {
+		gid = ownership[1]
+		directoryMode, socketMode = 0750, 0660
+	}
+	if uid < 0 || gid < -1 || len(ownership) > 2 {
+		return nil, fmt.Errorf("invalid control socket ownership")
+	}
+	if len(ownership) > 0 {
+		if err := os.Chown(filepath.Dir(socket), uid, gid); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.Chmod(filepath.Dir(socket), directoryMode); err != nil {
 		return nil, err
 	}
 	if info, err := os.Lstat(socket); err == nil {
@@ -92,9 +116,15 @@ func Listen(socket string, allowedUIDs []uint32, service *Service) (*Server, err
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(socket, 0600); err != nil {
+	if err := os.Chmod(socket, socketMode); err != nil {
 		listener.Close()
 		return nil, err
+	}
+	if len(ownership) > 0 {
+		if err := os.Chown(socket, uid, gid); err != nil {
+			listener.Close()
+			return nil, err
+		}
 	}
 	allowed := map[uint32]bool{}
 	for _, uid := range allowedUIDs {

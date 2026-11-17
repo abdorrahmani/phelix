@@ -14,7 +14,7 @@ import (
 )
 
 func TestControlRoutesEveryManagementFamily(t *testing.T) {
-	names := []string{"build", "rebuild", "deploy", "rollback", "start", "stop", "restart", "remove", "status", "list", "log", "watch", "scale", "autoscale", "job", "hooks", "env", "secrets", "health", "proxy", "matrix", "operation", "inspect", "plan", "authz", "context", "session", "security", "webhook", "build-report", "deployment-report", "config"}
+	names := []string{"build", "dockerize", "rebuild", "deploy", "rollback", "start", "stop", "restart", "remove", "status", "list", "log", "watch", "scale", "autoscale", "job", "hooks", "env", "secrets", "health", "proxy", "matrix", "operation", "inspect", "plan", "authz", "context", "session", "security", "webhook", "build-report", "deployment-report", "config"}
 	socket := filepath.Join(t.TempDir(), "api.sock")
 	t.Setenv("PHELIX_CONTROL_SOCKET", socket)
 	requests := make(chan *pb.CommandRequest, len(names))
@@ -61,7 +61,7 @@ func TestControlRoutesEveryManagementFamily(t *testing.T) {
 }
 
 func TestControlLeavesDeveloperHelpersLocal(t *testing.T) {
-	for _, name := range []string{"init", "doctor", "completion", "version", "dockerize"} {
+	for _, name := range []string{"init", "doctor", "completion", "version"} {
 		root := &cobra.Command{Use: "phelix"}
 		called := false
 		root.AddCommand(&cobra.Command{Use: name, RunE: func(*cobra.Command, []string) error { called = true; return nil }})
