@@ -214,6 +214,15 @@ func runDeployAwareStart(appInfo *app.AppInfo) error {
 
 	// Idempotent: an already-serving deployment is a no-op success.
 	if deploy.DecideLifecycle(state).Status == "running" {
+		if err := deploy.RefreshInstanceEndpoints(context.Background(), state); err != nil {
+			return err
+		}
+		if err := proxy.EnsureDaemon(context.Background(), "", 5*time.Second); err != nil {
+			return err
+		}
+		if err := deploy.RestoreProxyRoute(context.Background(), state, newProxyClientOrNull(), &colorLogger{}); err != nil {
+			return err
+		}
 		if err := syncAppInfoWithDeploy(appInfo, state); err != nil {
 			return err
 		}

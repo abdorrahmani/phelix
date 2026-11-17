@@ -383,13 +383,14 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	// 6. Start the canary on the inactive slot and gate it on the deploy-tier
 	// health check — traffic is never routed to it before this passes.
 	log.Stepf("starting canary instance on slot %s", canarySlot)
-	proc, port, err := ro.Launcher(ctx, binaryPath, envOverlay)
+	proc, port, err := ro.Launcher(launchSlot(ctx, canarySlot), binaryPath, envOverlay)
 	if err != nil {
 		ro.undoMigration(state, pre)
 		return ro.failf(phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "rollout: start canary instance"))
 	}
 	canaryInst := &Instance{
 		ContainerID: containerIDOf(proc),
+		Endpoint:    processEndpoint(proc, port),
 		SecretEnvs:  phelixerr.SecretEnvNames(envOverlay),
 		Slot:        canarySlot,
 		PID:         proc.PID(),
@@ -419,10 +420,10 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 	}
 
 	tierCfg := ro.healthCfg()
-	tier := selectDeployHealth(ctx, tierCfg, ro.AppName, hostPort(port), log, ro.Notifier)
+	tier := selectDeployHealth(ctx, tierCfg, ro.AppName, processEndpoint(proc, port), log, ro.Notifier)
 	ro.Telemetry.SetHealthConfig(tierCfg, tier)
 	ro.Telemetry.HealthCheckStarted(canarySlot, port)
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), deployResolver(proc)); err != nil {
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, processEndpoint(proc, port), proc.PID(), deployResolver(proc)); err != nil {
 		err = candidateHealthFailure(proc, binaryPath, port, tier, tierCfg, err)
 		stopHeldProcess(ctx, proc, grace)
 		canaryInst.Status = "failed"
@@ -536,10 +537,10 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		var primary proxy.Target
 		var backends []proxy.Target
 		if step.TrafficPercent >= 100 {
-			primary = proxy.Target{Host: hostPort(canaryInst.Port), Label: canarySlot}
+			primary = proxy.Target{Host: InstanceEndpoint(canaryInst), Label: canarySlot}
 		} else {
-			primary = proxy.Target{Host: hostPort(stable.Port), Label: stableSlot, Weight: 100 - step.TrafficPercent}
-			backends = []proxy.Target{{Host: hostPort(canaryInst.Port), Label: canarySlot, Weight: step.TrafficPercent}}
+			primary = proxy.Target{Host: InstanceEndpoint(stable), Label: stableSlot, Weight: 100 - step.TrafficPercent}
+			backends = []proxy.Target{{Host: InstanceEndpoint(canaryInst), Label: canarySlot, Weight: step.TrafficPercent}}
 		}
 		ro.Telemetry.ProxySwitching(canarySlot, canaryInst.Port,
 			fmt.Sprintf("routing %d%% of public port %d traffic to the canary", step.TrafficPercent, ro.PublicPort))
@@ -582,6 +583,10 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 			TrafficPercent: step.TrafficPercent,
 			Duration:       step.Duration,
 			CanarySlot:     canarySlot,
+			CanaryEndpoint: InstanceEndpoint(canaryInst),
+			StableEndpoint: InstanceEndpoint(stable),
+			CanaryProcess:  proc,
+			StableInstance: stable,
 			CanaryPort:     canaryInst.Port,
 			CanaryPID:      canaryInst.PID,
 			CanaryVersion:  targetVer,
@@ -680,8 +685,8 @@ func (ro *Rollout) Deploy(ctx context.Context) (errRet error) {
 		}
 	}
 	ro.Telemetry.PromoteCurrentVersion()
-	ro.Telemetry.SetProxy(ro.PublicPort, canarySlot, canaryInst.Port, []string{hostPort(canaryInst.Port)})
-	ro.Telemetry.SetRolloutUpstreams(weightedUpstreams(proxy.Target{Host: hostPort(canaryInst.Port), Label: canarySlot}, nil))
+	ro.Telemetry.SetProxy(ro.PublicPort, canarySlot, canaryInst.Port, []string{InstanceEndpoint(canaryInst)})
+	ro.Telemetry.SetRolloutUpstreams(weightedUpstreams(proxy.Target{Host: InstanceEndpoint(canaryInst), Label: canarySlot}, nil))
 	ro.Telemetry.RolloutStepPromoted(canarySlot, canaryInst.Port,
 		fmt.Sprintf("%s promoted to 100%% of traffic on slot %s", stableVersionLabel(canaryInst), canarySlot))
 
@@ -758,7 +763,7 @@ func (ro *Rollout) restoreStableRouting(ctx context.Context, state *DeployState,
 		return phelixerr.New(phelixerr.CodeProxy, "rollout: no stable target to restore routing to")
 	}
 	ro.logger().Stepf("restoring stable version to 100%% of traffic")
-	return ro.ProxyClient.Switch(ctx, ro.AppName, proxy.Target{Host: hostPort(stable.Port), Label: stable.Slot})
+	return ro.ProxyClient.Switch(ctx, ro.AppName, proxy.Target{Host: InstanceEndpoint(stable), Label: stable.Slot})
 }
 
 // checkEnrolled asks the daemon whether this app is registered so the first

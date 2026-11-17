@@ -170,7 +170,7 @@ func VerifyRollbackStability(ctx context.Context, opts VerificationOptions) erro
 // uses DialTimeout without context, which can outlive a short verify window.
 func checkVerificationTarget(ctx context.Context, tgt verifyTarget, cfg *health.DeployTierConfig) bool {
 	if tgt.tier != health.Tier3TCP {
-		return health.Check(ctx, tgt.tier, cfg, tgt.addr, tgt.pid, nil)
+		return health.Check(ctx, tgt.tier, cfg, tgt.addr, tgt.pid, tgt.resolver)
 	}
 	d := net.Dialer{Timeout: health.DefaultProbeTimeout}
 	conn, err := d.DialContext(ctx, "tcp", tgt.addr)
@@ -193,10 +193,11 @@ func tierConfig(opts VerificationOptions) *health.DeployTierConfig {
 // verifyTarget is one probe destination: the tier selected at deploy time is
 // reused so observation matches what "healthy" meant during the rollout.
 type verifyTarget struct {
-	label string
-	addr  string
-	pid   int
-	tier  health.Tier
+	resolver *health.Resolver
+	label    string
+	addr     string
+	pid      int
+	tier     health.Tier
 }
 
 // servingTargets maps the committed DeployState onto probe targets. Blue-green
@@ -213,10 +214,11 @@ func servingTargets(state *DeployState) []verifyTarget {
 			return
 		}
 		out = append(out, verifyTarget{
-			label: label,
-			addr:  hostPort(inst.Port),
-			pid:   inst.PID,
-			tier:  tier,
+			label:    label,
+			resolver: resolverForInstance(inst),
+			addr:     InstanceEndpoint(inst),
+			pid:      inst.PID,
+			tier:     tier,
 		})
 	}
 	switch state.Mode {

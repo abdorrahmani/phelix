@@ -381,7 +381,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 	} else {
 		log.Stepf("replica %s: starting first instance from %s", key, binaryPath)
 	}
-	proc, port, err := r.Launcher(ctx, binaryPath, envOverlay)
+	proc, port, err := r.Launcher(launchSlot(ctx, key), binaryPath, envOverlay)
 	if err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "start replica %s replacement", key)
 	}
@@ -411,7 +411,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 
 	// 2. Health-check ONLY the replacement's port.
 	r.Telemetry.ReplicaHealthCheckStarted(index, port)
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), newPID, deployResolver(proc)); err != nil {
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, processEndpoint(proc, port), newPID, deployResolver(proc)); err != nil {
 		stopHeldProcess(ctx, proc, grace)
 		restoreReplica(state, key, old)
 		if storeErr := r.persist(state); storeErr != nil {
@@ -434,6 +434,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 		StartTicks: startTicksOf(proc),
 		Slot:       key, PID: newPID, Port: port, BinaryPath: binaryPath, EnvPath: envPath,
 		ContainerID: containerIDOf(proc),
+		Endpoint:    processEndpoint(proc, port),
 		StartedAt:   time.Now(), Version: targetVer, Status: "running",
 	}
 	if r.atomicSecretRecovery {
@@ -454,7 +455,7 @@ func (r *Rolling) rollOne(ctx context.Context, state *DeployState, binaryPath, e
 
 	// 3. Membership swap FIRST: new instance in, old instance out.
 	r.Telemetry.ReplicaHealthy(index, newPID, port)
-	primary, backends := membershipAfterReplace(state.Replicas, key, port)
+	primary, backends := membershipAfterReplace(state.Replicas, key, port, candidate.Endpoint)
 	if r.ProxyClient == nil {
 		stopHeldProcess(ctx, proc, grace)
 		restoreReplica(state, key, old)
@@ -698,11 +699,14 @@ func (r *Rolling) checkEnrolled() bool {
 // membershipAfterReplace computes the proxy primary+backends given that
 // replica key now listens on newPort: every other healthy replica stays in
 // the set, nothing points at the replaced port any more.
-func membershipAfterReplace(replicas map[string]*Instance, key string, newPort int) (proxy.Target, []proxy.Target) {
+func membershipAfterReplace(replicas map[string]*Instance, key string, newPort int, endpoints ...string) (proxy.Target, []proxy.Target) {
 	virtual := make(map[string]*Instance, len(replicas))
 	for k, v := range replicas {
 		if k == key {
 			virtual[k] = &Instance{Slot: key, Status: "running", Port: newPort}
+			if len(endpoints) > 0 {
+				virtual[k].Endpoint = endpoints[0]
+			}
 			continue
 		}
 		virtual[k] = v
@@ -760,7 +764,7 @@ func healthyTargets(replicas map[string]*Instance) (proxy.Target, []proxy.Target
 		if inst == nil || inst.Status != "running" || inst.Port == 0 {
 			continue
 		}
-		t := proxy.Target{Host: hostPort(inst.Port), Label: "replica-" + k}
+		t := proxy.Target{Host: InstanceEndpoint(inst), Label: "replica-" + k}
 		if primary.Host == "" {
 			primary = t
 			continue
@@ -781,7 +785,7 @@ func firstPortAddr(state *DeployState) string {
 	}
 	for _, k := range replicaIndices(state.Replicas) {
 		if inst := state.Replicas[k]; inst != nil && inst.Port != 0 {
-			return hostPort(inst.Port)
+			return InstanceEndpoint(inst)
 		}
 	}
 	return "127.0.0.1:0"

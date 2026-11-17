@@ -122,7 +122,7 @@ func queryControl(ctx context.Context, request *pb.QueryRequest) (*pb.QueryRespo
 			for _, group := range []map[string]*deploy.Instance{state.Slots, state.Replicas} {
 				for _, instance := range group {
 					if instance != nil {
-						model.Instances = append(model.Instances, &pb.Instance{Slot: instance.Slot, ContainerId: instance.ContainerID, Endpoint: fmt.Sprintf("127.0.0.1:%d", instance.Port), Status: instance.Status, Version: int32(instance.Version), Pid: int32(instance.PID)})
+						model.Instances = append(model.Instances, &pb.Instance{Slot: instance.Slot, ContainerId: instance.ContainerID, Endpoint: deploy.InstanceEndpoint(instance), Status: instance.Status, Version: int32(instance.Version), Pid: int32(instance.PID)})
 					}
 				}
 			}

@@ -603,7 +603,11 @@ func restoreDeployedApps() {
 			continue
 		}
 		// Only restore apps that were serving before (auto-start intent).
-		if !info.AutoStart || deploy.DecideLifecycle(state).Status == "running" {
+		if !info.AutoStart {
+			continue
+		}
+		if err := deploy.RefreshInstanceEndpoints(context.Background(), state); err != nil {
+			logs.Warning("monitor", "cannot refresh endpoints for %s: %v", info.Name, err)
 			continue
 		}
 		if err := runDeployAwareStart(info); err != nil {

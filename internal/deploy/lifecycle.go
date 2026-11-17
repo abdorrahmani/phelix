@@ -430,11 +430,11 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 			return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "deploy: load env snapshot for %s", state.AppName)
 		}
 		log.Stepf("starting %s instance on slot %s", state.AppName, inst.Slot)
-		proc, newPort, err := opts.Launcher(ctx, inst.BinaryPath, envOverlay)
+		proc, newPort, err := opts.Launcher(launchSlot(ctx, inst.Slot), inst.BinaryPath, envOverlay)
 		if err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "deploy: start %s instance", state.AppName)
 		}
-		addr := hostPort(newPort)
+		addr := processEndpoint(proc, newPort)
 		if !port.WaitForListener(addr, opts.ListenTimeout) {
 			_, _ = GracefulStop(ctx, proc, 3*time.Second, 0)
 			return phelixerr.Newf(phelixerr.CodePortUnavailable,
@@ -446,6 +446,7 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		inst.StartTicks = startTicksOf(proc)
 
 		inst.ContainerID = containerIDOf(proc)
+		inst.Endpoint = processEndpoint(proc, newPort)
 		inst.Port = newPort
 		inst.Status = "running"
 		inst.StartedAt = time.Now()
@@ -481,14 +482,14 @@ func RestoreProxyRoute(ctx context.Context, state *DeployState, pc ProxyClient, 
 		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 			return phelixerr.Newf(phelixerr.CodeNotFound, "no running instance for %s", state.AppName)
 		}
-		primary = proxy.Target{Host: hostPort(inst.Port), Label: inst.Slot}
+		primary = proxy.Target{Host: InstanceEndpoint(inst), Label: inst.Slot}
 	case ModeRolling:
 		for _, k := range sortedReplicaKeys(state.Replicas) {
 			inst := state.Replicas[k]
 			if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 				continue
 			}
-			t := proxy.Target{Host: hostPort(inst.Port), Label: "replica-" + k}
+			t := proxy.Target{Host: InstanceEndpoint(inst), Label: "replica-" + k}
 			if primary.Host == "" {
 				primary = t
 				continue
