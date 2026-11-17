@@ -94,7 +94,6 @@ type monitorStreamManager struct {
 	// individually (and the access-log entries, which ride the batch only)
 	// into MonitorLogBatch events on its own goroutine.
 	logBatches *logBatcher
-	batchOnce  sync.Once
 
 	pausedMu sync.Mutex
 	paused   bool
@@ -121,21 +120,11 @@ var monitorStream = &monitorStreamManager{
 	logBatches:       newLogBatcher(),
 }
 
-// ensureLogBatcher starts the batch drain loop once, on first use.
-func (s *monitorStreamManager) ensureLogBatcher() {
-	s.batchOnce.Do(func() {
-		go s.logBatches.run(func(event *pb.MonitorEvent) error {
-			return monitorStream.send(event)
-		})
-	})
-}
-
 // queueBatchEntries queues already converted entries for batched delivery.
 func (s *monitorStreamManager) queueBatchEntries(entries []*pb.MonitorLogEntry) {
 	if len(entries) == 0 {
 		return
 	}
-	s.ensureLogBatcher()
 	if dropped := s.logBatches.add(entries); dropped > 0 {
 		logs.WarningFile("grpc", "[gRPC Monitor] log batch queue full, dropped %d lines", dropped)
 	}
@@ -376,7 +365,14 @@ func (c *Client) runMonitorStream() error {
 	monitorStream.serverInfoSent = false
 	monitorStream.mu.Unlock()
 
+	batchDone := make(chan struct{})
+	go func() {
+		defer close(batchDone)
+		monitorStream.logBatches.run(ctx, monitorStream.send)
+	}()
 	defer func() {
+		cancel()
+		<-batchDone
 		monitorStream.mu.Lock()
 		if monitorStream.stream == stream {
 			monitorStream.stream = nil
@@ -1115,4 +1111,10 @@ func stopMonitorStreamIfOwner(c *Client) {
 	}
 	monitorStream.stream = nil
 	monitorStream.owner = nil
+}
+
+func SetMetricsCollector(collector monitor.MetricsCollector) {
+	monitorStream.mu.Lock()
+	defer monitorStream.mu.Unlock()
+	monitorStream.metricsCollector = collector
 }

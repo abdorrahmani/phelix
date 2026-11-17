@@ -16,6 +16,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/controller"
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
+	"github.com/abdorrahmani/phelix/internal/monitor"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/abdorrahmani/phelix/internal/version"
 	"github.com/spf13/cobra"
@@ -89,6 +91,11 @@ func startControlService(command *cobra.Command, owner *controller.Controller) (
 	if err != nil {
 		return nil, err
 	}
+	cache := monitor.NewRuntimeMetricsCache()
+	metricsCtx, cancelMetrics := context.WithCancel(context.Background())
+	metricsDone := make(chan struct{})
+	go func() { defer close(metricsDone); cache.Run(metricsCtx) }()
+	phelixgrpc.SetMetricsCollector(monitor.NewMetricsCollector(cache))
 	var validationMu sync.Mutex
 	service := &controlapi.Service{
 		Operations:   operations,
@@ -98,7 +105,27 @@ func startControlService(command *cobra.Command, owner *controller.Controller) (
 			defer validationMu.Unlock()
 			return validateControlCommand(command.Root(), owner.Config, request)
 		},
-		QueryHandler: queryControl,
+		QueryHandler: func(ctx context.Context, request *pb.QueryRequest) (*pb.QueryResponse, error) {
+			response, err := queryControl(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			if request.Kind == pb.QueryKind_METRICS {
+				for _, application := range response.Applications {
+					for _, instance := range application.Instances {
+						if instance.ContainerId == "" || instance.Status != "running" {
+							continue
+						}
+						sample, ok := cache.Get(instance.ContainerId)
+						if !ok {
+							return nil, status.Error(codes.Unavailable, "Docker metrics not yet available or stale; retry after the next sample")
+						}
+						response.Metrics = append(response.Metrics, &pb.Metrics{ApplicationId: application.Id, ContainerId: sample.ContainerID, CpuPercent: sample.CPUPercent, MemoryBytes: sample.MemoryBytes, MemoryLimit: sample.MemoryLimit, NetworkRx: sample.NetworkRX, NetworkTx: sample.NetworkTX, BlockRead: sample.BlockRead, BlockWrite: sample.BlockWrite, State: sample.State, RestartCount: sample.RestartCount, Health: sample.Health, ExitCode: int32(sample.ExitCode)})
+					}
+				}
+			}
+			return response, nil
+		},
 	}
 	uids := append([]uint32{0, uint32(os.Getuid())}, owner.Config.AllowedUIDs...)
 	var socketUID []int
@@ -114,10 +141,12 @@ func startControlService(command *cobra.Command, owner *controller.Controller) (
 	}
 	listener, err := controlapi.Listen(owner.Config.Socket, uids, service, socketUID...)
 	if err != nil {
+		cancelMetrics()
+		<-metricsDone
 		operations.Close()
 		return nil, err
 	}
-	return func() { listener.Close(); operations.Close() }, nil
+	return func() { listener.Close(); operations.Close(); cancelMetrics(); <-metricsDone }, nil
 }
 
 func queryControl(ctx context.Context, request *pb.QueryRequest) (*pb.QueryResponse, error) {
@@ -157,6 +186,18 @@ func queryControl(ctx context.Context, request *pb.QueryRequest) (*pb.QueryRespo
 			model.Instances = append(model.Instances, &pb.Instance{Slot: "classic", Pid: int32(item.PID), Status: item.Status, Endpoint: fmt.Sprintf("127.0.0.1:%d", item.Port)})
 		}
 		response.Applications = append(response.Applications, model)
+		if request.Kind == pb.QueryKind_METRICS && model.Runtime != deploy.RuntimeDocker {
+			for _, instance := range model.Instances {
+				if instance.Pid <= 0 || instance.Status != "running" {
+					continue
+				}
+				memory, cpu, err := app.ProcessUsage(int(instance.Pid))
+				if err != nil {
+					return nil, status.Error(codes.Unavailable, "native process metrics unavailable")
+				}
+				response.Metrics = append(response.Metrics, &pb.Metrics{ApplicationId: item.ID, Pid: instance.Pid, CpuPercent: cpu, MemoryBytes: memory, State: model.Status})
+			}
+		}
 		if request.Kind == pb.QueryKind_VERSIONS {
 			versions, err := deploy.ListVersionsForDisplay(item.Name, deploy.DefaultRetention{Max: 5})
 			if err != nil {

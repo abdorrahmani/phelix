@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -85,11 +86,13 @@ func entrySize(e *pb.MonitorLogEntry) int {
 // run drains the queue until stop. It wakes on a size-triggered flush signal
 // or at least every maxBatchLinger, so the batch latency never exceeds the
 // linger window even when nothing fills the queue.
-func (b *logBatcher) run(sender func(*pb.MonitorEvent) error) {
+func (b *logBatcher) run(ctx context.Context, sender func(*pb.MonitorEvent) error) {
 	ticker := time.NewTicker(maxBatchLinger)
 	defer ticker.Stop()
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-b.done:
 			return
 		case <-b.flush:

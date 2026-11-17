@@ -58,9 +58,10 @@ type ProxyStatsSource interface {
 // ReplicaRef identifies one replica to sample: the deploy.json slot key, its
 // process ID and the recorded lifecycle status.
 type ReplicaRef struct {
-	Key    string
-	PID    int
-	Status string
+	ContainerID string
+	Key         string
+	PID         int
+	Status      string
 }
 
 // ReplicaSample is one replica's collected resource usage and the validity of
@@ -194,6 +195,7 @@ type Sampler struct {
 	now             func() time.Time
 	reader          procReader
 	hostMemoryBytes func() (uint64, error)
+	dockerMetrics   func(context.Context, ...string) ([]deploy.RuntimeMetrics, error)
 
 	mu          sync.Mutex
 	cpuPrev     map[int]procSample
@@ -215,6 +217,7 @@ func NewSampler(app string, stats ProxyStatsSource) *Sampler {
 		now:             time.Now,
 		reader:          gopsutilReader{},
 		hostMemoryBytes: defaultHostMemoryBytes,
+		dockerMetrics:   deploy.ContainerMetrics,
 		freshness:       DefaultFreshnessWindow,
 		last:            make(map[int]lastSample),
 	}
@@ -293,7 +296,7 @@ func ReplicaRefs(state *deploy.DeployState) []ReplicaRef {
 		if inst == nil {
 			continue
 		}
-		refs = append(refs, ReplicaRef{Key: key, PID: inst.PID, Status: inst.Status})
+		refs = append(refs, ReplicaRef{Key: key, PID: inst.PID, Status: inst.Status, ContainerID: inst.ContainerID})
 	}
 	return refs
 }
@@ -318,7 +321,7 @@ func ResourceRefs(state *deploy.DeployState) []ReplicaRef {
 	refs := make([]ReplicaRef, 0, len(state.Slots))
 	for _, slot := range []string{deploy.SlotBlue, deploy.SlotGreen} {
 		if inst := state.Slots[slot]; inst != nil {
-			refs = append(refs, ReplicaRef{Key: slot, PID: inst.PID, Status: inst.Status})
+			refs = append(refs, ReplicaRef{Key: slot, PID: inst.PID, Status: inst.Status, ContainerID: inst.ContainerID})
 		}
 	}
 	return refs
@@ -336,7 +339,7 @@ func (s *Sampler) Collect(ctx context.Context, replicas []ReplicaRef) Snapshot {
 	snap := Snapshot{App: s.app, At: now}
 	snap.Metrics.At = now
 
-	samples, stats := s.collectResourcesLocked(now, replicas)
+	samples, stats := s.collectResourcesLocked(ctx, now, replicas)
 	snap.Replicas = samples
 	snap.Metrics.CPUPercent = stats.maxCPU
 	snap.Metrics.MemoryPercent = stats.maxMemoryPercent
@@ -365,7 +368,7 @@ func (s *Sampler) Collect(ctx context.Context, replicas []ReplicaRef) Snapshot {
 func (s *Sampler) CollectResources(replicas []ReplicaRef) []ReplicaSample {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	samples, _ := s.collectResourcesLocked(s.now(), replicas)
+	samples, _ := s.collectResourcesLocked(context.Background(), s.now(), replicas)
 	return samples
 }
 
@@ -387,7 +390,7 @@ type resourceAggregate struct {
 	memoryMissing    bool
 }
 
-func (s *Sampler) collectResourcesLocked(now time.Time, replicas []ReplicaRef) ([]ReplicaSample, resourceAggregate) {
+func (s *Sampler) collectResourcesLocked(ctx context.Context, now time.Time, replicas []ReplicaRef) ([]ReplicaSample, resourceAggregate) {
 	hostTotal, hostErr := s.hostMemoryBytes()
 	prevCPU := s.cpuPrev
 	s.cpuPrev = make(map[int]procSample, len(replicas))
@@ -398,8 +401,58 @@ func (s *Sampler) collectResourcesLocked(now time.Time, replicas []ReplicaRef) (
 
 	var agg resourceAggregate
 	samples := make([]ReplicaSample, 0, len(replicas))
+	var containerIDs []string
+	for _, replica := range replicas {
+		if replica.ContainerID != "" && replica.Status != "stopped" {
+			containerIDs = append(containerIDs, replica.ContainerID)
+		}
+	}
+	dockerSamples := map[string]deploy.RuntimeMetrics{}
+	if len(containerIDs) > 0 {
+		metricsCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		values, err := s.dockerMetrics(metricsCtx, containerIDs...)
+		cancel()
+		if err == nil {
+			for _, value := range values {
+				dockerSamples[value.ContainerID] = value
+			}
+		}
+	}
 	for _, r := range replicas {
 		rs := ReplicaSample{Key: r.Key, PID: r.PID, At: now}
+		if r.ContainerID != "" {
+			rs.ProcessStatus = r.Status
+			rs.CPUState = MetricUnavailable
+			rs.MemoryState = MetricUnavailable
+			rs.MemoryPctState = MetricUnavailable
+			rs.HostMemState = MetricUnavailable
+			if sample, ok := dockerSamples[r.ContainerID]; ok {
+				rs.ProcessStatus = sample.State
+				rs.CPUPercent = sample.CPUPercent
+				rs.CPUState = MetricAvailable
+				rs.MemoryBytes = sample.MemoryBytes
+				rs.MemoryState = MetricAvailable
+				rs.MemoryLimit = sample.MemoryLimit
+				if rs.CPUPercent > agg.maxCPU {
+					agg.maxCPU = rs.CPUPercent
+				}
+				if sample.MemoryLimit > 0 {
+					rs.MemoryPercent = float64(sample.MemoryBytes) / float64(sample.MemoryLimit) * 100
+					rs.MemoryPctState = MetricAvailable
+					if rs.MemoryPercent > agg.maxMemoryPercent {
+						agg.maxMemoryPercent = rs.MemoryPercent
+					}
+				} else {
+					agg.memoryMissing = true
+				}
+			} else {
+				agg.cpuMissing = true
+				agg.memoryMissing = true
+			}
+			samples = append(samples, rs)
+			continue
+		}
+
 		last := s.last[r.PID]
 		alive := r.PID > 0
 		if r.PID > 0 {

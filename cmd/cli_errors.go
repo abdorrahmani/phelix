@@ -32,6 +32,7 @@ func RenderError(err error, debug bool) int {
 	if err == nil {
 		return ExitOK
 	}
+	err = phelixerr.FromGRPC(err)
 	var rendered interface{ RenderedError() (string, int) }
 	if errors.As(err, &rendered) {
 		display, exit := rendered.RenderedError()
