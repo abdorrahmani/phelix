@@ -115,9 +115,15 @@ func TestSourceMountTraversal(t *testing.T) {
 	if path, err := c.SourcePath("/host/source"); err != nil || path != root {
 		t.Fatal(path, err)
 	}
+	if path, err := c.SourcePath(root); err != nil || path != root {
+		t.Fatal("Controller-origin source path was rejected", path, err)
+	}
 	os.Symlink(outside, filepath.Join(root, "escape"))
 	if _, err := c.SourcePath("/host/source/escape"); err == nil {
 		t.Fatal("symlink escape allowed")
+	}
+	if _, err := c.SourcePath(filepath.Join(root, "escape")); err == nil {
+		t.Fatal("Controller-origin symlink escape allowed")
 	}
 	if _, err := c.SourcePath("/host/source/../other"); err == nil {
 		t.Fatal("traversal allowed")

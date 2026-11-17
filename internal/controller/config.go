@@ -81,6 +81,9 @@ func (c Config) SourcePath(path string) (string, error) {
 	allowed := c.Mode == "host" && len(c.Sources) == 0
 	for _, mount := range c.Sources {
 		relative, err := filepath.Rel(mount.Host, path)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			relative, err = filepath.Rel(mount.Controller, path)
+		}
 		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			mapped = filepath.Join(mount.Controller, relative)
 			root, err := filepath.EvalSymlinks(mount.Controller)
