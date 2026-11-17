@@ -19,6 +19,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
+	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -224,20 +225,19 @@ func oomExitError(waitErr error, pid int, memoryLimit string) error {
 // openInstanceLog creates (or appends to) a log file for a deploy instance.
 // Falls back to os.DevNull if the logs directory cannot be created.
 func openInstanceLog(binaryPath string, port int) (*os.File, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	path := instanceLogPath("", binaryPath, port)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	}
-	dir := filepath.Join(home, ".phelix", "logs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	}
-	return os.OpenFile(instanceLogPath(home, binaryPath, port), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 }
 
 // instanceLogPath is the on-disk location of one deploy instance's stdout/stderr.
 func instanceLogPath(home, binaryPath string, port int) string {
 	name := fmt.Sprintf("deploy_%s_%d.log", filepath.Base(binaryPath), port)
+	if home == "" || os.Getenv("PHELIX_DATA_DIR") != "" {
+		return filepath.Join(server.DataDir(), "logs", name)
+	}
 	return filepath.Join(home, ".phelix", "logs", name)
 }
 

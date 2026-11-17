@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/logs"
@@ -17,25 +19,32 @@ import (
 // exposed unless an operator explicitly opts in.
 //
 // PHELIX_PPROF holds a bind address, e.g. "127.0.0.1:6060" or ":6060". For
-// safety a bare port (e.g. "6060") or an empty host binds to loopback only —
+// safety a bare port (e.g. "6060") or an empty host binds to loopback only.
 // pprof exposes goroutine dumps and can trigger CPU/heap work, so it must never
 // be reachable off-box. Binding to a non-loopback host is honored but logged as
 // a warning.
 //
 // Returns a shutdown func the caller defers; nil when profiling is disabled.
+// Successful startup enables sampled block and mutex profiles. Shutdown
+// disables block sampling and restores the previous mutex sampling fraction.
 func startPprofIfEnabled() func() {
 	addr := strings.TrimSpace(os.Getenv("PHELIX_PPROF"))
 	if addr == "" {
 		return nil
 	}
 	addr = normalizePprofAddr(addr)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		logs.Warning("monitor", "pprof server could not listen on %s: %v", addr, err)
+		return nil
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+	mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -45,17 +54,24 @@ func startPprofIfEnabled() func() {
 
 	if host, _, err := net.SplitHostPort(addr); err == nil && !isLoopbackHost(host) {
 		logs.Warning("monitor",
-			"PHELIX_PPROF bound to non-loopback address %s; pprof exposes goroutine dumps and CPU/heap profiling — restrict to 127.0.0.1 unless you know what you're doing", addr)
+			"PHELIX_PPROF bound to non-loopback address %s; pprof exposes goroutine dumps and CPU/heap profiling; restrict to 127.0.0.1 unless you know what you're doing", addr)
 	}
+	runtime.SetBlockProfileRate(1_000_000)
+	previousMutexFraction := runtime.SetMutexProfileFraction(10)
 
+	logs.Info("monitor", "pprof profiling server listening on http://%s/debug/pprof/", listener.Addr())
 	go func() {
-		logs.Info("monitor", "pprof profiling server listening on http://%s/debug/pprof/", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			logs.Warning("monitor", "pprof server stopped: %v", err)
 		}
 	}()
 
-	return func() { _ = srv.Close() }
+	return sync.OnceFunc(func() {
+		_ = srv.Close()
+		_ = listener.Close()
+		runtime.SetBlockProfileRate(0)
+		runtime.SetMutexProfileFraction(previousMutexFraction)
+	})
 }
 
 // normalizePprofAddr accepts a bare port ("6060"), a ":port" (":6060"), or a

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // ConfigManager handles persistence of health check configurations
@@ -29,11 +30,7 @@ var (
 // configuration root. HOME may change in embedded/test processes, so a manager
 // cached for a different root must never be reused.
 func InitConfigManager() (*ConfigManager, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to resolve home directory", err)
-	}
-	basePath := filepath.Join(home, ".phelix", "apps")
+	basePath := filepath.Join(server.DataDir(), "apps")
 
 	configMgrMu.Lock()
 	defer configMgrMu.Unlock()

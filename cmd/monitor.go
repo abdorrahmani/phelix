@@ -356,7 +356,9 @@ func runMonitor() error {
 
 	supervisorCtx, cancelSupervisor := context.WithCancel(context.Background())
 	defer cancelSupervisor()
+	supervisorDone := make(chan struct{})
 	go func() {
+		defer close(supervisorDone)
 		logs.Info("monitor", "worker supervisor loop started")
 		supervisor.New().Run(supervisorCtx)
 	}()
@@ -496,6 +498,13 @@ func runMonitor() error {
 	<-sigChan
 
 	logs.Info("monitor", "shutdown signal received, stopping...")
+
+	cancelSupervisor()
+	select {
+	case <-supervisorDone:
+	case <-time.After(10 * time.Second):
+		logs.Warning("monitor", "worker supervisor did not stop within the shutdown window")
+	}
 
 	cancelSecurity()
 	select {

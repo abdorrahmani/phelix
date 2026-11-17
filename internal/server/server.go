@@ -91,14 +91,18 @@ func getLoadAverage() (float64, float64, float64, error) {
 
 // getProcessCount returns the number of running processes
 func getProcessCount() (uint32, error) {
-	entries, err := os.ReadDir("/proc")
+	f, err := os.Open("/proc")
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	names, err := f.Readdirnames(-1)
 	if err != nil {
 		return 0, err
 	}
 
 	var n uint32
-	for _, e := range entries {
-		name := e.Name()
+	for _, name := range names {
 		if name[0] >= '0' && name[0] <= '9' {
 			n++
 		}

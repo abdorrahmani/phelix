@@ -19,8 +19,9 @@ func TestEveryCodeHasAProducer(t *testing.T) {
 
 	// Codes that legitimately have no producer, with the reason.
 	allowed := map[string]string{
-		"CodeOK":           "success sentinel; ExitCodeFor maps it, nothing errors with it",
-		"CodeUnauthorized": "reserved for a backend 401; the CLI fails with UNAUTHENTICATED instead",
+		"CodeOK":                                "success sentinel; ExitCodeFor maps it, nothing errors with it",
+		"CodeUnauthorized":                      "reserved for a backend 401; the CLI fails with UNAUTHENTICATED instead",
+		"CodeHostSecurityCapabilityUnavailable": "reserved host-security wire code; unknown reboot state is returned without a local error",
 	}
 
 	fset := token.NewFileSet()

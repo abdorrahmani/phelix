@@ -229,6 +229,7 @@ func TestDaemon_StatsOpAndWeightPersistence(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
 	socket := filepath.Join(home, "proxy.sock")
 	d := NewDaemon(socket)
 	if err := d.Run(); err != nil {
@@ -325,6 +326,7 @@ func TestDaemon_StatsOpAndWeightPersistence(t *testing.T) {
 func TestDaemon_StatsUnknownAppIsEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("PHELIX_DATA_DIR", filepath.Join(home, ".phelix"))
 	socket := filepath.Join(home, "proxy.sock")
 	d := NewDaemon(socket)
 	if err := d.Run(); err != nil {

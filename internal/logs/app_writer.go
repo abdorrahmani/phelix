@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"bytes"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"io"
 	"os"
@@ -67,7 +68,7 @@ func (w *AppLogWriter) Write(p []byte) (int, error) {
 
 	remaining := p
 	for len(remaining) > 0 {
-		i := strings.IndexByte(string(remaining), '\n')
+		i := bytes.IndexByte(remaining, '\n')
 		end := i
 		if end < 0 {
 			end = len(remaining)

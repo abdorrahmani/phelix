@@ -14,6 +14,7 @@ import (
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 // WorkerLauncher starts one worker replica. Unlike InstanceLauncher it
@@ -112,20 +113,19 @@ func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config,
 // worker replica has no port, so the replica name names the file instead of
 // the internal port a service instance uses.
 func openWorkerInstanceLog(binaryPath string, replica string) (*os.File, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	path := workerLogPath("", binaryPath, replica)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	}
-	dir := filepath.Join(home, ".phelix", "logs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	}
-	return os.OpenFile(workerLogPath(home, binaryPath, replica), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 }
 
 // workerLogPath is the on-disk location of one worker replica's output.
 func workerLogPath(home, binaryPath, replica string) string {
 	name := fmt.Sprintf("deploy_%s_%s.log", filepath.Base(binaryPath), workerLogTag(replica))
+	if home == "" || os.Getenv("PHELIX_DATA_DIR") != "" {
+		return filepath.Join(server.DataDir(), "logs", name)
+	}
 	return filepath.Join(home, ".phelix", "logs", name)
 }
 

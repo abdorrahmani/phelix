@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/deploy"
 )
 
 // History kinds. A decision record is produced when the engine emits a
@@ -35,11 +37,11 @@ type HistoryRecord struct {
 // historyPath returns the app's autoscale history file, following the same
 // per-app directory convention as deploy.json.
 func historyPath(app string) (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := deploy.AppDataDir(app)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".phelix", "apps", app, "autoscale_history.jsonl"), nil
+	return filepath.Join(dir, "autoscale_history.jsonl"), nil
 }
 
 // AppendHistoryRecord appends one record. It is best-effort at the call
