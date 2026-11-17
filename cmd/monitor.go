@@ -51,7 +51,7 @@ The daemon:
 Use 'sudo systemctl start/stop/restart phelix' to manage the systemd service,
 or run this command directly to keep it attached to a terminal.`,
 	RunE: func(cobraCmd *cobra.Command, args []string) error {
-		return runMonitor()
+		return runController(cobraCmd, args)
 	},
 }
 
