@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -482,11 +480,9 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 
 	defer func() { errRet = errors.Join(errRet, deploy.FinishSecretTxn(appInfo.ID, secretTxn, errRet)) }()
 
-	deployCtx := context.Background()
-	if spec.Rollout != nil {
-		signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stopSignals()
-		deployCtx = signalCtx
+	deployCtx := spec.Context
+	if deployCtx == nil {
+		deployCtx = context.Background()
 	}
 
 	if spec.Rollout != nil {
@@ -560,7 +556,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 			Secrets:     secretTxn,
 			Hooks:       hookAdapter,
 		}
-		err := bg.Deploy(context.Background())
+		err := bg.Deploy(deployCtx)
 		reconcileAppWithDeploy(name)
 		if err != nil {
 			recordFailedDeploymentAnalysis(out, name, appInfo.ID, "blue-green", previousVer,
@@ -611,7 +607,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 		Secrets:        secretTxn,
 		Hooks:          hookAdapter,
 	}
-	err = r.Deploy(context.Background())
+	err = r.Deploy(deployCtx)
 	reconcileAppWithDeploy(name)
 	if err != nil {
 		recordFailedDeploymentAnalysis(out, name, appInfo.ID, "rolling", previousVer,

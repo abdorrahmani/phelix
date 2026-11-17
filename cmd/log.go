@@ -38,9 +38,10 @@ var (
 )
 
 var LogCmd = &cobra.Command{
-	Use:   "log <ID|AppName>",
-	Short: "Display logs for a specific application by its ID or AppName.",
-	Args:  cobra.MaximumNArgs(1),
+	Use:     "log <ID|AppName>",
+	Aliases: []string{"logs"},
+	Short:   "Display logs for a specific application by its ID or AppName.",
+	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Machine mode: log lines detour to stderr so the JSON envelope stays
 		// alone on stdout.

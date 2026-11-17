@@ -253,6 +253,18 @@ func listSecurityScheduledApps() []security.ScheduledApp {
 // client's reconnect loop; this function only fails fast on unrecoverable
 // startup errors (e.g. app state cannot be loaded).
 func runMonitor() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runMonitorContext(ctx, nil)
+}
+
+func runMonitorContext(ctx context.Context, management func() (func(), error)) error {
+	var stopManagement func()
+	defer func() {
+		if stopManagement != nil {
+			stopManagement()
+		}
+	}()
 
 	// Local profiling server, started before everything else so startup is
 	// profileable too. Disabled unless PHELIX_PPROF holds a bind address;
@@ -312,6 +324,13 @@ func runMonitor() error {
 		return err
 	}
 	logs.Info("monitor", "loaded agent identity agent_id=%s", server.GetAgentID())
+	if management != nil {
+		var err error
+		stopManagement, err = management()
+		if err != nil {
+			return err
+		}
+	}
 
 	if scope := phelixgrpc.PreferredSessionScope(); scope != phelixgrpc.SessionScopeAgent {
 		logs.Warning("monitor",
@@ -493,9 +512,11 @@ func runMonitor() error {
 		}
 	}()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	<-ctx.Done()
+	if stopManagement != nil {
+		stopManagement()
+		stopManagement = nil
+	}
 
 	logs.Info("monitor", "shutdown signal received, stopping...")
 

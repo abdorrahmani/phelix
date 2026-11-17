@@ -19,7 +19,7 @@ func GetMasterKey() ([]byte, error) {
 	if home == "" {
 		home = os.Getenv("USERPROFILE")
 	}
-	path := filepath.Join(home, ".phelix", "master.key")
+	path := filepath.Join(storageDirectory(), "master.key")
 	key, err := readMasterKey(path)
 	if !errors.Is(err, os.ErrNotExist) {
 		return key, err
@@ -36,8 +36,8 @@ func GetMasterKey() ([]byte, error) {
 		apps bool
 	}{
 		{filepath.Join(dataDir, "secrets"), false},
-		{filepath.Join(home, ".phelix", "envs"), false},
-		{filepath.Join(home, ".phelix", "apps"), true},
+		{filepath.Join(storageDirectory(), "envs"), false},
+		{filepath.Join(dataDir, "apps"), true},
 	} {
 		if err := inspectEncryptedStores(location.path, location.apps); err != nil {
 			return nil, err
@@ -89,7 +89,11 @@ func ReadMasterKey() ([]byte, error) {
 	if err != nil {
 		return nil, phelixerr.New(phelixerr.CodeEncryption, "cannot locate master key")
 	}
-	return readMasterKey(filepath.Join(home, ".phelix", "master.key"))
+	key, readErr := readMasterKey(filepath.Join(storageDirectory(), "master.key"))
+	if errors.Is(readErr, os.ErrNotExist) {
+		return readMasterKey(filepath.Join(home, ".phelix", "master.key"))
+	}
+	return key, readErr
 }
 
 // readMasterKey refuses damaged keys instead of replacing credentials already in use.

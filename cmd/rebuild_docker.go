@@ -68,7 +68,7 @@ func dockerImageBuilder(sourceDir, buildStrategy, composeFile, composeService st
 		if buildStrategy == project.DockerBuildCompose {
 			return composeBuildImage(ctx, sourceDir, composeFile, composeService, appName, version)
 		}
-		return dockerfileBuildImage(sourceDir, appName, version)
+		return dockerfileBuildImageContext(ctx, sourceDir, appName, version)
 	}
 }
 
@@ -76,6 +76,10 @@ func dockerImageBuilder(sourceDir, buildStrategy, composeFile, composeService st
 // detect the language, ensure a Dockerfile (generated if none, a user's
 // respected), and docker-build it as <app>:vN.
 func dockerfileBuildImage(sourceDir, appName string, version int) (string, error) {
+	return dockerfileBuildImageContext(context.Background(), sourceDir, appName, version)
+}
+
+func dockerfileBuildImageContext(ctx context.Context, sourceDir, appName string, version int) (string, error) {
 	lang, err := docker.DetectLanguage(sourceDir)
 	if err != nil {
 		return "", phelixerr.Wrapf(phelixerr.CodeUnsupportedProject, err,
@@ -89,7 +93,7 @@ func dockerfileBuildImage(sourceDir, appName string, version int) (string, error
 	}
 
 	imageRef := fmt.Sprintf("%s:v%d", appName, version)
-	if _, err := docker.BuildImage(docker.BuildConfig{
+	if _, err := docker.BuildImageContext(ctx, docker.BuildConfig{
 		ProjectRoot: sourceDir,
 		ImageName:   imageRef,
 		Labels: map[string]string{
@@ -294,6 +298,7 @@ func runDockerInitialBuild(cmd *cobra.Command, projCfg *project.Config, name str
 	}
 
 	spec := &rebuildSpec{
+		Context:      cmd.Context(),
 		AppInfo:      appInfo,
 		Name:         name,
 		Port:         publicPort,

@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
+	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
+	"github.com/abdorrahmani/phelix/internal/controller"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/abdorrahmani/phelix/cmd"
 	"github.com/abdorrahmani/phelix/cmd/auth"
@@ -95,6 +101,33 @@ func main() {
 
 	rootCmd.PersistentFlags().BoolVar(&cmd.Debug, "debug", false, "Show verbose error details and debug output")
 
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	rootCmd.SetContext(ctx)
+	if len(os.Args) == 2 && os.Args[1] == controller.AdapterArgument {
+		conn, request, readErr := controller.ReadAdapter()
+		if readErr != nil {
+			os.Exit(cmd.RenderError(readErr, false))
+		}
+		defer conn.Close()
+		if err := os.Chdir(request.Directory); err != nil {
+			controller.WriteMessage(conn, &pb.Error{Code: "INVALID_ARGUMENT", Message: "Controller source directory unavailable"})
+			return
+		}
+		rootCmd.SetArgs(request.Argv)
+		err = rootCmd.Execute()
+		result := &pb.Error{}
+		exit := 0
+		if err != nil {
+			result.Code = string(phelixerr.CodeOf(err))
+			result.Message = phelixerr.Redact(err.Error())
+			exit = cmd.RenderError(err, cmd.Debug)
+		}
+		controller.WriteMessage(conn, result)
+		conn.Close()
+		os.Exit(exit)
+	}
+	cmd.RouteControl(rootCmd)
 	err = rootCmd.Execute()
 	if err != nil {
 		os.Exit(cmd.RenderError(err, cmd.Debug))

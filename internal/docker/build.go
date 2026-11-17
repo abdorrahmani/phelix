@@ -2,10 +2,12 @@ package docker
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -61,6 +63,10 @@ type BuildResult struct {
 // Each line is prefixed with "    │ " to visually separate build output from
 // Phelix's own step indicators.
 func BuildImage(cfg BuildConfig) (*BuildResult, error) {
+	return BuildImageContext(context.Background(), cfg)
+}
+
+func BuildImageContext(ctx context.Context, cfg BuildConfig) (*BuildResult, error) {
 	start := time.Now()
 
 	args := []string{"build", "-t", cfg.ImageName}
@@ -78,7 +84,7 @@ func BuildImage(cfg BuildConfig) (*BuildResult, error) {
 	// Add the build context directory
 	args = append(args, cfg.ProjectRoot)
 
-	cmd := exec.Command("docker", args...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = cfg.ProjectRoot
 
 	// Stream stdout and stderr in real-time instead of buffering.
@@ -99,14 +105,18 @@ func BuildImage(cfg BuildConfig) (*BuildResult, error) {
 
 	// Stream both pipes concurrently; collect all output for error reporting.
 	var output strings.Builder
+	var outputMu sync.Mutex
+	var streams sync.WaitGroup
 	dim := color.New(color.Faint)
 
 	// Stream stdout (build results, naming)
-	go streamPipe(stdout, &output, dim)
+	streams.Add(2)
+	go func() { defer streams.Done(); streamPipeLocked(stdout, &output, dim, &outputMu) }()
 	// Stream stderr (BuildKit progress, layer downloads)
-	go streamPipe(stderr, &output, dim)
+	go func() { defer streams.Done(); streamPipeLocked(stderr, &output, dim, &outputMu) }()
 
 	// Wait for the build to finish
+	streams.Wait()
 	err = cmd.Wait()
 
 	result := &BuildResult{
@@ -130,6 +140,10 @@ func BuildImage(cfg BuildConfig) (*BuildResult, error) {
 // streamPipe reads lines from r, prefixes each with a dim "    │ " indicator,
 // writes them to the terminal, and appends to the output buffer.
 func streamPipe(r io.Reader, output *strings.Builder, dim *color.Color) {
+	streamPipeLocked(r, output, dim, &sync.Mutex{})
+}
+
+func streamPipeLocked(r io.Reader, output *strings.Builder, dim *color.Color, mu *sync.Mutex) {
 	scanner := bufio.NewScanner(r)
 	// Increase buffer size for long lines (e.g. base64-encoded layers)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -137,7 +151,9 @@ func streamPipe(r io.Reader, output *strings.Builder, dim *color.Color) {
 		line := scanner.Text()
 		// Print with dim prefix so build output is visually distinct
 		fmt.Printf("    %s %s\n", dim.Sprint("│"), line)
+		mu.Lock()
 		output.WriteString(line + "\n")
+		mu.Unlock()
 	}
 }
 

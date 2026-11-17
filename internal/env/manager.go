@@ -37,12 +37,7 @@ type EnvStore struct {
 
 // GetEnvFilePath returns the path to the app's .env.enc file
 func GetEnvFilePath(appID string) (string, error) {
-	homeDir := os.Getenv("HOME")
-	if homeDir == "" {
-		homeDir = os.Getenv("USERPROFILE") // For Windows
-	}
-
-	envDir := filepath.Join(homeDir, ".phelix", "envs")
+	envDir := filepath.Join(storageDirectory(), "envs")
 	if err := os.MkdirAll(envDir, 0755); err != nil {
 		return "", phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to create envs directory %s", envDir)
 	}
@@ -319,4 +314,15 @@ func (m *EnvManager) GetEnvVarCount(appID string) (int, error) {
 	}
 
 	return len(store.Entries), nil
+}
+
+func storageDirectory() string {
+	if dir := os.Getenv("PHELIX_DATA_DIR"); dir != "" {
+		return dir
+	}
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = os.Getenv("USERPROFILE")
+	}
+	return filepath.Join(home, ".phelix")
 }

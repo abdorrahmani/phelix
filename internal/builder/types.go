@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"context"
 	"io"
 	"strings"
 	"time"
@@ -45,6 +46,7 @@ func (l Language) IsSupported() bool {
 
 // BuildConfig contains configuration for the build process
 type BuildConfig struct {
+	Context        context.Context
 	ID             string    // Application ID
 	Name           string    // Application name
 	ProjectRoot    string    // Root directory of the project

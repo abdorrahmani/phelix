@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"context"
 	"os/exec"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ const DefaultBuildTimeout = 30 * time.Minute
 
 // BuildManager orchestrates the build process
 type BuildManager struct {
+	context context.Context
 	factory *BuilderFactory
 
 	// scanMu guards the scan cache below. Workspace builds share one manager
@@ -107,6 +109,7 @@ func (bm *BuildManager) PrepareBuild(
 	}
 
 	config := &BuildConfig{
+		Context:     bm.context,
 		ID:          appID,
 		Name:        appName,
 		ProjectRoot: projectRoot,
@@ -223,3 +226,5 @@ func buildTimeout(d time.Duration) time.Duration {
 
 	return d
 }
+
+func (bm *BuildManager) SetContext(ctx context.Context) { bm.context = ctx }
