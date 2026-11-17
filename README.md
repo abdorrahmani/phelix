@@ -8,6 +8,13 @@ through a dashboard at `phelix.anophel.com`.
 Phelix is written in Go and built with [Cobra](https://github.com/spf13/cobra).
 It targets Linux, with experimental Windows support.
 
+Start `phelix controller` before lifecycle commands. The CLI communicates with
+that single owner over a private Unix socket. The Controller runs on the host or
+inside Docker and reuses the same deployment engine in both modes. See the
+[Controller guide](docs/guides/controller.md) and complete
+[Host](examples/docker-host-controller/README.md) and
+[Container](examples/docker-container-controller/README.md) examples.
+
 ## Why Phelix
 
 Shipping a change to a small fleet usually means stitching together a build step,

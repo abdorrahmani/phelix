@@ -1,50 +1,32 @@
-# Running App Instances as Containers (Docker Runtime)
+# Running application containers with Phelix
 
-**Run one Phelix on the host and let it manage your app containers.** This is
-the supported way to use Phelix with Docker: a single Phelix agent on the
-machine builds an image per app and runs each instance as a container, so **one
-host stays one server** on the dashboard no matter how many app containers it
-runs.
+One Phelix Controller manages the host's application fleet. It can run directly
+on Linux or in a Docker container. In both modes the host CLI communicates over
+the same private Unix socket and the shared deployment engine builds images,
+checks health, switches traffic and manages rollback.
 
-> This is distinct from [`phelix dockerize`](docker-images.md), which just
-> builds/pushes an image. Here, Phelix *runs your app instances as containers*
-> under the zero-downtime proxy.
+Do not install Phelix in application containers. They remain ordinary application
+images. Compose manages backing infrastructure, while Phelix owns application
+lifecycle. The Controller keeps one stable AgentID and ServerID in persistent
+state regardless of how many applications it manages.
 
-Do **not** install a separate Phelix inside each app container. Each Phelix
-runtime is its own agent with its own identity, so three such containers would
-register as three servers even though they share one physical host — the exact
-problem this model exists to avoid. (See [identity](../architecture/identity.md).)
+Host Mode publishes each application's fixed internal port on an ephemeral host
+loopback port. Container Mode uses a shared user-defined network and exact
+container IP endpoints, without publishing application ports or assigning shared
+application aliases. Compose publishes the Controller proxy's public ports.
+Applications must read PORT and listen on their container interface, not just
+container loopback. Docker requires blue-green, rolling, canary or progressive;
+classic remains a native runtime strategy.
 
-Phelix keeps running exactly as it does on a bare VPS — one agent, one
-`agent_id`, one `apps.json` — but instead of executing each app as a host
-process, it **builds an image and runs each instance as a container**.
-Blue-green, rolling, canary, health checks, versioning and rollback all work
-unchanged: the zero-downtime proxy still owns the single public port and routes
-to the container's published loopback port, and a version rollback restarts the
-recorded image (`myapp:v11`) instead of a binary.
+Start `phelix controller` before management commands. `phelix monitor` starts the
+same lifecycle for compatibility. Docker socket access is highly privileged and
+must remain local. Persistent state, source mounts, socket UID/GID and recovery
+are described in the [Controller operations guide](controller.md).
 
-```text
-┌─ VPS — ONE Phelix agent = ONE server on the dashboard ─────────────┐
-│  phelix monitor        (host process, systemd — as today)          │
-│  phelix proxy  :8080 ─┐                                            │
-│                       ├─→ 127.0.0.1:49215  ← docker: billing:v3    │
-│                       ├─→ 127.0.0.1:49216  ← docker: auth:v7       │
-│                       └─→ 127.0.0.1:49217  ← docker: user:v2       │
-└────────────────────────────────────────────────────────────────────┘
-```
+Complete runnable examples:
 
-## Requirements
-
-- Phelix runs **on the host** (the normal `systemd` install), with a reachable
-  Docker daemon. Do **not** run Phelix itself inside a container for this model
-  unless you deliberately mount the Docker socket — that grants the container
-  root-equivalent access to the host (see the security note below).
-- Each app must read `PORT` (the same [PORT contract](../getting-started/the-port-contract.md)
-  as native apps). Phelix injects `PORT` into the container and publishes it to
-  an ephemeral host port bound to `127.0.0.1`.
-- The docker runtime rides the zero-downtime topology, so the app needs a
-  zero-downtime strategy — `blue-green`, `rolling`, `canary`, or `progressive`.
-  The `classic` stop→start path is native-only.
+- [Host Controller](../../examples/docker-host-controller/README.md)
+- [Container Controller](../../examples/docker-container-controller/README.md)
 
 ## Turn it on in `phelix.yaml`
 

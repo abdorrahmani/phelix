@@ -129,3 +129,18 @@ command -v phelix              # should print nothing
   managed apps.
 - [Configuration reference](../reference/configuration.md) — the `phelix.yaml`
   project file.
+
+## Controller service and Docker installation
+
+The systemd service now runs `phelix controller`; `phelix monitor` is a
+compatibility alias. Start the Controller before lifecycle CLI commands. The
+existing identity, registry and deployment state stay in the original data
+namespace. Stop the old service before upgrading and retain the full state.
+
+For a Controller container, build the repository's `Dockerfile.controller`, mount
+persistent state and a shared Unix socket directory, mount only required source
+roots, and attach the Controller to the applications' user-defined network.
+Docker socket access grants administrative control over the Docker environment.
+No management TCP port is required. Follow the complete
+[Container example](../../examples/docker-container-controller/README.md) and
+[Controller operations guide](../guides/controller.md).

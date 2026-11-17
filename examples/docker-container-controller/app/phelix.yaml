@@ -1,0 +1,11 @@
+name: container-example
+port: 8080
+deploy:
+  runtime: docker
+  strategy: blue-green
+  network: phelix-container-example
+health:
+  endpoints:
+    - name: readiness
+      path: /health
+      mode: auto

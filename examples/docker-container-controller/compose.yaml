@@ -1,0 +1,61 @@
+services:
+  controller:
+    image: phelix-controller:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile.controller
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - state:/var/lib/phelix
+      - ./run:/run/phelix
+      - ./controller.yaml:/etc/phelix/controller.yaml:ro
+      - ./app:/workspace/app:ro
+    environment:
+      PHELIX_CONTROLLER_CONFIG: /etc/phelix/controller.yaml
+      PHELIX_CONTROL_SOCKET: /run/phelix/control.sock
+    networks: [backend]
+    ports: ["127.0.0.1:8080:8080"]
+    restart: unless-stopped
+    stop_grace_period: 45s
+    mem_limit: 512m
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "phelix", "controller", "health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis:/data"]
+    networks: [backend]
+    restart: unless-stopped
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: example
+      POSTGRES_USER: example
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run setup.sh first}
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    networks: [backend]
+    restart: unless-stopped
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U example -d example"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+networks:
+  backend:
+    name: phelix-container-example
+volumes:
+  state: {}
+  redis: {}
+  postgres: {}
