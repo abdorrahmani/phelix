@@ -28,13 +28,13 @@ func (f *fakeEventBackend) ReportEvent(_ context.Context, _ *pb.ApplicationEvent
 }
 
 // setupTestSession writes a valid, non-expired session file under a temporary
-// HOME so attachAuthMetadata succeeds, and initializes server identity.
+// state directory so attachAuthMetadata succeeds, and initializes server identity.
 func setupTestSession(t *testing.T) {
 	t.Helper()
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	phelixDir := filepath.Join(tmpHome, ".phelix")
+	phelixDir := sessionDirectory()
 	if err := os.MkdirAll(phelixDir, 0o755); err != nil {
 		t.Fatalf("failed to create .phelix dir: %v", err)
 	}

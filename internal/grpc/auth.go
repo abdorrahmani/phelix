@@ -44,13 +44,20 @@ type sessionData struct {
 
 // sessionFilePath returns the path of the interactive session file.
 func sessionFilePath() string {
-	return filepath.Join(os.Getenv("HOME"), ".phelix", "session.json")
+	return filepath.Join(sessionDirectory(), "session.json")
 }
 
 // agentSessionFilePath returns the path of the monitor daemon's dedicated
 // (agent-scoped) session file.
 func agentSessionFilePath() string {
-	return filepath.Join(os.Getenv("HOME"), ".phelix", agentSessionFileName)
+	return filepath.Join(sessionDirectory(), agentSessionFileName)
+}
+
+func sessionDirectory() string {
+	if dir := os.Getenv("PHELIX_DATA_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(os.Getenv("HOME"), ".phelix")
 }
 
 // loadSession returns the session the gRPC client should authenticate with:

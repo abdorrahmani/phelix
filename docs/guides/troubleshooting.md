@@ -21,7 +21,7 @@ is stated explicitly instead of guessing.
 
 ## Installation problems
 
-- Verify the install with `phelix version`; on Linux check the monitor service
+- Verify the install with `phelix version`; on Linux check the Controller service
   with `sudo systemctl status phelix`.
 - The installer downloads a prebuilt binary for your OS/arch — no Go/Rust
   toolchain is needed just to install. See
@@ -165,9 +165,9 @@ is stated explicitly instead of guessing.
 
 - **Nothing appears on the dashboard:** monitoring is per-app opt-in and
   **disabled by default**. Enable it with `phelix watch <app>` (or `watching:
-  enable` in `phelix.yaml`). While no app is watched the monitor daemon does not
-  even open the stream, and dashboard-issued remote commands cannot reach the
-  server — enabling watching on any app re-opens it within seconds.
+  enable` in `phelix.yaml`). The Controller must be running with a valid backend
+  session in its state directory. An open agent connection alone does not enable
+  app telemetry. See [Enable backend reporting](monitoring.md#enable-backend-reporting).
 - **Requires an authenticated session.** See [Monitoring](monitoring.md).
 
 ## Resource and OOM problems

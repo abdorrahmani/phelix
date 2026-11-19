@@ -337,9 +337,9 @@ func startMatrixTestStream(t *testing.T, b *fakeMonitorBackend, c *Client) (stop
 }
 
 func TestMonitorStream_MatrixCommandAsyncAndIdempotent(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 	setupTestSession(t)
 	watchOneApp(t)
-	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	// The matrix ledger must be anchored at the isolated data dir for this
 	// test, and re-initialized so in-progress conversion can't leak across.
@@ -439,9 +439,9 @@ func TestMonitorStream_MatrixCommandAsyncAndIdempotent(t *testing.T) {
 }
 
 func TestMonitorStream_MatrixStatusSynchronous(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 	setupTestSession(t)
 	watchOneApp(t)
-	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	origLedger := matrixResults
 	matrixResults = newRollbackLedger(filepath.Join(t.TempDir(), "matrix-ledger.json"), rollbackLedgerCapacity, "matrix", "test note")
@@ -495,9 +495,9 @@ func TestMonitorStream_MatrixStatusSynchronous(t *testing.T) {
 }
 
 func TestMonitorStream_MatrixValidationErrors(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 	setupTestSession(t)
 	watchOneApp(t)
-	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	origLedger := matrixResults
 	matrixResults = newRollbackLedger(filepath.Join(t.TempDir(), "matrix-ledger.json"), rollbackLedgerCapacity, "matrix", "test note")
@@ -558,9 +558,9 @@ func seedActiveMatrixRun(t *testing.T, id string) *matrix.Run {
 }
 
 func TestMonitorStream_MatrixSnapshotResync(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 	setupTestSession(t)
 	watchOneApp(t)
-	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	origInterval := monitorMetricsInterval
 	monitorMetricsInterval = 500 * time.Millisecond
@@ -629,9 +629,9 @@ func waitForMatrixCount(t *testing.T, want int64, get func() int64) {
 // backend. All teardown is registered with t.Cleanup.
 func startMatrixDispatchHarness(t *testing.T) (*rollbackLedger, func(*pb.MonitorCommandRequest), *fakeMonitorBackend) {
 	t.Helper()
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 	setupTestSession(t)
 	watchOneApp(t)
-	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 
 	origLedger := matrixResults
 	matrixResults = newRollbackLedger(filepath.Join(t.TempDir(), "matrix-ledger.json"), rollbackLedgerCapacity, "matrix", "test note")

@@ -26,6 +26,22 @@ backend monitoring or dashboard authentication. `phelix monitor` is a
 compatibility alias for `phelix controller`, so both commands start the same
 service. Do not run them as separate services.
 
+## Why the Controller exists
+
+The earlier monitor already handled recovery, health checks, background jobs and
+backend reporting. The Controller reuses that lifecycle and adds one owner for
+local state, a private management API, supervised operations and proxy ownership.
+This lets a CLI on the host manage applications through a Controller running
+inside Docker, where source paths and application network addresses differ from
+the host. The deployment engine and backend monitoring protocol are reused.
+
+The existing monitor could have been extended under its old name. `controller`
+names the broader management role; `monitor` remains a compatibility entry point
+to that same service. See [Monitoring](monitoring.md#enable-backend-reporting) to
+enable backend reporting.
+
+## Foreground startup
+
 ```bash
 export PHELIX_DATA_DIR=/absolute/persistent/phelix
 export PHELIX_CONTROLLER_CONFIG="$PHELIX_DATA_DIR/controller.yaml"

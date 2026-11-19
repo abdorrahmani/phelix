@@ -18,7 +18,7 @@ app process at start — see the
 | Variable | Effect |
 |----------|--------|
 | `PHELIX_DATA_DIR` | Relocates all Phelix state. Otherwise `/var/lib/phelix` inside Docker (detected via `/.dockerenv`), else `~/.phelix`. |
-| `PHELIX_PPROF` | Enables local profiling for `phelix monitor` at the supplied bind address, such as `127.0.0.1:6060`. Bare ports and empty hosts bind to loopback. Includes CPU, heap, allocations, goroutines, threads, traces, and sampled block and mutex profiles under `/debug/pprof/`. Adds sampling overhead while enabled. |
+| `PHELIX_PPROF` | Enables local profiling for `phelix controller` at the supplied bind address, such as `127.0.0.1:6060`. Bare ports and empty hosts bind to loopback. Includes CPU, heap, allocations, goroutines, threads, traces, and sampled block and mutex profiles under `/debug/pprof/`. Adds sampling overhead while enabled. |
 | `PHELIX_MODE` | Backend environment/mode override (e.g. `dev`). `dev` uses plaintext gRPC for a local backend; any other value forces TLS with no insecure fallback. |
 | `PHELIX_API` | Overrides the backend REST API base URL (e.g. `http://phelix.local/api/v1`). |
 | `PHELIX_GRPC_URL` | Overrides the monitor gRPC endpoint (`host:port`, e.g. `phelix.local:50051`). |

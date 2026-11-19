@@ -552,7 +552,7 @@ func TestEventPayloadName(t *testing.T) {
 
 func writeSessionFileWithScope(t *testing.T, name string, fields map[string]any) string {
 	t.Helper()
-	phelixDir := filepath.Join(os.Getenv("HOME"), ".phelix")
+	phelixDir := sessionDirectory()
 	if err := os.MkdirAll(phelixDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

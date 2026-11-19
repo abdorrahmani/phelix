@@ -389,7 +389,7 @@ differ.
   the command line, so decrypted values never appear in `docker inspect` or the
   host process table.
 - If a deploy crashes after `docker run` but before recording the instance, the
-  orphaned container is reclaimed automatically the next time `phelix monitor`
+  orphaned container is reclaimed automatically the next time `phelix controller`
   starts (only `phelix.managed` containers that no deploy state references are
   removed).
 

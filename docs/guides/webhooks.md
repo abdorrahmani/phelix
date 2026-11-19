@@ -54,7 +54,7 @@ PHELIX_WEBHOOK_SECRET=... phelix webhook --host 0.0.0.0 --port 9746
 
 The server listens on `127.0.0.1:9746` by default (`--host`/`--port` to change).
 It runs in the foreground, exits cleanly on `SIGINT`/`SIGTERM`, and is designed
-to be supervised by systemd like `phelix monitor` (set the secret via
+to be supervised by systemd like `phelix controller` (set the secret via
 `Environment=` or an `EnvironmentFile`). Apps are resolved live from `apps.json`,
 so apps added or removed while the server runs are picked up without a restart.
 

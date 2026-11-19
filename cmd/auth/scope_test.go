@@ -23,6 +23,7 @@ import (
 
 	"github.com/abdorrahmani/phelix/config"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 )
 
 // loginRequestRecorder captures the login request's headers and replies with
@@ -91,6 +92,23 @@ func isolatedHome(t *testing.T) (sessionPath, agentSessionPath string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	return getSessionFilePath(), getAgentSessionFilePath()
+}
+
+func TestAuthenticate_ConfiguredDataDirectoryFeedsGRPC(t *testing.T) {
+	for _, scope := range []string{ScopeFull, ScopeAgent} {
+		t.Run(scope, func(t *testing.T) {
+			isolatedHome(t)
+			t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+			rec := newLoginRecorder(t)
+			rec.responseBody = strings.Replace(rec.responseBody, `"scope": "agent"`, `"scope": "`+scope+`"`, 1)
+			if err := authenticate("abdul", "synthetic-key", scope); err != nil {
+				t.Fatal(err)
+			}
+			if got := phelixgrpc.PreferredSessionScope(); got != scope {
+				t.Fatalf("gRPC session scope = %q, want %q from the configured data directory", got, scope)
+			}
+		})
+	}
 }
 
 func TestAuthenticate_AgentScopeSendsHeaderAndUsesDaemonFile(t *testing.T) {

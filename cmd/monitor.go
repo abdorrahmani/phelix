@@ -30,26 +30,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// MonitorCmd starts the long-running gRPC monitoring daemon. It is the process
-// systemd supervises directly via `ExecStart=/usr/local/bin/phelix monitor` and
-// the process an operator runs in the foreground at a terminal.
 var MonitorCmd = &cobra.Command{
 	Use:   "monitor",
-	Short: "Start the monitoring service",
-	Long: `Start the long-running gRPC monitoring daemon.
+	Short: "Run the Controller (compatibility alias)",
+	Long: `Compatibility alias for 'phelix controller'. Both commands start the same service.
 
-The daemon:
-  - Loads local state and restores any managed applications that were
-    previously running (auto-start apps).
-  - Establishes a persistent TLS-secured gRPC connection to the Phelix backend.
-  - Sends server/app metrics and logs approximately every 2 seconds over a
-    single long-lived MonitorStream.
-  - Reconnects automatically with exponential backoff if the connection drops.
-  - Runs in the foreground (it is what systemd supervises), exiting cleanly on
-    SIGTERM/SIGINT.
+The Controller owns local application management, deployments, persistent state,
+recovery, the proxy and monitoring. The CLI connects through its local Unix socket.
+It can also report watched applications to the backend over the existing
+authenticated TLS gRPC stream. Local management does not require backend monitoring.
 
 Use 'sudo systemctl start/stop/restart phelix' to manage the systemd service,
-or run this command directly to keep it attached to a terminal.`,
+or run 'phelix controller' in the foreground. Do not run monitor and controller
+as separate services.`,
 	RunE: func(cobraCmd *cobra.Command, args []string) error {
 		return runController(cobraCmd, args)
 	},

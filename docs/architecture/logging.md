@@ -101,7 +101,7 @@ the existing `MonitorEvent` envelope.
 
 - Confirm that at least one app is watched. `phelix watch <app>` enables the
   gate.
-- Confirm that `phelix monitor` is running.
+- Confirm that `phelix controller` is running with a valid backend session.
 - Confirm that `phelix log` shows new lines. If it does, the file and the
   collector are working.
 - Check the log file path. A service started with a different `HOME` or

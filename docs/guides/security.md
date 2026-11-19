@@ -63,7 +63,7 @@ phelix security config myapp --set-enabled true --set-scan-interval 12h --set-fa
 phelix security config myapp --set-enabled false
 ```
 
-Scheduled scans run opt-in through the monitor daemon:
+Scheduled scans run opt-in through the Controller:
 
 ```yaml
 security:
@@ -115,7 +115,7 @@ local inventory. `storage_truncated` identifies scans whose findings exceeded
 the local 1000-finding bound. Backend reads require a live consent check.
 
 For expired credentials, log in again with `phelix auth login --scope agent`,
-then restart the monitor service. Routine network disconnects reconnect
+then restart the Controller service. Routine network disconnects reconnect
 automatically without changing Agent identity.
 
 ### Integration verification
