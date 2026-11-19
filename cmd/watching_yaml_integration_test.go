@@ -26,6 +26,7 @@ func runPhelixIn(t *testing.T, home, dir string, args ...string) (int, string, s
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	prepareControlTest(t, cmd)
 	err := cmd.Run()
 	code := 0
 	if err != nil {

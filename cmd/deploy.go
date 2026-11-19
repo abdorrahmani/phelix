@@ -14,9 +14,9 @@ import (
 var deployUnlockJSON bool
 
 var DeployCmd = &cobra.Command{
-	Use:   "deploy",
+	Use:   "deploy [ID|AppName]",
 	Short: "Manage deployment state",
-	Args:  cobra.NoArgs,
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if wsDeployAll {
 			if wsDeployJSON {
@@ -24,6 +24,9 @@ var DeployCmd = &cobra.Command{
 				defer restore()
 			}
 			return runWorkspaceDeployAll(deployWorkspaceService)
+		}
+		if len(args) > 0 {
+			return RebuildCmd.RunE(cmd, args)
 		}
 		return cmd.Help()
 	},

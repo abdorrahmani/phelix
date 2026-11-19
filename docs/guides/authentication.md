@@ -9,12 +9,15 @@ logging in** — everything works locally. When you're not logged in, Phelix not
 during build/rebuild that no metrics or events will be sent to the dashboard
 until you authenticate.
 
-Once you log in, monitoring data starts flowing: events from commands you run
-and, if the monitor daemon is running, resource metrics and logs. Apps you
-created **before** logging in are synced to your dashboard at login time, so
-nothing you built while offline is lost.
+With the Controller running and an authenticated session, **watched** apps send
+events, resource metrics and logs. Enable each app with `phelix watch myapp`;
+login alone does not opt apps in. A full-scope login also syncs existing watched
+apps to the dashboard. See [Enable backend reporting](monitoring.md#enable-backend-reporting).
 
-The session is stored locally at `~/.phelix/session.json`.
+The session is stored locally at `$PHELIX_DATA_DIR/session.json`, or
+`~/.phelix/session.json` when no custom data directory is configured. Login must
+use the Controller's service account and state directory. In Container Mode,
+run login inside the Controller container so the session reaches its state volume.
 
 ```bash
 # Interactive
@@ -31,7 +34,7 @@ phelix auth logout     # invalidate and remove the session
 > dashboard? Skip `auth login` — build/run commands work the same. Only the
 > dashboard upload is skipped.
 
-## Agent-scoped sessions for the monitor daemon (recommended)
+## Agent-scoped sessions for Controller monitoring (recommended)
 
 By default, `phelix auth login` issues a **full-scope** session — valid for the
 dashboard and every monitoring channel. On a server you only monitor, that is
@@ -46,7 +49,8 @@ phelix auth login --username <user> --apiKey <key> --scope agent
 ```
 
 This requests a monitoring-only token (stored separately at
-`~/.phelix/agent-session.json` so it never displaces your interactive session).
+`agent-session.json` in the same state directory, so it never displaces your
+interactive session).
 The token is accepted by the monitoring gRPC channel and nothing else —
 dashboards, account settings, and session management all reject it. If the
 server is ever compromised, the stolen token cannot be used to take over your
@@ -62,7 +66,7 @@ while you use a normal (full-scope) login for interactive CLI commands there.
 The backend throttles failed logins (HTTP 429 with a `Retry-After` window) and
 abusive retry patterns on the monitoring channel (gRPC `ResourceExhausted`). The
 CLI honors these: a throttled login tells you when to retry instead of failing
-generically, and the monitor daemon backs off for the announced window rather
+generically, and the Controller backs off for the announced window rather
 than hammering the backend. If you see a "too many failed authentication
 attempts" or "too many login attempts" message, wait for the stated window —
 retrying earlier only extends it.
@@ -72,7 +76,7 @@ retrying earlier only extends it.
 - [Authorization](authorization.md) — **a different thing**: whether a caller
   may *execute* a deployment on this host. A dashboard session grants no
   execution rights, and the authorization boundary never consults it.
-- [Monitoring](monitoring.md) — what the monitor daemon transmits, and per-app
+- [Monitoring](monitoring.md) — what the Controller transmits, and per-app
   watching.
 - [Security](security.md) — session storage and transport security.
 - Error codes and exit codes for auth failures:

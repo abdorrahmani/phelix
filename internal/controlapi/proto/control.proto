@@ -1,0 +1,31 @@
+syntax = "proto3";
+package phelix.control.v1;
+option go_package = "github.com/abdorrahmani/phelix/internal/controlapi/proto;controlpb";
+
+service Control {
+ rpc Health(Empty) returns (HealthResponse);
+ rpc Info(Empty) returns (ControllerInfo);
+ rpc Query(QueryRequest) returns (QueryResponse);
+ rpc Execute(CommandRequest) returns (Operation);
+ rpc GetOperation(OperationRequest) returns (Operation);
+ rpc WatchOperation(WatchRequest) returns (stream Progress);
+ rpc CancelOperation(OperationRequest) returns (Operation);
+}
+message Empty {}
+message HealthResponse { bool ready = 1; }
+message ControllerInfo { string agent_id = 1; string server_id = 2; string mode = 3; string version = 4; string socket = 5; }
+enum QueryKind { QUERY_UNSPECIFIED = 0; APPLICATIONS = 1; STATUS = 2; VERSIONS = 3; HISTORY = 4; RUNTIME = 5; METRICS = 6; }
+message QueryRequest { QueryKind kind = 1; string application = 2; }
+message Application { string id = 1; string name = 2; string status = 3; int32 port = 4; string runtime = 5; string strategy = 6; int32 version = 7; repeated Instance instances = 8; }
+message Instance { string slot = 1; string container_id = 2; string endpoint = 3; string status = 4; int32 version = 5; int32 pid = 6; }
+message Version { int32 number = 1; string tag = 2; string image = 3; bool current = 4; string created_at = 5; }
+message HistoryEntry { int32 from_version = 1; int32 to_version = 2; string at = 3; bool success = 4; string reason = 5; }
+message Metrics { string container_id = 1; double cpu_percent = 2; uint64 memory_bytes = 3; uint64 memory_limit = 4; uint64 network_rx = 5; uint64 network_tx = 6; uint64 block_read = 7; uint64 block_write = 8; string state = 9; uint32 restart_count = 10; string health = 11; int32 exit_code = 12; int32 pid = 13; string application_id = 14; }
+message QueryResponse { repeated Application applications = 1; repeated Version versions = 2; repeated HistoryEntry history = 3; repeated Metrics metrics = 4; }
+message CommandRequest { repeated string argv = 1; string directory = 2; bytes input = 3; int64 timeout_seconds = 4; string caller = 5; }
+enum OperationState { OPERATION_UNSPECIFIED = 0; QUEUED = 1; RUNNING = 2; SUCCEEDED = 3; FAILED = 4; CANCELLED = 5; INTERRUPTED = 6; }
+message Error { string code = 1; string message = 2; string display = 3; }
+message Operation { string id = 1; OperationState state = 2; bool cancellable = 3; string created_at = 4; string completed_at = 5; Error error = 6; int32 exit_code = 7; }
+message OperationRequest { string id = 1; }
+message WatchRequest { string id = 1; uint64 after_sequence = 2; }
+message Progress { uint64 sequence = 1; string output = 2; bool stderr = 3; Operation operation = 4; }

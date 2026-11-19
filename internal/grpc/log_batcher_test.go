@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -44,6 +45,28 @@ func TestMonitorSendWithholdsDegradedAppAtTransmission(t *testing.T) {
 	secrets.MarkHealthy(appID)
 	if err := s.send(&pb.MonitorEvent{Payload: &pb.MonitorEvent_LogEntry{LogEntry: entry}}); err == nil {
 		t.Fatal("healthy output never reached transport")
+	}
+}
+
+func TestLogBatcherCancellationRetainsQueueForReconnect(t *testing.T) {
+	b := newLogBatcher()
+	defer b.stop()
+	b.add(makeEntries(1, 10))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.run(ctx, func(*pb.MonitorEvent) error { return errors.New("disconnected") })
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("batch sender survived stream cancellation")
+	}
+	batches := batchDrain(t, b)
+	if len(batches) != 1 || len(batches[0].Entries) != 1 {
+		t.Fatal("stream cancellation lost queued logs", batches)
 	}
 }
 
@@ -167,7 +190,7 @@ func TestLogBatcher_LingerFlush(t *testing.T) {
 	var mu sync.Mutex
 	got := 0
 	done := make(chan struct{})
-	go b.run(func(event *pb.MonitorEvent) error {
+	go b.run(context.Background(), func(event *pb.MonitorEvent) error {
 		if batch := event.GetLogBatch(); batch != nil {
 			mu.Lock()
 			got += len(batch.Entries)

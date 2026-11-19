@@ -2,12 +2,44 @@ package autoscale
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 )
+
+func TestSamplerUsesContainerMetricsAndPropagatesCancellation(t *testing.T) {
+	s, _ := newTestSampler(t, "docker-app", nil, &fakeReader{dead: map[int]bool{123: true}})
+	s.dockerMetrics = func(ctx context.Context, ids ...string) ([]deploy.RuntimeMetrics, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if len(ids) != 1 || ids[0] != "container" {
+			t.Fatal("sampler did not identify the container", ids)
+		}
+		return []deploy.RuntimeMetrics{{ContainerID: "container", CPUPercent: 60, MemoryBytes: 1 << 20, MemoryLimit: 2 << 20, State: "running"}}, nil
+	}
+	refs := []ReplicaRef{{Key: "0", PID: 123, ContainerID: "container", Status: "running"}}
+	snapshot := s.Collect(context.Background(), refs)
+	if snapshot.Metrics.CPUPercent != 60 || snapshot.Metrics.MemoryPercent != 50 || snapshot.Metrics.Missing != 0 || snapshot.Replicas[0].ProcessStatus != "running" {
+		t.Fatal("container metrics depended on the host PID", snapshot)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	snapshot = s.Collect(ctx, refs)
+	if !snapshot.Metrics.Missing.Has(deploy.MissingCPU) || !snapshot.Metrics.Missing.Has(deploy.MissingMemory) {
+		t.Fatal("cancelled metrics became available measurements", snapshot)
+	}
+	s.dockerMetrics = func(context.Context, ...string) ([]deploy.RuntimeMetrics, error) {
+		return nil, errors.New("daemon unavailable")
+	}
+	snapshot = s.Collect(context.Background(), refs)
+	if snapshot.Metrics.Missing == 0 {
+		t.Fatal("Docker daemon failure became an idle container", snapshot)
+	}
+}
 
 type fakeReader struct {
 	busy map[int]float64

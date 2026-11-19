@@ -135,6 +135,13 @@ func runDrain() int {
 		phelixerr.RegisterSecretValue(value)
 	}
 	if settings.DockerID != "" {
+		if !acquireDockerDrain(dst) {
+			_, err := ready.Write([]byte{1})
+			if err != nil {
+				return 1
+			}
+			return 0
+		}
 		return runDockerDrain(settings.DockerID, dst, ready)
 	}
 	if _, err := ready.Write([]byte{1}); err != nil {

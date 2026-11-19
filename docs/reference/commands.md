@@ -342,7 +342,7 @@ command for workers and the generic `scale` command for either workload.
 ## Jobs
 
 Job workloads (`type: job`) are one-shot commands run on a cron schedule by
-`phelix monitor`. They have no port, no health endpoint, no deploy strategy and
+`phelix controller`. They have no port, no health endpoint, no deploy strategy and
 no supervision: the exit status is the result. The full model, including
 scheduling, missed occurrences, recovery and retention, is in
 [Jobs](../guides/jobs.md); a runnable example is
@@ -396,7 +396,7 @@ phelix health status <App> [--watch]   # --watch = live terminal dashboard
 
 `phelix health daemon` starts the background health-check daemon that probes
 configured endpoints. It is an operator/daemon-control command, not part of the
-normal app workflow: on a standard systemd install the `phelix monitor` service
+normal app workflow: on a standard systemd install the `phelix controller` service
 already drives this daemon, so you rarely invoke it directly.
 
 ```bash
@@ -503,7 +503,7 @@ phelix security                   # the subcommand help (scan, report, history, 
 - `--set-enabled`, `--set-scan-interval`, and `--set-fail-threshold` edit
   the application's `phelix.yaml` in place; unrelated configuration and
   comments are preserved and invalid values are rejected before writing.
-- Scheduled scans run inside `phelix monitor` for apps with
+- Scheduled scans run inside `phelix controller` for apps with
   `security.vulnerability.enabled: true` in their `phelix.yaml`; the
   dashboard reaches the same operations remotely after the app opts in
   with `security.vulnerability.reporting: true`.
@@ -556,7 +556,7 @@ phelix security server reboot-status         # restart requirement, reasons, ker
   to disabled, the scan interval defaults to `24h` and accepts at least
   `1h`. Invalid values are rejected before writing. There is no remote
   toggle.
-- Scheduled scans run inside `phelix monitor` while consent is enabled:
+- Scheduled scans run inside `phelix controller` while consent is enabled:
   completion-anchored cadence, failure backoff from 15m doubling up to
   the interval, and one host scan lock shared with manual scans.
 - Unsupported distributions, missing utilities, and incomplete advisory
@@ -590,7 +590,7 @@ phelix security server reboot-status         # restart requirement, reasons, ker
   rpm kernel, pacman linux), and on Alpine an explicit limitation that
   apk cannot establish the state. Nothing reboots the host
   automatically.
-- Remote scans and remediation flow through `phelix monitor`: every
+- Remote scans and remediation flow through the Controller's backend stream: every
   command except the configuration query requires local reporting
   consent and mutations are ledger-replayed after reconnects. Error
   codes such as `HOST_SECURITY_CONSENT_DISABLED`, `HOST_SECURITY_BUSY`,
@@ -602,7 +602,8 @@ phelix security server reboot-status         # restart requirement, reasons, ker
 ```bash
 phelix version [--short | --verbose]
 phelix update [--check]   # update the Phelix binary to the latest release
-phelix monitor      # start the long-running gRPC monitoring daemon (foreground)
+phelix controller   # start local management and optional backend reporting (foreground)
+phelix monitor      # compatibility alias for phelix controller
 phelix webhook      # start the Git push webhook server (foreground; see Webhooks)
 phelix webhook status <app>   # active webhook deployment jobs (offline, read-only)
 phelix webhook history <app>  # recent webhook deployment history (offline, read-only)
@@ -612,7 +613,9 @@ phelix wizard       # guided interactive menu (see Interactive usage)
 - `phelix version` — see [installation](../getting-started/installation.md).
 - `phelix update` — see [installation](../getting-started/installation.md#updating);
   internals in [release process](../development/release-process.md).
-- `phelix monitor` — see [Monitoring](../guides/monitoring.md).
+- `phelix controller` — see [Controller](../guides/controller.md) and
+  [Monitoring](../guides/monitoring.md) for backend reporting.
+- `phelix monitor` — compatibility alias for the same Controller service.
 - `phelix webhook` — see [Webhooks](../guides/webhooks.md).
 - `phelix wizard` — see [Interactive usage](../guides/interactive-usage.md).
 

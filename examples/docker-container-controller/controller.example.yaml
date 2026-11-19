@@ -1,0 +1,7 @@
+mode: container
+network: phelix-container-example
+socket: /run/phelix/control.sock
+socket_uid: 1000
+sources:
+  - host: /absolute/path/to/examples/docker-container-controller/app
+    controller: /workspace/app

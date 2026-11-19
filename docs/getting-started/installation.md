@@ -6,7 +6,7 @@ toolchain just to install Phelix (those are only needed to *build your apps*).
 
 Phelix targets Linux, with experimental Windows support.
 
-## Recommended — one-line installer
+## Recommended one-line installer
 
 ```bash
 curl -fsSL https://phelix.anophel.com/install.sh | bash
@@ -18,17 +18,19 @@ The installer:
   prebuilt binary,
 - installs it to `/usr/local/bin/phelix`, and
 - on Linux, registers and enables a `phelix.service` **systemd** unit that runs
-  `phelix monitor` directly.
+  `phelix controller` directly.
 
-The monitor daemon runs in the foreground: it restores the managed apps that
-were previously running and keeps a persistent TLS-secured gRPC connection to
-the backend, reconnecting with exponential backoff.
+The Controller owns local application management, recovery, the proxy and
+monitoring. The CLI connects to it through a protected Unix socket. Backend
+monitoring is optional and uses the existing authenticated TLS gRPC stream.
+`phelix monitor` remains a compatibility alias that starts this same service.
+Do not start a second Controller alongside the installed service.
 
 Verify the install:
 
 ```bash
 phelix version              # verify the install
-sudo systemctl status phelix   # Linux: monitor service running?
+sudo systemctl status phelix   # Linux: Controller service running?
 ```
 
 ## Runtime dependencies and system requirements
@@ -68,8 +70,8 @@ so no Go/Rust toolchain is needed. In summary it:
   until the new one is proven in place, and restored automatically if a later
   step fails).
 - On Linux, if the `phelix.service` systemd unit is running, it **restarts the
-  monitor service** afterwards. `KillMode=process` means the restart stops only
-  the monitor — managed applications keep running. A service that is installed
+  Controller service** afterwards. `KillMode=process` means the restart stops only
+  the Controller; managed applications keep running. A service that is installed
   but stopped is left stopped; hosts without systemd (or macOS) simply get the
   binary replacement.
 - Replacing a binary under `/usr/local/bin` needs root: `phelix update` detects
@@ -129,3 +131,18 @@ command -v phelix              # should print nothing
   managed apps.
 - [Configuration reference](../reference/configuration.md) — the `phelix.yaml`
   project file.
+
+## Controller service and Docker installation
+
+The systemd service now runs `phelix controller`; `phelix monitor` is a
+compatibility alias. Start the Controller before lifecycle CLI commands. The
+existing identity, registry and deployment state stay in the original data
+namespace. Stop the old service before upgrading and retain the full state.
+
+For a Controller container, build the repository's `Dockerfile.controller`, mount
+persistent state and a shared Unix socket directory, mount only required source
+roots, and attach the Controller to the applications' user-defined network.
+Docker socket access grants administrative control over the Docker environment.
+No management TCP port is required. Follow the complete
+[Container example](../../examples/docker-container-controller/README.md) and
+[Controller operations guide](../guides/controller.md).

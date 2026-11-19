@@ -52,7 +52,7 @@ rejected at validation.
 
 ## Process supervision
 
-The monitor daemon (`phelix monitor`) runs one supervisor loop that owns every
+The Controller (`phelix controller`) runs one supervisor loop that owns every
 worker app. For each replica it reconciles the persisted desired state against
 the observed process, keyed by full process identity: PID, executable path and
 the kernel start time from `/proc/<pid>/stat`, so a recycled PID is never

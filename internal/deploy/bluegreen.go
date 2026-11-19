@@ -230,7 +230,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 4. Start the new instance on a free internal port.
 	log.Stepf("starting new instance on slot %s", inactive)
-	proc, port, err := bg.Launcher(ctx, binaryPath, envOverlay)
+	proc, port, err := bg.Launcher(launchSlot(ctx, inactive), binaryPath, envOverlay)
 	if err != nil {
 		return bg.failf(phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "start instance failed"))
 	}
@@ -242,6 +242,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		Port:        port,
 		BinaryPath:  binaryPath,
 		ContainerID: containerIDOf(proc),
+		Endpoint:    processEndpoint(proc, port),
 		EnvPath:     envPath,
 		StartedAt:   time.Now(),
 		Status:      "starting",
@@ -269,13 +270,13 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 
 	// 5. Select the health tier for the new instance (shared with rolling).
 	tierCfg := bg.healthCfg()
-	tier := selectDeployHealth(ctx, tierCfg, bg.AppName, hostPort(port), log, bg.Notifier)
+	tier := selectDeployHealth(ctx, tierCfg, bg.AppName, processEndpoint(proc, port), log, bg.Notifier)
 	bg.Telemetry.SetHealthConfig(tierCfg, tier)
 	bg.Telemetry.HealthCheckStarted(inactive, port)
 
 	// 6. Wait for healthy. On failure, abort and leave the active instance
 	//    untouched.
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), deployResolver(proc)); err != nil {
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, processEndpoint(proc, port), proc.PID(), deployResolver(proc)); err != nil {
 		err = candidateHealthFailure(proc, binaryPath, port, tier, tierCfg, err)
 		log.Errorf("new instance on slot %s failed health check: %v", inactive, err)
 		// Kill the failed instance; do NOT touch the active one.
@@ -314,7 +315,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 	}
 
 	// 7. Atomically switch the proxy to the new instance.
-	primary := proxy.Target{Host: hostPort(port), Label: inactive}
+	primary := proxy.Target{Host: processEndpoint(proc, port), Label: inactive}
 	if active == "" || !proxyEnrolled {
 		// First deploy: enrol the app. If the proxy wasn't reachable earlier,
 		// this is a hard error — we cannot offer zero-downtime without it.
@@ -363,7 +364,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 				bg.AppName, bg.AppName))
 		}
 		log.Successf("enrolled %s with proxy on public port %d -> slot %s", bg.AppName, bg.PublicPort, inactive)
-		bg.Telemetry.SetProxy(bg.PublicPort, inactive, port, []string{hostPort(port)})
+		bg.Telemetry.SetProxy(bg.PublicPort, inactive, port, []string{processEndpoint(proc, port)})
 		bg.Telemetry.ProxySwitched(inactive, port,
 			fmt.Sprintf("enrolled on public port %d", bg.PublicPort))
 		// The stale slot record no longer describes reality (the app it
@@ -397,7 +398,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			))
 		}
 		log.Successf("traffic switched to slot %s (zero downtime)", inactive)
-		bg.Telemetry.SetProxy(bg.PublicPort, inactive, port, []string{hostPort(port)})
+		bg.Telemetry.SetProxy(bg.PublicPort, inactive, port, []string{processEndpoint(proc, port)})
 		bg.Telemetry.ProxySwitched(inactive, port,
 			fmt.Sprintf("public port %d now routes to slot %s", bg.PublicPort, inactive))
 		switched = true
@@ -420,7 +421,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 		compensated := false
 		if oldActive != "" && bg.ProxyClient != nil {
 			if old := state.Slots[oldActive]; old != nil && old.Port > 0 {
-				oldTarget := proxy.Target{Host: hostPort(old.Port), Label: oldActive}
+				oldTarget := proxy.Target{Host: InstanceEndpoint(old), Label: oldActive}
 				if compErr := bg.ProxyClient.Switch(ctx, bg.AppName, oldTarget); compErr != nil {
 					return bg.failf(phelixerr.Wrapf(phelixerr.CodeProxy, compErr,
 						"persist post-switch state failed and proxy compensation failed"))
@@ -468,7 +469,7 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			if oldActive != "" && bg.ProxyClient != nil {
 				if old := state.Slots[oldActive]; old != nil && old.Port > 0 {
 					compErr = bg.ProxyClient.Switch(ctx, bg.AppName,
-						proxy.Target{Host: hostPort(old.Port), Label: oldActive})
+						proxy.Target{Host: InstanceEndpoint(old), Label: oldActive})
 				}
 			} else if oldActive == "" && bg.ProxyClient != nil {
 				compErr = bg.ProxyClient.Remove(ctx, bg.AppName)
@@ -523,7 +524,6 @@ func (bg *BlueGreen) Deploy(ctx context.Context) (errRet error) {
 			}
 			old.Status = "stopped"
 			old.PID = 0
-			old.ContainerID = ""
 			bg.Telemetry.InstanceStopped(oldActive, stoppedPID, drainOutcome(report))
 		}
 	}

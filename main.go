@@ -1,7 +1,14 @@
 package main
 
 import (
+	"context"
+	"github.com/abdorrahmani/phelix/internal/app"
+	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
+	"github.com/abdorrahmani/phelix/internal/controller"
+	"github.com/abdorrahmani/phelix/internal/server"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/abdorrahmani/phelix/cmd"
 	"github.com/abdorrahmani/phelix/cmd/auth"
@@ -75,6 +82,7 @@ func main() {
 	rootCmd.AddCommand(cmd.DockerizeCmd)
 	rootCmd.AddCommand(cmd.DeployCmd)
 	rootCmd.AddCommand(cmd.MonitorCmd)
+	rootCmd.AddCommand(cmd.ControllerCmd)
 	rootCmd.AddCommand(cmd.WebhookCmd)
 	rootCmd.AddCommand(cmd.MatrixCmd)
 	rootCmd.AddCommand(cmd.OperationCmd)
@@ -94,6 +102,42 @@ func main() {
 
 	rootCmd.PersistentFlags().BoolVar(&cmd.Debug, "debug", false, "Show verbose error details and debug output")
 
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	rootCmd.SetContext(ctx)
+	if len(os.Args) == 2 && os.Args[1] == controller.AdapterArgument {
+		conn, request, readErr := controller.ReadAdapter()
+		if readErr != nil {
+			os.Exit(cmd.RenderError(readErr, false))
+		}
+		defer conn.Close()
+		if err := os.Chdir(request.Directory); err != nil {
+			controller.WriteMessage(conn, &pb.Error{Code: "INVALID_ARGUMENT", Message: "Controller source directory unavailable"})
+			return
+		}
+		id, identityErr := server.EnsureAgentID()
+		if identityErr != nil || id != os.Getenv("PHELIX_CONTROLLER_ID") {
+			controller.WriteMessage(conn, &pb.Error{Code: "CONFIGURATION", Message: "Controller identity is unavailable or changed"})
+			return
+		}
+		if err := app.Manager.LoadState(); err != nil {
+			result, exit := cmd.ControlErrorResult(err, false)
+			controller.WriteMessage(conn, result)
+			os.Exit(exit)
+		}
+		rootCmd.SetArgs(request.Argv)
+		cmd.SetControlCaller(request.Caller)
+		err = rootCmd.Execute()
+		result := &pb.Error{}
+		exit := 0
+		if err != nil {
+			result, exit = cmd.ControlErrorResult(err, cmd.Debug)
+		}
+		controller.WriteMessage(conn, result)
+		conn.Close()
+		os.Exit(exit)
+	}
+	cmd.RouteControl(rootCmd)
 	err = rootCmd.Execute()
 	if err != nil {
 		os.Exit(cmd.RenderError(err, cmd.Debug))

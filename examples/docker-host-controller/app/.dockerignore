@@ -1,0 +1,6 @@
+.git
+.phelix
+*.log
+.env
+.env.*
+app_*

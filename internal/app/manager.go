@@ -336,8 +336,12 @@ func (m *AppManager) RemoveApplication(id string) error {
 
 	if app.Directory != "" {
 		binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
-		if err := os.Remove(binaryPath); err != nil && !os.IsNotExist(err) {
-			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to remove application binary %s", binaryPath)
+		if _, err := os.Lstat(binaryPath); err == nil {
+			if err := os.Remove(binaryPath); err != nil && !os.IsNotExist(err) {
+				return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to remove application binary %s", binaryPath)
+			}
+		} else if !os.IsNotExist(err) {
+			return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "failed to inspect application binary %s", binaryPath)
 		}
 	}
 

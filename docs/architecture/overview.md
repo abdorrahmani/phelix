@@ -48,9 +48,10 @@ and [`docs/error-architecture.md`](../error-architecture.md).
 ## Project layout
 
 `cmd/` is thin (flag parsing + orchestration); logic lives in `internal/`.
-`cmd/monitor.go` is the long-running daemon systemd supervises (`phelix monitor`)
-— it restores auto-start apps, drives the health daemon, and holds the persistent
-gRPC stream.
+`cmd/controller.go` starts the service systemd supervises (`phelix controller`).
+It owns the local management API, state lock and proxy, and reuses
+`cmd/monitor.go` for recovery, background schedulers and backend reporting.
+`phelix monitor` is a compatibility alias for this same service.
 
 ```text
 main.go                  # entry point; command registration; single error boundary

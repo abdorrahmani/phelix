@@ -18,6 +18,7 @@ import (
 // per-app sampler alive so CPU deltas survive between monitoring ticks; the
 // mutex guards that map only.
 type appMetricsCollector struct {
+	docker   *RuntimeMetricsCache
 	mu       sync.Mutex
 	samplers map[string]*autoscale.Sampler
 }
@@ -25,8 +26,12 @@ type appMetricsCollector struct {
 // NewMetricsCollector returns the default MetricsCollector implementation,
 // backed by the app/server/logs packages. It is transport-agnostic and can
 // be reused by any monitoring transport (gRPC today, previously WebSocket).
-func NewMetricsCollector() MetricsCollector {
-	return &appMetricsCollector{samplers: make(map[string]*autoscale.Sampler)}
+func NewMetricsCollector(caches ...*RuntimeMetricsCache) MetricsCollector {
+	collector := &appMetricsCollector{samplers: make(map[string]*autoscale.Sampler)}
+	if len(caches) > 0 {
+		collector.docker = caches[0]
+	}
+	return collector
 }
 
 func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
@@ -67,6 +72,24 @@ func (c *appMetricsCollector) CollectAppMetrics() []AppMetrics {
 			continue
 		}
 
+		if state, err := deploy.Load(appInfo.Name); err == nil && state.Runtime == deploy.RuntimeDocker {
+			if c.docker != nil {
+				var cpu float64
+				var memory uint64
+				available := false
+				for _, instance := range dockerServingInstances(state) {
+					if sample, ok := c.docker.Get(instance.ContainerID); ok {
+						cpu += sample.CPUPercent
+						memory += sample.MemoryBytes
+						available = true
+					}
+				}
+				if available {
+					metrics = append(metrics, AppMetrics{AppID: appInfo.ID, AppName: appInfo.Name, ServerID: serverID, CPUUsage: cpu, MemoryUsage: memory})
+				}
+			}
+			continue
+		}
 		status, err := app.Manager.StatusApplication(appInfo.ID)
 		if err != nil {
 			logs.Error("monitor", "error getting status for app %s: %v", appInfo.Name, err)
@@ -178,6 +201,9 @@ func (c *appMetricsCollector) CollectAppDetails() []AppDetails {
 			Storage:      appInfo.Storage,
 			WorkloadType: workloadTypeOf(appInfo),
 		}
+		if state, err := deploy.Load(appInfo.Name); err == nil && state.Runtime == deploy.RuntimeDocker {
+			detail.Status = deploy.DecideLifecycle(state).Status
+		}
 		if summary := workerRuntimeState(appInfo.Name); summary != nil {
 			detail.WorkloadType = project.TypeWorker
 			detail.Status = summary.Status
@@ -259,4 +285,16 @@ func (c *appMetricsCollector) CollectAccessLogs() ([]logs.LogEntry, error) {
 
 func (c *appMetricsCollector) CollectSelfLogs() ([]logs.LogEntry, error) {
 	return logs.CollectSelfLogs(server.GetServerID())
+}
+
+func dockerServingInstances(state *deploy.DeployState) []*deploy.Instance {
+	var instances []*deploy.Instance
+	for _, group := range []map[string]*deploy.Instance{state.Slots, state.Replicas} {
+		for _, instance := range group {
+			if instance != nil && instance.ContainerID != "" && instance.Status == "running" {
+				instances = append(instances, instance)
+			}
+		}
+	}
+	return instances
 }

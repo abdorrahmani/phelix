@@ -7,8 +7,10 @@ and [Health checks](../guides/health-checks.md).
 ## The monitor stream
 
 `internal/grpc` holds a single, long-lived, TLS-secured gRPC stream to the backend
-(`MonitorStream`), opened by the `phelix monitor` daemon. It requires an
-authenticated session (full-scope or agent-scoped — see
+(`MonitorStream`), opened by the monitoring component within the Controller.
+`phelix monitor` is a compatibility alias for `phelix controller`, not a second
+service. This outbound stream is separate from the local CLI Control API.
+It requires an authenticated session (full-scope or agent-scoped — see
 [Authentication](../guides/authentication.md)) and reconnects with exponential
 backoff.
 
@@ -35,14 +37,13 @@ backoff.
   ordinary disconnect.
 ## Watching gate
 
-Server-level data (identity, host metrics, self logs, agent metadata) is
-transmitted only while at least one app is watched (`app.AnyWatched`). With nothing
-watched, the daemon does not even open the stream — an unbound stream would be
-reaped by the backend's pre-bind window and produce reconnect churn — it parks and
-re-checks every 5s, and the first `phelix watch` opt-in re-opens it within seconds.
-Consequently, dashboard-issued remote commands cannot reach a server while none of
-its apps are watched. See [Monitoring guide](../guides/monitoring.md) for the
-user-facing behavior.
+Detailed server information, host metrics, self logs and metadata sync are
+transmitted only while at least one app is watched (`app.AnyWatched`). The
+authenticated stream can remain open with nothing watched. `AgentStatus` sends
+the server ID, agent version, capabilities and heartbeats independently of that
+gate, so remote commands remain reachable subject to local authorization and
+reporting consent. Watching enables app telemetry without restarting the
+Controller. See [Monitoring guide](../guides/monitoring.md) for setup.
 
 ## Traffic snapshots
 

@@ -51,7 +51,7 @@ func spawnHelper(t *testing.T) {
 				_ = cmd.Process.Kill()
 				_, _ = cmd.Process.Wait()
 			})
-			id, err := processex.Identity(cmd.Process.Pid)
+			id, err := processex.WaitIdentity(context.Background(), cmd.Process.Pid, cmd.Path)
 			if err != nil {
 				_ = cmd.Process.Kill()
 				_, _ = cmd.Process.Wait()

@@ -1,0 +1,5 @@
+mode: host
+socket: /absolute/path/to/examples/docker-host-controller/state/control.sock
+sources:
+  - host: /absolute/path/to/examples/docker-host-controller/app
+    controller: /absolute/path/to/examples/docker-host-controller/app

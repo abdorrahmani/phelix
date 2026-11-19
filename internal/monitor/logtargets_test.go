@@ -58,3 +58,19 @@ func TestAppLogTargetsFindsServiceInstanceOutput(t *testing.T) {
 		t.Fatal("service output does not match launch destination", targets)
 	}
 }
+
+func TestAppLogTargetsRetainsStoppedDockerOutput(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	state := &deploy.DeployState{AppName: "docker-output", Runtime: deploy.RuntimeDocker, Mode: deploy.ModeBlueGreen,
+		Slots: map[string]*deploy.Instance{
+			"blue":  {Slot: "blue", ContainerID: "old", BinaryPath: "app:v1", Status: "stopped", Version: 1},
+			"green": {Slot: "green", ContainerID: "new", BinaryPath: "app:v2", Status: "running", Version: 2},
+		}}
+	if err := deploy.Store(state); err != nil {
+		t.Fatal(err)
+	}
+	targets := AppLogTargets(app.AppListItem{ID: "app", Name: state.AppName})
+	if len(targets) != 2 || targets[0].Path != deploy.DockerLogFilePath("old") || targets[1].Path != deploy.DockerLogFilePath("new") {
+		t.Fatal("Docker log paths changed after draining", targets)
+	}
+}

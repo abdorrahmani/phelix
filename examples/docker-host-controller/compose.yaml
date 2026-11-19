@@ -1,0 +1,34 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis:/data"]
+    networks: [backend]
+    restart: unless-stopped
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: example
+      POSTGRES_USER: example
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run setup.sh first}
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    networks: [backend]
+    restart: unless-stopped
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U example -d example"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+networks:
+  backend:
+    name: phelix-host-example
+volumes:
+  redis: {}
+  postgres: {}

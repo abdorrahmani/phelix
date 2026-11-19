@@ -169,6 +169,7 @@ var BuildCmd = &cobra.Command{
 
 		buildMgr := builder.NewBuildManager()
 		buildMgr.SetTimeout(buildTimeout)
+		buildMgr.SetContext(cmd.Context())
 		lang := buildMgr.DetectLanguage(currentDir)
 		if !lang.IsSupported() {
 			return phelixerr.Newf(

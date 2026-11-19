@@ -114,10 +114,10 @@ func (b *countingBackend) attemptCount() int {
 }
 
 // writeTestSessionFile writes a valid, non-expired session under the current
-// HOME, matching the on-disk format loadSession reads.
+// state directory, matching the on-disk format loadSession reads.
 func writeTestSessionFile(t *testing.T) {
 	t.Helper()
-	phelixDir := filepath.Join(os.Getenv("HOME"), ".phelix")
+	phelixDir := sessionDirectory()
 	if err := os.MkdirAll(phelixDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -136,7 +136,7 @@ func writeTestSessionFile(t *testing.T) {
 
 func removeTestSessionFile(t *testing.T) {
 	t.Helper()
-	path := filepath.Join(os.Getenv("HOME"), ".phelix", "session.json")
+	path := sessionFilePath()
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("remove session: %v", err)
 	}

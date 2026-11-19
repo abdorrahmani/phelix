@@ -67,6 +67,7 @@ func runPhelixInHome(t *testing.T, home string, args ...string) (int, string, st
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	prepareControlTest(t, cmd)
 	err := cmd.Run()
 	code := 0
 	if err != nil {
@@ -77,6 +78,24 @@ func runPhelixInHome(t *testing.T, home string, args ...string) (int, string, st
 		}
 	}
 	return code, stdout.String(), stderr.String()
+}
+
+func TestCLIEnvironmentLoadsControllerRegistry(t *testing.T) {
+	home := t.TempDir()
+	directory := filepath.Join(home, ".phelix")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	registry := `{"50102030-4050-4670-8090-aabbccddeeff":{"id":"50102030-4050-4670-8090-aabbccddeeff","name":"environment-app","status":"stopped"}}`
+	if err := os.WriteFile(filepath.Join(directory, "apps.json"), []byte(registry), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"env", "set", "environment-app", "EXAMPLE_VALUE=private-test-token"}, {"env", "list", "environment-app"}} {
+		exit, output, diagnostic := runPhelixInHome(t, home, arguments...)
+		if exit != 0 || !strings.Contains(output, "EXAMPLE_VALUE") || strings.Contains(output+diagnostic, "private-test-token") {
+			t.Fatalf("environment operation failed or exposed its value: exit=%d output=%q diagnostic=%q", exit, output, diagnostic)
+		}
+	}
 }
 
 // TestCLIStatus_AppNotFound_Exit12 is the integration pair of the status.go
@@ -197,6 +216,7 @@ func TestCLIConfigLint_ExitCodes(t *testing.T) {
 			cmd.Env = append(os.Environ(), "HOME="+home)
 			var stdout, stderr strings.Builder
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			prepareControlTest(t, cmd)
 			err := cmd.Run()
 			code := 0
 			if ee, ok := err.(*exec.ExitError); ok {
@@ -215,6 +235,7 @@ func TestCLIConfigLint_ExitCodes(t *testing.T) {
 	cmd := exec.Command(phelixBin(t), "config", "lint")
 	cmd.Dir = t.TempDir()
 	cmd.Env = append(os.Environ(), "HOME="+home)
+	prepareControlTest(t, cmd)
 	err := cmd.Run()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {

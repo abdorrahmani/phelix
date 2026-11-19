@@ -1,0 +1,18 @@
+FROM golang:1.27.4-alpine AS build
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/phelix .
+
+FROM docker:29-cli
+RUN apk add --no-cache ca-certificates git tini
+COPY --from=build /out/phelix /usr/local/bin/phelix
+ENV PHELIX_DATA_DIR=/var/lib/phelix
+ENV HOME=/var/lib/phelix/home
+WORKDIR /var/lib/phelix
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/phelix"]
+CMD ["controller"]

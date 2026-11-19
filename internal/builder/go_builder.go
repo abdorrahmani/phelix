@@ -77,7 +77,11 @@ func (gb *GoBuilder) Build(config BuildConfig) error {
 
 	args = append(args, "-o", config.OutputPath, target)
 
-	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout(config.Timeout))
+	parent := config.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, buildTimeout(config.Timeout))
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "go", args...)

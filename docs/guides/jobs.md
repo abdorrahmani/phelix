@@ -55,7 +55,7 @@ same configuration works before and after `phelix build`.
 
 Each run receives:
 
-- the monitor process environment;
+- the Controller process environment;
 - the environment snapshot recorded with the version, or the app's live
   encrypted environment before the first build;
 - the app's committed secret bindings, merged with the existing
@@ -136,10 +136,11 @@ previous process as `interrupted`, unless the recorded process identity still
 matches: a manual run may outlive a monitor restart. These semantics are in
 [Where Phelix stores data](../reference/data-directory.md).
 
-## Monitor
+## Controller scheduler
 
-Only `phelix monitor` runs the schedule. `phelix job run` works without the
-monitor. The scheduler starts with the daemon, uses its own context, stops
+`phelix controller` runs the schedule; `phelix monitor` starts the same service.
+`phelix job run` submits an immediate run to the Controller instead of waiting
+for the schedule. The scheduler starts with the service, uses its own context, stops
 gracefully on shutdown, and marks an active run `cancelled` when its context is
 cancelled.
 
@@ -151,8 +152,8 @@ instant and one is slow, schedule them a few minutes apart.
 
 - One schedule and one command per app.
 - Only `skip` exists for missed occurrences; there is no catch-up or backfill.
-- Timers live in the monitor. Without `phelix monitor`, nothing runs on
-  schedule, although `phelix job run` still works.
+- Timers live in the Controller. It must be running for scheduled and manual
+  job execution.
 - Host commands only: `deploy.runtime: docker` is rejected.
 - Filesystem locks assume one host; there is no distributed scheduler.
 - The retained 200-execution window is fixed.

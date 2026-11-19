@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/secrets"
@@ -129,12 +130,12 @@ func DockerLauncherForApp(appName, network string) InstanceLauncher {
 			return nil, 0, err
 		}
 		values := phelixerr.SecretValuesInEnv(env)
-		if len(values) == 0 {
-			return proc, port, nil
-		}
 		if err := captureDockerOutput(proc, imageRef, port, env); err != nil {
 			stopHeldProcess(context.Background(), proc, 3*time.Second)
 			return nil, 0, err
+		}
+		if len(values) == 0 {
+			return proc, port, nil
 		}
 		release := phelixerr.AcquireSecretValues(values)
 		go func() {
@@ -153,7 +154,7 @@ func DockerLauncherForApp(appName, network string) InstanceLauncher {
 
 // captureDockerOutput sends container output through the same detached drain as native apps.
 func captureDockerOutput(proc Process, imageRef string, port int, env []string) error {
-	file, err := openInstanceLog(imageRef, port)
+	file, err := openDockerLog(containerIDOf(proc))
 	if err != nil {
 		return err
 	}
@@ -171,6 +172,7 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 		run = execDockerRunner
 	}
 	return func(ctx context.Context, imageRef string, env []string) (Process, int, error) {
+		launchNetwork, containerSlot := network, slot
 		if imageRef == "" {
 			return nil, 0, phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: docker image reference is empty")
 		}
@@ -179,16 +181,37 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 			"--label", DockerLabelManaged + "=true",
 			"--label", DockerLabelApp + "=" + appName,
 		}
+		if owner := os.Getenv("PHELIX_CONTROLLER_ID"); owner != "" {
+			args = append(args, "--label", DockerLabelController+"="+owner)
+			for _, item := range app.Manager.ListApplications() {
+				if item.Name == appName {
+					args = append(args, "--label", DockerLabelAppID+"="+item.ID)
+					break
+				}
+			}
+		}
+		if value, ok := ctx.Value(instanceSlotKey{}).(string); ok {
+			containerSlot = value
+		}
 		if txnID := secretLaunchTxn(env); txnID != "" {
 			args = append(args, "--label", "phelix.secret-txn="+txnID)
 		}
-		if slot != "" {
-			args = append(args, "--label", DockerLabelSlot+"="+slot)
+		if containerSlot != "" {
+			args = append(args, "--label", DockerLabelSlot+"="+containerSlot)
 		}
 		// Publish the fixed internal port to an ephemeral host port bound to
 		// loopback only — the proxy is the sole public entry point, so the
 		// container must never be reachable from outside the host directly.
-		args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d/tcp", dockerInternalPort))
+		if os.Getenv("PHELIX_CONTROLLER_MODE") != "container" {
+			args = append(args, "-p", fmt.Sprintf("127.0.0.1::%d/tcp", dockerInternalPort))
+		} else {
+			if launchNetwork == "" {
+				launchNetwork = os.Getenv("PHELIX_CONTROLLER_NETWORK")
+			}
+			if launchNetwork == "" || launchNetwork != os.Getenv("PHELIX_CONTROLLER_NETWORK") {
+				return nil, 0, phelixerr.New(phelixerr.CodeConfiguration, "application network must match the shared Controller network in container mode")
+			}
+		}
 
 		// Attach to a user-defined network (the docker-compose backing tier) when
 		// one is configured, so the app resolves backing services by their compose
@@ -203,8 +226,8 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 		// round-robin route requests to the unproven candidate. App instances are
 		// reached ONLY through the phelix proxy's public port; this attach exists
 		// purely for the app's own outbound calls to backing services.
-		if network != "" {
-			args = append(args, "--network", network)
+		if launchNetwork != "" {
+			args = append(args, "--network", launchNetwork)
 		}
 
 		multiline := false
@@ -244,7 +267,7 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 
 		proc := &dockerProcess{id: containerID, run: run, secretEnvs: phelixerr.SecretEnvNames(env)}
 
-		hostPort, err := dockerPublishedPort(ctx, run, containerID, dockerInternalPort)
+		endpoint, hostPort, err := dockerEndpoint(ctx, run, containerID, launchNetwork)
 		if err != nil {
 			// The container started but we cannot route to it — kill it so a
 			// half-started candidate is never left leaking (fail-safe deploys).
@@ -252,6 +275,7 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 			return nil, 0, err
 		}
 
+		proc.endpoint = endpoint
 		return proc, hostPort, nil
 	}
 }
@@ -343,6 +367,7 @@ func dockerPublishedPort(ctx context.Context, run dockerRunner, containerID stri
 // GracefulStop drives it exactly like a native process: Signal(SIGTERM) asks
 // politely, Wait blocks on `docker wait`, and Kill force-removes on timeout.
 type dockerProcess struct {
+	endpoint   string
 	id         string
 	run        dockerRunner
 	secretEnvs []string
@@ -365,6 +390,8 @@ func (p *dockerProcess) PID() int {
 // ContainerID exposes the underlying container id for state recording and
 // label-based verification (phase 3).
 func (p *dockerProcess) ContainerID() string { return p.id }
+
+func (p *dockerProcess) Endpoint() string { return p.endpoint }
 
 // Logs returns a bounded, redacted tail of the container's `docker logs`
 // output. Deploy health-failure reporting uses it so a docker candidate that
@@ -522,6 +549,7 @@ func isDockerNotRunning(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "no such container") ||
+		strings.Contains(s, "no such object") ||
 		strings.Contains(s, "is not running") ||
 		strings.Contains(s, "is not paused")
 }

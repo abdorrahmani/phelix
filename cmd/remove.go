@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/deploy"
@@ -40,6 +41,10 @@ var RemoveCmd = &cobra.Command{
 			return err
 		}
 
+		cleanupState, cleanupErr := deploy.Load(appInfo.Name)
+		if cleanupErr != nil && !os.IsNotExist(cleanupErr) {
+			return cleanupErr
+		}
 		if wstate, werr := workerAppState(appInfo.Name); werr == nil && wstate != nil {
 			if err := runWorkerTeardown(appInfo); err != nil {
 				return phelixerr.Wrapf(phelixerr.CodeProcessFailed, err,
@@ -50,6 +55,11 @@ var RemoveCmd = &cobra.Command{
 				"failed to stop the zero-downtime deployment for %q before removal", appInfo.Name)
 		}
 
+		if cleanupState != nil {
+			if err := deploy.RemoveStoppedContainers(cmd.Context(), cleanupState); err != nil {
+				return err
+			}
+		}
 		fmt.Printf("• Removing application '%s' (ID: %s)\n", appInfo.Name, appInfo.ID)
 		if err := app.Manager.RemoveApplication(appInfo.ID); err != nil {
 			if rerr := phelixgrpc.ReportEventResult(appInfo.ID, appInfo.Name, "remove", false, err.Error(), 0, "", ""); rerr != nil {

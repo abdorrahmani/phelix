@@ -53,6 +53,7 @@ func TestMCPStdioServer_AcceptanceWorkflow(t *testing.T) {
 
 	proc := exec.Command(bin, "mcp", "serve", "--stdio")
 	proc.Env = append(os.Environ(), "HOME="+home, "PHELIX_DATA_DIR="+dataDir)
+	prepareControlTest(t, proc)
 	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
 	if err != nil {
 		t.Fatal(err)

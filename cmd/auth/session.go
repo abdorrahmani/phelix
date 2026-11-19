@@ -39,7 +39,7 @@ var ErrNotLoggedIn = phelixerr.New(
 
 // getSessionFilePath returns the full path of the interactive session file.
 func getSessionFilePath() string {
-	return filepath.Join(os.Getenv("HOME"), ".phelix", sessionFileName)
+	return filepath.Join(sessionDirectory(), sessionFileName)
 }
 
 // getAgentSessionFilePath returns the full path of the monitor daemon's
@@ -47,7 +47,7 @@ func getSessionFilePath() string {
 // agent-scoped login never displaces the full-scope session interactive
 // commands rely on (its token is rejected by dashboard REST endpoints).
 func getAgentSessionFilePath() string {
-	return filepath.Join(os.Getenv("HOME"), ".phelix", agentSessionFileName)
+	return filepath.Join(sessionDirectory(), agentSessionFileName)
 }
 
 // sessionPathForScope maps a requested login scope to the file it is stored
@@ -182,4 +182,11 @@ func IsLoggedIn() bool {
 	}
 	_, ok := GetValidAgentSession()
 	return ok
+}
+
+func sessionDirectory() string {
+	if dir := os.Getenv("PHELIX_DATA_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(os.Getenv("HOME"), ".phelix")
 }

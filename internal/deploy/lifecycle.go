@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -170,13 +172,21 @@ func instancesServing(s *DeployState) []*Instance {
 // it to keep the application lifecycle record consistent with the deployment
 // instead of maintaining two independent, drifting notions of "running".
 func DecideLifecycle(state *DeployState) LifecycleDecision {
+	return decideLifecycle(state, InstanceAlive)
+}
+
+func DecideLifecycleContext(ctx context.Context, state *DeployState) LifecycleDecision {
+	return decideLifecycle(state, func(instance *Instance) bool { return InstanceAliveContext(ctx, instance) })
+}
+
+func decideLifecycle(state *DeployState, alive func(*Instance) bool) LifecycleDecision {
 	if state == nil {
 		return LifecycleDecision{}
 	}
 	serving := instancesServing(state)
 	d := LifecycleDecision{Desired: len(serving), PublicPort: state.PublicPort}
 	for _, inst := range serving {
-		if !InstanceAlive(inst) {
+		if !alive(inst) {
 			continue
 		}
 		if d.PID == 0 {
@@ -321,6 +331,7 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 		grace = DefaultGracePeriod
 	}
 
+	var failures []error
 	stopAll := func(instances map[string]*Instance) {
 		for _, inst := range instances {
 			if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
@@ -333,6 +344,10 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 			}
 			log.Stepf("stopping %s instance %s (grace %s)", state.AppName, instanceRef(inst), grace)
 			report := stopInstance(ctx, inst, grace, 0)
+			if !report.Exited {
+				failures = append(failures, fmt.Errorf("cannot confirm instance %s stopped", instanceRef(inst)))
+				continue
+			}
 			if report.ForceKilled {
 				log.Warnf("instance %s ignored SIGTERM; SIGKILL applied", instanceRef(inst))
 			}
@@ -342,6 +357,9 @@ func TeardownDeployment(ctx context.Context, state *DeployState, grace time.Dura
 	}
 	stopAll(state.Slots)
 	stopAll(state.Replicas)
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
 
 	if err := Store(state); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeFilesystem, err, "deploy: persist teardown state for %s", state.AppName)
@@ -430,11 +448,11 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 			return phelixerr.Wrapf(phelixerr.CodeOf(err), err, "deploy: load env snapshot for %s", state.AppName)
 		}
 		log.Stepf("starting %s instance on slot %s", state.AppName, inst.Slot)
-		proc, newPort, err := opts.Launcher(ctx, inst.BinaryPath, envOverlay)
+		proc, newPort, err := opts.Launcher(launchSlot(ctx, inst.Slot), inst.BinaryPath, envOverlay)
 		if err != nil {
 			return phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "deploy: start %s instance", state.AppName)
 		}
-		addr := hostPort(newPort)
+		addr := processEndpoint(proc, newPort)
 		if !port.WaitForListener(addr, opts.ListenTimeout) {
 			_, _ = GracefulStop(ctx, proc, 3*time.Second, 0)
 			return phelixerr.Newf(phelixerr.CodePortUnavailable,
@@ -446,6 +464,7 @@ func StartDeployment(ctx context.Context, state *DeployState, opts StartOptions)
 		inst.StartTicks = startTicksOf(proc)
 
 		inst.ContainerID = containerIDOf(proc)
+		inst.Endpoint = processEndpoint(proc, newPort)
 		inst.Port = newPort
 		inst.Status = "running"
 		inst.StartedAt = time.Now()
@@ -481,14 +500,14 @@ func RestoreProxyRoute(ctx context.Context, state *DeployState, pc ProxyClient, 
 		if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 			return phelixerr.Newf(phelixerr.CodeNotFound, "no running instance for %s", state.AppName)
 		}
-		primary = proxy.Target{Host: hostPort(inst.Port), Label: inst.Slot}
+		primary = proxy.Target{Host: InstanceEndpoint(inst), Label: inst.Slot}
 	case ModeRolling:
 		for _, k := range sortedReplicaKeys(state.Replicas) {
 			inst := state.Replicas[k]
 			if inst == nil || (inst.PID <= 0 && inst.ContainerID == "") {
 				continue
 			}
-			t := proxy.Target{Host: hostPort(inst.Port), Label: "replica-" + k}
+			t := proxy.Target{Host: InstanceEndpoint(inst), Label: "replica-" + k}
 			if primary.Host == "" {
 				primary = t
 				continue

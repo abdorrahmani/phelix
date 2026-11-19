@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/abdorrahmani/phelix/internal/app"
@@ -357,6 +355,14 @@ func init() {
 		"Output machine-readable JSON (stdout carries only the result envelope; progress moves to stderr)")
 	RebuildCmd.Flags().StringVar(&rebuildRequestKey, "request-key", "",
 		"Idempotency key: retrying with the same key and same inputs replays the recorded result instead of executing again; reusing a key with different inputs fails with IDEMPOTENCY_CONFLICT")
+	for _, name := range []string{"strategy", "blue-green", "replicas", "canary", "port", "tag", "source-dir", "auto-rollback", "args", "json", "request-key"} {
+		if DeployCmd.Flags().Lookup(name) == nil {
+			if flag := RebuildCmd.Flags().Lookup(name); flag != nil {
+				DeployCmd.Flags().AddFlag(flag)
+			}
+		}
+	}
+
 }
 
 // runZeroDowntimeDeploy wires the deploy package into the CLI. It builds a
@@ -482,11 +488,9 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 
 	defer func() { errRet = errors.Join(errRet, deploy.FinishSecretTxn(appInfo.ID, secretTxn, errRet)) }()
 
-	deployCtx := context.Background()
-	if spec.Rollout != nil {
-		signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stopSignals()
-		deployCtx = signalCtx
+	deployCtx := spec.Context
+	if deployCtx == nil {
+		deployCtx = context.Background()
 	}
 
 	if spec.Rollout != nil {
@@ -560,7 +564,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 			Secrets:     secretTxn,
 			Hooks:       hookAdapter,
 		}
-		err := bg.Deploy(context.Background())
+		err := bg.Deploy(deployCtx)
 		reconcileAppWithDeploy(name)
 		if err != nil {
 			recordFailedDeploymentAnalysis(out, name, appInfo.ID, "blue-green", previousVer,
@@ -611,7 +615,7 @@ func runZeroDowntimeDeploy(spec *rebuildSpec, op *opRun) (errRet error) {
 		Secrets:        secretTxn,
 		Hooks:          hookAdapter,
 	}
-	err = r.Deploy(context.Background())
+	err = r.Deploy(deployCtx)
 	reconcileAppWithDeploy(name)
 	if err != nil {
 		recordFailedDeploymentAnalysis(out, name, appInfo.ID, "rolling", previousVer,

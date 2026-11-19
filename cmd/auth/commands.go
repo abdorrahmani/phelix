@@ -29,10 +29,13 @@ var LoginCmd = &cobra.Command{
 	Long: `Authenticate user with Phelix.
 
 By default the login issues a full-scope session (dashboard + monitoring),
-stored in ~/.phelix/session.json — this is what interactive CLI commands use.
+stored in session.json under PHELIX_DATA_DIR (default ~/.phelix) — this is
+what interactive CLI commands use.
 
-Use --scope agent to issue a monitoring-only session for the phelix monitor
-daemon, stored separately in ~/.phelix/agent-session.json. An agent-scoped
+Use --scope agent to issue a monitoring-only session for the Controller,
+stored separately in agent-session.json in the same state directory. Set
+PHELIX_DATA_DIR to the Controller's data directory; in Container Mode, run
+login inside the Controller container. An agent-scoped
 token can only be used by the monitoring channel: if the server it runs on is
 ever compromised, the stolen token cannot touch your dashboard or account.
 Use this variant when provisioning servers (install scripts, systemd setup).`,
@@ -80,7 +83,7 @@ Use this variant when provisioning servers (install scripts, systemd setup).`,
 			// endpoints, so the post-login app upload is skipped by design.
 			// The gRPC monitor surface (which the token IS valid for) syncs
 			// apps through its own metadata/snapshot flow.
-			fmt.Printf("Hi %s. Monitoring-only (agent-scoped) session created for the phelix monitor daemon.\n", color.New(color.Bold).SprintFunc()(username))
+			fmt.Printf("Hi %s. Monitoring-only (agent-scoped) session created for Controller monitoring.\n", color.New(color.Bold).SprintFunc()(username))
 			fmt.Printf("A compromised server can no longer expose your full account: this token only authorizes monitoring.\n")
 			connstate.MarkConnected()
 			return nil

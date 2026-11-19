@@ -151,7 +151,8 @@ Examples:
 			}
 
 			// Mask if sensitive
-			displayValue := env.MaskValue(key, value)
+			_ = value
+			displayValue := "***REDACTED***"
 			fmt.Printf("%s=%s\n", key, displayValue)
 
 		case "list":

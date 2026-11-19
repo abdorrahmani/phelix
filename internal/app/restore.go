@@ -36,56 +36,66 @@ var RestoreAppGuard func(id, name string) (func(), error)
 // when LoadState has already been invoked (it re-loads state under the same
 // rule as the rest of the manager).
 func (m *AppManager) RestoreAutoStartApps() (int, error) {
-	m.Lock.Lock()
-	defer m.Lock.Unlock()
-
-	if err := m.loadStateLocked(); err != nil {
+	if err := m.LoadState(); err != nil {
 		return 0, phelixerr.Wrap(phelixerr.CodeFilesystem, "failed to load state", err)
 	}
-
+	m.Lock.Lock()
+	var candidates []AppInfo
+	for _, application := range m.Apps {
+		if application.AutoStart && application.Status != "running" {
+			candidates = append(candidates, *application)
+		}
+	}
+	m.Lock.Unlock()
 	restored := 0
-	for id, a := range m.Apps {
-		// LoadState has already clamped a dead PID to "stopped"; anything in
-		// that state carrying AutoStart intent is a restore candidate.
-		if !a.AutoStart || a.Status == "running" {
-			continue
-		}
+	for _, application := range candidates {
+		id := application.ID
 		if DeployedAppSkipper != nil && DeployedAppSkipper(id) {
-			logs.Info("app", "skipping classic restore for %s (ID: %s): managed by zero-downtime deployment", a.Name, id)
+			logs.Info("app", "skipping classic restore for %s (ID: %s): managed by zero-downtime deployment", application.Name, id)
 			continue
-		}
-
-		// startApplicationProcess reuses the app's persisted directory, port
-		// and log file, and flags the app as auto-start again. Legacy state
-		// files may carry an empty log_file; fall back to the canonical path.
-		logFile := a.LogFile
-		if logFile == "" {
-			logFile = logs.AppLogPath(id)
 		}
 		release := func() {}
 		if RestoreAppGuard != nil {
 			var err error
-			release, err = RestoreAppGuard(id, a.Name)
+			release, err = RestoreAppGuard(id, application.Name)
 			if err != nil {
-				logs.Warning("app", "cannot restore app %s (ID: %s): %v", a.Name, id, err)
+				logs.Warning("app", "cannot restore app %s (ID: %s): %v", application.Name, id, err)
 				continue
 			}
 		}
-		err := m.startApplicationProcess(id, a.Name, a.Port, logFile)
-		if err == nil {
-			err = m.SaveState()
-			if err != nil {
-				err = errors.Join(err, m.stopNewlyStarted(a))
-			}
-		}
+		started, err := m.restoreClassicApplication(id)
 		release()
 		if err != nil {
-			logs.Error("app", "failed to restore app %s (ID: %s): %v", a.Name, id, err)
+			logs.Error("app", "failed to restore app %s (ID: %s): %v", application.Name, id, err)
 			continue
 		}
-		logs.Info("app", "restored app %s (ID: %s) on port %d", a.Name, id, a.Port)
-		restored++
+		if started {
+			logs.Info("app", "restored app %s (ID: %s) on port %d", application.Name, id, application.Port)
+			restored++
+		}
 	}
-
 	return restored, nil
+}
+
+func (m *AppManager) restoreClassicApplication(id string) (bool, error) {
+	m.Lock.Lock()
+	defer m.Lock.Unlock()
+	if err := m.loadStateLocked(); err != nil {
+		return false, err
+	}
+	application := m.Apps[id]
+	if application == nil || !application.AutoStart || application.Status == "running" {
+		return false, nil
+	}
+	logFile := application.LogFile
+	if logFile == "" {
+		logFile = logs.AppLogPath(id)
+	}
+	if err := m.startApplicationProcess(id, application.Name, application.Port, logFile); err != nil {
+		return false, err
+	}
+	if err := m.SaveState(); err != nil {
+		return false, errors.Join(err, m.stopNewlyStarted(application))
+	}
+	return true, nil
 }

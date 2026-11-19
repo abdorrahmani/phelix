@@ -119,12 +119,13 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 				return err
 			}
 		} else {
-			proc, listenPort, err := launcher(ctx, inst.BinaryPath, env)
+			proc, listenPort, err := launcher(launchSlot(ctx, key), inst.BinaryPath, env)
 			if err != nil {
 				return err
 			}
 			processes[key] = proc
 			candidate.PID, candidate.Port, candidate.ContainerID = proc.PID(), listenPort, containerIDOf(proc)
+			candidate.Endpoint = processEndpoint(proc, listenPort)
 			candidate.StartTicks = 0
 			if candidate.ContainerID == "" {
 				identity, err := processex.Identity(candidate.PID)
@@ -134,8 +135,8 @@ func RestartSecretInstances(ctx context.Context, state *DeployState, desired *se
 				candidate.StartTicks = identity.StartTime
 			}
 			cfg := DefaultHealthProvider()(state.AppID)
-			tier := selectDeployHealth(ctx, cfg, state.AppName, hostPort(listenPort), &nopLogger{}, nil)
-			if err := health.WaitForHealthy(ctx, tier, cfg, hostPort(listenPort), proc.PID(), deployResolver(proc)); err != nil {
+			tier := selectDeployHealth(ctx, cfg, state.AppName, processEndpoint(proc, listenPort), &nopLogger{}, nil)
+			if err := health.WaitForHealthy(ctx, tier, cfg, processEndpoint(proc, listenPort), proc.PID(), deployResolver(proc)); err != nil {
 				return err
 			}
 		}

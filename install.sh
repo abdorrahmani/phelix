@@ -13,9 +13,9 @@
 #      the binary; skips gracefully when none is present.
 #   4. Installs it to <install-dir>/phelix (default /usr/local/bin).
 #   5. On Linux: registers + enables a phelix.service systemd unit that runs
-#      `phelix monitor` directly in the foreground. The daemon restores the
-#      managed apps that were previously running and keeps its TLS gRPC
-#      connection to the backend alive, reconnecting with exponential backoff.
+#      `phelix controller` directly in the foreground. The service restores the
+#      managed apps that were previously running. Authenticated backend
+#      monitoring uses TLS gRPC and reconnects with exponential backoff.
 #      On macOS: installs the binary only (no systemd).
 #
 # This is the end-user counterpart of the in-repo setup.sh, which builds from
@@ -357,18 +357,18 @@ setup_systemd() {
 
     # systemd unit. Runs as the invoking (non-root) user when installed via sudo.
     #
-    # ExecStart runs `phelix monitor` DIRECTLY — no startup wrapper. The monitor
-    # daemon runs in the foreground: it loads local state, restores managed apps
-    # that were previously running, opens its TLS gRPC connection to the backend,
-    # and reconnects with exponential backoff. systemd supervises the daemon
+    # ExecStart runs `phelix controller` directly without a startup wrapper. The
+    # service runs in the foreground: it loads local state, restores managed apps
+    # that were previously running and optionally reports watched apps through
+    # an authenticated TLS gRPC connection. systemd supervises the daemon
     # process itself, so `systemctl stop` delivers a clean SIGTERM.
     #
-    # KillMode=process stops only the monitor process on stop/restart, keeping
-    # managed application processes alive across monitor restarts.
+    # KillMode=process stops only the Controller process on stop/restart, keeping
+    # managed application processes alive across Controller restarts.
     local svc_user="${SUDO_USER:-${USER}}"
     ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<UNIT
 [Unit]
-Description=Phelix Node Agent
+Description=Phelix Controller
 After=network-online.target
 Wants=network-online.target
 
@@ -376,7 +376,7 @@ Wants=network-online.target
 Type=simple
 User=${svc_user}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/phelix monitor
+ExecStart=${INSTALL_DIR}/phelix controller
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
@@ -523,12 +523,10 @@ BANNER
             setup_systemd
         else
             warn "systemctl not found; skipping service setup."
-            warn "Run 'phelix monitor' in the foreground, or create your own init unit."
+            warn "Run 'phelix controller' in the foreground, or create your own init unit."
         fi
     elif [ "${OS}" = "darwin" ]; then
-        info "macOS: binary installed. No systemd on macOS — start the monitor manually:"
-        info "  ${C_CYAN}phelix monitor${C_RESET}   # run in the foreground"
-        info "Or use launchd / a background-session script for auto-start."
+        info "macOS: binary installed. The Controller requires a Linux host."
     fi
 
     # Verify the binary is runnable.
@@ -546,13 +544,14 @@ BANNER
     echo "  ${C_CYAN}phelix auth login${C_RESET}            # authenticate"
     echo "  ${C_CYAN}phelix build myapp --port 8080${C_RESET}  # build & run an app"
     [ "${OS}" = "linux" ] && [ "${NO_SERVICE}" -eq 0 ] && \
-        echo "  ${C_CYAN}sudo systemctl status phelix${C_RESET}   # monitor service"
+        echo "  ${C_CYAN}sudo systemctl status phelix${C_RESET}   # Controller service"
     # On servers used only for monitoring, prefer the agent-scoped session: a
     # stolen token from a compromised server then has no account access.
     echo
-    echo "  Server only running the monitor? Authenticate with"
+    echo "  For backend monitoring, authenticate with"
     echo "  ${C_CYAN}phelix auth login --scope agent${C_RESET} — the issued token"
     echo "  only authorizes monitoring, not your account."
+    echo "  ${C_CYAN}phelix watch myapp${C_RESET}         # enable backend reporting for this app"
 }
 
 main "$@"

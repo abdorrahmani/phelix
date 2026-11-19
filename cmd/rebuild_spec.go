@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 // rebuildSpec is the resolved execution specification for one rebuild.
 type rebuildSpec struct {
+	Context      context.Context
 	ProjCfg      *project.Config
 	AppInfo      *app.AppInfo
 	Name         string
@@ -137,6 +139,7 @@ func buildRebuildSpec(cmd *cobra.Command, args []string) (*rebuildSpec, error) {
 
 	buildMgr := builder.NewBuildManager()
 	buildMgr.SetTimeout(rebuildTimeout)
+	buildMgr.SetContext(cmd.Context())
 	lang := builder.ParseLanguage(appInfo.Language)
 	if !lang.IsSupported() {
 		lang = buildMgr.DetectLanguage(buildSource)
@@ -160,6 +163,7 @@ func buildRebuildSpec(cmd *cobra.Command, args []string) (*rebuildSpec, error) {
 	}
 
 	return &rebuildSpec{
+		Context:      cmd.Context(),
 		ProjCfg:      projCfg,
 		AppInfo:      appInfo,
 		Name:         name,
@@ -196,9 +200,11 @@ func runRebuildExec(spec *rebuildSpec, op *opRun) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "  %s Checking toolchain...\n", color.BlueString("→"))
-	if err := toolchain.EnsureTool(lang, Confirm); err != nil {
-		return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
+	if projCfg.DeployRuntime() != project.RuntimeDocker {
+		fmt.Fprintf(out, "  %s Checking toolchain...\n", color.BlueString("→"))
+		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
+			return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)
+		}
 	}
 
 	fmt.Fprintf(out, "%s Rebuilding application %s (ID: %s)\n", color.BlueString("→"), color.CyanString("'%s'", name), color.YellowString(appInfo.ID))

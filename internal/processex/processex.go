@@ -9,11 +9,35 @@
 package processex
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+func WaitIdentity(ctx context.Context, pid int, executable string) (ProcessIdentity, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			return ProcessIdentity{}, err
+		}
+		identity, err := Identity(pid)
+		if err == nil && sameExe(identity.ExePath, executable) {
+			return identity, nil
+		}
+		if !Alive(pid) {
+			return ProcessIdentity{}, ErrNoStat
+		}
+		select {
+		case <-ctx.Done():
+			return ProcessIdentity{}, ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
 
 // ProcessIdentity is the spawn-time fingerprint of one process.
 type ProcessIdentity struct {

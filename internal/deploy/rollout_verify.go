@@ -34,6 +34,10 @@ var ErrStableBaselineUnhealthy = errors.New("stable baseline failed its health p
 // StepContext is everything one verification window needs to know about the
 // step and the two instances it observes.
 type StepContext struct {
+	CanaryEndpoint string
+	StableEndpoint string
+	CanaryProcess  Process
+	StableInstance *Instance
 	Step           int // zero-based index of the step being verified
 	TotalSteps     int
 	TrafficPercent int
@@ -64,15 +68,15 @@ func (ro *Rollout) verifyStep(ctx context.Context, sc StepContext) error {
 	interval := ro.Plan.Verification.withDefaults().Interval
 
 	probe := func() error {
-		if sc.CanaryPID > 0 && !pidAlive(sc.CanaryPID) {
+		if sc.CanaryProcess != nil && !processAlive(sc.CanaryProcess) || sc.CanaryProcess == nil && sc.CanaryPID > 0 && !pidAlive(sc.CanaryPID) {
 			return phelixerr.Newf(phelixerr.CodeCanaryRegression,
 				"canary process (pid %d) exited while serving %d%% of traffic", sc.CanaryPID, sc.TrafficPercent)
 		}
-		if !health.Check(ctx, sc.Tier, sc.TierCfg, hostPort(sc.CanaryPort), sc.CanaryPID, nil) {
+		if !health.Check(ctx, sc.Tier, sc.TierCfg, stepEndpoint(sc.CanaryEndpoint, sc.CanaryPort), sc.CanaryPID, deployResolver(sc.CanaryProcess)) {
 			return phelixerr.Newf(phelixerr.CodeCanaryRegression,
 				"canary failed its health check at %d%% traffic (tier %s)", sc.TrafficPercent, sc.Tier)
 		}
-		if !health.Check(ctx, sc.Tier, sc.TierCfg, hostPort(sc.StablePort), sc.StablePID, nil) {
+		if !health.Check(ctx, sc.Tier, sc.TierCfg, stepEndpoint(sc.StableEndpoint, sc.StablePort), sc.StablePID, resolverForInstance(sc.StableInstance)) {
 			return phelixerr.Wrapf(phelixerr.CodeHealthCheckFailed, ErrStableBaselineUnhealthy,
 				"stable baseline on port %d failed its health check during rollout", sc.StablePort)
 		}
@@ -175,7 +179,7 @@ func (ro *Rollout) evaluateStats(sc StepContext, start, end map[string]proxy.Bac
 	}
 	log := ro.logger()
 
-	canaryHost, stableHost := hostPort(sc.CanaryPort), hostPort(sc.StablePort)
+	canaryHost, stableHost := stepEndpoint(sc.CanaryEndpoint, sc.CanaryPort), stepEndpoint(sc.StableEndpoint, sc.StablePort)
 	cDelta := deltaBetween(start[canaryHost], end[canaryHost])
 	sDelta := deltaBetween(start[stableHost], end[stableHost])
 	info.CanaryRequests, info.CanaryErrors, info.BaselineRequests = cDelta.requests, cDelta.errors, sDelta.requests
@@ -327,4 +331,25 @@ func humanCount(n int64) string {
 		out = append(out, c)
 	}
 	return string(out)
+}
+
+func stepEndpoint(endpoint string, port int) string {
+	if endpoint != "" {
+		return endpoint
+	}
+	return hostPort(port)
+}
+
+func processAlive(process Process) bool {
+	if alive, ok := process.(interface{ Alive() bool }); ok {
+		return alive.Alive()
+	}
+	return pidAlive(process.PID())
+}
+
+func resolverForInstance(instance *Instance) *health.Resolver {
+	if instance != nil && instance.ContainerID != "" {
+		return health.NewResolver(health.WithPidChecker(func(int) bool { return InstanceAlive(instance) }))
+	}
+	return nil
 }

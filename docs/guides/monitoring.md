@@ -4,9 +4,16 @@ Phelix can push app data, resource metrics, health, and logs to your dashboard
 at `phelix.anophel.com` through a persistent gRPC monitoring stream. Monitoring
 is **opt-in per app** and requires an authenticated session.
 
-## `phelix monitor`
+## Controller and monitoring
 
-Starts the long-running gRPC monitoring daemon that:
+`phelix controller` starts the service that owns local application management,
+deployment, recovery, the proxy and monitoring. `phelix monitor` is a compatibility
+alias for the same service. Do not run both as separate processes.
+
+Monitoring is a responsibility within the Controller. Its optional backend
+connection is separate from the local Unix socket used by the CLI. Local
+application management does not require dashboard authentication or a watched app.
+The Controller:
 
 - Restores managed applications that were previously running (auto-start apps).
 - Opens a single, long-lived, TLS-secured gRPC stream to the Phelix backend
@@ -15,15 +22,15 @@ Starts the long-running gRPC monitoring daemon that:
 - Sends application information, resource metrics, and logs of every **watched**
   app to the central server roughly every 2 seconds (see per-app watching below).
 - While at least one app is watched, also sends the server's own data — identity,
-  host metrics, self logs, agent metadata; with nothing watched it transmits
-  nothing at all and does not even open the stream.
+  host metrics, self logs and metadata. An authenticated agent connection can
+  remain active without watched apps, advertising capabilities and heartbeats.
 - Automatically reconnects with exponential backoff if the connection is lost.
 - Provides real-time updates for all managed applications.
 
 It runs in the **foreground** and stays attached to the terminal when invoked
 manually. On Linux it is normally started by the systemd unit created by
-`install.sh`, which supervises `phelix monitor` directly
-(`/usr/local/bin/phelix monitor` as `ExecStart`) — there is no backgrounding
+`install.sh`, which supervises `phelix controller` directly
+(`/usr/local/bin/phelix controller` as `ExecStart`). There is no backgrounding
 shell wrapper. Manage it with:
 
 ```bash
@@ -33,6 +40,33 @@ sudo systemctl stop phelix
 sudo systemctl status phelix
 sudo journalctl -u phelix -f
 ```
+
+## Enable backend reporting
+
+With the installed Controller service running, authenticate as its service
+account and enable watching for each application you want on the dashboard:
+
+```bash
+phelix auth login --scope agent
+phelix watch myapp
+phelix status myapp
+```
+
+Use the same `PHELIX_DATA_DIR` as the Controller if you configured a custom state
+directory. Login alone does not enable watching. A full-scope login also works;
+the Controller prefers an agent-scoped session when available.
+
+In Container Mode, login inside the Controller container so the session is
+stored in its persistent state volume. For the supplied Compose example:
+
+```bash
+docker compose exec controller phelix auth login --scope agent
+phelix watch container-example
+```
+
+Run the host `watch` command with the example's `PHELIX_CONTROL_SOCKET` configured.
+The Controller sends watched app data through its existing authenticated gRPC
+connection. A separate `phelix monitor` process is unnecessary.
 
 ## Multi-server
 
@@ -71,7 +105,7 @@ rebuild keeps your choice instead of reverting it (a project without
 `phelix.yaml` changes only the runtime state — no file is created).
 
 The state persists in `apps.json`, is shown by `phelix list` (WATCHING column)
-and `phelix status` (Watching column), and takes effect on the monitor daemon's
+and `phelix status` (Watching column), and takes effect on the Controller's
 next reporting tick — no restart needed.
 
 **When `watching` is enabled**, the app participates in backend monitoring as
@@ -80,23 +114,20 @@ per-replica share), health snapshots, app logs, deployment topology, and
 dashboard registration flow to `phelix.anophel.com`.
 
 **When `watching` is disabled**, none of that data is sent for the app — the
-backend receives no monitoring stream for it at all (not an empty payload).
+backend receives no telemetry payloads for that app.
 Everything else keeps working exactly as before: the app can still be built, run,
 stopped, restarted, rolled back, and inspected locally, local health checks and
 auto-restart keep running, and `phelix list`/`phelix status` show its full local
 state. `watching` belongs to the application, so one server can mix watched and
 unwatched apps freely.
 
-**Server-level data follows the same opt-in.** Server identity, host metrics,
-self logs, and agent metadata are transmitted only while at least one app on the
-server is watched: a server whose every app has opted out sends nothing to the
-backend at all, and the monitor daemon does not even open the monitoring stream
-(there is nothing to say, and a stream that never identifies itself would be
-reaped by the backend's pre-bind window anyway). Enabling `watching` on any app
-re-opens the stream within a few seconds — no restart needed. This also means
-dashboard-issued remote commands (rollback, matrix, webhook management) cannot
-reach a server while none of its apps are watched; enabling watching restores the
-channel.
+**Host telemetry follows the same opt-in.** Detailed server information, host
+metrics, self logs and metadata sync are transmitted only while at least one app
+is watched. The authenticated agent connection can remain open without watched
+apps: it sends the server ID, agent version, capabilities and heartbeats, and can
+receive remote commands subject to local authorization and reporting consent.
+Enabling watching takes effect without restarting the Controller or its agent
+connection.
 
 Watching never affects local behavior: `phelix build` and `phelix rebuild` work
 identically with or without it (a missing `phelix.yaml` changes nothing), and a
@@ -110,14 +141,15 @@ enforced server-side.
 
 ## Remote (dashboard-issued) commands
 
-While a server has at least one watched app, the dashboard can issue remote
-commands over the monitoring stream — remote rebuild (including one-off strategy
+While the Controller has an authenticated backend connection, the dashboard can
+issue remote commands over the monitoring stream — remote rebuild (including one-off strategy
 overrides), rollback, matrix, and webhook management. The one-off strategy
 override the dashboard sends is the same one `--strategy` applies locally; see
 [configuration](../reference/configuration.md) and the
 
 ## Related
 
+- [Controller operations](controller.md): installation, local API and lifecycle.
 - [Authentication](authentication.md) — the session the daemon needs, and
   agent-scoped tokens.
 - [Health checks](health-checks.md) — how health snapshots are configured.

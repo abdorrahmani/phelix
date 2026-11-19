@@ -29,6 +29,17 @@ func dockerContainerAlive(containerID string) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	return dockerContainerAliveContext(ctx, containerID)
+}
+
+func dockerContainerAliveContext(ctx context.Context, containerID string) bool {
+	owned, ownershipErr := ownedDockerContainer(ctx, dockerIdentityRunner, containerID)
+	if ownershipErr != nil {
+		return !isDockerNotRunning(ownershipErr)
+	}
+	if !owned {
+		return false
+	}
 	out, err := dockerIdentityRunner(ctx,
 		"inspect", "--format", "{{.State.Running}}|{{index .Config.Labels \""+DockerLabelManaged+"\"}}", containerID)
 	if err != nil {
@@ -40,6 +51,13 @@ func dockerContainerAlive(containerID string) bool {
 		return false
 	}
 	return running == "true" && managed == "true"
+}
+
+func InstanceAliveContext(ctx context.Context, instance *Instance) bool {
+	if instance != nil && instance.ContainerID != "" {
+		return dockerContainerAliveContext(ctx, instance.ContainerID)
+	}
+	return instanceAliveViaRuntime(instance)
 }
 
 // dockerProcessByID rebuilds a Process handle for a container started by a
@@ -62,6 +80,13 @@ func dockerProcessByID(containerID string) Process {
 func stopByContainerID(ctx context.Context, containerID string, grace time.Duration, inFlight int64) ShutdownReport {
 	verifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	owned, ownershipErr := ownedDockerContainer(verifyCtx, dockerIdentityRunner, containerID)
+	if ownershipErr != nil {
+		return ShutdownReport{Exited: isDockerNotRunning(ownershipErr), InFlight: inFlight}
+	}
+	if !owned {
+		return ShutdownReport{Exited: true, InFlight: inFlight}
+	}
 	out, err := dockerIdentityRunner(verifyCtx, "inspect", "--format", "{{.State.Running}}|{{index .Config.Labels \""+DockerLabelManaged+"\"}}", containerID)
 	if err != nil {
 		return ShutdownReport{Exited: isDockerNotRunning(err), InFlight: inFlight}

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
@@ -17,6 +18,14 @@ func KnownContainerIDs(state *DeployState) []string {
 		return nil
 	}
 	var ids []string
+	if state.ScaleProgress != nil {
+		if state.ScaleProgress.NewContainerID != "" {
+			ids = append(ids, state.ScaleProgress.NewContainerID)
+		}
+		if state.ScaleProgress.VictimContainerID != "" {
+			ids = append(ids, state.ScaleProgress.VictimContainerID)
+		}
+	}
 	for _, inst := range state.Retiring {
 		if inst != nil && inst.ContainerID != "" {
 			ids = append(ids, inst.ContainerID)
@@ -58,10 +67,14 @@ func ReconcileOrphanContainers(ctx context.Context, appName string, known map[st
 }
 
 func reconcileOrphanContainers(ctx context.Context, appName string, known map[string]bool, run dockerRunner) ([]string, error) {
-	out, err := run(ctx, "ps", "-a", "--no-trunc",
-		"--filter", "label="+DockerLabelManaged+"=true",
-		"--filter", "label="+DockerLabelApp+"="+appName,
-		"--format", "{{.ID}}")
+	args := []string{"ps", "-a", "--no-trunc",
+		"--filter", "label=" + DockerLabelManaged + "=true",
+		"--filter", "label=" + DockerLabelApp + "=" + appName,
+		"--format", "{{.ID}}"}
+	if owner := os.Getenv("PHELIX_CONTROLLER_ID"); owner != "" {
+		args = append(args, "--filter", "label="+DockerLabelController+"="+owner)
+	}
+	out, err := run(ctx, args...)
 	if err != nil {
 		return nil, phelixerr.Wrapf(phelixerr.CodeDocker, err, "deploy: list phelix-managed containers")
 	}
@@ -73,6 +86,13 @@ func reconcileOrphanContainers(ctx context.Context, appName string, known map[st
 			continue
 		}
 
+		owned, verifyErr := ownedDockerContainer(ctx, run, id)
+		if verifyErr != nil {
+			return removed, verifyErr
+		}
+		if !owned {
+			continue
+		}
 		if _, rmErr := run(ctx, "rm", "-f", id); rmErr != nil {
 			continue
 		}

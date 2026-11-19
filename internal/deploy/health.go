@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/health"
@@ -61,7 +62,7 @@ func selectDeployHealth(ctx context.Context, cfg *health.DeployTierConfig, appNa
 // instance and from the on-disk instance log for a native one; the native path
 // is byte-for-byte unchanged.
 func candidateHealthFailure(proc Process, binaryPath string, port int, tier health.Tier, cfg *health.DeployTierConfig, err error) error {
-	detail := "probe target: " + probeTarget(tier, cfg, port)
+	detail := "probe target: " + strings.ReplaceAll(probeTarget(tier, cfg, port), hostPort(port), processEndpoint(proc, port))
 	if tail := candidateLogTail(proc, binaryPath, port, 2048); tail != "" {
 		detail += "\ninstance output (tail):\n" + tail
 	}

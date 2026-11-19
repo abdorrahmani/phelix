@@ -48,7 +48,11 @@ func (rb *RustBuilder) Validate(scan *ProjectScan) error {
 // Build performs a Rust build and records the exact executable cargo reported
 // for the selected package and binary target.
 func (rb *RustBuilder) Build(config BuildConfig) error {
-	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout(config.Timeout))
+	parent := config.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, buildTimeout(config.Timeout))
 	defer cancel()
 
 	selection, err := cargo.SelectFor(ctx, config.ProjectRoot, config.ExtraArgs)

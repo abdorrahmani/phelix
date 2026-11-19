@@ -24,7 +24,10 @@ type ScaleProgress struct {
 	To        int       `json:"to"`
 	StartedAt time.Time `json:"started_at"`
 
-	NewPID int `json:"new_pid,omitempty"`
+	NewPID            int    `json:"new_pid,omitempty"`
+	NewContainerID    string `json:"new_container_id,omitempty"`
+	VictimContainerID string `json:"victim_container_id,omitempty"`
+	VictimEndpoint    string `json:"victim_endpoint,omitempty"`
 
 	VictimKey    string `json:"victim_key,omitempty"`
 	VictimPID    int    `json:"victim_pid,omitempty"`
@@ -154,7 +157,7 @@ func (e *ScaleExecutor) scaleUp(ctx context.Context, state *DeployState, from, d
 func (e *ScaleExecutor) scaleUpOne(ctx context.Context, state *DeployState, key, binaryPath, envPath string, envOverlay []string, ver int, tier health.Tier, tierCfg *health.DeployTierConfig, grace time.Duration, enrolled bool) error {
 	log := e.logger()
 
-	proc, port, err := e.Launcher(ctx, binaryPath, envOverlay)
+	proc, port, err := e.Launcher(launchSlot(ctx, key), binaryPath, envOverlay)
 	if err != nil {
 		e.clearProgress(state)
 		if persistErr := e.persist(state); persistErr != nil {
@@ -163,6 +166,7 @@ func (e *ScaleExecutor) scaleUpOne(ctx context.Context, state *DeployState, key,
 		return phelixerr.Wrapf(phelixerr.CodeInstanceStartFailed, err, "autoscale: launch replica %s", key)
 	}
 	state.ScaleProgress.NewPID = proc.PID()
+	state.ScaleProgress.NewContainerID = containerIDOf(proc)
 	if err := e.persist(state); err != nil {
 		stopHeldProcess(ctx, proc, grace)
 		e.clearProgress(state)
@@ -176,12 +180,13 @@ func (e *ScaleExecutor) scaleUpOne(ctx context.Context, state *DeployState, key,
 	inst.Version = ver
 	inst.StartTicks = startTicksOf(proc)
 	inst.ContainerID = containerIDOf(proc)
+	inst.Endpoint = processEndpoint(proc, port)
 	inst.StartedAt = time.Now()
 	inst.PID = proc.PID()
 	inst.Port = port
 	inst.Status = "starting"
 
-	if err := health.WaitForHealthy(ctx, tier, tierCfg, hostPort(port), proc.PID(), deployResolver(proc)); err != nil {
+	if err := health.WaitForHealthy(ctx, tier, tierCfg, processEndpoint(proc, port), proc.PID(), deployResolver(proc)); err != nil {
 		stopHeldProcess(ctx, proc, grace)
 		delete(state.Replicas, key)
 		e.clearProgress(state)
@@ -275,6 +280,8 @@ func (e *ScaleExecutor) scaleDown(ctx context.Context, state *DeployState, from,
 		if state.ScaleProgress.VictimKey == "" {
 			state.ScaleProgress.VictimKey = inst.Slot
 			state.ScaleProgress.VictimPID = inst.PID
+			state.ScaleProgress.VictimContainerID = inst.ContainerID
+			state.ScaleProgress.VictimEndpoint = inst.Endpoint
 			state.ScaleProgress.VictimPort = inst.Port
 			state.ScaleProgress.VictimBinary = inst.BinaryPath
 		}
@@ -354,10 +361,12 @@ func RecoverInterruptedScale(ctx context.Context, appName string, proxyClient Pr
 	case "down":
 		if marker.VictimPID > 0 || marker.VictimPort > 0 {
 			victim := &Instance{
-				Slot:       marker.VictimKey,
-				PID:        marker.VictimPID,
-				Port:       marker.VictimPort,
-				BinaryPath: marker.VictimBinary,
+				Slot:        marker.VictimKey,
+				PID:         marker.VictimPID,
+				ContainerID: marker.VictimContainerID,
+				Endpoint:    marker.VictimEndpoint,
+				Port:        marker.VictimPort,
+				BinaryPath:  marker.VictimBinary,
 			}
 			stopInstance(ctx, victim, DefaultGracePeriod, 0)
 		}
@@ -379,10 +388,13 @@ func RecoverInterruptedScale(ctx context.Context, appName string, proxyClient Pr
 // recorded launch PID from the marker plus a process scan for the app's
 // replica binaries, mirroring DetectWorkerOrphans.
 func stopUnrecordedReplicas(ctx context.Context, state *DeployState, marker *ScaleProgress) error {
-	if marker.NewPID > 0 {
+	if marker.NewPID > 0 || marker.NewContainerID != "" {
 		binary := markerBinaryFor(state, marker)
-		victim := &Instance{Slot: "scale", PID: marker.NewPID, BinaryPath: binary}
+		victim := &Instance{Slot: "scale", PID: marker.NewPID, BinaryPath: binary, ContainerID: marker.NewContainerID}
 		stopInstance(ctx, victim, DefaultGracePeriod, 0)
+	}
+	if state.Runtime == RuntimeDocker {
+		return nil
 	}
 	known := make(map[int]bool, len(state.Replicas))
 	exes := make(map[string]bool)

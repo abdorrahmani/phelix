@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"testing"
@@ -197,6 +198,55 @@ func TestRestoreSkipsOnlyAppWhoseGuardFails(t *testing.T) {
 	}
 	if !checked["blocked"] || !checked["ready"] || !released {
 		t.Fatal("blocked app prevented independent restore or leaked its lock")
+	}
+}
+
+func TestRestoreSkipperCanReadRegistry(t *testing.T) {
+	isolateStateFile(t)
+	previous := DeployedAppSkipper
+	t.Cleanup(func() { DeployedAppSkipper = previous })
+	manager := &AppManager{Apps: map[string]*AppInfo{"docker": {ID: "docker", Name: "docker", AutoStart: true, Status: "stopped"}}}
+	if err := manager.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	checked := false
+	DeployedAppSkipper = func(id string) bool {
+		applications := manager.ListApplications()
+		checked = len(applications) == 1 && id == applications[0].ID
+		return true
+	}
+	count, err := manager.RestoreAutoStartApps()
+	if err != nil || count != 0 || !checked {
+		t.Fatal("restore callback could not inspect registry", count, err)
+	}
+}
+
+func TestRemoveApplicationWithoutNativeBinaryOnReadOnlySource(t *testing.T) {
+	isolateStateFile(t)
+	source := t.TempDir()
+	marker := filepath.Join(source, "main.go")
+	if err := os.WriteFile(marker, []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(source, 0555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(source, 0700) })
+	manager := &AppManager{Apps: map[string]*AppInfo{"docker": {ID: "docker", Name: "docker", Status: "stopped", Directory: source}}}
+	if err := manager.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RemoveApplication("docker"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.LoadState(); err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.Apps) != 0 {
+		t.Fatal("application remains registered")
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "source" {
+		t.Fatal("application removal changed source", err)
 	}
 }
 
