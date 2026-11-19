@@ -20,7 +20,7 @@ import (
 // These run the real binary against a local release server (via
 // PHELIX_RELEASE_BASE_URL) so no test depends on phelix.anophel.com being
 // reachable. Each test builds its own stamped binaries because `phelix
-// update` replaces its own executable — sharing phelixBin would corrupt it
+// update` replaces its own executable, sharing phelixBin would corrupt it
 // for other tests.
 
 // testCmd is the single exec point of this test harness. Executables are
