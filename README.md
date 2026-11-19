@@ -81,6 +81,16 @@ curl -fsSL https://phelix.anophel.com/install.sh | bash
 phelix version
 ```
 
+To try the latest beta, install with `--channel beta`:
+
+```bash
+curl -fsSL https://phelix.anophel.com/install.sh | bash -s -- --channel beta
+```
+
+Use `phelix update --channel beta` for later beta updates. Stable remains the
+default. See [installation](docs/getting-started/installation.md) for pinned
+versions and update checks.
+
 Then, from a Go or Rust project directory:
 
 ```bash

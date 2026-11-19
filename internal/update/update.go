@@ -47,7 +47,7 @@ type Options struct {
 	// BaseURL overrides DefaultBaseURL. Empty means the public release host.
 	BaseURL string
 	Channel string
-	// CurrentVersion is the running binary's version , the same string
+	// CurrentVersion is the running binary's version, the same string
 	// `phelix version` prints (internal/version.Version).
 	CurrentVersion string
 	// CheckOnly resolves and compares versions without downloading,
@@ -116,7 +116,7 @@ func Run(opts Options) (*Result, error) {
 
 	steps(StepInfo, "Checking for updates...")
 
-	// Current version , same source as `phelix version`. A development or
+	// Current version, same source as `phelix version`. A development or
 	// unknown version carries no release semantics, so it is never treated
 	// as "older than everything"; refuse rather than blindly replace.
 	curRaw := strings.TrimSpace(opts.CurrentVersion)

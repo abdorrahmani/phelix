@@ -173,7 +173,7 @@ func (c *ReleaseClient) DownloadArtifact(version string, p Platform, destPath st
 }
 
 // FetchChecksum downloads the .sha256 sidecar for a release artifact. found
-// is false when the release publishes no checksum , install.sh's policy in
+// is false when the release publishes no checksum, install.sh's policy in
 // that case is to warn and continue, never to guess. A malformed sidecar is
 // a hard error.
 func (c *ReleaseClient) FetchChecksum(version string, p Platform) (sumHex string, found bool, err error) {
@@ -219,7 +219,7 @@ func isSHA256Hex(s string) bool {
 }
 
 // VerifyChecksum compares the SHA-256 of filePath against wantHex. A
-// mismatch is always a hard failure , it must never be downgraded to a
+// mismatch is always a hard failure, it must never be downgraded to a
 // warning.
 func VerifyChecksum(filePath, wantHex string) error {
 	sum, err := fileSHA256(filePath)

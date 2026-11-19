@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install.sh , Phelix one-line installer (hosted at phelix.anophel.com/install.sh)
+# install.sh, Phelix one-line installer (hosted at phelix.anophel.com/install.sh)
 #
 #   curl -fsSL https://phelix.anophel.com/install.sh | bash
 #
@@ -575,7 +575,7 @@ BANNER
     # stolen token from a compromised server then has no account access.
     echo
     echo "  For backend monitoring, authenticate with"
-    echo "  ${C_CYAN}phelix auth login --scope agent${C_RESET} , the issued token"
+    echo "  ${C_CYAN}phelix auth login --scope agent${C_RESET}, the issued token"
     echo "  only authorizes monitoring, not your account."
     echo "  ${C_CYAN}phelix watch myapp${C_RESET}         # enable backend reporting for this app"
 }
