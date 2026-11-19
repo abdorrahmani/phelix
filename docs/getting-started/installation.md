@@ -33,15 +33,47 @@ phelix version              # verify the install
 sudo systemctl status phelix   # Linux: Controller service running?
 ```
 
+## Beta releases and pinned versions
+
+The default installer uses the stable channel. To install the latest beta:
+
+```bash
+curl -fsSL https://phelix.anophel.com/install.sh | bash -s -- --channel beta
+```
+
+You can also select beta through the installer's environment:
+
+```bash
+curl -fsSL https://phelix.anophel.com/install.sh | PHELIX_CHANNEL=beta bash
+```
+
+To install a specific release, pass its complete version:
+
+```bash
+curl -fsSL https://phelix.anophel.com/install.sh | bash -s -- --version 1.3.0-beta.1
+```
+
+`--version` takes precedence over channel selection and accepts a leading `v`.
+`PHELIX_VERSION` provides the same option through the installer's environment.
+`--channel` takes precedence over `PHELIX_CHANNEL`. Only `stable` and `beta`
+are supported. Beta versions use `-beta` or `-beta.1`, `-beta.2`, and so on.
+
+The installer resolves stable releases from `releases/latest/version` and beta
+releases from `releases/beta/version`, then downloads from the concrete version
+directory. It prefers the `X-Phelix-Version` header and otherwise uses the first
+body line. Missing, invalid, or incompatible channel metadata stops installation
+before the installed binary is changed. A pinned version does not need channel
+metadata.
+
 ## Runtime dependencies and system requirements
 
-- **Go** toolchain (`go`) and/or **Rust** toolchain (`cargo`) — required to
+- **Go** toolchain (`go`) and/or **Rust** toolchain (`cargo`), required to
   build apps. Phelix detects a missing toolchain and offers to install it
   automatically on Linux; for other operating systems it prints manual
   instructions.
-- **Docker** — only required for `phelix dockerize` (and for the
+- **Docker**, only required for `phelix dockerize` (and for the
   [Docker runtime](../guides/docker-runtime.md)).
-- **Internet connection** — optional. Only needed for authentication and the
+- **Internet connection**, optional. Only needed for authentication and the
   `phelix.anophel.com` dashboard; build/run works fully offline.
 - Sufficient permissions to create and manage application files.
 - Network access between servers, if you monitor multiple servers.
@@ -53,16 +85,29 @@ phelix update            # download and install the latest release
 phelix update --check    # only report whether an update is available
 ```
 
+To check for or install a beta update:
+
+```bash
+phelix update --channel beta --check
+phelix update --channel beta
+```
+
+Channel selection applies to the current command. Even after installing a beta,
+`phelix update` defaults to stable. Use `--channel beta` whenever you want a beta
+update. A final release is newer than its own beta, and beta numbers are compared
+numerically, so `beta.10` is newer than `beta.2`. The updater never downgrades: if
+the selected channel is older than the installed version, it leaves it in place.
+
 `phelix update` upgrades the Phelix CLI/agent binary itself to the latest
 stable release, using the **same release server and layout as the one-line
 installer** (`https://phelix.anophel.com/releases/<version>/phelix-<os>-<arch>`),
 so no Go/Rust toolchain is needed. In summary it:
 
-- Resolves the latest stable version and compares it against the running one
+- Resolves the latest version in the chosen channel and compares it against the running one
   with proper semantic-version ordering (`v1.2.3` and `1.2.3` are the same
   version; a locally newer build is never downgraded).
 - Downloads the matching prebuilt binary for the current platform.
-- Verifies the release's **SHA-256 checksum** when one is published — a mismatch
+- Verifies the release's **SHA-256 checksum** when one is published, a mismatch
   aborts the update. When no checksum is published, it warns and continues (same
   policy as the installer).
 - Validates the download is a genuine Phelix binary for this platform, then
@@ -86,7 +131,7 @@ If Phelix is already up to date:
 ```
 
 Application state under `~/.phelix/` (sessions, builds, environment variables,
-version history) is **never modified** — the command only replaces the binary
+version history) is **never modified**, the command only replaces the binary
 itself and never rebuilds your applications.
 
 > The internal mechanics of the update/release pipeline (checksum policy,
@@ -126,10 +171,10 @@ command -v phelix              # should print nothing
 
 ## Next steps
 
-- [Quick Start](quick-start.md) — build and deploy your first app.
-- [The PORT Contract](the-port-contract.md) — the one hard requirement for
+- [Quick Start](quick-start.md), build and deploy your first app.
+- [The PORT Contract](the-port-contract.md), the one hard requirement for
   managed apps.
-- [Configuration reference](../reference/configuration.md) — the `phelix.yaml`
+- [Configuration reference](../reference/configuration.md), the `phelix.yaml`
   project file.
 
 ## Controller service and Docker installation

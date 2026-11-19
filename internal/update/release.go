@@ -24,8 +24,7 @@ import (
 const DefaultBaseURL = "https://phelix.anophel.com"
 
 const (
-	latestVersionPath = "/releases/latest/version"
-	versionHeader     = "X-Phelix-Version"
+	versionHeader = "X-Phelix-Version"
 )
 
 // Request timeouts. The download gets a generous budget for slow links; the
@@ -40,6 +39,7 @@ const (
 type ReleaseClient struct {
 	BaseURL string
 	HTTP    *http.Client
+	Channel string
 }
 
 func (c *ReleaseClient) client() *http.Client {
@@ -67,18 +67,26 @@ func (c *ReleaseClient) do(req *http.Request) (*http.Response, error) {
 
 // artifactURL builds the release download URL for version/platform.
 func (c *ReleaseClient) artifactURL(version string, p Platform) string {
+	version = strings.TrimPrefix(strings.TrimPrefix(version, "v"), "V")
 	return strings.TrimSuffix(c.BaseURL, "/") + "/releases/" + version + "/phelix-" + p.OS + "-" + p.Arch
 }
 
-// ResolveLatest returns the latest stable version string exactly as the
-// server publishes it, using the same authoritative endpoint and header as
-// install.sh: GET /releases/latest/version → X-Phelix-Version. When the
-// header is absent the response body is used as a fallback.
+// ResolveLatest reads the selected channel's version from the response header or first body line.
 func (c *ReleaseClient) ResolveLatest() (string, error) {
+	channel := c.Channel
+	path := "/releases/latest/version"
+	switch channel {
+	case "", "stable":
+		channel = "stable"
+	case "beta":
+		path = "/releases/beta/version"
+	default:
+		return "", phelixerr.Newf(phelixerr.CodeInvalidArgument, "unknown release channel %q; choose stable or beta", channel)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		strings.TrimSuffix(c.BaseURL, "/")+latestVersionPath, nil)
+		strings.TrimSuffix(c.BaseURL, "/")+path, nil)
 	if err != nil {
 		return "", phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "invalid release server URL %q", c.BaseURL)
 	}
@@ -89,8 +97,8 @@ func (c *ReleaseClient) ResolveLatest() (string, error) {
 	defer resp.Body.Close()
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return "", phelixerr.New(phelixerr.CodeNotFound,
-			"the release server publishes no latest-version information")
+		return "", phelixerr.Newf(phelixerr.CodeNotFound,
+			"the release server publishes no %s version information", channel)
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
 		return "", phelixerr.Newf(phelixerr.CodeConnection,
 			"the release server returned HTTP %d while resolving the latest version", resp.StatusCode)
@@ -98,12 +106,24 @@ func (c *ReleaseClient) ResolveLatest() (string, error) {
 
 	v := strings.TrimSpace(resp.Header.Get(versionHeader))
 	if v == "" {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		if err != nil {
+			return "", phelixerr.Wrap(phelixerr.CodeConnection, "could not read the release version", err)
+		}
 		v = strings.TrimSpace(strings.SplitN(string(body), "\n", 2)[0])
 	}
 	if v == "" {
 		return "", phelixerr.New(phelixerr.CodeNotFound,
 			"the release server did not report a latest version")
+	}
+	parsed, err := ParseSemver(v)
+	if err != nil {
+		return "", err
+	}
+	if (channel == "stable" && parsed.Pre != "") ||
+		(channel == "beta" && parsed.Pre != "beta" && !strings.HasPrefix(parsed.Pre, "beta.")) {
+		return "", phelixerr.Newf(phelixerr.CodeConfiguration,
+			"the %s channel reported an incompatible version (%q)", channel, v)
 	}
 	return v, nil
 }
@@ -153,7 +173,7 @@ func (c *ReleaseClient) DownloadArtifact(version string, p Platform, destPath st
 }
 
 // FetchChecksum downloads the .sha256 sidecar for a release artifact. found
-// is false when the release publishes no checksum — install.sh's policy in
+// is false when the release publishes no checksum, install.sh's policy in
 // that case is to warn and continue, never to guess. A malformed sidecar is
 // a hard error.
 func (c *ReleaseClient) FetchChecksum(version string, p Platform) (sumHex string, found bool, err error) {
@@ -199,7 +219,7 @@ func isSHA256Hex(s string) bool {
 }
 
 // VerifyChecksum compares the SHA-256 of filePath against wantHex. A
-// mismatch is always a hard failure — it must never be downgraded to a
+// mismatch is always a hard failure, it must never be downgraded to a
 // warning.
 func VerifyChecksum(filePath, wantHex string) error {
 	sum, err := fileSHA256(filePath)

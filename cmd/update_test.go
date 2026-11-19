@@ -20,7 +20,7 @@ import (
 // These run the real binary against a local release server (via
 // PHELIX_RELEASE_BASE_URL) so no test depends on phelix.anophel.com being
 // reachable. Each test builds its own stamped binaries because `phelix
-// update` replaces its own executable — sharing phelixBin would corrupt it
+// update` replaces its own executable, sharing phelixBin would corrupt it
 // for other tests.
 
 // testCmd is the single exec point of this test harness. Executables are
@@ -37,10 +37,11 @@ func testCmd(name string, args ...string) (*exec.Cmd, error) {
 }
 
 var (
-	stampedBuildOnce sync.Once
-	stampedBinDir    string // holds "phelix" (v1.0.0) and the 1.0.1 release payload
-	releasePayload   string // the 1.0.1 binary, served as the release artifact
-	stampedBuildErr  error
+	stampedBuildOnce   sync.Once
+	stampedBinDir      string // holds "phelix" (v1.0.0) and the 1.0.1 release payload
+	releasePayload     string // the 1.0.1 binary, served as the release artifact
+	betaReleasePayload string
+	stampedBuildErr    error
 )
 
 func buildStampedBinaries(t *testing.T) string {
@@ -58,6 +59,7 @@ func buildStampedBinaries(t *testing.T) string {
 		}
 		stampedBinDir = dir
 		releasePayload = filepath.Join(dir, "phelix-release-1.0.1")
+		betaReleasePayload = filepath.Join(dir, "phelix-release-1.1.0-beta.1")
 
 		build := func(version, out string) error {
 			ldflags := fmt.Sprintf("-s -w -X github.com/abdorrahmani/phelix/internal/version.BuildID=test -X github.com/abdorrahmani/phelix/internal/version.Commit=test -X github.com/abdorrahmani/phelix/internal/version.BuildTime=2026-11-06T11:46:12Z -X github.com/abdorrahmani/phelix/internal/version.Version=%s", version)
@@ -79,6 +81,9 @@ func buildStampedBinaries(t *testing.T) string {
 		if err := build("1.0.1", releasePayload); err != nil {
 			stampedBuildErr = err
 			return
+		}
+		if err := build("1.1.0-beta.1", betaReleasePayload); err != nil {
+			stampedBuildErr = err
 		}
 	})
 	if stampedBuildErr != nil {

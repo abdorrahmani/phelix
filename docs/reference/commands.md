@@ -20,13 +20,13 @@ config file supplies both, the command runs without asking anything.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port, -p` | `8080` | Port to run the app on (not required for matrix builds, which never start an instance, and not required for `type: worker` or `type: job` projects, which never listen) |
-| `--build-arg, -a` | — | Extra args passed to the build tool (repeatable); in matrix mode they are passed to every `go build` / `cross build` |
-| `--tag` | — | Human label stored with the version (e.g. `"hotfix-auth"`) |
+| `--build-arg, -a` |, | Extra args passed to the build tool (repeatable); in matrix mode they are passed to every `go build` / `cross build` |
+| `--tag` |, | Human label stored with the version (e.g. `"hotfix-auth"`) |
 | `--debug` | `false` | Verbose build/tool output |
 | `--matrix` | `false` | Matrix mode: build versions × platforms (see [Matrix builds](../guides/matrix-builds.md); also activates via the phelix.yaml matrix profile) |
-| `--go-versions` | — | Go versions, e.g. `1.22,1.23,1.27` |
-| `--rust-versions` | — | Rust versions, e.g. `1.77,1.78.2` |
-| `--platforms` | — | Targets, e.g. `linux/amd64,linux/arm64` |
+| `--go-versions` |, | Go versions, e.g. `1.22,1.23,1.27` |
+| `--rust-versions` |, | Rust versions, e.g. `1.77,1.78.2` |
+| `--platforms` |, | Targets, e.g. `linux/amd64,linux/arm64` |
 | `--matrix-concurrency` | 3 | Max parallel matrix builds |
 | `--matrix-dry-run` | `false` | Print the plan without building |
 | `--all` | `false` | Build every service of the workspace in dependency order (see [Workspaces](../guides/workspaces.md)) |
@@ -52,9 +52,9 @@ rolling rebuild inherited this way keeps the replica count the app is running at
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port, -p` | previous/`8080` | Port to run on |
-| `--build-arg, -a` | — | Extra build args (repeatable) |
-| `--tag` | — | Version label |
-| `--strategy` | — | Strategy for this rebuild only: `classic`, `blue-green`, `rolling`, `canary`, or `progressive`. Overrides `phelix.yaml`; never written back to it |
+| `--build-arg, -a` |, | Extra build args (repeatable) |
+| `--tag` |, | Version label |
+| `--strategy` |, | Strategy for this rebuild only: `classic`, `blue-green`, `rolling`, `canary`, or `progressive`. Overrides `phelix.yaml`; never written back to it |
 | `--blue-green` | `false` | Zero-downtime blue-green deploy (needs `phelix proxy`) |
 | `--replicas` | `0` | Zero-downtime rolling deploy over N replicas |
 | `--canary` | `0` | Canary deploy: route N percent (1-99) of traffic to the new version, verify health and metrics, then promote. Verification window/thresholds come from `phelix.yaml` `deploy.rollout` (needs `phelix proxy` and an existing deployment) |
@@ -70,7 +70,7 @@ phelix rebuild myapp --strategy rolling
 ```
 
 `--strategy rolling` combined with `--replicas N` uses N replicas. `--canary`
-cannot be combined with `--strategy`, `--blue-green` or `--replicas` — it already
+cannot be combined with `--strategy`, `--blue-green` or `--replicas`, it already
 names a strategy. An unrecognized value fails with `INVALID_ARGUMENT` (exit code
 `2`) before anything is built. This is the same override the dashboard sends for a
 remote rebuild (`canary`/`progressive` overrides resolve their plan from the app's
@@ -105,7 +105,7 @@ Never modifies application source code. If a hardcoded listen port is detected,
 prints a warning and points to `phelix doctor`. It also accepts `--runtime docker`
 to write a docker-runtime config (see [Docker runtime](../guides/docker-runtime.md))
 and `--type worker` to write a port-less worker template (supervision defaults,
-no `port`, no endpoint probes — see [Workers](../guides/workers.md)):
+no `port`, no endpoint probes, see [Workers](../guides/workers.md)):
 
 ```bash
 phelix init --type worker --name email-worker --yes
@@ -143,7 +143,7 @@ phelix config schema > schema.json
 ### `phelix doctor`
 
 Diagnoses whether the current project is Phelix-compatible: project detection,
-toolchain, build tools, `phelix.yaml`, and — most importantly — whether the
+toolchain, build tools, `phelix.yaml`, and, most importantly, whether the
 application listens on `PORT` instead of a hardcoded port.
 
 ```text
@@ -173,7 +173,7 @@ listener check entirely. Diagnostic only, never rewrites source code.
 
 ### `phelix build-report <AppName> [flags]`
 
-Read-only inspection of stored build reports — never triggers a build, works fully
+Read-only inspection of stored build reports, never triggers a build, works fully
 offline. See [Build reports](../guides/build-reports.md).
 
 ```bash
@@ -217,11 +217,11 @@ with `ROLLBACK_FAILED`).
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--to` | — | Target: `v3`, `3`, or a tag name (bypasses the interactive picker) |
+| `--to` |, | Target: `v3`, `3`, or a tag name (bypasses the interactive picker) |
 | `--list` | `false` | List all retained versions with metadata (non-interactive) |
 | `--dry-run` | `false` | Preview the rollback plan without changing application, process, proxy, or deployment state |
-| `--reason` | — | Record why the rollback was performed (stored in rollback history; max 500 characters) |
-| `--verify` | — | Observe rollback stability for a Go duration (e.g. `30s`, `1m`, `2m30s`) after the rollback completes |
+| `--reason` |, | Record why the rollback was performed (stored in rollback history; max 500 characters) |
+| `--verify` |, | Observe rollback stability for a Go duration (e.g. `30s`, `1m`, `2m30s`) after the rollback completes |
 | `--all` | `false` | Roll every workspace service back to its own previous version in reverse dependency order. Cannot be combined with `--to`, `--list`, `--dry-run`, `--verify`, or `--request-key` |
 
 ### `phelix rollback history <AppName> [--limit N]`
@@ -459,7 +459,7 @@ phelix dockerize myapp --tag v1.0.0 --with-compose --depends-on redis,postgres
 | `-a, --build-arg` | Extra build argument `KEY=VALUE` (repeatable; malformed entries are rejected with `INVALID_ARGUMENT`) |
 | `--with-compose` | Generate a `docker-compose.yml` with the app service |
 | `--depends-on` | Sidecar services for compose (`redis`, `postgres`, `mysql`, `mongodb`, `rabbitmq`) |
-| `--matrix` + family | Matrix Docker builds — see [Matrix builds](../guides/matrix-builds.md) |
+| `--matrix` + family | Matrix Docker builds, see [Matrix builds](../guides/matrix-builds.md) |
 
 ## Matrix builds
 
@@ -601,7 +601,7 @@ phelix security server reboot-status         # restart requirement, reasons, ker
 
 ```bash
 phelix version [--short | --verbose]
-phelix update [--check]   # update the Phelix binary to the latest release
+phelix update [--check] [--channel stable|beta]
 phelix controller   # start local management and optional backend reporting (foreground)
 phelix monitor      # compatibility alias for phelix controller
 phelix webhook      # start the Git push webhook server (foreground; see Webhooks)
@@ -610,21 +610,22 @@ phelix webhook history <app>  # recent webhook deployment history (offline, read
 phelix wizard       # guided interactive menu (see Interactive usage)
 ```
 
-- `phelix version` — see [installation](../getting-started/installation.md).
-- `phelix update` — see [installation](../getting-started/installation.md#updating);
+- `phelix version`, see [installation](../getting-started/installation.md).
+- `phelix update` defaults to stable. Use `--channel beta` to check for or install
+  a beta release. See [installation](../getting-started/installation.md#updating);
   internals in [release process](../development/release-process.md).
-- `phelix controller` — see [Controller](../guides/controller.md) and
+- `phelix controller`, see [Controller](../guides/controller.md) and
   [Monitoring](../guides/monitoring.md) for backend reporting.
-- `phelix monitor` — compatibility alias for the same Controller service.
-- `phelix webhook` — see [Webhooks](../guides/webhooks.md).
-- `phelix wizard` — see [Interactive usage](../guides/interactive-usage.md).
+- `phelix monitor`, compatibility alias for the same Controller service.
+- `phelix webhook`, see [Webhooks](../guides/webhooks.md).
+- `phelix wizard`, see [Interactive usage](../guides/interactive-usage.md).
 
 ## Related
 
-- [Configuration](configuration.md) — the `phelix.yaml` values these commands
+- [Configuration](configuration.md), the `phelix.yaml` values these commands
   resolve.
-- [Workers](../guides/workers.md) — the workload model behind `phelix scale`
+- [Workers](../guides/workers.md), the workload model behind `phelix scale`
   and the worker behavior of the lifecycle commands.
-- [Jobs](../guides/jobs.md) — the scheduled one-shot workload behind
+- [Jobs](../guides/jobs.md), the scheduled one-shot workload behind
   `phelix job`.
 - [Exit codes](exit-codes.md), [Error codes](error-codes.md).

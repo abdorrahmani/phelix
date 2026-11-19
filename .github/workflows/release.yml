@@ -1,0 +1,80 @@
+name: Publish Phelix release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, such as v1.3.0 or v1.3.0-beta.1
+        required: true
+        type: string
+      publish:
+        description: Publish the release after testing and building
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phelix-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          source .github/scripts/release-tag.sh
+          read_release_tag "$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'RELEASE_DIR=%s/phelix-release-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release artifacts
+        shell: bash
+        env:
+          BUILD_ID: ${{ github.run_number }}.${{ github.run_attempt }}
+        run: bash .github/scripts/build-artifacts.sh "$RELEASE_TAG" "$RELEASE_DIR" "$BUILD_ID"
+
+      - name: Save release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: phelix-${{ steps.release.outputs.version }}
+          path: ${{ env.RELEASE_DIR }}/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish GitHub release
+        if: github.event_name == 'push' || inputs.publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .github/scripts/publish-github.sh "$RELEASE_TAG" "$RELEASE_DIR"

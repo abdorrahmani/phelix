@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install.sh — Phelix one-line installer (hosted at phelix.anophel.com/install.sh)
+# install.sh, Phelix one-line installer (hosted at phelix.anophel.com/install.sh)
 #
 #   curl -fsSL https://phelix.anophel.com/install.sh | bash
 #
@@ -35,8 +35,9 @@ set -euo pipefail
 # This is the authoritative release contract. The in-binary `phelix update`
 # command (internal/update) resolves and downloads releases from the same
 # layout below; keep the two in sync when changing it.
-BASE_URL="https://phelix.anophel.com"
+BASE_URL="${PHELIX_RELEASE_BASE_URL:-https://phelix.anophel.com}"
 VERSION="${PHELIX_VERSION:-latest}"
+CHANNEL="${PHELIX_CHANNEL:-stable}"
 INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="phelix"
 NO_SERVICE=0
@@ -226,35 +227,43 @@ detect_arch() {
     esac
 }
 
-# Resolve "latest" to a concrete version from the stable URL, using the same
-# contract as `phelix update` (internal/update): prefer the X-Phelix-Version
-# response header when the host sets one, then fall back to the first line of
-# the body — which is the `version` file release.sh publishes. Returns the
-# concrete version string, or "latest" if resolution is unavailable (the
-# download itself will still work against the /latest/ path).
-resolve_version() {
-    # Release directories are unprefixed (releases/1.0.0), so strip a
-    # user-supplied leading "v" (e.g. --version v1.2.3).
+# validate_version checks a release name before it is used in a download address.
+validate_version() {
     local v="${1#v}"
-    if [ "${v}" != "latest" ]; then
-        printf "%s" "${v}"
+    v="${v#V}"
+    local pattern='^[0-9]+\.[0-9]+\.[0-9]+(-?[0-9A-Za-z][0-9A-Za-z-]*(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+    [[ "${v}" =~ ${pattern} ]] || fail "invalid release version: $1"
+    printf '%s' "${v}"
+}
+
+# resolve_version reads the chosen channel or returns a requested release version.
+resolve_version() {
+    if [ "$1" != "latest" ]; then
+        validate_version "$1"
         return
     fi
+    local alias="latest" resolved=""
+    [ "${CHANNEL}" != "beta" ] || alias="beta"
+    local version_url="${BASE_URL}/releases/${alias}/version"
     if have_cmd curl; then
-        local resolved
-        if resolved="$(curl -fsSI "${BASE_URL}/releases/latest/version" 2>/dev/null \
-                       | sed -n 's/^[Xx]-Phelix-[Vv]ersion:[[:space:]]*//p' \
-                       | tr -d '[:space:]\r' | head -n1)" && [ -n "${resolved}" ]; then
-            printf "%s" "${resolved}"
-            return
-        fi
-        if resolved="$(curl -fsSL "${BASE_URL}/releases/latest/version" 2>/dev/null \
-                       | head -n1 | tr -d '[:space:]\r')" && [ -n "${resolved}" ]; then
-            printf "%s" "${resolved}"
-            return
-        fi
+        resolved="$(curl -fsSI "${version_url}" 2>/dev/null \
+            | awk 'tolower($1) == "x-phelix-version:" {sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); print; exit}')" || resolved=""
     fi
-    printf "latest"
+    if [ -z "${resolved}" ]; then
+        download "${version_url}" "${TMPDIR_WORK}/version" \
+            || fail "could not find a ${CHANNEL} release"
+        resolved="$(sed -n '1{s/\r$//;s/^[[:space:]]*//;s/[[:space:]]*$//;p;}' "${TMPDIR_WORK}/version")"
+    fi
+    resolved="$(validate_version "${resolved}")" || return 1
+    local release="${resolved%%+*}"
+    if [ "${CHANNEL}" = "stable" ]; then
+        [[ "${release}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || fail "the stable channel reported a prerelease: ${resolved}"
+    else
+        [[ "${release}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-?beta(\.[0-9A-Za-z-]+)*$ ]] \
+            || fail "the beta channel reported an incompatible version: ${resolved}"
+    fi
+    printf '%s' "${resolved}"
 }
 
 # ---------------------------------------------------------------------------
@@ -439,6 +448,10 @@ UNIT
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
+            --channel)
+                CHANNEL="${2:?--channel requires a value (stable or beta)}"
+                shift 2
+                ;;
             --version)
                 VERSION="${2:?--version requires a value (e.g. 1.2.3)}"
                 shift 2
@@ -463,6 +476,7 @@ Usage:
   curl -fsSL https://phelix.anophel.com/install.sh | bash
 
 Options (pass after `bash -s --`):
+  --channel <c>      Release channel: stable or beta. Default: stable.
   --version <v>      Pin a release version (e.g. 1.2.3). Default: latest.
   --install-dir <p>  Binary install directory. Default: /usr/local/bin.
   --no-service       Do not create/enable the systemd service.
@@ -470,7 +484,9 @@ Options (pass after `bash -s --`):
   --help             Show this help.
 
 Environment:
+  PHELIX_CHANNEL     Same as --channel.
   PHELIX_VERSION     Same as --version.
+  PHELIX_RELEASE_BASE_URL  Release server address. Default: https://phelix.anophel.com.
 HELP
                 exit 0
                 ;;
@@ -497,6 +513,16 @@ main() {
         do_uninstall
         exit 0
     fi
+
+    case "${CHANNEL}" in
+        stable|beta) ;;
+        *) fail "unknown release channel: ${CHANNEL}; choose stable or beta" ;;
+    esac
+    BASE_URL="${BASE_URL%/}"
+    local https_url='^https://[^/?#[:space:]]+(/[^?#[:space:]]*)?$'
+    local local_url='^http://(localhost|127(\.[0-9]{1,3}){3}|\[::1\])(:[0-9]+)?(/[^?#[:space:]]*)?$'
+    [[ "${BASE_URL}" =~ ${https_url} || "${BASE_URL}" =~ ${local_url} ]] \
+        || fail "PHELIX_RELEASE_BASE_URL must use HTTPS, or HTTP on a local address"
 
     info "This is the ${C_BOLD}Phelix${C_RESET} installer."
     info "Detected platform: ${C_CYAN}${OS}/${ARCH}${C_RESET}"
@@ -549,7 +575,7 @@ BANNER
     # stolen token from a compromised server then has no account access.
     echo
     echo "  For backend monitoring, authenticate with"
-    echo "  ${C_CYAN}phelix auth login --scope agent${C_RESET} — the issued token"
+    echo "  ${C_CYAN}phelix auth login --scope agent${C_RESET}, the issued token"
     echo "  only authorizes monitoring, not your account."
     echo "  ${C_CYAN}phelix watch myapp${C_RESET}         # enable backend reporting for this app"
 }

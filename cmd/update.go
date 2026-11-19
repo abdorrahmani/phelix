@@ -14,12 +14,13 @@ import (
 )
 
 var updateCheckOnly bool
+var updateChannel string
 
 // UpdateCmd updates the installed Phelix binary to the latest stable
 // release using the same release server and layout as install.sh.
 var UpdateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update Phelix to the latest release",
+	Short: "Update Phelix to the latest stable or beta release",
 	Long: `Update the Phelix CLI/agent binary to the latest stable release.
 
 The command resolves the latest release from the same release server the
@@ -31,6 +32,7 @@ On Linux, when the phelix.service systemd unit is running, the monitor
 service is restarted after the binary is replaced (managed applications
 keep running). Application state under ~/.phelix/ is never touched.
 
+Use --channel beta to try the latest beta release. Stable is the default.
 Use --check to only report whether an update is available.`,
 	Args: cobra.NoArgs,
 	RunE: func(cobraCmd *cobra.Command, args []string) error {
@@ -40,6 +42,7 @@ Use --check to only report whether an update is available.`,
 
 func init() {
 	UpdateCmd.Flags().BoolVar(&updateCheckOnly, "check", false, "Check for an update without installing it")
+	UpdateCmd.Flags().StringVar(&updateChannel, "channel", "stable", "Release channel: stable or beta")
 }
 
 func runUpdate() error {
@@ -50,6 +53,7 @@ func runUpdate() error {
 
 	_, err = update.Run(update.Options{
 		BaseURL:        baseURL,
+		Channel:        updateChannel,
 		CurrentVersion: version.Version,
 		CheckOnly:      updateCheckOnly,
 		StdinIsTTY:     IsInteractive(),

@@ -13,7 +13,7 @@ import (
 )
 
 // oomLauncher returns a dead-on-arrival port (health fails) whose process
-// handle reports RESOURCE_OOM for the exit — what launchInstance produces for
+// handle reports RESOURCE_OOM for the exit, what launchInstance produces for
 // a candidate killed by its cgroup memory limit before becoming healthy.
 type oomLauncher struct{}
 
@@ -84,7 +84,7 @@ func TestBlueGreenCandidateOOMFailsDeployKeepsActiveServing(t *testing.T) {
 func TestRollingReplacementOOMUsesExistingFailurePath(t *testing.T) {
 	resetHome(t)
 	app := "rolling-oom"
-	old := &Instance{Slot: "0", PID: os.Getpid(), Port: 43210, BinaryPath: "/bin/true", EnvPath: "/old/env", Status: "running", Version: 7, StartedAt: time.Unix(12, 0)}
+	old := &Instance{Slot: "0", PID: os.Getpid(), Port: 43210, BinaryPath: "/bin/true", EnvPath: "/old/env", Status: "running", Version: 7, StartedAt: time.Unix(12, 0).UTC()}
 	state := &DeployState{AppName: app, Mode: ModeRolling, PublicPort: 8080, Replicas: map[string]*Instance{"0": cloneInstance(old)}}
 	if err := Store(state); err != nil {
 		t.Fatal(err)
