@@ -50,7 +50,11 @@ func TestGitHubArtifactBuildRestoresConfig(t *testing.T) {
 			}
 			command := exec.Command("bash", ".github/scripts/build-artifacts.sh", "v1.3.0-beta.1", "artifacts", "42.1")
 			command.Dir = dir
-			command.Env = append(os.Environ(), "PATH="+filepath.Join(dir, "bin")+":"+os.Getenv("PATH"), fmt.Sprintf("PHELIX_TEST_BUILD_FAIL=%d", map[bool]int{false: 0, true: 1}[fail]))
+			buildFail := "0"
+			if fail {
+				buildFail = "1"
+			}
+			command.Env = append(os.Environ(), "PATH="+filepath.Join(dir, "bin")+":"+os.Getenv("PATH"), "PHELIX_TEST_BUILD_FAIL="+buildFail)
 			output, runErr := command.CombinedOutput()
 			if (runErr != nil) != fail {
 				t.Fatalf("error = %v, output = %s", runErr, output)

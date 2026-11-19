@@ -8,7 +8,7 @@ import (
 
 // Bug regression for the duplicate-replica-0 incident: the rolling deploy
 // historically sent the primary inside the backend set, and the daemon
-// prepended the primary again when persisting — proxy-state.json ended up
+// prepended the primary again when persisting, proxy-state.json ended up
 // with the same replica twice and `phelix proxy status` showed N+1 backends.
 // The daemon is the single point where the routing table is stored, so it
 // must normalise membership to one entry per host no matter what a caller
@@ -43,7 +43,7 @@ func TestDaemon_BackendMembershipIdempotentAndUnique(t *testing.T) {
 	// Enrol with the primary duplicated inside the backend set (the historic
 	// rolling-deploy wire shape), then reconcile repeatedly with the same and
 	// with full sets including the primary.
-	if err := c.Add(ctx, "app", 8091, want[0],
+	if err := c.Add(ctx, "app", freeTCPPort(t), want[0],
 		Target{Host: prim.addr(), Label: "replica-0"},
 		want[1], want[2]); err != nil {
 		t.Fatalf("add: %v", err)

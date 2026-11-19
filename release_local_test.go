@@ -118,6 +118,7 @@ if [ "$1" = env ]; then
     printf '/tmp/phelix-test-toolchain\n'
     exit 0
 fi
+grep -q 'mode: "production"' config/config.yml || exit 1
 if [ "${PHELIX_TEST_BUILD_FAIL:-}" = 1 ]; then
     exit 1
 fi
