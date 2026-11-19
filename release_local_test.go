@@ -90,16 +90,29 @@ func localReleaseFixture(t *testing.T, mode string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dir := releaseBuildFixture(t, mode)
+	if err := os.WriteFile(filepath.Join(dir, "release.sh"), script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func releaseBuildFixture(t *testing.T, mode string) string {
+	t.Helper()
+	builder, err := os.ReadFile(".github/scripts/build-artifacts.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	for _, name := range []string{"config", "bin"} {
-		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+	for _, name := range []string{"config", "bin", ".github/scripts"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	files := map[string]string{
-		"release.sh":        string(script),
-		"config/config.yml": fmt.Sprintf("mode: %s\ngrpcUrl: phelix.anophel.com:443\n", mode),
-		"bin/git":           "#!/bin/sh\nprintf 'abc1234\\n'\n",
+		".github/scripts/build-artifacts.sh": string(builder),
+		"config/config.yml":                  fmt.Sprintf("mode: %s\ngrpcUrl: phelix.anophel.com:443\n", mode),
+		"bin/git":                            "#!/bin/sh\nprintf 'abc1234\\n'\n",
 		"bin/go": `#!/bin/sh
 if [ "$1" = env ]; then
     printf '/tmp/phelix-test-toolchain\n'
