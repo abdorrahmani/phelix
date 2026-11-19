@@ -46,7 +46,8 @@ type StepFunc func(kind StepKind, format string, args ...any)
 type Options struct {
 	// BaseURL overrides DefaultBaseURL. Empty means the public release host.
 	BaseURL string
-	// CurrentVersion is the running binary's version — the same string
+	Channel string
+	// CurrentVersion is the running binary's version , the same string
 	// `phelix version` prints (internal/version.Version).
 	CurrentVersion string
 	// CheckOnly resolves and compares versions without downloading,
@@ -111,11 +112,11 @@ func Run(opts Options) (*Result, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	client := &ReleaseClient{BaseURL: baseURL, HTTP: opts.HTTPClient}
+	client := &ReleaseClient{BaseURL: baseURL, HTTP: opts.HTTPClient, Channel: opts.Channel}
 
 	steps(StepInfo, "Checking for updates...")
 
-	// Current version — same source as `phelix version`. A development or
+	// Current version , same source as `phelix version`. A development or
 	// unknown version carries no release semantics, so it is never treated
 	// as "older than everything"; refuse rather than blindly replace.
 	curRaw := strings.TrimSpace(opts.CurrentVersion)
@@ -148,7 +149,7 @@ func Run(opts Options) (*Result, error) {
 	switch cmp := Compare(cur, latest); {
 	case cmp > 0:
 		// Never downgrade: a locally newer build stays in place.
-		steps(StepInfo, "Latest stable release (%s) is older than the installed version (%s); nothing to update.", latestD, curD)
+		steps(StepInfo, "Latest release (%s) is older than the installed version (%s); nothing to update.", latestD, curD)
 		res.Outcome = OutcomeLocalNewer
 		return res, nil
 	case cmp == 0:
