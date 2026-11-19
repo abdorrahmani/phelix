@@ -5,6 +5,7 @@ package cmd
 // build` applies the project's declared value to the app entry.
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,16 +81,16 @@ func TestCLIBuild_AppliesWatchingFromProjectConfig(t *testing.T) {
 		yaml        string
 		wantEnabled bool
 	}{
-		{"enable", "name: watchon\nport: 48991\nwatching: enable\n", true},
-		{"absent", "name: watchoff\nport: 48992\n", false},
-		{"disable", "name: watchno\nport: 48993\nwatching: disable\n", false},
+		{"enable", "name: watchon\nport: %d\nwatching: enable\n", true},
+		{"absent", "name: watchoff\nport: %d\n", false},
+		{"disable", "name: watchno\nport: %d\nwatching: disable\n", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeProject(t, map[string]string{
 				"go.mod":      "module example.com/" + tc.name + "\n\ngo 1.22\n",
 				"main.go":     goPORTMain,
-				"phelix.yaml": tc.yaml,
+				"phelix.yaml": fmt.Sprintf(tc.yaml, freePortForTest(t)),
 			})
 			home := t.TempDir()
 
