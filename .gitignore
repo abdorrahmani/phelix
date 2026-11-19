@@ -27,6 +27,7 @@ go.work
 go.work.sum
 !examples/workspace-go/go.work
 !examples/workspace-go/go.work.sum
+!internal/security/testdata/gowork/go.work
 
 # Cargo build output
 target/
