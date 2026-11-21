@@ -1,0 +1,6 @@
+services:
+  phelix:
+    image: phelix-controller:development
+    build:
+      context: ../..
+      dockerfile: Dockerfile.controller

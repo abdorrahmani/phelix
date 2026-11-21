@@ -16,6 +16,12 @@ for name in "${ARTIFACTS[@]}"; do
     [[ -s "${OUT_DIR}/${name}" && -s "${OUT_DIR}/${name}.sha256" ]] || { printf 'Missing release artifact: %s\n' "${name}" >&2; exit 1; }
     FILES+=("${OUT_DIR}/${name}" "${OUT_DIR}/${name}.sha256")
 done
+for example in docker-host-controller docker-container-controller; do
+    if [[ -f "$OUT_DIR/$example.tar.gz" ]]; then
+        (cd "$OUT_DIR" && sha256sum -c "$example.tar.gz.sha256")
+        FILES+=("$OUT_DIR/$example.tar.gz" "$OUT_DIR/$example.tar.gz.sha256")
+    fi
+done
 FILES+=("${OUT_DIR}/checksums.sha256" "${OUT_DIR}/version")
 (
     cd "${OUT_DIR}"

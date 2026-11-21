@@ -253,3 +253,10 @@ status before retrying an interrupted operation.
 
 Complete examples: [Host Mode](../../examples/docker-host-controller/README.md)
 and [Container Mode](../../examples/docker-container-controller/README.md).
+
+## Official image installation
+
+Use `install.sh --docker` for a fresh container Controller and add `--with-cli`
+when a host CLI is desired. The installer configures socket discovery. See
+[Container installation](container-installation.md) for version selection,
+permissions, source mounts, upgrade, backup, migration and troubleshooting.
