@@ -264,8 +264,8 @@ AES-256-GCM and never logged in plaintext; authentication is optional and
 tokens are stored locally; monitoring connections use TLS (only `mode: dev`
 uses plaintext, for local backends); webhook secrets live only in environment
 variables and signatures are verified constant-time; managed containers publish
-only to `127.0.0.1`. When you are not logged in, no app data, metrics, or events
-leave your machine. See [Security](docs/guides/security.md).
+only to `127.0.0.1`. Dashboard uploads require login. Local vulnerability scans
+can still query OSV.dev with dependency metadata. See [Security](docs/guides/security.md).
 
 Native artifact trust is checked before launch and rollback. Configure an
 application policy with `phelix security supply-chain policy`, and enable

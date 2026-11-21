@@ -16,7 +16,8 @@ each area in depth.
 - Webhook shared secrets live only in environment variables (never in
   `phelix.yaml`), signatures are verified with constant-time comparison, and the
   server binds to `127.0.0.1` unless you explicitly pass `--host`.
-- When not logged in, no app data, metrics, or events leave your machine.
+- Dashboard uploads require login. Local vulnerability scans can still query
+  OSV.dev with dependency metadata.
 
 ## Dependency vulnerability scanning
 

@@ -19,8 +19,9 @@ metadata remains explicit.
 Provenance is an in-toto Statement v1 with a SLSA provenance v1 predicate. It
 binds the artifact's filename and SHA-256 to the application version, available
 repository and full Git revision, source fingerprint, builder, Phelix version,
-compiler, target and SBOM digests. Sensitive argument values and environment
-values are omitted. Missing source or compiler information is not fabricated.
+compiler, target and SBOM digests. Build arguments retain flag names only;
+all argument values and environment values are omitted. Missing source or
+compiler information is not fabricated.
 This document format does not establish a SLSA assurance level or make the local
 builder hermetic.
 
@@ -148,6 +149,14 @@ disabled mode skips that automatic scan unless `require_scan` is set.
 Artifact integrity failures always reject verification and launch, including in
 audit or disabled mode. A malformed policy fails closed. Enforce mode rejects
 legacy artifacts that lack build evidence.
+
+Current audit and enforcement violations remain in the local `phelix.log` with
+their application, artifact, rule and reason. Enforced policy errors use
+`SECURITY_POLICY_REJECTED`; ordinary deployment telemetry carries a generic
+message while full reasons remain in local logs and report decisions.
+Security self logs and sensitive results are withheld when remote reporting is
+disabled, including entries queued before the disable operation. Ordinary
+application and self-log monitoring remain independently controlled.
 
 Create a policy file such as `security-policy.json`:
 
