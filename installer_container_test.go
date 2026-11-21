@@ -12,7 +12,7 @@ import (
 )
 
 func TestContainerInstallerConfigurationAndSafeFailures(t *testing.T) {
-	for _, scenario := range []string{"install", "state", "configuration", "docker", "compose", "pull", "active", "port", "traversal", "repeat"} {
+	for _, scenario := range []string{"install", "state", "configuration", "docker", "compose", "pull", "active", "enabled", "port", "traversal", "repeat"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			bin := filepath.Join(root, "bin")
@@ -32,7 +32,7 @@ case "$1" in
     ;;
 esac
 `,
-				"systemctl": "#!/usr/bin/env bash\n[[ \"$PHELIX_INSTALL_TEST_SCENARIO\" == active ]]\n",
+				"systemctl": "#!/usr/bin/env bash\n[[ \"$PHELIX_INSTALL_TEST_SCENARIO\" == active || ( \"$PHELIX_INSTALL_TEST_SCENARIO\" == enabled && \"$1\" == is-enabled ) ]]\n",
 				"sudo":      "#!/usr/bin/env bash\nif [[ \"$1\" == -v ]]; then exit 0; fi\nexec \"$@\"\n",
 			} {
 				if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0755); err != nil {

@@ -457,8 +457,8 @@ install_container() {
     need_cmd docker
     docker info >/dev/null || fail "Docker Engine is unavailable; install or start it before continuing"
     docker compose version >/dev/null || fail "Docker Compose is required"
-    if have_cmd systemctl && systemctl is-active --quiet phelix.service; then
-        fail "A host Controller is active. Follow the backup and migration guide before switching modes"
+    if have_cmd systemctl && { systemctl is-active --quiet phelix.service || systemctl is-enabled --quiet phelix.service; }; then
+        fail "A host Controller is active or enabled. Follow the backup and migration guide before switching modes"
     fi
     local sudo_cmd="" operator_uid operator_gid
     operator_uid="$(id -u "${SUDO_USER:-$(id -un)}")"
