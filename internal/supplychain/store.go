@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/abdorrahmani/phelix/internal/security"
 	"io"
 	"os"
 	"path/filepath"
@@ -119,11 +120,41 @@ func (s *Store) Document(digest string) ([]byte, error) {
 	return raw, nil
 }
 
-func reportKey(r *Report) string { return "v" + strconv.Itoa(r.Version) + "-" + r.Artifact.SHA256 }
+func reportKey(r *Report) string {
+	key := "v" + strconv.Itoa(r.Version) + "-" + r.Artifact.SHA256
+	if r.BuildID != "" {
+		key += "-" + Digest([]byte(r.BuildID))[:32]
+	}
+	return key
+}
 
 func (s *Store) Save(r *Report) error {
 	if err := ValidateReport(r); err != nil {
 		return err
+	}
+	lock, err := security.NewScanStore(s.DataDir).AcquireConfigLock("artifact-" + Digest([]byte(r.AppID+"/"+Reference(r))))
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	existing, loadErr := s.Load(r.AppID, Reference(r))
+	if loadErr == nil {
+		if existing.Provenance.SHA256 != r.Provenance.SHA256 || len(existing.SBOMs) != len(r.SBOMs) {
+			return errors.New("artifact build documents are immutable")
+		}
+		for i := range r.SBOMs {
+			if existing.SBOMs[i].SHA256 != r.SBOMs[i].SHA256 {
+				return errors.New("artifact SBOM documents are immutable")
+			}
+		}
+		if r.Signature.Status == "missing" && len(r.Signature.Bundles) == 0 && len(existing.Signature.Bundles) > 0 {
+			r.Signature = existing.Signature
+		}
+		if existing.Scan != nil && (r.Scan == nil || (existing.Scan.FinishedAt != nil && r.Scan.FinishedAt != nil && existing.Scan.FinishedAt.After(*r.Scan.FinishedAt))) {
+			r.Scan = existing.Scan
+		}
+	} else if !os.IsNotExist(loadErr) {
+		return loadErr
 	}
 	for digest, raw := range r.Documents {
 		if Digest(raw) != digest {
@@ -180,41 +211,80 @@ func (s *Store) List(appID string, limit, offset int) ([]*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []*Report
+	var names []string
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-			r, err := s.Load(appID, strings.TrimSuffix(entry.Name(), ".json"))
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, r)
+			names = append(names, strings.TrimSuffix(entry.Name(), ".json"))
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Version != out[j].Version {
-			return out[i].Version > out[j].Version
+	sort.Slice(names, func(i, j int) bool {
+		vi, _ := strconv.Atoi(strings.SplitN(strings.TrimPrefix(names[i], "v"), "-", 2)[0])
+		vj, _ := strconv.Atoi(strings.SplitN(strings.TrimPrefix(names[j], "v"), "-", 2)[0])
+		if vi != vj {
+			return vi > vj
 		}
-		return out[i].BuiltAt.After(out[j].BuiltAt)
+		return names[i] < names[j]
 	})
-	if offset >= len(out) {
+	if offset >= len(names) {
 		return []*Report{}, nil
 	}
 	end := offset + limit
-	if end > len(out) {
-		end = len(out)
+	if end > len(names) {
+		end = len(names)
 	}
-	return out[offset:end], nil
+	out := make([]*Report, 0, end-offset)
+	for _, name := range names[offset:end] {
+		r, err := s.Load(appID, name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 func ValidateReport(r *Report) error {
 	if r == nil || r.SchemaVersion != 1 || !identityPattern.MatchString(r.AppID) || !identityPattern.MatchString(r.AppName) || r.Version < 0 || r.BuiltAt.IsZero() {
 		return errors.New("invalid security report identity")
 	}
+	if r.BuildID != "" && !identityPattern.MatchString(r.BuildID) {
+		return errors.New("invalid build combination identity")
+	}
 	if !digestPattern.MatchString(r.Artifact.SHA256) || r.Artifact.SizeBytes < 0 || r.Artifact.Filename == "" || filepath.Base(r.Artifact.Filename) != r.Artifact.Filename {
 		return errors.New("invalid artifact identity")
 	}
 	if r.Inventory == nil || len(r.Inventory.Modules) > 100000 || len(r.Inventory.Edges) > 500000 {
 		return errors.New("missing or oversized inventory")
+	}
+	formats := map[string]bool{}
+	for _, d := range r.SBOMs {
+		if (d.Format != "spdx-2.3" && d.Format != "cyclonedx-1.6") || formats[d.Format] {
+			return errors.New("invalid or duplicate SBOM format")
+		}
+		formats[d.Format] = true
+	}
+	if r.Provenance.SHA256 != "" && r.Provenance.Format != "slsa-provenance-v1" {
+		return errors.New("unsupported provenance format")
+	}
+	nodes := map[string]bool{}
+	for _, root := range r.Inventory.Roots {
+		nodes[root] = true
+	}
+	for _, m := range r.Inventory.Modules {
+		if m.Name == "" || m.Key == "" || len(m.Name) > 512 || len(m.Version) > 256 || nodes[m.Key] {
+			return errors.New("invalid or duplicate dependency identity")
+		}
+		nodes[m.Key] = true
+	}
+	for _, e := range r.Inventory.Edges {
+		if !nodes[e.From] || !nodes[e.To] {
+			return errors.New("dependency graph refers to a missing package")
+		}
+	}
+	for key, hash := range r.PackageHashes {
+		if !nodes[key] || !digestPattern.MatchString(hash) {
+			return errors.New("invalid dependency checksum")
+		}
 	}
 	refs := append([]Document{}, r.SBOMs...)
 	if r.Provenance.SHA256 != "" {
@@ -259,4 +329,69 @@ func (s *Store) SavePolicy(appID string, p Policy) error {
 		return err
 	}
 	return atomicWrite(filepath.Join(s.root(), "policies", appID+".json"), raw)
+}
+
+func (s *Store) Count(appID string) (int, error) {
+	if !identityPattern.MatchString(appID) {
+		return 0, errors.New("invalid application identity")
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root(), "reports", appID))
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) ForVersion(appID string, version int, digest string) (*Report, error) {
+	return s.ForBuild(appID, version, digest, "")
+}
+
+func (s *Store) ForBuild(appID string, version int, digest, buildID string) (*Report, error) {
+	if !identityPattern.MatchString(appID) || version < 1 || (digest != "" && !digestPattern.MatchString(digest)) || (buildID != "" && !identityPattern.MatchString(buildID)) {
+		return nil, errors.New("invalid artifact selection")
+	}
+	if digest != "" && buildID != "" {
+		r, err := s.Load(appID, reportKey(&Report{Version: version, Artifact: Artifact{SHA256: digest}, BuildID: buildID}))
+		if err == nil && r.BuildID != buildID {
+			return nil, errors.New("report belongs to a different build combination")
+		}
+		return r, err
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root(), "reports", appID))
+	if err != nil {
+		return nil, err
+	}
+	prefix := "v" + strconv.Itoa(version) + "-"
+	name := ""
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), prefix) && strings.HasSuffix(e.Name(), ".json") {
+			if digest != "" && !strings.HasPrefix(e.Name(), prefix+digest) {
+				continue
+			}
+			if buildID != "" && !strings.HasSuffix(e.Name(), "-"+Digest([]byte(buildID))[:32]+".json") {
+				continue
+			}
+			if name != "" {
+				return nil, errors.New("version has multiple build artifacts; specify its SHA-256 digest and build ID")
+			}
+			name = strings.TrimSuffix(e.Name(), ".json")
+		}
+	}
+	if name == "" {
+		return nil, os.ErrNotExist
+	}
+	r, err := s.Load(appID, name)
+	if err == nil && buildID != "" && r.BuildID != buildID {
+		return nil, errors.New("report belongs to a different build combination")
+	}
+	return r, err
 }

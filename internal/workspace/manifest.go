@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/abdorrahmani/phelix/internal/deploy"
+	"github.com/abdorrahmani/phelix/internal/appname"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixport "github.com/abdorrahmani/phelix/internal/port"
 	"go.yaml.in/yaml/v3"
@@ -108,7 +108,7 @@ func Load(dir string) (*Manifest, error) {
 // because every workspace service becomes a Phelix app: the name keys the
 // per-app state directory, deploy.json, and versions.json.
 func validateServiceName(name string) error {
-	if err := deploy.ValidateAppName(name); err != nil {
+	if err := appname.Validate(name); err != nil {
 		return phelixerr.Wrapf(phelixerr.CodeConfiguration, err, "invalid service name %q", name)
 	}
 	return nil

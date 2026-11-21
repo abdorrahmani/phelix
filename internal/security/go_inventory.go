@@ -271,6 +271,9 @@ func projectGoGraphEdges(roots []string, modules []Module, raw []ModuleGraphEdge
 	selected := map[string]string{}
 	for _, mod := range modules {
 		selected[mod.Name] = mod.Key
+		if mod.ReplacedFrom != "" {
+			selected[mod.ReplacedFrom] = mod.Key
+		}
 	}
 	rootSet := map[string]bool{}
 	for _, root := range roots {

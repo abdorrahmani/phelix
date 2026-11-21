@@ -123,3 +123,12 @@ func TestInventoryGo_Malformed(t *testing.T) {
 		t.Fatal("malformed go.mod must fail")
 	}
 }
+
+func TestReplacementGraphUsesEffectiveIdentity(t *testing.T) {
+	mods := []Module{{Name: "./direct", Key: "./direct", ReplacedFrom: "example.org/direct"}, {Name: "./transitive", Key: "./transitive", ReplacedFrom: "example.org/transitive"}}
+	raw := []ModuleGraphEdge{{ParentPath: "root", ChildPath: "example.org/direct"}, {ParentPath: "example.org/direct", ChildPath: "example.org/transitive"}}
+	edges := projectGoGraphEdges([]string{"root"}, mods, raw)
+	if len(edges) != 2 || edges[0].To != "./direct" || edges[1].From != "./direct" || edges[1].To != "./transitive" {
+		t.Fatalf("replacement graph lost dependency relationships: %+v", edges)
+	}
+}

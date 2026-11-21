@@ -5,7 +5,10 @@ go 1.27.4
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/fatih/color v1.19.0
+	github.com/github/go-spdx/v2 v2.8.0
+	github.com/google/licensecheck v0.3.1
 	github.com/google/uuid v1.6.0
+	github.com/in-toto/attestation v1.2.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/olekukonko/tablewriter v1.1.5
 	github.com/pelletier/go-toml/v2 v2.4.3
@@ -30,7 +33,6 @@ require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
-	github.com/github/go-spdx/v2 v2.8.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect

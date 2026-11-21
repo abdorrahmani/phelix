@@ -23,6 +23,7 @@ type Document struct {
 }
 
 type Source struct {
+	SHA256     string `json:"sha256,omitempty"`
 	Repository string `json:"repository,omitempty"`
 	Commit     string `json:"commit,omitempty"`
 	Ref        string `json:"ref,omitempty"`
@@ -77,6 +78,8 @@ type Decision struct {
 }
 
 type Report struct {
+	BuildID       string               `json:"build_id,omitempty"`
+	PackageHashes map[string]string    `json:"package_hashes,omitempty"`
 	SchemaVersion int                  `json:"schema_version"`
 	AppID         string               `json:"app_id"`
 	AppName       string               `json:"app_name"`

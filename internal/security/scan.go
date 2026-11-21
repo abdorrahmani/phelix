@@ -18,6 +18,8 @@ const ScanTimeout = 90 * time.Second
 
 // ScanOptions describes one scan execution.
 type ScanOptions struct {
+	Inventory *Inventory
+
 	// AppID and AppName identify the scanned application. IdentityKey
 	// attributes the scan in the store: the app id when the project is a
 	// registered app, a name-based key otherwise.
@@ -105,26 +107,36 @@ func RunScan(ctx context.Context, opts ScanOptions) (*ScanResult, error) {
 	progress := progressSafe(opts.Progress)
 
 	progress("inventory", "detecting the project ecosystem")
-	eco, err := DetectEcosystem(opts.Dir)
+	eco := Ecosystem("")
+	var err error
+	if opts.Inventory != nil {
+		eco = opts.Inventory.Ecosystem
+	} else {
+		eco, err = DetectEcosystem(opts.Dir)
+	}
 	if err != nil {
 		return fail(err)
 	}
-	var inv *Inventory
-	switch eco {
-	case EcosystemGo:
-		resolver := opts.GoResolver
-		if resolver == nil {
-			resolver = &ToolchainGoResolver{}
+	inv := opts.Inventory
+	if inv == nil {
+		switch eco {
+		case EcosystemGo:
+			resolver := opts.GoResolver
+			if resolver == nil {
+				resolver = &ToolchainGoResolver{}
+			}
+			inv, err = InventoryGoWithResolution(ctx, opts.Dir, resolver)
+		case EcosystemRust:
+			inv, err = InventoryRust(opts.Dir)
 		}
-		inv, err = InventoryGoWithResolution(ctx, opts.Dir, resolver)
-	case EcosystemRust:
-		inv, err = InventoryRust(opts.Dir)
 	}
 	if err != nil {
 		return fail(err)
 	}
 	record.Inventory = inv
-	record.SourceFiles = FingerprintFiles(opts.Dir, fingerprintNames(eco))
+	if opts.Inventory == nil {
+		record.SourceFiles = FingerprintFiles(opts.Dir, fingerprintNames(eco))
+	}
 
 	source := NewPrefetchSource(cache, client)
 	source.Now = now
