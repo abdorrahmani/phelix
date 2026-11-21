@@ -3,12 +3,14 @@ package cmd
 import (
 	"context"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
 
 	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 )
@@ -31,6 +33,7 @@ func (c *selectionClient) Query(_ context.Context, request *pb.QueryRequest, _ .
 func TestControlAppSelectionUsesControllerIDs(t *testing.T) {
 	for _, name := range []string{"status", "remove"} {
 		t.Run(name, func(t *testing.T) {
+			defer machine.LeaveJSON()
 			root := &cobra.Command{Use: "phelix"}
 			command := &cobra.Command{Use: name}
 			flag := map[string]string{"status": "json", "remove": "purge"}[name]
@@ -44,6 +47,9 @@ func TestControlAppSelectionUsesControllerIDs(t *testing.T) {
 				{Id: "b", Name: "billing"}, {Id: "unnamed"}, {Id: "a", Name: "billing"},
 			}}}
 			args, err := selectControlApp(command, nil, client, func(message string, options []string) (string, error) {
+				if name == "status" && os.Stdout != os.Stderr {
+					t.Fatal("JSON selection printed its menu to stdout")
+				}
 				if !strings.Contains(message, map[string]string{"status": "inspect", "remove": "remove"}[name]) {
 					t.Fatalf("wrong prompt: %s", message)
 				}

@@ -13,6 +13,7 @@ import (
 	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
 	"github.com/abdorrahmani/phelix/internal/controller"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -158,6 +159,10 @@ func selectControlApp(command *cobra.Command, args []string, client pb.ControlCl
 	}
 	if workspace, _ := command.Flags().GetBool("workspace"); workspace {
 		return args, nil
+	}
+	if json, _ := command.Flags().GetBool("json"); json {
+		restore := machine.EnterJSON()
+		defer restore()
 	}
 	ctx, cancel := context.WithTimeout(command.Context(), 10*time.Second)
 	defer cancel()
