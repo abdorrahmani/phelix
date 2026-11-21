@@ -134,7 +134,7 @@ func remoteSupplyChainCommand(ctx context.Context, req *pb.MonitorCommandRequest
 		}
 		return supplyChainResult(req, supplyChainAnswer{Policy: &policy}, nil)
 	}
-	report, err := store.ForVersion(target.appID, int(opts.GetVersion()), opts.GetArtifactDigest())
+	report, err := store.ForBuild(target.appID, int(opts.GetVersion()), opts.GetArtifactDigest(), opts.GetBuildId())
 	if err != nil {
 		return securityCommandError(req, err)
 	}
@@ -186,7 +186,7 @@ func remoteArtifactPath(target *securityTarget, report *supplychain.Report) (str
 			return "", errors.New("container image verification is unavailable for native artifact reports")
 		}
 		for _, combination := range version.MatrixArtifacts {
-			if combination.SHA256 == report.Artifact.SHA256 && combination.Binary != "" {
+			if combination.SHA256 == report.Artifact.SHA256 && combination.Binary != "" && (report.BuildID == "" || (combination.Security != nil && combination.Security.BuildID == report.BuildID)) {
 				return combination.Binary, nil
 			}
 		}

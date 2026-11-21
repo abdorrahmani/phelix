@@ -16,6 +16,9 @@ func TestSupplyChainCommandValidation(t *testing.T) {
 	}{
 		{"status", SecurityRemoteStatus, nil, true},
 		{"detail", SecurityArtifactDetail, &pb.SecurityCommandOptions{Version: 3, ArtifactDigest: strings.Repeat("a", 64)}, true},
+		{"matrix detail", SecurityArtifactDetail, &pb.SecurityCommandOptions{Version: 3, ArtifactDigest: strings.Repeat("a", 64), BuildId: "go1.27-linux-amd64"}, true},
+		{"matrix traversal", SecurityArtifactDetail, &pb.SecurityCommandOptions{Version: 3, BuildId: "../artifact"}, false},
+		{"matrix without version", SecurityArtifacts, &pb.SecurityCommandOptions{BuildId: "go1.27-linux-amd64"}, false},
 		{"missing version", SecurityArtifactDetail, nil, false},
 		{"wrong digest", SecurityArtifactDetail, &pb.SecurityCommandOptions{Version: 3, ArtifactDigest: "../file"}, false},
 		{"foreign scan fields", SecurityAppStatus, &pb.SecurityCommandOptions{SetEnabled: true}, false},

@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -68,6 +69,9 @@ func ValidateSupplyChainCommand(req *pb.MonitorCommandRequest) error {
 		if _, err := hex.DecodeString(opts.GetArtifactDigest()); err != nil {
 			return phelixerr.New(phelixerr.CodeInvalidArgument, "artifact digest is malformed")
 		}
+	}
+	if opts.GetBuildId() != "" && (opts.GetVersion() <= 0 || !regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$`).MatchString(opts.GetBuildId())) {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "build identifier requires a version and a valid matrix combination")
 	}
 	switch req.GetType() {
 	case SecurityArtifactDetail, SecurityArtifactRescan, SecurityArtifactVerify, SecuritySBOM, SecurityProvenance:

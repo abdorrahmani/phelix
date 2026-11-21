@@ -11,6 +11,7 @@ message SecurityCommandOptions {
   string format = 18;
   string policy_json = 19;
   string artifact_digest = 20;
+  string build_id = 21;
   // security_scan_detail: which scan to fetch.
   string scan_id = 1;
   // security_advisory: which advisory identifier to inspect.
@@ -199,4 +200,5 @@ message SupplyChainAck {
   int32 version = 3;
   uint64 revision = 4;
   string error = 5;
+  string build_id = 6;
 }

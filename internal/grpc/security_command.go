@@ -212,7 +212,7 @@ func validateSecurityCommand(req *pb.MonitorCommandRequest) error {
 	}
 
 	opts := req.GetSecurity()
-	if opts.GetVersion() != 0 || opts.GetFormat() != "" || opts.GetPolicyJson() != "" || opts.GetArtifactDigest() != "" {
+	if opts.GetVersion() != 0 || opts.GetFormat() != "" || opts.GetPolicyJson() != "" || opts.GetArtifactDigest() != "" || opts.GetBuildId() != "" {
 		return phelixerr.New(phelixerr.CodeInvalidArgument, "supply chain options are not valid for this security operation")
 	}
 	if opts == nil {

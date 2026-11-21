@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/security"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 )
 
 func TestRemoteLogsAreBoundedAndExcludeIncompleteLines(t *testing.T) {
@@ -73,5 +75,32 @@ func TestRemoteCancellationRequiresSameApplication(t *testing.T) {
 	result := handler(securityRequest("cancel", phelixgrpc.SecurityOperationCancel, "another-app", nil))
 	if result.Status != "error" {
 		t.Fatalf("missing cancellation target accepted: %v", result)
+	}
+}
+
+func TestRemoteArtifactPathUsesMatrixBuildID(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	dir, err := deploy.AppDataDir("matrixapp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.Repeat("a", 64)
+	versions := deploy.VersionsFile{Versions: []deploy.VersionMeta{{Version: 1, MatrixArtifacts: []deploy.MatrixArtifact{
+		{SHA256: digest, Binary: "/first", Security: &supplychain.Report{BuildID: "go1.27-linux-amd64"}},
+		{SHA256: digest, Binary: "/second", Security: &supplychain.Report{BuildID: "go1.28-linux-amd64"}},
+	}}}}
+	raw, err := json.Marshal(versions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "versions.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := remoteArtifactPath(&securityTarget{appName: "matrixapp"}, &supplychain.Report{Version: 1, BuildID: "go1.28-linux-amd64", Artifact: supplychain.Artifact{SHA256: digest}})
+	if err != nil || path != "/second" {
+		t.Fatalf("matrix selection returned %q: %v", path, err)
 	}
 }
