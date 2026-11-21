@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/abdorrahmani/phelix/internal/logs"
 )
 
 func Sign(ctx context.Context, s *Store, r *Report, path, keyRef string) error {
@@ -241,6 +243,13 @@ func Verify(ctx context.Context, s *Store, r *Report, path string) error {
 	}
 	r.Decisions, err = Evaluate(r, p)
 	r.Decisions = append(r.Decisions, Decision{Rule: "artifact_integrity", Status: "pass", Reason: "artifact SHA-256 and size verified from current bytes"})
+	if p.Mode == "audit" {
+		for _, decision := range r.Decisions {
+			if decision.Status == "violation" {
+				logs.WarningFile("security", "artifact policy audit: app=%s artifact=%s rule=%s reason=%s", r.AppID, Reference(r), decision.Rule, decision.Reason)
+			}
+		}
+	}
 	return err
 }
 

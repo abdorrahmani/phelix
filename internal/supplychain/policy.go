@@ -100,9 +100,12 @@ func Evaluate(r *Report, p Policy) ([]Decision, error) {
 				}
 			}
 		}
-		allowed, err := spdxexp.Satisfies(l.Expression, candidates)
-		if err != nil {
-			return ds, err
+		allowed := false
+		if len(candidates) > 0 {
+			allowed, err = spdxexp.Satisfies(l.Expression, candidates)
+			if err != nil {
+				return ds, err
+			}
 		}
 		if !allowed {
 			add("license", false, l.Package+" has no license alternative permitted by policy: "+l.Expression)
