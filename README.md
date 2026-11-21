@@ -61,6 +61,12 @@ retries, per-artifact SHA-256, and release manifests.
   Go and Rust dependencies against OSV.dev, with conservative findings,
   scan history, an advisory cache, opt-in scheduled scans, and a dedicated
   CI exit code. See [Security](docs/guides/security.md).
+- **Native supply chain security**: versioned SPDX and CycloneDX SBOMs,
+  dependency and license reports, SLSA provenance, Cosign signing and artifact
+  verification, with audit or enforce policies. See
+  [Supply chain security](docs/guides/supply-chain-security.md).
+- **Remote security reporting**: persistent server activation through
+  `phelix security remote enable`, independent of project YAML and app watching.
 - **Per-instance resource limits**: CPU/memory via cgroups v2 (Linux).
 - **Git webhook deploys**: HMAC-authenticated push webhooks deploy the exact
 pushed commit through the normal rebuild pipeline.
@@ -255,11 +261,16 @@ candidate never touches the live instance. See the
 
 Environment variables and registry credentials are encrypted at rest with
 AES-256-GCM and never logged in plaintext; authentication is optional and
-tokens are stored locally; the monitor gRPC channel uses TLS (only `mode: dev`
+tokens are stored locally; monitoring connections use TLS (only `mode: dev`
 uses plaintext, for local backends); webhook secrets live only in environment
 variables and signatures are verified constant-time; managed containers publish
 only to `127.0.0.1`. When you are not logged in, no app data, metrics, or events
 leave your machine. See [Security](docs/guides/security.md).
+
+Native artifact trust is checked before launch and rollback. Configure an
+application policy with `phelix security supply-chain policy`, and enable
+dashboard security reporting separately with `phelix security remote enable`.
+Container image trust is outside this native artifact feature's coverage.
 
 ## Support
 

@@ -479,8 +479,10 @@ phelix matrix init
 ## Dependency vulnerability scanning
 
 Scan a Go or Rust project's dependencies against OSV.dev advisories. Scans
-are local and read-only: no toolchain runs, no dependency files change, and
-no data leaves the machine. Full behavior, confidence rules.
+do not compile the application or edit dependency files. Go can use the
+installed toolchain and local module cache to resolve versions. Advisory queries
+send ecosystem and package names to OSV.dev. See [Security](../guides/security.md)
+for evidence and coverage rules.
 
 ```bash
 phelix security scan              # scan the project in the current directory
@@ -504,9 +506,64 @@ phelix security                   # the subcommand help (scan, report, history, 
   the application's `phelix.yaml` in place; unrelated configuration and
   comments are preserved and invalid values are rejected before writing.
 - Scheduled scans run inside `phelix controller` for apps with
-  `security.vulnerability.enabled: true` in their `phelix.yaml`; the
-  dashboard reaches the same operations remotely after the app opts in
-  with `security.vulnerability.reporting: true`.
+  `security.vulnerability.enabled: true` in their `phelix.yaml`. Remote
+  reporting is activated separately for the server with
+  `phelix security remote enable`.
+
+## Native supply chain security
+
+Inspect security evidence for stored Go and Rust build artifacts. Commands
+emit JSON by default; SBOM and provenance export their document directly.
+See [Supply chain security](../guides/supply-chain-security.md) for trust setup,
+policy semantics and complete examples.
+
+```bash
+phelix security supply-chain list myapp --limit 20 --offset 0
+phelix security supply-chain show myapp --version 1
+phelix security supply-chain sbom myapp --version 1 --format spdx-2.3
+phelix security supply-chain sbom myapp --version 1 --format cyclonedx-1.6
+phelix security supply-chain provenance myapp --version 1
+phelix security supply-chain inventory myapp --version 1
+phelix security supply-chain licenses myapp --version 1
+phelix security supply-chain scan myapp --version 1
+phelix security supply-chain verify myapp --version 1
+phelix security supply-chain sign myapp --version 1 --key "$PHELIX_SIGNING_KEY"
+phelix security supply-chain policy myapp --file security-policy.json
+phelix security supply-chain policy myapp --mode audit
+```
+
+- `--version` defaults to the latest stored version. All artifact commands
+  except `list` and `policy` also accept `--digest` and `--build-id` to select
+  the exact matrix evidence. Ambiguous selection fails.
+- `list` uses `--limit` from 1 to 100, default 20, and a nonnegative `--offset`.
+- `sbom --format` accepts `spdx-2.3` or `cyclonedx-1.6`, default CycloneDX.
+- `sign --key` supplies a Cosign key reference; omit it for keyless signing.
+  Configure the trusted public key or identity and issuer first.
+- `policy --file -` reads JSON from stdin. `--mode` accepts `disabled`, `audit`
+  or `enforce` and preserves other policy fields.
+- These commands use JSON without a `--json` flag. Local operations remain
+  available while remote reporting is disabled.
+
+## Remote security activation
+
+Manage this server's reporting without editing `phelix.yaml`. Activation and
+scans require a full account session and applicable local authorization.
+
+```bash
+phelix security remote enable
+phelix security remote disable
+phelix security remote status --json
+phelix security remote config --json
+phelix security remote scan myapp --json
+phelix security remote report myapp --json
+```
+
+All six subcommands accept `--json`. `status` and `config` inspect persisted
+activation and synchronization state. `scan` scans the registered application
+on the current Controller; `report` reads its latest completed dependency scan.
+Use the dashboard to select another server. State survives restarts at
+`security/remote.json` under the Phelix data directory. See
+[Remote security activation](../guides/security.md#remote-security-activation).
 
 ## Server package security
 
