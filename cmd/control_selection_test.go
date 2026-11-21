@@ -33,6 +33,11 @@ func TestControlAppSelectionUsesControllerIDs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := &cobra.Command{Use: "phelix"}
 			command := &cobra.Command{Use: name}
+			flag := map[string]string{"status": "json", "remove": "purge"}[name]
+			command.Flags().Bool(flag, false, "")
+			if err := command.Flags().Set(flag, "true"); err != nil {
+				t.Fatal(err)
+			}
 			root.AddCommand(command)
 			command.SetContext(context.Background())
 			client := &selectionClient{response: &pb.QueryResponse{Applications: []*pb.Application{
@@ -49,6 +54,9 @@ func TestControlAppSelectionUsesControllerIDs(t *testing.T) {
 			})
 			if err != nil || !reflect.DeepEqual(args, []string{"b"}) || client.queries != 1 {
 				t.Fatalf("incorrect selection: %v, %v", args, err)
+			}
+			if argv := controlArguments(command, args); !reflect.DeepEqual(argv, []string{name, "b", "--" + flag + "=true"}) {
+				t.Fatalf("selection lost command flags: %v", argv)
 			}
 		})
 	}

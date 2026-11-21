@@ -126,4 +126,12 @@ func TestContainerReplicaStatusAndUptime(t *testing.T) {
 	if err != nil || status.Status != "running" || !strings.HasPrefix(status.Uptime, "00h 10m") {
 		t.Fatalf("first container start time was replaced: %+v, %v", status, err)
 	}
+	state.Replicas["0"].StartedAt = time.Time{}
+	if err := deploy.Store(state); err != nil {
+		t.Fatal(err)
+	}
+	status, err = app.Manager.StatusApplication("runtime-id")
+	if err != nil || status.Status != "running" || status.Uptime != "N/A" {
+		t.Fatalf("unknown start time produced an uptime: %+v, %v", status, err)
+	}
 }
