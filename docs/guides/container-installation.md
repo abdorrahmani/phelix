@@ -133,7 +133,10 @@ docker compose -f /etc/phelix/compose.yaml exec -T phelix phelix list
 Verify the identity matches, the registry is unchanged, proxy requests succeed,
 and logs and rollback remain available. Keep the old image and backup until this
 passes. Update an optional host CLI to the same version using `--no-service`.
-Container images are upgraded with Compose, not `phelix update`.
+Container images are upgraded with Compose. Binary self-update inside the image
+is rejected. The backend's systemd restart action is unavailable in Container
+Mode; restart the Controller with Compose on its host. Other existing backend
+monitoring and application management paths remain in place.
 
 For rollback, stop the new Controller, retain its current state separately,
 restore the compatible pre-upgrade state backup, and restore the previous image

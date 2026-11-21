@@ -30,20 +30,43 @@ sources:
   - host: $work/projects
     controller: /projects
 CONFIG
-container="$(docker run -d --network "$network" \
+# start_controller creates a Controller using the same persistent mounts.
+start_controller() {
+    docker run -d --network "$network" \
     --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
     --mount type=bind,src="$work/state",dst=/var/lib/phelix \
     --mount type=bind,src="$work/run",dst=/run/phelix \
     --mount type=bind,src="$work/projects",dst=/projects,readonly \
     --mount type=bind,src="$work/controller.yaml",dst=/etc/phelix/controller.yaml,readonly \
-    "$image")"
-for ((attempt=0; attempt<60; attempt++)); do
-    if docker exec "$container" phelix controller health; then break; fi
-    if ((attempt == 59)); then docker logs "$container"; exit 1; fi
-    sleep 1
-done
+    "$image"
+}
+
+# wait_ready checks the local API after startup or restart.
+wait_ready() {
+    for ((attempt=0; attempt<60; attempt++)); do
+        if docker exec "$container" phelix controller health; then break; fi
+        if ((attempt == 59)); then docker logs "$container"; exit 1; fi
+        sleep 1
+    done
+}
+container="$(start_controller)"
+wait_ready
 docker exec "$container" phelix controller info | grep -F '"mode":"container"'
 docker exec "$container" phelix list
+identity="$(docker exec "$container" cat /var/lib/phelix/agent-id)"
+docker restart --time=60 "$container" >/dev/null
+wait_ready
+docker exec "$container" phelix controller info | grep -F "$identity"
+docker exec "$container" sh -c 'printf "%s" "{\"id\":\"interrupted-check\",\"state\":\"RUNNING\"}" > /var/lib/phelix/controller-operations/interrupted-check.json'
+docker rm -f "$container" >/dev/null
+container="$(start_controller)"
+wait_ready
+docker exec "$container" phelix controller info | grep -F "$identity"
+docker exec "$container" phelix controller operation interrupted-check | grep -F 'INTERRUPTED'
+if docker exec "$container" phelix update; then
+    printf 'Container image unexpectedly allowed binary replacement.\n' >&2
+    exit 1
+fi
 docker stop --time=60 "$container" >/dev/null
 [[ "$(docker inspect "$container" --format '{{.State.ExitCode}}')" == 0 ]]
 printf 'Validated Phelix %s on linux/%s\n' "$version" "$arch"

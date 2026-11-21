@@ -39,3 +39,14 @@ func TestSystemdRequestRestartUnsupported(t *testing.T) {
 		t.Fatalf("missing unit error = %v, want CodeUnimplemented", err)
 	}
 }
+
+func TestContainerControllerDoesNotRestartHostService(t *testing.T) {
+	t.Setenv("PHELIX_CONTROLLER_MODE", "container")
+	runner := &fakeRunner{}
+	if err := (Systemd{Runner: runner}).RequestRestart(); !phelixerr.IsCode(err, phelixerr.CodeUnimplemented) {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatal("container restart touched the host service", runner.calls)
+	}
+}
