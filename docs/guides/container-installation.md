@@ -39,7 +39,7 @@ firewall deliberately to serve external traffic. The management API has no
 public port. Compose creates the configured network; Phelix owns the application
 containers. Additional proxy ports require recreating the Controller.
 
-Installation refuses an active host service, existing state, an existing
+Installation refuses an active or enabled host service, existing state, an existing
 Container Mode configuration, or an existing host CLI endpoint file. It does
 not install Docker or replace an existing installation. A repeated installation
 leaves the original configuration and state intact. Use the upgrade or migration

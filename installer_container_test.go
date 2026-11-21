@@ -100,6 +100,13 @@ esac
 			if err := yaml.Unmarshal(raw, &compose); err != nil {
 				t.Fatal(err)
 			}
+			if dockerPath, err := exec.LookPath("docker"); err == nil && scenario == "install" {
+				if err := exec.Command(dockerPath, "compose", "version").Run(); err == nil {
+					if output, err := exec.Command(dockerPath, "compose", "-f", filepath.Join(configDir, "compose.yaml"), "config", "--quiet").CombinedOutput(); err != nil {
+						t.Fatalf("Docker Compose rejected generated configuration: %v: %s", err, output)
+					}
+				}
+			}
 			service := compose.Services["phelix"]
 			if service.Image != "ghcr.io/abdorrahmani/phelix:1.2.3" || service.Privileged || fmt.Sprint(service.Ports) != "[127.0.0.1:8080:8080]" {
 				t.Fatal(service)

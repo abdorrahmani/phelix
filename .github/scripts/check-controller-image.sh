@@ -53,6 +53,16 @@ container="$(start_controller)"
 wait_ready
 docker exec "$container" phelix controller info | grep -F '"mode":"container"'
 docker exec "$container" phelix list
+mkdir -p "$work/projects/native"
+printf 'module native-check\n\ngo 1.21\n' > "$work/projects/native/go.mod"
+printf 'package main\nfunc main() {}\n' > "$work/projects/native/main.go"
+printf 'name: native-check\nport: 18081\n' > "$work/projects/native/phelix.yaml"
+if docker exec -w /projects/native "$container" phelix build native-check > "$work/native-check.log" 2>&1; then
+    printf 'Container unexpectedly accepted a native build.\n' >&2
+    exit 1
+fi
+grep -F 'native applications require Host Mode' "$work/native-check.log"
+if grep -F 'Checking toolchain' "$work/native-check.log"; then exit 1; fi
 identity="$(docker exec "$container" cat /var/lib/phelix/agent-id)"
 docker restart --time=60 "$container" >/dev/null
 wait_ready

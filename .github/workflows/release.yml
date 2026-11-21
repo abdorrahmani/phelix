@@ -141,6 +141,13 @@ jobs:
             SOURCE_DATE_EPOCH=${{ steps.build.outputs.epoch }}
       - name: Check startup, architecture, API and shutdown
         run: bash .github/scripts/check-controller-image.sh "$IMAGE:${{ needs.release.outputs.image_tag }}-${{ matrix.arch }}" "${{ needs.release.outputs.version }}" "${{ matrix.arch }}"
+      - name: Check Docker strategies in both Controller modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/phelix-controller-test-cli" .
+          bash .github/scripts/test-controller-docker.sh "$IMAGE:${{ needs.release.outputs.image_tag }}-${{ matrix.arch }}" "$RUNNER_TEMP/phelix-controller-test-cli" container
+          bash .github/scripts/test-controller-docker.sh "$IMAGE:${{ needs.release.outputs.image_tag }}-${{ matrix.arch }}" "$RUNNER_TEMP/phelix-controller-test-cli" host
       - name: Scan Controller image
         uses: anchore/scan-action@v6
         with:
