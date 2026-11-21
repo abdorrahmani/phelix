@@ -20,6 +20,11 @@ func TestNamedDeploymentUsesRegisteredMountedSource(t *testing.T) {
 	if _, err := validateControlCommand(root, cfg, request); err != nil || request.Directory != rootPath {
 		t.Fatal(request, err)
 	}
+	request = &pb.CommandRequest{Argv: []string{"deploy", "sample", "--source-dir=."}, Directory: "/host/projects"}
+	if _, err := validateControlCommand(root, cfg, request); err != nil || request.Argv[2] != "--source-dir="+rootPath {
+		t.Fatal("relative project source was not mapped", request, err)
+	}
+
 	request = &pb.CommandRequest{Argv: []string{"deploy", "unknown"}, Directory: "/unmounted/home"}
 	if _, err := validateControlCommand(root, cfg, request); err == nil {
 		t.Fatal("unmounted source was accepted")
