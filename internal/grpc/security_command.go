@@ -404,44 +404,36 @@ func finalizeSecurityResult(req *pb.MonitorCommandRequest, result *pb.MonitorCom
 }
 
 func sendSecurityResult(result *pb.MonitorCommandResult) error {
-	if len(result.GetSupplyChainJson()) > 0 && result.GetCommand() != SecurityRemoteStatus &&
-		result.GetCommand() != SecurityRemoteEnable && result.GetCommand() != SecurityRemoteDisable &&
-		result.GetCommand() != SecurityAppStatus && result.GetCommand() != SecurityAppLogs && result.GetCommand() != SecurityAppBuild && !supplyChainReadEnabled() {
-		result = proto.Clone(result).(*pb.MonitorCommandResult)
-		result.SupplyChainJson = nil
-		result.SecurityResultWithheld = true
-		result.SecurityConsentErrorCode = string(phelixerr.CodeSecurityReportingDisabled)
-		if !isMutatingSecurityCommand(result.GetCommand()) {
-			result.Status = "error"
-			result.ErrorCode = string(phelixerr.CodeSecurityReportingDisabled)
-			result.Error = "remote security reporting is disabled"
-		}
+	if result.GetCommand() == SecurityCommandConfig && result.GetSecurityConfig() != nil {
+		result = executeSecurityCommand(&pb.MonitorCommandRequest{RequestId: result.GetRequestId(), Type: SecurityCommandConfig, AppName: result.GetAppName()})
 	}
-	if result.GetSecurityScanRecord() != nil || result.GetSecurityScanList() != nil || result.GetSecurityAdvisory() != nil || result.GetSecurityConfig() != nil {
-		status := executeSecurityCommand(&pb.MonitorCommandRequest{RequestId: result.GetRequestId(), Type: SecurityCommandConfig, AppName: result.GetAppName()})
-		if result.GetCommand() == SecurityCommandConfig {
-			return sendCommandResultLogged(status)
-		}
-		if !security.RemoteSecurityEnabled(server.DataDir()) {
-			code := status.GetErrorCode()
-			if code == "" {
-				code = string(phelixerr.CodeSecurityReportingDisabled)
-			}
-			result = proto.Clone(result).(*pb.MonitorCommandResult)
-			result.SecurityScanRecord = nil
-			result.SecurityScanList = nil
-			result.SecurityAdvisory = nil
-			result.SecurityConfig = nil
-			result.SecurityResultWithheld = true
-			result.SecurityConsentErrorCode = code
-			if !isMutatingSecurityCommand(result.GetCommand()) {
-				result.Status = "error"
-				result.ErrorCode = code
-				result.Error = "security data is withheld by current local configuration"
-			}
-		}
+	return sendCommandResultLogged(withholdSecurityResult(result))
+}
+
+func withholdSecurityResult(result *pb.MonitorCommandResult) *pb.MonitorCommandResult {
+	switch result.GetCommand() {
+	case SecurityRemoteStatus, SecurityRemoteEnable, SecurityRemoteDisable, SecurityAppStatus, SecurityAppLogs, SecurityAppBuild, SecurityCommandConfig:
+		return result
 	}
-	return sendCommandResultLogged(result)
+	if supplyChainReadEnabled() || len(result.GetSupplyChainJson()) == 0 && result.GetError() == "" && result.GetSecurityScanRecord() == nil && result.GetSecurityScanList() == nil && result.GetSecurityAdvisory() == nil && result.GetSecurityConfig() == nil {
+		return result
+	}
+	result = proto.Clone(result).(*pb.MonitorCommandResult)
+	result.SupplyChainJson = nil
+	result.SecurityScanRecord = nil
+	result.SecurityScanList = nil
+	result.SecurityAdvisory = nil
+	result.SecurityConfig = nil
+	result.SecurityResultWithheld = true
+	result.SecurityConsentErrorCode = string(phelixerr.CodeSecurityReportingDisabled)
+	if !isMutatingSecurityCommand(result.GetCommand()) {
+		result.Status = "error"
+		result.ErrorCode = string(phelixerr.CodeSecurityReportingDisabled)
+		result.Error = "remote security reporting is disabled"
+	} else if result.GetError() != "" {
+		result.Error = "security operation failed; details are withheld because remote security reporting is disabled"
+	}
+	return result
 }
 
 func acknowledgeSecurityResult(ledger *rollbackLedger, ack *pb.SecurityResultAck) {
@@ -491,6 +483,9 @@ func (c *Client) sendSecuritySnapshots() {
 			ServerId:  server.GetAgentID(),
 			Timestamp: time.Now().UnixMilli(),
 			Payload:   &pb.MonitorEvent_SecurityScan{SecurityScan: snapshot},
+		}
+		if !security.RemoteSecurityEnabled(server.DataDir()) {
+			return
 		}
 		if err := monitorStream.send(event); err != nil {
 			logs.ErrorFile("grpc", "[gRPC Security] failed to send scan snapshot: %v", err)

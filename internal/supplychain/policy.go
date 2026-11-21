@@ -3,6 +3,8 @@ package supplychain
 import (
 	"errors"
 	"fmt"
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/security"
 	"github.com/github/go-spdx/v2/spdxexp"
 	"strings"
@@ -115,11 +117,16 @@ func Evaluate(r *Report, p Policy) ([]Decision, error) {
 
 	}
 	if p.Mode == "enforce" {
+		var rejection error
 		for _, d := range ds {
 			if d.Status == "violation" {
-				return ds, errors.New("security policy rejected artifact: " + d.Reason)
+				logs.WarningFile("security", "artifact policy enforcement: app=%s artifact=%s rule=%s reason=%s", r.AppID, Reference(r), d.Rule, d.Reason)
+				if rejection == nil {
+					rejection = phelixerr.Wrap(phelixerr.CodeSecurityPolicyRejected, "artifact rejected by the local security policy; inspect local security logs or the artifact report for details", errors.New(d.Reason))
+				}
 			}
 		}
+		return ds, rejection
 	}
 	return ds, nil
 }

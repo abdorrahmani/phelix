@@ -2,9 +2,11 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -170,14 +172,34 @@ var oversizedEventLog = func(payloadType string) {
 func (s *monitorStreamManager) send(event *pb.MonitorEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if result := event.GetCommandResult(); result != nil && isSecurityCommand(result.GetCommand()) {
+		event = proto.Clone(event).(*pb.MonitorEvent)
+		event.Payload = &pb.MonitorEvent_CommandResult{CommandResult: withholdSecurityResult(result)}
+	}
+	if event.GetSecurityScan() != nil && !supplyChainReadEnabled() {
+		return phelixerr.New(phelixerr.CodeSecurityReportingDisabled, "remote security reporting is disabled")
+	}
+	if raw := event.GetSupplyChainJson(); len(raw) > 0 && !supplyChainReadEnabled() {
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope) != 1 || len(envelope["remote"]) == 0 {
+			return phelixerr.New(phelixerr.CodeSecurityReportingDisabled, "remote security reporting is disabled")
+		}
+	}
 	if entry := event.GetLogEntry(); entry != nil {
+		if entry.GetSource() == pb.LogSource_LOG_SOURCE_SELF && (entry.GetComponent() == "security" || strings.Contains(entry.GetComponent(), "***")) && !supplyChainReadEnabled() {
+			return nil
+		}
 		if state, _ := secrets.SecurityOf(entry.GetAppId()); state == secrets.SecurityDegraded {
 			return nil
 		}
 	}
 	if batch := event.GetLogBatch(); batch != nil {
+		reporting := supplyChainReadEnabled()
 		entries := make([]*pb.MonitorLogEntry, 0, len(batch.Entries))
 		for _, entry := range batch.Entries {
+			if entry.GetSource() == pb.LogSource_LOG_SOURCE_SELF && (entry.GetComponent() == "security" || strings.Contains(entry.GetComponent(), "***")) && !reporting {
+				continue
+			}
 			if state, _ := secrets.SecurityOf(entry.GetAppId()); state != secrets.SecurityDegraded {
 				entries = append(entries, entry)
 			}

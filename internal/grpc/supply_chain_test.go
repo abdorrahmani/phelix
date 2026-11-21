@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
+	"github.com/abdorrahmani/phelix/internal/security"
+	"github.com/abdorrahmani/phelix/internal/server"
 )
 
 func TestSupplyChainCommandValidation(t *testing.T) {
@@ -56,5 +59,33 @@ func TestSupplyChainQueueStopsWithClient(t *testing.T) {
 	defer client.supplyChainMu.Unlock()
 	if _, err := os.Stat(filepath.Join(dir, "security", "remote.json")); !os.IsNotExist(err) {
 		t.Fatalf("closed client initialized reporting state: %v", err)
+	}
+}
+
+func TestSupplyChainSmallUploadRequiresCurrentConsent(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	previous := monitorStream.stream
+	stream := &capturingHostSecurityStream{}
+	monitorStream.stream = stream
+	t.Cleanup(func() { monitorStream.stream = previous })
+	client := &Client{}
+	for _, state := range []string{"absent", "enabled", "disabled"} {
+		t.Run(state, func(t *testing.T) {
+			if state != "absent" {
+				if _, err := security.SetRemoteSecurity(server.DataDir(), state == "enabled"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stream.events = nil
+			raw := []byte(`{"report":{"app_id":"app"}}`)
+			err := client.sendSupplyChainJSON(raw, "app")
+			if state == "enabled" {
+				if err != nil || len(stream.events) != 1 || string(stream.events[0].GetSupplyChainJson()) != string(raw) {
+					t.Fatalf("consented report was not delivered: %v", err)
+				}
+			} else if phelixerr.CodeOf(err) != phelixerr.CodeSecurityReportingDisabled || len(stream.events) != 0 {
+				t.Fatalf("report sent without current consent: events=%d error=%v", len(stream.events), err)
+			}
+		})
 	}
 }

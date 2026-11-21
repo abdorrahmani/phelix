@@ -193,6 +193,9 @@ func (c *Client) sendSupplyChainSnapshots() {
 
 func (c *Client) sendSupplyChainJSON(raw []byte, appID string) error {
 	send := func(payload []byte) error {
+		if !supplyChainReadEnabled() {
+			return phelixerr.New(phelixerr.CodeSecurityReportingDisabled, "remote security was disabled during artifact synchronization")
+		}
 		return monitorStream.send(&pb.MonitorEvent{ServerId: server.GetAgentID(), Payload: &pb.MonitorEvent_SupplyChainJson{SupplyChainJson: payload}})
 	}
 	if len(raw) <= 3<<20 {
@@ -213,9 +216,6 @@ func (c *Client) sendSupplyChainJSON(raw []byte, appID string) error {
 			case <-c.done:
 				return phelixerr.New(phelixerr.CodeUnavailable, "controller stopped during artifact synchronization")
 			}
-		}
-		if !security.RemoteSecurityEnabled(server.DataDir()) {
-			return phelixerr.New(phelixerr.CodeSecurityReportingDisabled, "remote security was disabled during artifact synchronization")
 		}
 		payload, err := json.Marshal(map[string]any{"transfer": map[string]any{"id": id, "app_id": appID, "part": part, "parts": parts, "payload": raw[part*chunkSize : min(len(raw), (part+1)*chunkSize)]}})
 		if err != nil {
