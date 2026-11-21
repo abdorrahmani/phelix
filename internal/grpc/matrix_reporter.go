@@ -61,7 +61,8 @@ type MatrixReporter struct {
 	// from concurrent executor workers, so the counter is atomic; event order
 	// on the wire is still a total order because every event passes through
 	// the single sender channel with its seq stamped at emit time.
-	seq atomic.Int64
+	seq    atomic.Int64
+	emitMu sync.Mutex
 }
 
 // NewMatrixReporter creates the reporter for one remote matrix command.
@@ -74,6 +75,8 @@ func (r *MatrixReporter) emit(event *pb.MatrixEvent) {
 	if r == nil {
 		return
 	}
+	r.emitMu.Lock()
+	defer r.emitMu.Unlock()
 	event.ServerId = server.GetServerID()
 	event.RequestId = r.requestID
 	event.MatrixRunId = r.runID

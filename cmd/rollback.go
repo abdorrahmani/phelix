@@ -19,6 +19,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/ops"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/secrets"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 	"github.com/abdorrahmani/phelix/internal/table"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -988,17 +989,40 @@ func (b *rollbackBinaryBackup) Restore() error {
 		return nil
 	}
 	if !b.existed {
-		return os.Remove(b.dest)
+		err := os.Remove(b.dest)
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		sideErr := os.Remove(b.dest + ".supply-chain.json")
+		if os.IsNotExist(sideErr) {
+			sideErr = nil
+		}
+		return errors.Join(err, sideErr)
 	}
 	// Same-directory rename atomically replaces the failed target binary.
-	return os.Rename(b.path, b.dest)
+	if err := os.Rename(b.path, b.dest); err != nil {
+		return err
+	}
+	err := os.Rename(b.path+".supply-chain.json", b.dest+".supply-chain.json")
+	if os.IsNotExist(err) {
+		err = os.Remove(b.dest + ".supply-chain.json")
+		if os.IsNotExist(err) {
+			return nil
+		}
+	}
+	return err
 }
 
 func (b *rollbackBinaryBackup) Discard() error {
 	if b == nil || !b.existed {
 		return nil
 	}
-	return os.Remove(b.path)
+	err := os.Remove(b.path)
+	sideErr := os.Remove(b.path + ".supply-chain.json")
+	if os.IsNotExist(sideErr) {
+		sideErr = nil
+	}
+	return errors.Join(err, sideErr)
 }
 
 // compensateClassicRollback restores the previous binary and running credentials.
@@ -1048,6 +1072,10 @@ func refreshClassicSecretJournal(info *app.AppInfo, port, version int) error {
 // copyFileForRollback stages src in dst's directory, fsyncs it, and atomically
 // renames it over dst. A failed copy never truncates the live destination.
 func copyFileForRollback(src, dst string) error {
+	sidecar, sideErr := supplychain.LoadSidecar(src)
+	if sideErr != nil && !os.IsNotExist(sideErr) {
+		return sideErr
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -1078,7 +1106,16 @@ func copyFileForRollback(src, dst string) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, dst)
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	if os.IsNotExist(sideErr) {
+		if err = os.Remove(dst + ".supply-chain.json"); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return supplychain.SaveSidecar(dst, sidecar)
 }
 
 // renderRollbackPreview builds the read-only rollback plan, prints it, and

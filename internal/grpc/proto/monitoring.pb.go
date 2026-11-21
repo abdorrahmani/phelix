@@ -2544,13 +2544,14 @@ func (x *MonitorCommandRequest) GetHostSecurity() *HostSecurityCommandOptions {
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
 // sent back to the backend after a command finishes executing.
 type MonitorCommandResult struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Command   string                 `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
-	AppName   string                 `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
-	Status    string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
-	Error     string                 `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
-	Timestamp int64                  `protobuf:"varint,6,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	SupplyChainJson []byte                 `protobuf:"bytes,45,opt,name=supply_chain_json,json=supplyChainJson,proto3" json:"supply_chain_json,omitempty"`
+	RequestId       string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Command         string                 `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
+	AppName         string                 `protobuf:"bytes,3,opt,name=app_name,json=appName,proto3" json:"app_name,omitempty"`
+	Status          string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	Error           string                 `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	Timestamp       int64                  `protobuf:"varint,6,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	// Machine-readable phelix error code (internal/errors/codes.go), set when
 	// status="error" and the failure carries a structured code
 	// (e.g. ROLLBACK_TARGET_NOT_FOUND, DEPLOY_LOCKED). Empty on success and for
@@ -2690,6 +2691,13 @@ func (x *MonitorCommandResult) ProtoReflect() protoreflect.Message {
 // Deprecated: Use MonitorCommandResult.ProtoReflect.Descriptor instead.
 func (*MonitorCommandResult) Descriptor() ([]byte, []int) {
 	return file_internal_grpc_proto_monitoring_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *MonitorCommandResult) GetSupplyChainJson() []byte {
+	if x != nil {
+		return x.SupplyChainJson
+	}
+	return nil
 }
 
 func (x *MonitorCommandResult) GetRequestId() string {
@@ -3413,6 +3421,7 @@ type MonitorEvent struct {
 	//	*MonitorEvent_HookConfig
 	//	*MonitorEvent_HookExecution
 	//	*MonitorEvent_HostSecuritySummary
+	//	*MonitorEvent_SupplyChainJson
 	Payload       isMonitorEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3649,6 +3658,15 @@ func (x *MonitorEvent) GetHostSecuritySummary() *HostSecuritySnapshotSummary {
 	return nil
 }
 
+func (x *MonitorEvent) GetSupplyChainJson() []byte {
+	if x != nil {
+		if x, ok := x.Payload.(*MonitorEvent_SupplyChainJson); ok {
+			return x.SupplyChainJson
+		}
+	}
+	return nil
+}
+
 type isMonitorEvent_Payload interface {
 	isMonitorEvent_Payload()
 }
@@ -3778,6 +3796,10 @@ type MonitorEvent_HostSecuritySummary struct {
 	HostSecuritySummary *HostSecuritySnapshotSummary `protobuf:"bytes,29,opt,name=host_security_summary,json=hostSecuritySummary,proto3,oneof"`
 }
 
+type MonitorEvent_SupplyChainJson struct {
+	SupplyChainJson []byte `protobuf:"bytes,30,opt,name=supply_chain_json,json=supplyChainJson,proto3,oneof"`
+}
+
 func (*MonitorEvent_ServerInfo) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_ServerMetrics) isMonitorEvent_Payload() {}
@@ -3818,6 +3840,8 @@ func (*MonitorEvent_HookExecution) isMonitorEvent_Payload() {}
 
 func (*MonitorEvent_HostSecuritySummary) isMonitorEvent_Payload() {}
 
+func (*MonitorEvent_SupplyChainJson) isMonitorEvent_Payload() {}
+
 // MonitorControl is a single message sent from the backend to the CLI
 // monitor daemon over the same long-lived MonitorStream. It mirrors the old
 // "command" and "ping" WebSocket message types sent by the backend.
@@ -3828,6 +3852,7 @@ type MonitorControl struct {
 	//	*MonitorControl_Command
 	//	*MonitorControl_Ping
 	//	*MonitorControl_SecurityResultAck
+	//	*MonitorControl_SupplyChainAck
 	Payload       isMonitorControl_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3897,6 +3922,15 @@ func (x *MonitorControl) GetSecurityResultAck() *SecurityResultAck {
 	return nil
 }
 
+func (x *MonitorControl) GetSupplyChainAck() *SupplyChainAck {
+	if x != nil {
+		if x, ok := x.Payload.(*MonitorControl_SupplyChainAck); ok {
+			return x.SupplyChainAck
+		}
+	}
+	return nil
+}
+
 type isMonitorControl_Payload interface {
 	isMonitorControl_Payload()
 }
@@ -3913,11 +3947,17 @@ type MonitorControl_SecurityResultAck struct {
 	SecurityResultAck *SecurityResultAck `protobuf:"bytes,3,opt,name=security_result_ack,json=securityResultAck,proto3,oneof"`
 }
 
+type MonitorControl_SupplyChainAck struct {
+	SupplyChainAck *SupplyChainAck `protobuf:"bytes,4,opt,name=supply_chain_ack,json=supplyChainAck,proto3,oneof"`
+}
+
 func (*MonitorControl_Command) isMonitorControl_Payload() {}
 
 func (*MonitorControl_Ping) isMonitorControl_Payload() {}
 
 func (*MonitorControl_SecurityResultAck) isMonitorControl_Payload() {}
+
+func (*MonitorControl_SupplyChainAck) isMonitorControl_Payload() {}
 
 // VersionSync is one app's complete, idempotent version history (every retained
 // version in versions.json). The monitor daemon pushes it on every (re)connect
@@ -4512,8 +4552,9 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\bsecurity\x18\x0f \x01(\v2\x1e.phelix.SecurityCommandOptionsR\bsecurity\x12$\n" +
 	"\x03job\x18\x10 \x01(\v2\x12.phelix.JobOptionsR\x03job\x12)\n" +
 	"\x05hooks\x18\x11 \x01(\v2\x13.phelix.HookOptionsR\x05hooks\x12G\n" +
-	"\rhost_security\x18\x12 \x01(\v2\".phelix.HostSecurityCommandOptionsR\fhostSecurity\"\xbc\x13\n" +
-	"\x14MonitorCommandResult\x12\x1d\n" +
+	"\rhost_security\x18\x12 \x01(\v2\".phelix.HostSecurityCommandOptionsR\fhostSecurity\"\xe8\x13\n" +
+	"\x14MonitorCommandResult\x12*\n" +
+	"\x11supply_chain_json\x18- \x01(\fR\x0fsupplyChainJson\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x19\n" +
@@ -4611,7 +4652,7 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\x04from\x18\x04 \x01(\x05R\x04from\x12\x0e\n" +
 	"\x02to\x18\x05 \x01(\x05R\x02to\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\x12\x14\n" +
-	"\x05error\x18\a \x01(\tR\x05error\"\xb7\n" +
+	"\x05error\x18\a \x01(\tR\x05error\"\xe5\n" +
 	"\n" +
 	"\fMonitorEvent\x12\x1b\n" +
 	"\tserver_id\x18\x01 \x01(\tR\bserverId\x12\x1c\n" +
@@ -4642,12 +4683,14 @@ const file_internal_grpc_proto_monitoring_proto_rawDesc = "" +
 	"\vhook_config\x18\x1b \x01(\v2\x1a.phelix.HookConfigSnapshotH\x00R\n" +
 	"hookConfig\x12C\n" +
 	"\x0ehook_execution\x18\x1c \x01(\v2\x1a.phelix.HookExecutionStateH\x00R\rhookExecution\x12Y\n" +
-	"\x15host_security_summary\x18\x1d \x01(\v2#.phelix.HostSecuritySnapshotSummaryH\x00R\x13hostSecuritySummaryB\t\n" +
-	"\apayload\"\xc7\x01\n" +
+	"\x15host_security_summary\x18\x1d \x01(\v2#.phelix.HostSecuritySnapshotSummaryH\x00R\x13hostSecuritySummary\x12,\n" +
+	"\x11supply_chain_json\x18\x1e \x01(\fH\x00R\x0fsupplyChainJsonB\t\n" +
+	"\apayload\"\x8b\x02\n" +
 	"\x0eMonitorControl\x129\n" +
 	"\acommand\x18\x01 \x01(\v2\x1d.phelix.MonitorCommandRequestH\x00R\acommand\x12\"\n" +
 	"\x04ping\x18\x02 \x01(\v2\f.phelix.PingH\x00R\x04ping\x12K\n" +
-	"\x13security_result_ack\x18\x03 \x01(\v2\x19.phelix.SecurityResultAckH\x00R\x11securityResultAckB\t\n" +
+	"\x13security_result_ack\x18\x03 \x01(\v2\x19.phelix.SecurityResultAckH\x00R\x11securityResultAck\x12B\n" +
+	"\x10supply_chain_ack\x18\x04 \x01(\v2\x16.phelix.SupplyChainAckH\x00R\x0esupplyChainAckB\t\n" +
 	"\apayload\"q\n" +
 	"\vVersionSync\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x19\n" +
@@ -4783,7 +4826,8 @@ var file_internal_grpc_proto_monitoring_proto_goTypes = []any{
 	(*HookConfigSnapshot)(nil),          // 65: phelix.HookConfigSnapshot
 	(*HostSecuritySnapshotSummary)(nil), // 66: phelix.HostSecuritySnapshotSummary
 	(*Ping)(nil),                        // 67: phelix.Ping
-	(*BuildReport)(nil),                 // 68: phelix.BuildReport
+	(*SupplyChainAck)(nil),              // 68: phelix.SupplyChainAck
+	(*BuildReport)(nil),                 // 69: phelix.BuildReport
 }
 var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	4,  // 0: phelix.ServerInfo.connection:type_name -> phelix.ServerConnection
@@ -4861,13 +4905,14 @@ var file_internal_grpc_proto_monitoring_proto_depIdxs = []int32{
 	20, // 72: phelix.MonitorControl.command:type_name -> phelix.MonitorCommandRequest
 	67, // 73: phelix.MonitorControl.ping:type_name -> phelix.Ping
 	29, // 74: phelix.MonitorControl.security_result_ack:type_name -> phelix.SecurityResultAck
-	27, // 75: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
-	68, // 76: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
-	77, // [77:77] is the sub-list for method output_type
-	77, // [77:77] is the sub-list for method input_type
-	77, // [77:77] is the sub-list for extension type_name
-	77, // [77:77] is the sub-list for extension extendee
-	0,  // [0:77] is the sub-list for field type_name
+	68, // 75: phelix.MonitorControl.supply_chain_ack:type_name -> phelix.SupplyChainAck
+	27, // 76: phelix.VersionSync.versions:type_name -> phelix.VersionEntry
+	69, // 77: phelix.VersionEntry.build_report:type_name -> phelix.BuildReport
+	78, // [78:78] is the sub-list for method output_type
+	78, // [78:78] is the sub-list for method input_type
+	78, // [78:78] is the sub-list for extension type_name
+	78, // [78:78] is the sub-list for extension extendee
+	0,  // [0:78] is the sub-list for field type_name
 }
 
 func init() { file_internal_grpc_proto_monitoring_proto_init() }
@@ -4906,11 +4951,13 @@ func file_internal_grpc_proto_monitoring_proto_init() {
 		(*MonitorEvent_HookConfig)(nil),
 		(*MonitorEvent_HookExecution)(nil),
 		(*MonitorEvent_HostSecuritySummary)(nil),
+		(*MonitorEvent_SupplyChainJson)(nil),
 	}
 	file_internal_grpc_proto_monitoring_proto_msgTypes[22].OneofWrappers = []any{
 		(*MonitorControl_Command)(nil),
 		(*MonitorControl_Ping)(nil),
 		(*MonitorControl_SecurityResultAck)(nil),
+		(*MonitorControl_SupplyChainAck)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

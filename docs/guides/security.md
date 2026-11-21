@@ -1,12 +1,12 @@
 # Security
 
-A summary of Phelix's security-relevant behavior, with pointers to the guides
-and contracts that cover each area in depth.
+A summary of Phelix's security behavior, with links to the guides that cover
+each area in depth.
 
 ## Security considerations
 
-- All communication with the Phelix service is encrypted (only when logged in —
-  offline mode sends nothing).
+- Production communication with the Phelix service is encrypted. Local
+  development mode can use plaintext connections; offline mode sends nothing.
 - Authentication tokens are securely stored (`~/.phelix/session.json`).
 - Server-to-server communication is authenticated.
 - Sessions are regularly validated.
@@ -16,19 +16,20 @@ and contracts that cover each area in depth.
 - Webhook shared secrets live only in environment variables (never in
   `phelix.yaml`), signatures are verified with constant-time comparison, and the
   server binds to `127.0.0.1` unless you explicitly pass `--host`.
-- When not logged in, no app data, metrics, or events leave your machine.
+- Dashboard uploads require login. Local vulnerability scans can still query
+  OSV.dev with dependency metadata.
 
 ## Dependency vulnerability scanning
 
-`phelix security` inventories the Go and Rust dependencies of an
-application and evaluates them against OSV.dev advisories, fully locally:
-dependency files are parsed in place, nothing is built, and nothing is
-downloaded. Go dependency versions are resolved authoritatively with
+`phelix security scan` inventories the Go and Rust dependencies of an
+application and evaluates them against OSV.dev advisories. The command does
+not compile the application or edit its dependency files. Go dependency versions
+are resolved authoritatively with
 `go list -m` (proxy disabled: resolution uses the local module cache only,
 so a warm cache from normal builds answers offline); without a usable
 toolchain the scan degrades to manifest evidence and says so. The advisory
-query sends ecosystem and package names to OSV.dev; dependency data
-reaches the Phelix backend only after you opt in (below).
+query sends ecosystem and package names to OSV.dev. Remote reporting requires
+the separate server activation described below.
 
 Findings carry their evidence class: a dependency is `affected` when its
 resolved version is established (Cargo.lock, a pinned replace directive,
@@ -43,11 +44,11 @@ usable CI gate; an offline scan that could not check every package reports
 Commands:
 
 ```bash
-phelix security scan [app]      # scan; progress renders on stderr, --json stays pure
-phelix security report [app]    # latest completed scan, --previous for the diff
-phelix security history [app]   # recorded scans with status and counts
-phelix security show <ID>       # one advisory, cache first
-phelix security config [app]    # show the effective settings and schedule
+phelix security scan myapp --json
+phelix security report myapp --previous
+phelix security history myapp
+phelix security show GO-2024-2687
+phelix security config myapp
 ```
 
 Run without arguments, `phelix security` prints its subcommand help, and
@@ -73,65 +74,64 @@ security:
     fail_threshold: high
 ```
 
-### Remote access and reporting consent
+## Versioned artifact security
 
-The dashboard can view reports, dependency graphs, scan history, and
-advisory details, and can trigger scans or change settings, over the same
-authenticated gRPC channel as every other remote operation. Because
-dependency names and versions are private, every application opts in
-explicitly:
+Native Go and Rust builds now record SPDX 2.3 and CycloneDX 1.6 SBOMs,
+resolved dependency relationships, license findings, SLSA provenance v1 and the
+artifact's SHA-256. You can rescan a stored version's exact inventory, sign its
+artifact and documents with Cosign, and apply audit or enforce policies.
+Integrity is recalculated before launch and rollback. See
+[Supply chain security](supply-chain-security.md) for commands, trust settings
+and the limits of native artifact coverage.
 
-```yaml
-security:
-  vulnerability:
-    reporting: true
-```
+## Remote security activation
 
-Agent reads the registered application's current `phelix.yaml` for each request.
-A missing file, invalid configuration, or unavailable project directory returns
-its own error code. None becomes a false consent denial. The registered app ID
-and directory identify the application; its display name may differ from the
-YAML name.
-
-With `reporting` disabled, `security_config` returns only identity and disabled
-consent. Reports, history, advisory details, scans, configuration changes, and
-snapshots require consent. Remote commands and CLI configuration flags cannot
-change reporting. Only a local edit to `phelix.yaml` can grant it.
-
-Agent sends connection status every 10 seconds even when no app is watched or
-metrics are paused. Backend uses the active stream and its own receive time,
-with a 30-second freshness window. Consent, missing scans, and individual command
-failures do not decide Agent availability.
-
-Mutations use durable request IDs. Retry the same ID with the same payload.
-Agent persists the outcome before delivery and replays it until backend
-acknowledges persistence. Restarted unfinished operations return
-`SECURITY_OUTCOME_UNKNOWN`; they do not execute again. A timeout does not prove
-failure. If consent changes, Agent withholds data while preserving the outcome.
-An already-running separate scan returns `SECURITY_SCAN_RUNNING`.
-
-Reports and details page stored findings in groups of 200. Graphs use the actual
-local inventory. `storage_truncated` identifies scans whose findings exceeded
-the local 1000-finding bound. Backend reads require a live consent check.
-
-For expired credentials, log in again with `phelix auth login --scope agent`,
-then restart the Controller service. Routine network disconnects reconnect
-automatically without changing Agent identity.
-
-### Integration verification
-
-Run deterministic OSV fixtures through the real Agent stream:
+Remote security reporting is disabled by default and belongs to the server.
+Enable it explicitly using a full account session in the Controller's state
+directory:
 
 ```bash
-go test ./cmd -run TestSecurityMonitorEndToEnd -count=1
-go test -race ./internal/grpc ./cmd -run 'Security|CLISecurity'
-go test -race ./internal/security
+phelix auth login
+phelix security remote enable
+phelix security remote status --json
+phelix security remote config
+phelix security remote scan myapp
+phelix security remote report myapp --json
+phelix security remote disable
 ```
 
-The backend companion test is `TestSecurityHTTPMonitorIntegration` in
-`b-phelix/services/app/internal/grpc`. It covers HTTP routing through authenticated
-MonitorStream and connection recovery. Dashboard tests cover request correlation,
-consent gating, findings pagination, and delayed results.
+`enable` and `disable` require authentication and applicable host authorization.
+An agent-scoped monitoring session cannot perform activation. The `scan`
+operation also requires a full account session and applicable application
+authorization. `status` and `config` inspect the same persisted activation state.
+All six remote subcommands accept `--json`.
+
+Activation is stored at `security/remote.json` inside the Phelix data directory,
+normally `~/.phelix`, or the directory selected by `PHELIX_DATA_DIR`. Container
+installations default to `/var/lib/phelix`. The state survives restarts and
+records a revision, synchronization status and any synchronization error.
+`pending` means the change is saved locally but needs a connected Controller;
+`synchronized` means the current revision was acknowledged; `failed` includes
+the reported synchronization error.
+
+The YAML setting `security.vulnerability.reporting` no longer activates or
+disables remote reporting. YAML still controls scheduled local scans. Local
+scans and artifact checks continue to work while remote reporting is disabled.
+
+When enabled, security history for registered applications can be synchronized
+even if those applications are not watched. This does not turn on their metrics
+or log monitoring. The `remote scan` and `remote report` CLI commands operate on
+the current Controller's registered application; select another server through
+the dashboard. A scan uses the current project's dependencies, while
+`supply-chain scan --version` rescans a stored artifact's inventory.
+
+Disabling stops new security uploads and remote scan and report access. Previously
+synchronized artifact history and operation audit records remain available to authorized
+dashboard users. Local historical reports remain on disk. Remote operations use
+stable request IDs: retry an uncertain operation with the same ID and payload.
+An interrupted operation can report `SECURITY_OUTCOME_UNKNOWN`; a timeout does
+not establish that it failed. Cancellation terminates supported work and reports
+its final outcome after the work exits.
 
 ## Secrets at rest
 
@@ -150,7 +150,7 @@ masked in that process's logs, dashboard stream, CLI rendering and error
 output for as long as a running instance or a draining log stream could still
 produce it.
 
-Errors never leak secrets — not even under `--debug`; every rendered string
+Errors are redacted even under `--debug`; every rendered string
 passes through a redactor, and env errors carry the key *name* only. See
 [error codes](../reference/error-codes.md).
 
@@ -172,9 +172,11 @@ actually sets (verified in the implementation):
 | `~/.phelix/secrets/<appID>.lock` | `0600` | lock file; created once, never replaced, so concurrent commands serialize |
 | Docker runtime `--env-file` (decrypted, per launch) | `0600` | decrypted values never appear on the argv or in `docker inspect` |
 | Server settings (`ServerInfo` persistence) | `0600` | write-only connection fields are also scrubbed before the wire |
+| `security/remote.json` in the Phelix data directory | `0600` | server reporting activation and synchronization state |
+| `supply-chain/` in the Phelix data directory | `0700` directories, `0600` files | artifact reports, policies and exact document bytes |
 
 The important distinction: the **encrypted env store is world-readable (`0644`)
-by design** — its confidentiality comes from the encryption, not the filesystem
+by design**; its confidentiality comes from the encryption, not the filesystem
 mode, so exposure of the `.enc` file does not expose secrets without
 `master.key`. The key, sessions, and decrypted Docker env-files are the artifacts
 protected by `0600`. Beyond these specific files, Phelix does not document or
@@ -199,25 +201,26 @@ shared secret lives only in an environment variable, and the server binds to
 Managed containers publish only to `127.0.0.1` (the proxy is the sole public
 entry point), and secrets reach containers via a `0600` `--env-file` rather than
 the command line. Mounting the Docker socket into a containerized Phelix grants
-host-root — do it only deliberately. See [Docker runtime](docker-runtime.md).
+host-root privileges. Do it only deliberately. See [Docker runtime](docker-runtime.md).
 
 ## Execution authorization
 
 Deployment execution can be gated at a single boundary between a validated
 plan and the engine: `request → plan → authorization → (approval) →
-execution`. It is **off by default** — a host with no
-`~/.phelix/authz/policy.json` behaves exactly as before — and fails closed
+execution`. It is **off by default**. A host with no
+`~/.phelix/authz/policy.json` behaves as before, and authorization fails closed
 once configured: a broken policy denies rather than degrading to "allow
 everything", and every refusal is a zero-mutation outcome. Authorization
 binds to the plan's content hash, so a grant for one plan can never execute
 another. See [Authorization](authorization.md).
 
-Note that `phelix auth login` authenticates you to the **dashboard backend**
+Note that `phelix auth login` authenticates you to your **dashboard account**
 and grants no execution rights on the host; the two are independent.
 
 
 ## Related
 
 - [Authentication](authentication.md), [Authorization](authorization.md),
+  [Supply chain security](supply-chain-security.md),
   [Environment variables](environment-variables.md),
   [Webhooks](webhooks.md), [Docker runtime](docker-runtime.md).

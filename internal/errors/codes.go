@@ -211,6 +211,7 @@ const (
 	CodeSecurityInProgress           Code = "SECURITY_IN_PROGRESS"
 	CodeSecurityOutcomeUnknown       Code = "SECURITY_OUTCOME_UNKNOWN"
 	CodeSecurityResponseTooLarge     Code = "SECURITY_RESPONSE_TOO_LARGE"
+	CodeSecurityPolicyRejected       Code = "SECURITY_POLICY_REJECTED"
 
 	// Host security remote-command codes. They travel verbatim in
 	// MonitorCommandResult.error_code; the backend maps each onto an HTTP

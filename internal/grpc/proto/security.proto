@@ -7,6 +7,11 @@ option go_package = "github.com/abdorrahmani/phelix/internal/grpc/proto";
 // SecurityCommandOptions carries the parameters of one security command
 // (MonitorCommandRequest.security = 15).
 message SecurityCommandOptions {
+  int32 version = 17;
+  string format = 18;
+  string policy_json = 19;
+  string artifact_digest = 20;
+  string build_id = 21;
   // security_scan_detail: which scan to fetch.
   string scan_id = 1;
   // security_advisory: which advisory identifier to inspect.
@@ -187,4 +192,13 @@ message SecurityScanSnapshot {
   string freshness = 6;
   string coverage = 7;
   SecurityScanCounts counts = 8;
+}
+
+message SupplyChainAck {
+  string app_id = 1;
+  string digest = 2;
+  int32 version = 3;
+  uint64 revision = 4;
+  string error = 5;
+  string build_id = 6;
 }

@@ -134,6 +134,14 @@ func (r *RustMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 		return result
 	}
 
+	securityArgs := append(append([]string{"+" + c.Version}, r.ExtraArgs...), "--target", triple)
+	facts, securityErr := captureSecurity(ctx, r.ProjectRoot, r.AppName, "rust", c, securityArgs)
+	if securityErr != nil {
+		result.Status = "failed"
+		result.Error = securityErr
+		return result
+	}
+	defer finishSecurity(ctx, facts, result)
 	// Determine the exact package and binary target from cargo metadata.
 	selection, err := r.selectTarget(ctx)
 	if err != nil {

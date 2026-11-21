@@ -340,9 +340,9 @@ func remoteMatrixBuild(ctx context.Context, req *pb.MonitorCommandRequest, opts 
 		return matrixRunTerminalResult(run, false, serr)
 	}
 
-	completeMatrixSession(run, opts.GetTag())
+	completionErr := completeMatrixSession(run, opts.GetTag())
 	rep.RunFinished(run, interrupted)
-	return matrixRunTerminalResult(run, interrupted, nil)
+	return matrixRunTerminalResult(run, interrupted, completionErr)
 }
 
 // ---------------------------------------------------------------------------
@@ -485,9 +485,9 @@ func remoteMatrixResume(ctx context.Context, req *pb.MonitorCommandRequest, opts
 		return matrixRunTerminalResult(lockedRun, false, serr)
 	}
 
-	completeMatrixSession(lockedRun, opts.GetTag())
+	completionErr := completeMatrixSession(lockedRun, opts.GetTag())
 	rep.RunFinished(lockedRun, interrupted)
-	return matrixRunTerminalResult(lockedRun, interrupted, nil)
+	return matrixRunTerminalResult(lockedRun, interrupted, completionErr)
 }
 
 // remoteResolveResumeTarget resolves the run a matrix_resume command
@@ -569,9 +569,9 @@ func remoteMatrixRetry(ctx context.Context, req *pb.MonitorCommandRequest, _ *pb
 		return matrixRunTerminalResult(retryRun, false, serr)
 	}
 
-	completeMatrixSession(retryRun, "")
+	completionErr := completeMatrixSession(retryRun, "")
 	rep.RunFinished(retryRun, interrupted)
-	return matrixRunTerminalResult(retryRun, interrupted, nil)
+	return matrixRunTerminalResult(retryRun, interrupted, completionErr)
 }
 
 // ---------------------------------------------------------------------------

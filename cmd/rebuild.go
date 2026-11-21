@@ -21,6 +21,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/ops"
 	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/proxy"
+	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -177,7 +179,9 @@ func runClassicRebuild(spec *rebuildSpec, op *opRun) (errRet error) {
 		deploy.DefaultRetention{Max: 5}, logger,
 	)
 	if verErr != nil {
-		fmt.Fprintf(out, "  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
+		tracker.Failed(verErr)
+		markBuildFailed(appInfo.ID)
+		return verErr
 	} else {
 		fmt.Fprintf(out, "  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
 		tracker.SetTargetVersion(rec.Version)
@@ -888,6 +892,17 @@ func rebuildApp(out io.Writer, id string, extraArgs []string, buildMgr *builder.
 	buildCtx.Config.Output = out
 	fmt.Fprintf(out, "  %s Rebuilding with %s...\n", color.BlueString("→"), color.GreenString(buildMgr.FormatLanguage(lang)))
 
+	securityCtx := buildCtx.Config.Context
+	if securityCtx == nil {
+		securityCtx = context.Background()
+	}
+	securityCtx, cancelSecurity := context.WithTimeout(securityCtx, builder.DefaultBuildTimeout)
+	defer cancelSecurity()
+	facts, captureErr := supplychain.Capture(securityCtx, supplychain.BuildFacts{AppID: id, AppName: appInfo.Name, Directory: projectRoot, Language: string(lang), Arguments: extraArgs, OutputPath: outputPath})
+	if captureErr != nil {
+		markBuildFailed(id)
+		return nil, captureErr
+	}
 	if err := buildMgr.ExecuteBuild(buildCtx); err != nil {
 
 		printFailedBuildSummaryTo(out, lang, buildCtx.Config)
@@ -907,6 +922,10 @@ func rebuildApp(out io.Writer, id string, extraArgs []string, buildMgr *builder.
 		return nil, phelixerr.Wrap(code, "rebuild failed", err)
 	}
 
+	if _, securityErr := supplychain.Generate(securityCtx, supplychain.NewStore(server.DataDir()), facts, outputPath); securityErr != nil {
+		markBuildFailed(id)
+		return nil, securityErr
+	}
 	duration := buildMgr.GetBuildDuration(buildCtx)
 	fmt.Fprintf(out, "  %s Rebuild completed in %s\n", color.GreenString("✓"), color.YellowString(duration.String()))
 

@@ -17,6 +17,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/abdorrahmani/phelix/internal/secrets"
+	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -64,6 +66,10 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 	}
 
 	binaryPath := filepath.Join(app.Directory, fmt.Sprintf("app_%s", id))
+	if err := supplychain.VerifyApplicationPath(context.Background(), supplychain.NewStore(server.DataDir()), binaryPath, id, name); err != nil {
+		f.Close()
+		return err
+	}
 	cmd := exec.Command(binaryPath)
 	cmd.Dir = app.Directory
 

@@ -54,8 +54,8 @@ func TestSecurityPeriodicPassesEmitOneWarning(t *testing.T) {
 	securitySnapshotsForConsentingApps()
 	listSecurityScheduledApps()
 
-	if len(messages) != 2 {
-		t.Fatalf("warnings = %d, want 2: %v", len(messages), messages)
+	if len(messages) != 1 {
+		t.Fatalf("only the source-dependent scheduler should warn: %v", messages)
 	}
 	for _, message := range messages {
 		if !strings.Contains(message, "100 application(s)") {

@@ -224,25 +224,25 @@ func TestSecurityMonitorEndToEnd(t *testing.T) {
 	if got := request("history-next", phelixgrpc.SecurityCommandHistory, &pb.SecurityCommandOptions{Limit: 1, Offset: 1}); got.GetSecurityScanList().GetHasMore() {
 		t.Fatalf("history page 2: %v", got)
 	}
-	for _, tc := range []struct{ yaml, code string }{
-		{"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: false\n", "SECURITY_REPORTING_DISABLED"},
-		{"security: [", "SECURITY_CONFIG_INVALID"},
-	} {
-		if err := os.WriteFile(filepath.Join(dir, "phelix.yaml"), []byte(tc.yaml), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if got := request(tc.code, phelixgrpc.SecurityCommandReport, nil); got.GetErrorCode() != tc.code || got.GetSecurityScanRecord() != nil {
-			t.Fatalf("privacy/config: %v", got)
-		}
-		if tc.code == "SECURITY_REPORTING_DISABLED" {
-			if got := request("consent-status", phelixgrpc.SecurityCommandConfig, nil); got.Status != "success" || got.GetSecurityConfig().GetReporting() != "disabled" || got.GetSecurityConfig().GetLastScanId() != "" {
-				t.Fatalf("safe status: %v", got)
-			}
-			if got := request("run", phelixgrpc.SecurityCommandRun, nil); !got.GetSecurityResultWithheld() || got.GetSecurityScanRecord() != nil || runs.Load() != 2 {
-				t.Fatalf("replay privacy: %v", got)
-			}
-		}
+	if err := os.WriteFile(filepath.Join(dir, "phelix.yaml"), []byte("name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: false\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
+	if got := request("yaml-disabled", phelixgrpc.SecurityCommandReport, nil); got.Status != "success" {
+		t.Fatalf("YAML incorrectly disabled reporting: %v", got)
+	}
+	if _, err := security.SetRemoteSecurity(securityTestDataDir(), false); err != nil {
+		t.Fatal(err)
+	}
+	if got := request("persistent-disabled", phelixgrpc.SecurityCommandReport, nil); got.GetErrorCode() != "SECURITY_REPORTING_DISABLED" || got.GetSecurityScanRecord() != nil {
+		t.Fatalf("persistent activation privacy: %v", got)
+	}
+	if got := request("consent-status", phelixgrpc.SecurityCommandConfig, nil); got.Status != "success" || got.GetSecurityConfig().GetReporting() != "disabled" || got.GetSecurityConfig().GetLastScanId() != "" {
+		t.Fatalf("safe disabled status: %v", got)
+	}
+	if got := request("run", phelixgrpc.SecurityCommandRun, nil); !got.GetSecurityResultWithheld() || got.GetSecurityScanRecord() != nil || runs.Load() != 2 {
+		t.Fatalf("replay privacy: %v", got)
+	}
+
 	stored, err := security.NewScanStore(securityTestDataDir()).ListScans(securityRemoteAppID)
 	if err != nil || len(stored) != 2 {
 		t.Fatalf("scan count = %d: %v", len(stored), err)

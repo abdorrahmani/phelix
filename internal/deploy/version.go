@@ -6,33 +6,31 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"context"
+	"github.com/abdorrahmani/phelix/internal/appname"
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 )
-
-// appNameRe keeps an app name to a single safe path component. The name
-// becomes ~/.phelix/apps/<name>/, so separators, ".." and absolute paths
-// must never reach the filesystem. A leading dot is rejected, which rules out
-// both "." and "..".
-var appNameRe = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$`)
 
 // VersionMeta is one row in ~/.phelix/apps/<AppName>/versions.json.
 type VersionMeta struct {
-	Version    int        `json:"version"`
-	Tag        string     `json:"tag,omitempty"`
-	GitCommit  string     `json:"git_commit,omitempty"`
-	BuiltAt    time.Time  `json:"built_at"`
-	SizeBytes  int64      `json:"size_bytes"`
-	DeployedAt *time.Time `json:"deployed_at,omitempty"`
-	DeployMode string     `json:"deploy_mode,omitempty"`
-	IsCurrent  bool       `json:"is_current"`
+	SHA256     string              `json:"sha256,omitempty"`
+	Security   *supplychain.Report `json:"security,omitempty"`
+	Version    int                 `json:"version"`
+	Tag        string              `json:"tag,omitempty"`
+	GitCommit  string              `json:"git_commit,omitempty"`
+	BuiltAt    time.Time           `json:"built_at"`
+	SizeBytes  int64               `json:"size_bytes"`
+	DeployedAt *time.Time          `json:"deployed_at,omitempty"`
+	DeployMode string              `json:"deploy_mode,omitempty"`
+	IsCurrent  bool                `json:"is_current"`
 	// DockerImage is the full image reference (registry/repo:tag) when this
 	// version was built via `phelix dockerize`. When present, future deploy
 	// logic can use "docker run" as a BuildSource implementation instead of
@@ -60,13 +58,14 @@ type VersionMeta struct {
 // MatrixArtifact describes one artifact from a matrix build, corresponding
 // to a single {toolchain version} × {platform} combination.
 type MatrixArtifact struct {
-	Platform  string `json:"platform"`            // e.g. "linux/amd64"
-	Version   string `json:"toolchain_version"`   // e.g. "1.22"
-	Binary    string `json:"binary,omitempty"`    // binary path (Go/Rust native builds)
-	ImageTag  string `json:"image_tag,omitempty"` // per-combination Docker image tag
-	Status    string `json:"status"`              // "success", "failed"
-	Error     string `json:"error,omitempty"`     // error message if failed
-	SizeBytes int64  `json:"size_bytes,omitempty"`
+	Security  *supplychain.Report `json:"security,omitempty"`
+	Platform  string              `json:"platform"`            // e.g. "linux/amd64"
+	Version   string              `json:"toolchain_version"`   // e.g. "1.22"
+	Binary    string              `json:"binary,omitempty"`    // binary path (Go/Rust native builds)
+	ImageTag  string              `json:"image_tag,omitempty"` // per-combination Docker image tag
+	Status    string              `json:"status"`              // "success", "failed"
+	Error     string              `json:"error,omitempty"`     // error message if failed
+	SizeBytes int64               `json:"size_bytes,omitempty"`
 
 	// MatrixRunID associates the artifact with its Matrix Run
 	// ("mx_YYYYMMDD_xxxx"), closing the Matrix Run → combination → artifact
@@ -342,6 +341,9 @@ func versionExists(vf *VersionsFile, ver int) bool {
 // returned when the version does not exist or was not recorded as a Docker
 // build (no image reference to run).
 func DockerImageForVersion(appName string, ver int) (string, error) {
+	if err := checkContainerSecurityPolicy(appName); err != nil {
+		return "", err
+	}
 	vf, err := LoadVersions(appName)
 	if err != nil {
 		return "", err
@@ -377,6 +379,25 @@ func VersionPaths(appName string, ver int) (binaryPath, envPath string, err erro
 	if _, err := os.Stat(binaryPath); err != nil {
 		list := formatAvailableVersions(vf)
 		return "", "", phelixerr.Newf(phelixerr.CodeVersionNotFound, "deploy: binary for v%d missing for %q; available: %s", ver, appName, list)
+	}
+	for _, meta := range vf.Versions {
+		if meta.Version == ver {
+			if meta.SHA256 != "" {
+				hash, _, err := supplychain.SHA256File(binaryPath)
+				if err != nil {
+					return "", "", err
+				}
+				if hash != meta.SHA256 {
+					return "", "", phelixerr.New(phelixerr.CodeValidation, "artifact integrity verification failed: SHA-256 differs from version metadata")
+				}
+			}
+			if meta.Security != nil {
+				copy := *meta.Security
+				if err := supplychain.Verify(context.Background(), supplychain.NewStore(server.DataDir()), &copy, binaryPath); err != nil {
+					return "", "", err
+				}
+			}
+		}
 	}
 	envPath, err = envSnapshotPath(appName, ver)
 	if err != nil {
@@ -435,6 +456,36 @@ func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, re
 	if err != nil {
 		return nil, err
 	}
+	hash, size, err := supplychain.SHA256File(destBin)
+	if err != nil {
+		return nil, err
+	}
+	var artifactSecurity *supplychain.Report
+	original, sideErr := supplychain.LoadSidecar(builtBinaryPath)
+	if sideErr == nil {
+		securityCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		artifactSecurity, err = supplychain.Finalize(securityCtx, supplychain.NewStore(server.DataDir()), original, destBin, ver)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		if err = supplychain.SaveSidecar(builtBinaryPath, artifactSecurity); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(sideErr) {
+		return nil, sideErr
+	} else {
+		p, err := supplychain.NewStore(server.DataDir()).LoadPolicy(appID)
+		if err != nil {
+			return nil, err
+		}
+		if p.Mode == "enforce" {
+			return nil, phelixerr.New(phelixerr.CodeValidation, "security metadata is missing; rebuild this artifact with Phelix")
+		}
+	}
+	if size != info.Size() {
+		return nil, phelixerr.New(phelixerr.CodeValidation, "artifact changed while being recorded")
+	}
 	envPath, err := snapshotEnvForVersion(appName, appID, ver)
 	if err != nil {
 		return nil, err
@@ -448,6 +499,8 @@ func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, re
 		report.Artifact.SizeBytes = info.Size()
 	}
 	vf.Versions = append(vf.Versions, VersionMeta{
+		SHA256:      hash,
+		Security:    artifactSecurity,
 		Version:     ver,
 		Tag:         tag,
 		GitCommit:   gitCommit,
@@ -458,6 +511,11 @@ func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, re
 	})
 	if err := saveVersions(appName, vf); err != nil {
 		return nil, err
+	}
+	if artifactSecurity != nil {
+		if err := supplychain.NewStore(server.DataDir()).Save(artifactSecurity); err != nil {
+			return nil, err
+		}
 	}
 	if err := PruneVersions(appName, policy, log); err != nil {
 		return nil, err
@@ -470,6 +528,9 @@ func RecordFreshBuild(appName, appID, builtBinaryPath, gitCommit, tag string, re
 // a DockerImage reference that future deploy logic can use to run the image.
 // The version is created with is_current=false (same two-phase protocol).
 func RecordDockerBuild(appName, dockerImage, tag, gitCommit string, policy RetentionPolicy, log Logger) (*RecordResult, error) {
+	if err := checkContainerSecurityPolicy(appName); err != nil {
+		return nil, err
+	}
 	if policy == nil {
 		policy = DefaultRetention{}
 	}
@@ -855,6 +916,54 @@ func RecordMatrixBuild(appName, tag, gitCommit string, artifacts []MatrixArtifac
 	if err != nil {
 		return nil, err
 	}
+	for i := range artifacts {
+		a := &artifacts[i]
+		if a.ImageTag != "" {
+			if err := checkContainerSecurityPolicy(appName); err != nil {
+				return nil, err
+			}
+		}
+		if a.Status != "success" || a.Binary == "" {
+			continue
+		}
+		hash, size, err := supplychain.SHA256File(a.Binary)
+		if err != nil {
+			return nil, err
+		}
+		if a.SHA256 != "" && a.SHA256 != hash {
+			return nil, phelixerr.New(phelixerr.CodeValidation, "matrix artifact checksum changed before persistence")
+		}
+		a.SHA256 = hash
+		a.SizeBytes = size
+		security := a.Security
+		if security == nil {
+			security, err = supplychain.LoadSidecar(a.Binary)
+			if err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
+		}
+		combination := a.Platform + "/" + a.Version
+		if security != nil && security.BuildID != "" {
+			combination = security.BuildID
+		}
+		versionRoot, err := versionDir(appName, ver)
+		if err != nil {
+			return nil, err
+		}
+		storedPath := filepath.Join(versionRoot, "matrix", supplychain.Digest([]byte(combination))[:32], "binary")
+		if err := copyFile(a.Binary, storedPath, 0755); err != nil {
+			return nil, err
+		}
+		a.Binary = storedPath
+		if security != nil {
+			securityCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			a.Security, err = supplychain.Finalize(securityCtx, supplychain.NewStore(server.DataDir()), security, a.Binary, ver)
+			cancel()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	vf.Versions = append(vf.Versions, VersionMeta{
 		Version:         ver,
 		Tag:             tag,
@@ -866,6 +975,13 @@ func RecordMatrixBuild(appName, tag, gitCommit string, artifacts []MatrixArtifac
 	})
 	if err := saveVersions(appName, vf); err != nil {
 		return nil, err
+	}
+	for _, artifact := range artifacts {
+		if artifact.Security != nil {
+			if err := supplychain.NewStore(server.DataDir()).Save(artifact.Security); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := PruneVersions(appName, policy, log); err != nil {
 		return nil, err
@@ -961,9 +1077,5 @@ func deploymentProtectedVersions(appName string) map[int]bool {
 // names arriving over gRPC are covered too; CLI callers check it early to
 // fail before any state is written.
 func ValidateAppName(name string) error {
-	if !appNameRe.MatchString(name) {
-		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "invalid application name %q: use letters, digits, dot, dash or underscore (1-64 characters, no path separators)", name)
-	}
-
-	return nil
+	return appname.Validate(name)
 }

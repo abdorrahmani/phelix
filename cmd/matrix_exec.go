@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/builder"
 	"github.com/abdorrahmani/phelix/internal/buildreport"
 	"github.com/abdorrahmani/phelix/internal/deploy"
@@ -18,6 +17,7 @@ import (
 	phelixgrpc "github.com/abdorrahmani/phelix/internal/grpc"
 	"github.com/abdorrahmani/phelix/internal/matrix"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 	"github.com/fatih/color"
 )
 
@@ -275,7 +275,7 @@ func matrixSessionBuildFunc(run *matrix.Run, combos []matrix.Combination, extraA
 // resumed run's report.json describes all of its combinations, consistent with
 // the release manifest and versions.json. Observability only — it never fails
 // the session.
-func completeMatrixSession(run *matrix.Run, tag string) {
+func completeMatrixSession(run *matrix.Run, tag string) error {
 	report := matrix.ReportFromRun(run)
 	report.PrintTerminal()
 
@@ -285,21 +285,30 @@ func completeMatrixSession(run *matrix.Run, tag string) {
 	}
 
 	if run.Succeeded == 0 {
-		return
+		return nil
 	}
 
 	// Record artifacts from the run record (not just this session's results)
 	// so a resumed run records its previously-succeeded combinations too.
 	// Each artifact carries its checksum — the integrity identity that flows
 	// into the release manifest below.
+	matrixAppID := matrixAppID(run.AppName)
 	artifacts := make([]deploy.MatrixArtifact, 0, run.Succeeded)
 	successful := make([]matrix.RunCombination, 0, run.Succeeded)
 	for _, rc := range run.Combinations {
 		if rc.Status != "success" {
 			continue
 		}
+		securityReport, securityErr := supplychain.LoadSidecar(rc.Artifact)
+		if securityErr != nil && !os.IsNotExist(securityErr) {
+			return phelixerr.Wrap(phelixerr.CodeValidation, "matrix security metadata could not be read", securityErr)
+		}
+		if securityReport != nil && matrixAppID != "" {
+			securityReport.AppID = matrixAppID
+		}
 		successful = append(successful, rc)
 		artifacts = append(artifacts, deploy.MatrixArtifact{
+			Security:    securityReport,
 			MatrixRunID: string(run.ID),
 			Platform:    rc.Platform,
 			Version:     rc.Version,
@@ -318,23 +327,23 @@ func completeMatrixSession(run *matrix.Run, tag string) {
 		deploy.DefaultRetention{Max: 5}, logger,
 	)
 	if verErr != nil {
-		fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
-		return
+		return phelixerr.Wrap(phelixerr.CodeBuildFailed, "matrix artifact security or version persistence failed", verErr)
+	}
+	releaseRun := run.Clone()
+	for i, completed := range successful {
+		for j := range releaseRun.Combinations {
+			if releaseRun.Combinations[j].ID == completed.ID {
+				releaseRun.Combinations[j].Artifact = artifacts[i].Binary
+			}
+		}
 	}
 	fmt.Printf("  %s Matrix build recorded in version history (v%d)\n", color.GreenString("✓"), rec.Version)
 
-	matrixAppID := ""
-	for _, a := range app.Manager.ListApplications() {
-		if a.Name == run.AppName {
-			matrixAppID = a.ID
-			break
-		}
-	}
 	phelixgrpc.ReportMatrixBuildEventForApp(matrixAppID, run.AppName,
 		run.Status == matrix.RunStatusSucceeded, rec.Version, tag, gitCommit, artifacts, "")
 
 	if run.Status == matrix.RunStatusSucceeded || run.Status == matrix.RunStatusPartial {
-		manifest, merr := matrix.BuildReleaseManifest(run, rec.Version, tag, time.Now())
+		manifest, merr := matrix.BuildReleaseManifest(releaseRun, rec.Version, tag, time.Now())
 		if merr == nil {
 			if serr := matrix.SaveManifest(manifest); serr != nil {
 				fmt.Printf("  %s Warning: could not write release manifest: %v\n", color.YellowString("⚠"), serr)
@@ -360,6 +369,7 @@ func completeMatrixSession(run *matrix.Run, tag string) {
 		fmt.Printf("  %s Build report warning:\n", color.YellowString("⚠"))
 		fmt.Printf("  Unable to compare with previous builds: %v\n", herr)
 	}
+	return nil
 }
 
 // newMatrixComboReportFromRun assembles the per-combination build report from
@@ -451,7 +461,9 @@ func resumeMatrixRun(args []string, projCfg *project.Config, extraArgs []string,
 	if err != nil {
 		return err
 	}
-	completeMatrixSession(resumed, tag)
+	if err := completeMatrixSession(resumed, tag); err != nil {
+		return err
+	}
 
 	if interrupted {
 		return phelixerr.Newf(phelixerr.CodeBuildFailed,

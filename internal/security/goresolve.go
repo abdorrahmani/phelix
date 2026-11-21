@@ -20,6 +20,8 @@ const GoResolveTimeout = 60 * time.Second
 // selects it: the authoritative answer to "which version does this
 // application compile with".
 type ResolvedModule struct {
+	Dir string
+	Sum string
 	// Path is the effective module identity: the replacement target when
 	// the module is replaced, the module path otherwise.
 	Path string
@@ -106,9 +108,11 @@ func (r *ToolchainGoResolver) ResolveModules(ctx context.Context, dir string) ([
 		if entry.Main {
 			continue
 		}
-		mod := ResolvedModule{Path: entry.Path, Version: entry.Version, Indirect: entry.Indirect}
+		mod := ResolvedModule{Path: entry.Path, Version: entry.Version, Indirect: entry.Indirect, Dir: entry.Dir, Sum: entry.Sum}
 		if entry.Replace != nil {
 			mod.ReplacedFrom = entry.Path
+			mod.Dir = entry.Replace.Dir
+			mod.Sum = entry.Replace.Sum
 			mod.Path = entry.Replace.Path
 			mod.Version = entry.Replace.Version
 			mod.LocalReplace = entry.Replace.Version == ""
@@ -185,6 +189,8 @@ func splitModuleVersion(node string) (string, string) {
 
 // goListModule mirrors one JSON object of `go list -m -json all`.
 type goListModule struct {
+	Dir      string           `json:"Dir"`
+	Sum      string           `json:"Sum"`
 	Path     string           `json:"Path"`
 	Version  string           `json:"Version"`
 	Indirect bool             `json:"Indirect"`
@@ -193,6 +199,8 @@ type goListModule struct {
 }
 
 type goListModuleRef struct {
+	Dir     string `json:"Dir"`
+	Sum     string `json:"Sum"`
 	Path    string `json:"Path"`
 	Version string `json:"Version"`
 }

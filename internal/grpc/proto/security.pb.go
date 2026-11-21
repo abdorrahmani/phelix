@@ -24,7 +24,12 @@ const (
 // SecurityCommandOptions carries the parameters of one security command
 // (MonitorCommandRequest.security = 15).
 type SecurityCommandOptions struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Version        int32                  `protobuf:"varint,17,opt,name=version,proto3" json:"version,omitempty"`
+	Format         string                 `protobuf:"bytes,18,opt,name=format,proto3" json:"format,omitempty"`
+	PolicyJson     string                 `protobuf:"bytes,19,opt,name=policy_json,json=policyJson,proto3" json:"policy_json,omitempty"`
+	ArtifactDigest string                 `protobuf:"bytes,20,opt,name=artifact_digest,json=artifactDigest,proto3" json:"artifact_digest,omitempty"`
+	BuildId        string                 `protobuf:"bytes,21,opt,name=build_id,json=buildId,proto3" json:"build_id,omitempty"`
 	// security_scan_detail: which scan to fetch.
 	ScanId string `protobuf:"bytes,1,opt,name=scan_id,json=scanId,proto3" json:"scan_id,omitempty"`
 	// security_advisory: which advisory identifier to inspect.
@@ -82,6 +87,41 @@ func (x *SecurityCommandOptions) ProtoReflect() protoreflect.Message {
 // Deprecated: Use SecurityCommandOptions.ProtoReflect.Descriptor instead.
 func (*SecurityCommandOptions) Descriptor() ([]byte, []int) {
 	return file_internal_grpc_proto_security_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *SecurityCommandOptions) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *SecurityCommandOptions) GetFormat() string {
+	if x != nil {
+		return x.Format
+	}
+	return ""
+}
+
+func (x *SecurityCommandOptions) GetPolicyJson() string {
+	if x != nil {
+		return x.PolicyJson
+	}
+	return ""
+}
+
+func (x *SecurityCommandOptions) GetArtifactDigest() string {
+	if x != nil {
+		return x.ArtifactDigest
+	}
+	return ""
+}
+
+func (x *SecurityCommandOptions) GetBuildId() string {
+	if x != nil {
+		return x.BuildId
+	}
+	return ""
 }
 
 func (x *SecurityCommandOptions) GetScanId() string {
@@ -1407,12 +1447,102 @@ func (x *SecurityScanSnapshot) GetCounts() *SecurityScanCounts {
 	return nil
 }
 
+type SupplyChainAck struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	Digest        string                 `protobuf:"bytes,2,opt,name=digest,proto3" json:"digest,omitempty"`
+	Version       int32                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	Revision      uint64                 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
+	Error         string                 `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	BuildId       string                 `protobuf:"bytes,6,opt,name=build_id,json=buildId,proto3" json:"build_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SupplyChainAck) Reset() {
+	*x = SupplyChainAck{}
+	mi := &file_internal_grpc_proto_security_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SupplyChainAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SupplyChainAck) ProtoMessage() {}
+
+func (x *SupplyChainAck) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_grpc_proto_security_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SupplyChainAck.ProtoReflect.Descriptor instead.
+func (*SupplyChainAck) Descriptor() ([]byte, []int) {
+	return file_internal_grpc_proto_security_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SupplyChainAck) GetAppId() string {
+	if x != nil {
+		return x.AppId
+	}
+	return ""
+}
+
+func (x *SupplyChainAck) GetDigest() string {
+	if x != nil {
+		return x.Digest
+	}
+	return ""
+}
+
+func (x *SupplyChainAck) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *SupplyChainAck) GetRevision() uint64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *SupplyChainAck) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *SupplyChainAck) GetBuildId() string {
+	if x != nil {
+		return x.BuildId
+	}
+	return ""
+}
+
 var File_internal_grpc_proto_security_proto protoreflect.FileDescriptor
 
 const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"\n" +
-	"\"internal/grpc/proto/security.proto\x12\x06phelix\"\xea\x03\n" +
-	"\x16SecurityCommandOptions\x12\x17\n" +
+	"\"internal/grpc/proto/security.proto\x12\x06phelix\"\x81\x05\n" +
+	"\x16SecurityCommandOptions\x12\x18\n" +
+	"\aversion\x18\x11 \x01(\x05R\aversion\x12\x16\n" +
+	"\x06format\x18\x12 \x01(\tR\x06format\x12\x1f\n" +
+	"\vpolicy_json\x18\x13 \x01(\tR\n" +
+	"policyJson\x12'\n" +
+	"\x0fartifact_digest\x18\x14 \x01(\tR\x0eartifactDigest\x12\x19\n" +
+	"\bbuild_id\x18\x15 \x01(\tR\abuildId\x12\x17\n" +
 	"\ascan_id\x18\x01 \x01(\tR\x06scanId\x12\x1f\n" +
 	"\vadvisory_id\x18\x0e \x01(\tR\n" +
 	"advisoryId\x12)\n" +
@@ -1561,7 +1691,14 @@ const file_internal_grpc_proto_security_proto_rawDesc = "" +
 	"\x0efinished_at_ms\x18\x05 \x01(\x03R\ffinishedAtMs\x12\x1c\n" +
 	"\tfreshness\x18\x06 \x01(\tR\tfreshness\x12\x1a\n" +
 	"\bcoverage\x18\a \x01(\tR\bcoverage\x122\n" +
-	"\x06counts\x18\b \x01(\v2\x1a.phelix.SecurityScanCountsR\x06countsB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
+	"\x06counts\x18\b \x01(\v2\x1a.phelix.SecurityScanCountsR\x06counts\"\xa6\x01\n" +
+	"\x0eSupplyChainAck\x12\x15\n" +
+	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12\x16\n" +
+	"\x06digest\x18\x02 \x01(\tR\x06digest\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\x05R\aversion\x12\x1a\n" +
+	"\brevision\x18\x04 \x01(\x04R\brevision\x12\x14\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\x12\x19\n" +
+	"\bbuild_id\x18\x06 \x01(\tR\abuildIdB4Z2github.com/abdorrahmani/phelix/internal/grpc/protob\x06proto3"
 
 var (
 	file_internal_grpc_proto_security_proto_rawDescOnce sync.Once
@@ -1575,7 +1712,7 @@ func file_internal_grpc_proto_security_proto_rawDescGZIP() []byte {
 	return file_internal_grpc_proto_security_proto_rawDescData
 }
 
-var file_internal_grpc_proto_security_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_internal_grpc_proto_security_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_internal_grpc_proto_security_proto_goTypes = []any{
 	(*SecurityCommandOptions)(nil), // 0: phelix.SecurityCommandOptions
 	(*SecurityModule)(nil),         // 1: phelix.SecurityModule
@@ -1588,6 +1725,7 @@ var file_internal_grpc_proto_security_proto_goTypes = []any{
 	(*SecurityAdvisory)(nil),       // 8: phelix.SecurityAdvisory
 	(*SecurityConfigState)(nil),    // 9: phelix.SecurityConfigState
 	(*SecurityScanSnapshot)(nil),   // 10: phelix.SecurityScanSnapshot
+	(*SupplyChainAck)(nil),         // 11: phelix.SupplyChainAck
 }
 var file_internal_grpc_proto_security_proto_depIdxs = []int32{
 	1, // 0: phelix.SecurityGraph.nodes:type_name -> phelix.SecurityModule
@@ -1615,7 +1753,7 @@ func file_internal_grpc_proto_security_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_grpc_proto_security_proto_rawDesc), len(file_internal_grpc_proto_security_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

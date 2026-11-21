@@ -76,7 +76,9 @@ final status in the source Run is failed.`,
 		if err != nil {
 			return err
 		}
-		completeMatrixSession(retryRun, "")
+		if err := completeMatrixSession(retryRun, ""); err != nil {
+			return err
+		}
 
 		switch {
 		case interrupted:

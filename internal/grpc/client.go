@@ -41,8 +41,11 @@ type Client struct {
 	// authParkMu guards authParkUntil: once the backend's failed-auth budget
 	// (E2) rejects a metadata sync, authenticated syncs park until the window
 	// passes instead of re-attempting every 30s.
-	authParkMu    sync.Mutex
-	authParkUntil time.Time
+	authParkMu              sync.Mutex
+	authParkUntil           time.Time
+	supplyChainMu           sync.Mutex
+	supplyChainAppOffset    int
+	supplyChainReportOffset int
 }
 
 // NewClient creates a new gRPC client instance.
@@ -204,6 +207,8 @@ func (c *Client) Close() {
 			logs.ErrorFile("grpc", "[gRPC] Error closing connection: %v", err)
 		}
 	}
+	c.supplyChainMu.Lock()
+	c.supplyChainMu.Unlock()
 
 	c.connected = false
 	logs.InfoFile("grpc", "[gRPC] Client closed")

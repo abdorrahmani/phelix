@@ -22,6 +22,15 @@ const securityFindingsWireCap = 200
 
 // RemoteSecurityCommand exposes scan data only with current local consent.
 func RemoteSecurityCommand(req *pb.MonitorCommandRequest) *pb.MonitorCommandResult {
+	if phelixgrpc.IsSupplyChainCommand(req.GetType()) {
+		timeout := 2 * time.Minute
+		if req.GetType() == phelixgrpc.SecurityAppBuild {
+			timeout = 30 * time.Minute
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		return remoteSupplyChainCommand(ctx, req)
+	}
 	target, err := remoteSecurityTarget(req.GetAppName())
 	if err != nil {
 		return securityCommandError(req, err)
@@ -79,23 +88,18 @@ func remoteSecurityTarget(identifier string) (*securityTarget, error) {
 	}
 	target := &securityTarget{appID: info.ID, appName: info.Name, identityKey: info.ID, dir: info.Directory}
 	manager.Lock.Unlock()
-	var err error
-	target.cfg, err = project.LoadSecurityProject(target.dir)
-	if err != nil {
-		return nil, err
-	}
 	return target, nil
 }
 
 // remoteSecurityConsent checks the local permission to disclose scan data.
 func remoteSecurityConsent(target *securityTarget) error {
-	if target.cfg == nil || target.cfg.Security == nil || target.cfg.Security.Vulnerability == nil {
-		return phelixerr.New(phelixerr.CodeSecurityReportingDisabled,
-			"security reporting is not enabled for this application in phelix.yaml (security.vulnerability.reporting: true opts in)")
+	state, err := security.LoadRemoteState(server.DataDir())
+	if err != nil {
+		return phelixerr.Wrap(phelixerr.CodeSecurityReportingDisabled, "cannot read remote security activation", err)
 	}
-	if !target.cfg.Security.Vulnerability.ResolvedReporting() {
+	if !state.Enabled {
 		return phelixerr.New(phelixerr.CodeSecurityReportingDisabled,
-			"security reporting is disabled for this application (security.vulnerability.reporting: true opts in)")
+			"remote security is disabled on this server; run 'phelix security remote enable'")
 	}
 	return nil
 }
@@ -216,6 +220,11 @@ func remoteSecurityAdvisory(req *pb.MonitorCommandRequest, target *securityTarge
 // remoteSecurityConfig returns the effective configuration plus scheduler
 // status.
 func remoteSecurityConfig(req *pb.MonitorCommandRequest, target *securityTarget) *pb.MonitorCommandResult {
+	cfg, err := project.LoadSecurityProject(target.dir)
+	if err != nil {
+		return securityCommandError(req, err)
+	}
+	target.cfg = cfg
 	state, err := securityConfigState(target)
 	if err != nil {
 		return securityCommandError(req, err)
@@ -228,6 +237,10 @@ func remoteSecurityConfig(req *pb.MonitorCommandRequest, target *securityTarget)
 // remote) returns SECURITY_SCAN_RUNNING instead of duplicating work. The result is
 // the completed (or failed) scan record.
 func remoteSecurityScanRun(req *pb.MonitorCommandRequest, target *securityTarget) *pb.MonitorCommandResult {
+	return remoteSecurityScanRunContext(context.Background(), req, target)
+}
+
+func remoteSecurityScanRunContext(ctx context.Context, req *pb.MonitorCommandRequest, target *securityTarget) *pb.MonitorCommandResult {
 	store := security.NewScanStore(server.DataDir())
 	lock, err := store.TryAcquireScanLock(target.identityKey)
 	if errors.Is(err, security.ErrScanLockHeld) {
@@ -248,8 +261,11 @@ func remoteSecurityScanRun(req *pb.MonitorCommandRequest, target *securityTarget
 		DataDir:     server.DataDir(),
 		OSVBaseURL:  security.OSVBaseURL(),
 	}
-	result, err := security.RunScan(context.Background(), opts)
+	result, err := security.RunScan(ctx, opts)
 	if err != nil {
+		if ctx.Err() != nil {
+			return supplyChainResult(req, supplyChainAnswer{}, ctx.Err())
+		}
 		return securityCommandError(req, err)
 	}
 	return securityCommandSuccess(recordToProto(req, target, result.Record, false, nil))
@@ -316,10 +332,11 @@ func securityConfigState(target *securityTarget) (*pb.SecurityConfigState, error
 	if remoteSecurityConsent(target) != nil {
 		return state, nil
 	}
+	state.Reporting = "enabled"
 	if target.cfg != nil && target.cfg.Security != nil && target.cfg.Security.Vulnerability != nil {
 		v := target.cfg.Security.Vulnerability
 		state.Enabled = v.Enabled
-		state.Reporting = boolString(v.ResolvedReporting())
+		state.Reporting = "enabled"
 		if interval, err := v.ResolvedScanInterval(); err == nil {
 			state.ScanInterval = interval.String()
 		}
