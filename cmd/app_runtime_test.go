@@ -135,3 +135,29 @@ func TestContainerReplicaStatusAndUptime(t *testing.T) {
 		t.Fatalf("unknown start time produced an uptime: %+v, %v", status, err)
 	}
 }
+
+func TestObservedDockerDeploymentPersistsRecoveryIntent(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	installStatusDocker(t)
+	withJobManager(t, map[string]*app.AppInfo{
+		"runtime-id": {ID: "runtime-id", Name: "runtime-test", Status: "stopped"},
+	})
+	if err := app.Manager.SaveState(); err != nil {
+		t.Fatal(err)
+	}
+	state := &deploy.DeployState{AppName: "runtime-test", Mode: deploy.ModeBlueGreen, Runtime: deploy.RuntimeDocker,
+		ActiveSlot: deploy.SlotBlue, PublicPort: 8080,
+		Slots: map[string]*deploy.Instance{deploy.SlotBlue: {Slot: deploy.SlotBlue, ContainerID: "live", PID: 99999999, Status: "running", StartedAt: time.Now()}},
+	}
+	if err := deploy.Store(state); err != nil {
+		t.Fatal(err)
+	}
+	reconcileAppWithDeploy("runtime-test")
+	if err := app.Manager.LoadState(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := GetAppInfo("runtime-test")
+	if err != nil || !info.AutoStart {
+		t.Fatal("observed running status prevented recovery intent from being saved", info, err)
+	}
+}
