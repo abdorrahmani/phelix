@@ -9,6 +9,7 @@ read_release_tag() {
         return 1
     fi
     VERSION="${tag#v}"
+    IMAGE_TAG="${VERSION//+/_}"
     PRERELEASE=false
     if [[ "${VERSION%%+*}" == *-beta* ]]; then
         PRERELEASE=true

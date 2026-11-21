@@ -49,6 +49,10 @@ func loadClientConfig(installed string) (Config, error) {
 
 func loadConfig(path string) (Config, error) {
 	c := Config{Socket: filepath.Join(server.DataDir(), "control.sock"), Mode: "host", MaxOperations: 8}
+	if mode := os.Getenv("PHELIX_CONTROLLER_MODE"); mode != "" {
+		c.Mode = mode
+	}
+	c.Network = os.Getenv("PHELIX_CONTROLLER_NETWORK")
 	raw, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return c, err

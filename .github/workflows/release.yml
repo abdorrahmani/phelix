@@ -28,6 +28,10 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      image_tag: ${{ steps.release.outputs.image_tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
@@ -46,7 +50,7 @@ jobs:
           source .github/scripts/release-tag.sh
           read_release_tag "$RELEASE_TAG"
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
-          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\nimage_tag=%s\nprerelease=%s\n' "$VERSION" "$IMAGE_TAG" "$PRERELEASE" >> "$GITHUB_OUTPUT"
           printf 'RELEASE_DIR=%s/phelix-release-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
 
       - name: Set up Go
@@ -78,3 +82,104 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: bash .github/scripts/publish-github.sh "$RELEASE_TAG" "$RELEASE_DIR"
+
+  controller-image:
+    name: Validate Controller image (${{ matrix.arch }})
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ["${{ matrix.runner }}"]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      IMAGE: ghcr.io/abdorrahmani/phelix
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Test on target architecture
+        run: go test ./...
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Release build inputs
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'revision=%s\ntime=%s\nepoch=%s\n' "$(git rev-parse HEAD)" "$(git show -s --format=%cI HEAD)" "$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build image for validation
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.controller
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: ${{ env.IMAGE }}:${{ needs.release.outputs.image_tag }}-${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ needs.release.outputs.version }}
+            BUILD_ID=${{ github.run_number }}.${{ github.run_attempt }}
+            REVISION=${{ steps.build.outputs.revision }}
+            BUILD_TIME=${{ steps.build.outputs.time }}
+            SOURCE_DATE_EPOCH=${{ steps.build.outputs.epoch }}
+      - name: Check startup, architecture, API and shutdown
+        run: bash .github/scripts/check-controller-image.sh "$IMAGE:${{ needs.release.outputs.image_tag }}-${{ matrix.arch }}" "${{ needs.release.outputs.version }}" "${{ matrix.arch }}"
+      - name: Scan Controller image
+        uses: anchore/scan-action@v6
+        with:
+          image: ${{ env.IMAGE }}:${{ needs.release.outputs.image_tag }}-${{ matrix.arch }}
+          fail-build: false
+          output-format: json
+      - name: Login to GHCR
+        if: github.event_name == 'push' || inputs.publish
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish validated architecture
+        if: github.event_name == 'push' || inputs.publish
+        shell: bash
+        run: docker push "$IMAGE:${{ needs.release.outputs.image_tag }}-${{ matrix.arch }}"
+
+  controller-manifest:
+    name: Publish Controller image tags
+    needs: [release, controller-image]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: [ubuntu-24.04]
+    permissions:
+      packages: write
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish version and stable latest
+        shell: bash
+        env:
+          IMAGE: ghcr.io/abdorrahmani/phelix
+          IMAGE_TAG: ${{ needs.release.outputs.image_tag }}
+          PRERELEASE: ${{ needs.release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          tags=(--tag "$IMAGE:$IMAGE_TAG")
+          if [[ "$PRERELEASE" == false ]]; then tags+=(--tag "$IMAGE:latest"); fi
+          docker buildx imagetools create "${tags[@]}" "$IMAGE:$IMAGE_TAG-amd64" "$IMAGE:$IMAGE_TAG-arm64"

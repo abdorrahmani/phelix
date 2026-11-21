@@ -1,18 +1,46 @@
-FROM golang:1.27.4-alpine AS build
+ARG GO_IMAGE=golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280
+ARG RUNTIME_IMAGE=docker:29-cli@sha256:34507eb5069d8be82c95dd3b6987d4250fd5fee49b82e2509b7d7a7030740d6d
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
+ARG TARGETOS
+ARG TARGETARCH
 ARG GOPROXY=https://proxy.golang.org,direct
+ARG VERSION=0.0.0-dev
+ARG BUILD_ID=dev
+ARG REVISION=unknown
+ARG BUILD_TIME=unknown
 ENV GOPROXY=$GOPROXY
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/phelix .
+RUN sed -E -i \
+    -e 's@^(\s*mode:).*@\1 "production"@' \
+    -e 's@^(\s*api:).*@\1 "https://phelix.anophel.com/api/v1"@' \
+    -e 's@^(\s*grpcUrl:).*@\1 "phelix.anophel.com:443"@' config/config.yml && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+    -ldflags="-s -w -X github.com/abdorrahmani/phelix/internal/version.Version=$VERSION -X github.com/abdorrahmani/phelix/internal/version.BuildID=$BUILD_ID -X github.com/abdorrahmani/phelix/internal/version.Commit=$REVISION -X github.com/abdorrahmani/phelix/internal/version.BuildTime=$BUILD_TIME -X github.com/abdorrahmani/phelix/internal/version.CGOEnabled=0" \
+    -o /out/phelix .
 
-FROM docker:29-cli
-RUN apk add --no-cache ca-certificates git tini
+FROM ${RUNTIME_IMAGE}
+ARG VERSION=0.0.0-dev
+ARG REVISION=unknown
+ARG BUILD_TIME=unknown
+LABEL org.opencontainers.image.title="Phelix Controller" \
+      org.opencontainers.image.source="https://github.com/abdorrahmani/phelix" \
+      org.opencontainers.image.version=$VERSION \
+      org.opencontainers.image.revision=$REVISION \
+      org.opencontainers.image.created=$BUILD_TIME
+RUN apk add --no-cache ca-certificates git tini && \
+    mkdir -p /var/lib/phelix /run/phelix /etc/phelix && \
+    chmod 0700 /var/lib/phelix /run/phelix
 COPY --from=build /out/phelix /usr/local/bin/phelix
-ENV PHELIX_DATA_DIR=/var/lib/phelix
-ENV HOME=/var/lib/phelix/home
+ENV PHELIX_DATA_DIR=/var/lib/phelix \
+    HOME=/var/lib/phelix/home \
+    PHELIX_CONTROLLER_MODE=container \
+    PHELIX_CONTROL_SOCKET=/run/phelix/control.sock \
+    PHELIX_CONTROLLER_CONFIG=/etc/phelix/controller.yaml
 WORKDIR /var/lib/phelix
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 CMD ["phelix", "controller", "health"]
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/phelix"]
 CMD ["controller"]
