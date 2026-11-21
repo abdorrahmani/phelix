@@ -464,6 +464,7 @@ func (c *Client) runMonitorStream() error {
 	c.sendVersionSyncs()
 
 	c.sendSecuritySnapshots()
+	c.queueSupplyChainSnapshots()
 
 	c.sendHostSecuritySnapshots()
 
@@ -511,6 +512,7 @@ func (c *Client) runMonitorStream() error {
 			c.sendMatrixSnapshots()
 			c.sendVersionSyncs()
 			c.sendSecuritySnapshots()
+			c.queueSupplyChainSnapshots()
 			c.sendHostSecuritySnapshots()
 		case <-serverTicker.C:
 			if monitorStream.isPaused() {
@@ -596,6 +598,8 @@ func (c *Client) monitorRecvLoop(stream pb.PhelixService_MonitorStreamClient, ex
 		case *pb.MonitorControl_SecurityResultAck:
 			acknowledgeSecurityResult(securityLedger, p.SecurityResultAck)
 			acknowledgeHostSecurityResult(hostSecurityLedger, p.SecurityResultAck)
+		case *pb.MonitorControl_SupplyChainAck:
+			acknowledgeSupplyChain(p.SupplyChainAck)
 		}
 	}
 }
@@ -830,7 +834,7 @@ func (c *Client) handleMonitorCommand(req *pb.MonitorCommandRequest, executor mo
 // sendMonitorServerInfo sends the ServerInfo snapshot once per stream
 // (re)connection, mirroring the legacy "servers" WebSocket message.
 func (c *Client) sendMonitorServerInfo() error {
-	if !app.AnyWatched() {
+	if !app.AnyWatched() && !supplyChainReadEnabled() {
 		return nil
 	}
 	if monitorStream.serverInfoSentOnStream() {

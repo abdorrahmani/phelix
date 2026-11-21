@@ -25,30 +25,27 @@ import (
 
 var securityJSON bool
 
-// SecurityCmd groups application dependency vulnerability scanning. Scans
-// run locally against OSV.dev, never execute a toolchain, never modify
-// dependency files, and never transmit inventory data.
 var SecurityCmd = &cobra.Command{
 	Use:   "security",
-	Short: "Application dependency vulnerability scanning",
-	Long: `Application dependency vulnerability scanning.
+	Short: "Dependency and build artifact security",
+	Long: `Inspect dependencies and verify versioned build artifacts.
 
-Inventory the Go or Rust dependencies of a project, evaluate them against
-OSV.dev advisories, and review findings, history, and individual advisories.
-Scans are local: dependency files are parsed in place, no toolchain runs,
-and nothing is built. The advisory query sends ecosystem and package names
-to OSV.dev; no dependency data reaches the Phelix backend.
+Scan Go or Rust dependencies against OSV.dev, review findings and history,
+and inspect SPDX, CycloneDX, provenance, signatures and security policies.
+Go scanning uses the installed toolchain to resolve the module graph when
+available. Unresolved versions and incomplete scans remain explicit.
+The advisory query sends ecosystem and package names to OSV.dev.
 
-Scan dispositions are conservative. A finding is affected only when the
-dependency's resolved version is established (Cargo.lock, a pinned replace
-directive). Go manifest requirements are minimums, so they report
-potentially affected with the reasoning attached. Reachability is never
-claimed: every finding reports reachability unknown.
+Remote reporting is disabled by default. Enable it for this server with
+'phelix security remote enable'. Local scans and artifact checks continue
+to work while reporting is disabled.
 
 Examples:
   phelix security scan              scan the project in the current directory
   phelix security scan myapp        scan a registered application
   phelix security report myapp      show the latest completed scan
+  phelix security supply-chain verify myapp  verify a stored artifact
+  phelix security remote status     inspect independent remote activation
   phelix security show GHSA-...     inspect one advisory
   phelix security config myapp      show effective scan settings`,
 	Args: cobra.NoArgs,

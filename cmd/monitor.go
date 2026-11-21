@@ -116,9 +116,18 @@ func runHostSecurityScheduler(ctx context.Context) {
 // host authorization boundary. The application identifier resolves to its
 // stable id before the decision so policies can target apps precisely.
 func remoteSecurityAuthorize(req *pb.MonitorCommandRequest) error {
+	if req.GetType() == phelixgrpc.SecurityRemoteEnable || req.GetType() == phelixgrpc.SecurityRemoteDisable {
+		return remoteHostSecurityAuthorize(req)
+	}
 	target, err := remoteSecurityTarget(req.GetAppName())
 	if err != nil {
 		return err
+	}
+	if req.GetType() == phelixgrpc.SecurityAppStatus || req.GetType() == phelixgrpc.SecurityAppLogs {
+		return nil
+	}
+	if req.GetType() == phelixgrpc.SecurityAppBuild {
+		return authorizeDirectExecution(authz.ActionRebuild, target.appName, target.appID)
 	}
 	return authorizeDirectExecution(authz.ActionSecurity, target.appName, target.appID)
 }
@@ -163,16 +172,10 @@ var securityWarningFile = logs.WarningFile
 // summary for every application that opted in to security reporting.
 func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
 	var out []*pb.SecurityScanSnapshot
-	var skips securityProjectSkips
+	if !security.RemoteSecurityEnabled(server.DataDir()) {
+		return out
+	}
 	for _, info := range app.Manager.ListApplications() {
-		cfg, err := project.LoadSecurityProject(info.Directory)
-		if err != nil {
-			skips.add(err)
-			continue
-		}
-		if remoteSecurityConsent(&securityTarget{cfg: cfg}) != nil {
-			continue
-		}
 		store := security.NewScanStore(server.DataDir())
 		entry, err := store.Latest(info.ID)
 		if err != nil || entry == nil || entry.ScanID == "" {
@@ -204,7 +207,6 @@ func securitySnapshotsForConsentingApps() []*pb.SecurityScanSnapshot {
 		}
 		out = append(out, snapshot)
 	}
-	skips.log("cannot resolve reporting configuration")
 	return out
 }
 
@@ -434,7 +436,7 @@ func runMonitorContext(ctx context.Context, management func() (func(), error)) e
 	if err := phelixgrpc.InitializeSecurityLedger(); err != nil {
 		logs.Warning("monitor", "remote security ledger unavailable; mutating security commands will fail closed: %v", err)
 	}
-	phelixgrpc.SetSecurityHandler(RemoteSecurityCommand)
+	phelixgrpc.SetSecurityHandler(newRemoteSecurityHandler())
 	phelixgrpc.SetSecurityAuthorizer(remoteSecurityAuthorize)
 	phelixgrpc.SecuritySnapshotProvider = securitySnapshotsForConsentingApps
 

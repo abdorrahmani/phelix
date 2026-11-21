@@ -501,6 +501,7 @@ message MonitorCommandRequest {
 // MonitorCommandResult mirrors the old "command_response" WebSocket message
 // sent back to the backend after a command finishes executing.
 message MonitorCommandResult {
+  bytes supply_chain_json = 45;
   string request_id = 1;
   string command = 2;
   string app_name = 3;
@@ -753,6 +754,7 @@ message MonitorEvent {
     // deployment resync tick, only when host reporting consent is enabled.
     // An older backend ignores the unknown oneof case.
     HostSecuritySnapshotSummary host_security_summary = 29;
+    bytes supply_chain_json = 30;
   }
 }
 
@@ -764,6 +766,7 @@ message MonitorControl {
     MonitorCommandRequest command = 1;
     Ping ping = 2;
     SecurityResultAck security_result_ack = 3;
+    SupplyChainAck supply_chain_ack = 4;
   }
 }
 

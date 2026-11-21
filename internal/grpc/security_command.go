@@ -12,6 +12,7 @@ import (
 	pb "github.com/abdorrahmani/phelix/internal/grpc/proto"
 	"github.com/abdorrahmani/phelix/internal/logs"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/security"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"google.golang.org/protobuf/proto"
 )
@@ -154,6 +155,9 @@ func SecurityQueryLimit(requested int32) int {
 
 // isSecurityCommand reports whether a command type is a security command.
 func isSecurityCommand(t string) bool {
+	if IsSupplyChainCommand(t) {
+		return true
+	}
 	switch t {
 	case SecurityCommandReport, SecurityCommandHistory, SecurityCommandDetail,
 		SecurityCommandAdvisory, SecurityCommandConfig, SecurityCommandRun,
@@ -168,7 +172,10 @@ func isSecurityCommand(t string) bool {
 // read-only: answered directly, never recorded in the ledger.
 func isMutatingSecurityCommand(t string) bool {
 	switch t {
-	case SecurityCommandRun, SecurityCommandConfigSet:
+	case SecurityCommandRun, SecurityCommandConfigSet, SecurityArtifactRescan, SecurityArtifactVerify,
+		SecurityPolicySet, SecurityRemoteEnable, SecurityRemoteDisable, SecurityOperationCancel:
+		return true
+	case SecurityAppStatus, SecurityAppLogs, SecurityAppBuild:
 		return true
 	}
 	return false
@@ -200,8 +207,14 @@ func validateSecurityCommand(req *pb.MonitorCommandRequest) error {
 	if !isSecurityCommand(req.GetType()) {
 		return phelixerr.Newf(phelixerr.CodeInvalidArgument, "unknown security command type %q", req.GetType())
 	}
+	if IsSupplyChainCommand(req.GetType()) {
+		return ValidateSupplyChainCommand(req)
+	}
 
 	opts := req.GetSecurity()
+	if opts.GetVersion() != 0 || opts.GetFormat() != "" || opts.GetPolicyJson() != "" || opts.GetArtifactDigest() != "" {
+		return phelixerr.New(phelixerr.CodeInvalidArgument, "supply chain options are not valid for this security operation")
+	}
 	if opts == nil {
 		switch req.GetType() {
 		case SecurityCommandDetail:
@@ -391,12 +404,25 @@ func finalizeSecurityResult(req *pb.MonitorCommandRequest, result *pb.MonitorCom
 }
 
 func sendSecurityResult(result *pb.MonitorCommandResult) error {
+	if len(result.GetSupplyChainJson()) > 0 && result.GetCommand() != SecurityRemoteStatus &&
+		result.GetCommand() != SecurityRemoteEnable && result.GetCommand() != SecurityRemoteDisable &&
+		result.GetCommand() != SecurityAppStatus && result.GetCommand() != SecurityAppLogs && result.GetCommand() != SecurityAppBuild && !supplyChainReadEnabled() {
+		result = proto.Clone(result).(*pb.MonitorCommandResult)
+		result.SupplyChainJson = nil
+		result.SecurityResultWithheld = true
+		result.SecurityConsentErrorCode = string(phelixerr.CodeSecurityReportingDisabled)
+		if !isMutatingSecurityCommand(result.GetCommand()) {
+			result.Status = "error"
+			result.ErrorCode = string(phelixerr.CodeSecurityReportingDisabled)
+			result.Error = "remote security reporting is disabled"
+		}
+	}
 	if result.GetSecurityScanRecord() != nil || result.GetSecurityScanList() != nil || result.GetSecurityAdvisory() != nil || result.GetSecurityConfig() != nil {
 		status := executeSecurityCommand(&pb.MonitorCommandRequest{RequestId: result.GetRequestId(), Type: SecurityCommandConfig, AppName: result.GetAppName()})
 		if result.GetCommand() == SecurityCommandConfig {
 			return sendCommandResultLogged(status)
 		}
-		if status.GetStatus() != "success" || status.GetSecurityConfig().GetReporting() != "enabled" {
+		if !security.RemoteSecurityEnabled(server.DataDir()) {
 			code := status.GetErrorCode()
 			if code == "" {
 				code = string(phelixerr.CodeSecurityReportingDisabled)

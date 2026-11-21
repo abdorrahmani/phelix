@@ -42,7 +42,18 @@ func securityRemoteFixture(t *testing.T, reporting bool) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	telemetry := filepath.Join(home, ".config", "go", "telemetry")
+	if err := os.MkdirAll(telemetry, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(telemetry, "mode"), []byte("off"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(home, ".phelix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := security.SetRemoteSecurity(filepath.Join(home, ".phelix"), reporting); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,37 +167,38 @@ func TestRemoteSecurity_CurrentConfiguration(t *testing.T) {
 	osv := securityOSV(t, "low")
 	defer osv.Close()
 	securityRemoteScan(t, dir, osv.URL)
-	for _, tc := range []struct{ content, code, reporting string }{
-		{"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: true\n", "", "enabled"},
-		{"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: false\n", "SECURITY_REPORTING_DISABLED", "disabled"},
-		{"security: [", "SECURITY_CONFIG_INVALID", ""},
-		{"name: another\nsecurity:\n  vulnerability:\n    reporting: true\n", "", "enabled"},
+	for _, content := range []string{
+		"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: true\n",
+		"name: remoteapp\nsecurity:\n  vulnerability:\n    reporting: false\n",
+		"security: [",
 	} {
-		if err := os.WriteFile(filepath.Join(dir, "phelix.yaml"), []byte(tc.content), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "phelix.yaml"), []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
 		result := RemoteSecurityCommand(securityRequest("r", phelixgrpc.SecurityCommandReport, securityRemoteAppID, nil))
-		if result.GetErrorCode() != tc.code {
-			t.Fatalf("report: %v, want %s", result, tc.code)
+		if result.GetStatus() != "success" {
+			t.Fatalf("YAML must not control reporting: %v", result)
 		}
-		cfg := RemoteSecurityCommand(securityRequest("c", phelixgrpc.SecurityCommandConfig, securityRemoteAppID, nil))
-		if tc.reporting != "" && cfg.GetSecurityConfig().GetReporting() != tc.reporting {
-			t.Fatalf("config: %v", cfg)
-		}
-		if tc.reporting == "disabled" && (cfg.GetSecurityConfig().GetLastScanId() != "" || cfg.GetSecurityConfig().GetScanInterval() != "") {
-			t.Fatal("disabled status disclosed scan settings")
-		}
-		snapshots := securitySnapshotsForConsentingApps()
-		if (len(snapshots) > 0) != (tc.reporting == "enabled") {
-			t.Fatalf("snapshots ignored current config: %v", snapshots)
+		if len(securitySnapshotsForConsentingApps()) != 1 {
+			t.Fatal("YAML must not control snapshots")
 		}
 	}
 	if err := os.Remove(filepath.Join(dir, "phelix.yaml")); err != nil {
 		t.Fatal(err)
 	}
 	result := RemoteSecurityCommand(securityRequest("m", phelixgrpc.SecurityCommandReport, securityRemoteAppID, nil))
-	if result.GetErrorCode() != "SECURITY_CONFIG_MISSING" {
-		t.Fatalf("missing config: %v", result)
+	if result.GetStatus() != "success" {
+		t.Fatalf("historical reports need no project YAML: %v", result)
+	}
+	if _, err := security.SetRemoteSecurity(securityTestDataDir(), false); err != nil {
+		t.Fatal(err)
+	}
+	result = RemoteSecurityCommand(securityRequest("disabled", phelixgrpc.SecurityCommandReport, securityRemoteAppID, nil))
+	if result.GetErrorCode() != "SECURITY_REPORTING_DISABLED" || len(securitySnapshotsForConsentingApps()) != 0 {
+		t.Fatalf("persistent disable must stop disclosure: %v", result)
+	}
+	if _, err := security.NewScanStore(securityTestDataDir()).ListScans(securityRemoteAppID); err != nil {
+		t.Fatal(err)
 	}
 }
 
