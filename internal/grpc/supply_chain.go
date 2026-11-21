@@ -232,6 +232,12 @@ func (c *Client) queueSupplyChainSnapshots() {
 	if !c.supplyChainMu.TryLock() {
 		return
 	}
+	select {
+	case <-c.done:
+		c.supplyChainMu.Unlock()
+		return
+	default:
+	}
 	go func() {
 		defer c.supplyChainMu.Unlock()
 		c.sendSupplyChainSnapshots()

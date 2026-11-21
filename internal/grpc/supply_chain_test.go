@@ -1,6 +1,8 @@
 package grpc
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -38,5 +40,21 @@ func TestSupplyChainCommandValidation(t *testing.T) {
 				t.Fatalf("valid=%v error=%v", tc.valid, err)
 			}
 		})
+	}
+}
+
+func TestSupplyChainQueueStopsWithClient(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PHELIX_DATA_DIR", dir)
+	done := make(chan struct{})
+	close(done)
+	client := &Client{done: done}
+	client.queueSupplyChainSnapshots()
+	if !client.supplyChainMu.TryLock() {
+		t.Fatal("closed client queued a synchronization worker")
+	}
+	defer client.supplyChainMu.Unlock()
+	if _, err := os.Stat(filepath.Join(dir, "security", "remote.json")); !os.IsNotExist(err) {
+		t.Fatalf("closed client initialized reporting state: %v", err)
 	}
 }
