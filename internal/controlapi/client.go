@@ -20,7 +20,10 @@ func Connect(ctx context.Context, socket string) (*grpc.ClientConn, pb.ControlCl
 		return nil, nil, err
 	}
 	client := pb.NewControlClient(connection)
-	if _, err := client.Health(ctx, &pb.Empty{}); err != nil {
+	if response, err := client.Health(ctx, &pb.Empty{}); err != nil || !response.GetReady() {
+		if err == nil {
+			err = fmt.Errorf("Controller is not ready")
+		}
 		connection.Close()
 		return nil, nil, fmt.Errorf("cannot connect to Phelix Controller at %s; start 'phelix controller' or set PHELIX_CONTROL_SOCKET: %w", socket, err)
 	}

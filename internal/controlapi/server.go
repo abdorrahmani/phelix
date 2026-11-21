@@ -2,11 +2,13 @@ package controlapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
@@ -106,6 +108,12 @@ func Listen(socket string, allowedUIDs []uint32, service *Service, ownership ...
 			conn.Close()
 			return nil, fmt.Errorf("control socket is already in use")
 		}
+		if !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("cannot verify stale control socket: %w", err)
+		}
+		if err := validateSocketOwner(info, uid); err != nil {
+			return nil, err
+		}
 		if err := os.Remove(socket); err != nil {
 			return nil, err
 		}
@@ -138,5 +146,16 @@ func Listen(socket string, allowedUIDs []uint32, service *Service, ownership ...
 }
 
 func (s *Server) Close() {
-	s.once.Do(func() { s.grpc.Stop(); s.listener.Close(); <-s.done })
+	s.once.Do(func() {
+		stopped := make(chan struct{})
+		go func() { s.grpc.GracefulStop(); close(stopped) }()
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			s.grpc.Stop()
+			<-stopped
+		}
+		s.listener.Close()
+		<-s.done
+	})
 }

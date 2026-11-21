@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/credentials"
@@ -47,4 +49,12 @@ func (c unixCredentials) ServerHandshake(conn net.Conn) (net.Conn, credentials.A
 		return nil, nil, fmt.Errorf("local peer is not authorized")
 	}
 	return conn, peerInfo{UID: peer.Uid}, nil
+}
+
+func validateSocketOwner(info os.FileInfo, uid int) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || (stat.Uid != uint32(os.Getuid()) && stat.Uid != uint32(uid)) || info.Mode().Perm()&0007 != 0 {
+		return fmt.Errorf("stale control socket has unsafe ownership or permissions")
+	}
+	return nil
 }

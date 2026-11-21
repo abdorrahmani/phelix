@@ -319,13 +319,6 @@ func runMonitorContext(ctx context.Context, management func() (func(), error)) e
 		return err
 	}
 	logs.Info("monitor", "loaded agent identity agent_id=%s", server.GetAgentID())
-	if management != nil {
-		var err error
-		stopManagement, err = management()
-		if err != nil {
-			return err
-		}
-	}
 
 	if scope := phelixgrpc.PreferredSessionScope(); scope != phelixgrpc.SessionScopeAgent {
 		logs.Warning("monitor",
@@ -451,6 +444,14 @@ func runMonitorContext(ctx context.Context, management func() (func(), error)) e
 
 	if err := healthDaemon.Start(); err != nil {
 		logs.Warning("monitor", "failed to start health daemon: %v", err)
+	}
+
+	if management != nil {
+		var err error
+		stopManagement, err = management()
+		if err != nil {
+			return err
+		}
 	}
 
 	done := make(chan struct{})
