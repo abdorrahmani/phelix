@@ -421,7 +421,7 @@ func TestExplicitVerificationTargetsOverrideClassicJournal(t *testing.T) {
 	}
 	live := startChildInstance(t, "classic", 1)
 	err := VerifyRollbackStability(context.Background(), VerificationOptions{
-		AppName: state.AppName, Duration: time.Millisecond,
+		AppName: state.AppName, Duration: 100 * time.Millisecond,
 		Targets: []VerifyTarget{{Label: "classic", HostPort: hostPort(live.Port), PID: live.PID}},
 	})
 	if err != nil {
