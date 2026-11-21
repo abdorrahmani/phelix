@@ -122,7 +122,7 @@ func init() {
 }
 
 func controllerQuery(command *cobra.Command, args []string) error {
-	cfg, err := controller.LoadConfig()
+	cfg, err := controller.LoadClientConfig()
 	if err != nil {
 		return err
 	}

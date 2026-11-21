@@ -63,7 +63,7 @@ func controlArguments(command *cobra.Command, args []string) []string {
 }
 
 func runControlClient(command *cobra.Command, args []string) error {
-	cfg, err := controller.LoadConfig()
+	cfg, err := controller.LoadClientConfig()
 	if err != nil {
 		return err
 	}
@@ -95,7 +95,19 @@ func runControlClient(command *cobra.Command, args []string) error {
 		}
 	}
 	submitCtx, submitCancel := context.WithTimeout(command.Context(), 5*time.Second)
-	operation, err := client.Execute(submitCtx, &pb.CommandRequest{Argv: controlArguments(command, args), Directory: directory, Input: input})
+	defer submitCancel()
+	request := &pb.CommandRequest{Argv: controlArguments(command, args), Directory: directory, Input: input}
+	if deadline, ok := command.Context().Deadline(); ok {
+		seconds := int64((time.Until(deadline) + time.Second - 1) / time.Second)
+		if seconds < 1 {
+			return context.DeadlineExceeded
+		}
+		if seconds > 86400 {
+			seconds = 86400
+		}
+		request.TimeoutSeconds = seconds
+	}
+	operation, err := client.Execute(submitCtx, request)
 	submitCancel()
 	if err != nil {
 		return err

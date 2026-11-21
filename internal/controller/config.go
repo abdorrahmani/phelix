@@ -27,11 +27,28 @@ type Config struct {
 }
 
 func LoadConfig() (Config, error) {
-	c := Config{Socket: filepath.Join(server.DataDir(), "control.sock"), Mode: "host", MaxOperations: 8}
 	path := os.Getenv("PHELIX_CONTROLLER_CONFIG")
 	if path == "" {
 		path = filepath.Join(server.DataDir(), "controller.yaml")
 	}
+	return loadConfig(path)
+}
+
+func LoadClientConfig() (Config, error) {
+	return loadClientConfig("/etc/phelix/client.yaml")
+}
+
+func loadClientConfig(installed string) (Config, error) {
+	if os.Getenv("PHELIX_CONTROLLER_CONFIG") == "" && os.Getenv("PHELIX_CONTROL_SOCKET") == "" && os.Getenv("PHELIX_DATA_DIR") == "" {
+		if _, err := os.Stat(filepath.Join(server.DataDir(), "controller.yaml")); os.IsNotExist(err) {
+			return loadConfig(installed)
+		}
+	}
+	return LoadConfig()
+}
+
+func loadConfig(path string) (Config, error) {
+	c := Config{Socket: filepath.Join(server.DataDir(), "control.sock"), Mode: "host", MaxOperations: 8}
 	raw, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return c, err
