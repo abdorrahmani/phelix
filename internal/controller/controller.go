@@ -16,7 +16,7 @@ type Controller struct {
 	owner    *Owner
 }
 
-func New(ctx context.Context, cfg Config) (*Controller, error) {
+func New(ctx context.Context, cfg Config) (_ *Controller, errRet error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -27,7 +27,7 @@ func New(ctx context.Context, cfg Config) (*Controller, error) {
 	success := false
 	defer func() {
 		if !success {
-			owner.Close()
+			errRet = errors.Join(errRet, owner.Close())
 		}
 	}()
 	if err := MigrateStorage(filepath.Join(os.Getenv("HOME"), ".phelix"), server.DataDir()); err != nil {
@@ -45,5 +45,5 @@ func New(ctx context.Context, cfg Config) (*Controller, error) {
 }
 
 func (c *Controller) Close() error {
-	return errors.Join(c.owner.Close())
+	return c.owner.Close()
 }

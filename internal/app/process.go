@@ -48,6 +48,9 @@ func (m *AppManager) startApplicationProcess(id string, name string, portNum int
 }
 
 func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, portNum int, logFile string, pinned *secrets.PinnedSet) error {
+	if err := ValidateNativeRuntime(); err != nil {
+		return err
+	}
 
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -201,6 +204,14 @@ func (m *AppManager) startApplicationProcessWithSecrets(id string, name string, 
 		)
 	}
 
+	return nil
+}
+
+// ValidateNativeRuntime requires host execution for native applications.
+func ValidateNativeRuntime() error {
+	if os.Getenv("PHELIX_CONTROLLER_MODE") == "container" {
+		return phelixerr.New(phelixerr.CodeConfiguration, "native applications require Host Mode; configure deploy.runtime: docker for a container Controller")
+	}
 	return nil
 }
 

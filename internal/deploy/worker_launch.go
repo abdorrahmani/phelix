@@ -48,6 +48,9 @@ func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config,
 }
 
 func launchAppWorkerInstance(binaryPath string, env []string, cfg resources.Config, replica, appName string) (Process, processex.ProcessIdentity, error) {
+	if err := app.ValidateNativeRuntime(); err != nil {
+		return nil, processex.ProcessIdentity{}, err
+	}
 	if binaryPath == "" {
 		return nil, processex.ProcessIdentity{}, phelixerr.New(phelixerr.CodeInvalidArgument, "worker: binary path is empty")
 	}

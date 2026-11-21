@@ -133,6 +133,9 @@ func launchInstance(ctx context.Context, binaryPath string, env []string, cfg re
 }
 
 func launchAppInstance(ctx context.Context, binaryPath string, env []string, cfg resources.Config, appName string) (Process, int, error) {
+	if err := app.ValidateNativeRuntime(); err != nil {
+		return nil, 0, err
+	}
 	if binaryPath == "" {
 		return nil, 0, phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: binary path is empty")
 	}
