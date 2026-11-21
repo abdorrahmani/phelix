@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -72,6 +73,12 @@ func runControlClient(command *cobra.Command, args []string) error {
 		return phelixerr.Wrap(phelixerr.CodeConnection, "Controller unavailable", err)
 	}
 	defer conn.Close()
+	if IsInteractive() {
+		args, err = selectControlApp(command, args, client, PromptSelect)
+		if err != nil {
+			return err
+		}
+	}
 	directory, err := os.Getwd()
 	if err != nil {
 		return err
@@ -143,6 +150,53 @@ func runControlClient(command *cobra.Command, args []string) error {
 			return phelixerr.New(phelixerr.CodeProcessFailed, "Controller operation failed")
 		}
 	}
+}
+
+func selectControlApp(command *cobra.Command, args []string, client pb.ControlClient, choose func(string, []string) (string, error)) ([]string, error) {
+	if len(args) > 0 || command.Parent() != command.Root() || (command.Name() != "status" && command.Name() != "remove") {
+		return args, nil
+	}
+	if workspace, _ := command.Flags().GetBool("workspace"); workspace {
+		return args, nil
+	}
+	ctx, cancel := context.WithTimeout(command.Context(), 10*time.Second)
+	defer cancel()
+	response, err := client.Query(ctx, &pb.QueryRequest{Kind: pb.QueryKind_APPLICATIONS})
+	if err != nil {
+		return nil, err
+	}
+	if len(response.Applications) == 0 {
+		return nil, phelixerr.New(phelixerr.CodeNotFound, "no applications found; build one first with 'phelix build <NAME>'")
+	}
+	sort.Slice(response.Applications, func(i, j int) bool {
+		a, b := response.Applications[i], response.Applications[j]
+		if a.Name == b.Name {
+			return a.Id < b.Id
+		}
+		return a.Name < b.Name
+	})
+	options := make([]string, 0, len(response.Applications))
+	for _, application := range response.Applications {
+		label := application.Id
+		if application.Name != "" {
+			label = fmt.Sprintf("%s (%s)", application.Name, application.Id)
+		}
+		options = append(options, label)
+	}
+	message := "Select application to inspect"
+	if command.Name() == "remove" {
+		message = "Select application to remove"
+	}
+	selected, err := choose(message, options)
+	if err != nil {
+		return nil, err
+	}
+	for i, option := range options {
+		if option == selected {
+			return []string{response.Applications[i].Id}, nil
+		}
+	}
+	return nil, phelixerr.New(phelixerr.CodeInvalidArgument, "selected application was not found")
 }
 
 type controlOperationError struct{ result *pb.Operation }
