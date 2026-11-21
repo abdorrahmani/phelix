@@ -739,13 +739,16 @@ func TestRustCommandUsesVersionAndExtraArgs(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte("[package]\nname='demo'\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte("[package]\nname='demo'\nversion='0.1.0'\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "src", "main.rs"), []byte("fn main() {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var got []string
+	if err := os.WriteFile(filepath.Join(root, "Cargo.lock"), []byte("version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	r := &RustMatrixBuilder{
 		ProjectRoot: root, AppName: "demo", ExtraArgs: []string{"--locked"},
 		Resolve:  func(context.Context, string, []string) (cargo.Selection, error) { return testRustSelection() },

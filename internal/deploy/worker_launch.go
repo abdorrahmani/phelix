@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 )
 
 // WorkerLauncher starts one worker replica. Unlike InstanceLauncher it
@@ -33,7 +35,7 @@ func WorkerLauncherForApp(appName string) WorkerLauncher {
 		if err != nil {
 			return nil, processex.ProcessIdentity{}, phelixerr.Wrap(phelixerr.CodeConfiguration, "worker: load resource limits", err)
 		}
-		return launchWorkerInstance(binaryPath, env, cfg, replica)
+		return launchAppWorkerInstance(binaryPath, env, cfg, replica, appName)
 	}
 }
 
@@ -42,6 +44,10 @@ func WorkerLauncherForApp(appName string) WorkerLauncher {
 // PORT appended), per-replica log file, cgroup lease via resources.Start, and
 // one wait goroutine that classifies a cgroup OOM before releasing the lease.
 func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config, replica string) (Process, processex.ProcessIdentity, error) {
+	return launchAppWorkerInstance(binaryPath, env, cfg, replica, "")
+}
+
+func launchAppWorkerInstance(binaryPath string, env []string, cfg resources.Config, replica, appName string) (Process, processex.ProcessIdentity, error) {
 	if binaryPath == "" {
 		return nil, processex.ProcessIdentity{}, phelixerr.New(phelixerr.CodeInvalidArgument, "worker: binary path is empty")
 	}
@@ -50,6 +56,15 @@ func launchWorkerInstance(binaryPath string, env []string, cfg resources.Config,
 	}
 	if replica == "" {
 		return nil, processex.ProcessIdentity{}, phelixerr.New(phelixerr.CodeInvalidArgument, "worker: replica name is empty")
+	}
+	var verifyErr error
+	if appName == "" {
+		verifyErr = supplychain.VerifyPath(context.Background(), supplychain.NewStore(server.DataDir()), binaryPath, "")
+	} else {
+		verifyErr = verifyNativeAppArtifact(context.Background(), appName, binaryPath)
+	}
+	if verifyErr != nil {
+		return nil, processex.ProcessIdentity{}, verifyErr
 	}
 
 	logFile, err := openWorkerInstanceLog(binaryPath, replica)

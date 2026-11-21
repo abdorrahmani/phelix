@@ -20,6 +20,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/processex"
 	"github.com/abdorrahmani/phelix/internal/resources"
 	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -123,11 +124,15 @@ func LauncherForApp(appName string) InstanceLauncher {
 		if err != nil {
 			return nil, 0, phelixerr.Wrap(phelixerr.CodeConfiguration, "deploy: load resource limits", err)
 		}
-		return launchInstance(ctx, binaryPath, env, cfg)
+		return launchAppInstance(ctx, binaryPath, env, cfg, appName)
 	}
 }
 
-func launchInstance(_ context.Context, binaryPath string, env []string, cfg resources.Config) (Process, int, error) {
+func launchInstance(ctx context.Context, binaryPath string, env []string, cfg resources.Config) (Process, int, error) {
+	return launchAppInstance(ctx, binaryPath, env, cfg, "")
+}
+
+func launchAppInstance(ctx context.Context, binaryPath string, env []string, cfg resources.Config, appName string) (Process, int, error) {
 	if binaryPath == "" {
 		return nil, 0, phelixerr.New(phelixerr.CodeInvalidArgument, "deploy: binary path is empty")
 	}
@@ -135,6 +140,15 @@ func launchInstance(_ context.Context, binaryPath string, env []string, cfg reso
 		return nil, 0, phelixerr.Wrapf(phelixerr.CodeNotFound, err, "deploy: binary not found")
 	}
 
+	var verifyErr error
+	if appName == "" {
+		verifyErr = supplychain.VerifyPath(ctx, supplychain.NewStore(server.DataDir()), binaryPath, "")
+	} else {
+		verifyErr = verifyNativeAppArtifact(ctx, appName, binaryPath)
+	}
+	if verifyErr != nil {
+		return nil, 0, verifyErr
+	}
 	port, err := freePort()
 	if err != nil {
 		return nil, 0, phelixerr.Wrapf(phelixerr.CodePortUnavailable, err, "deploy: allocate internal port")

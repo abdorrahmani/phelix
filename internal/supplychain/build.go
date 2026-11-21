@@ -333,9 +333,6 @@ func Finalize(ctx context.Context, s *Store, r *Report, path string, versionNumb
 	if err = SaveSidecar(path, &copy); err != nil {
 		return nil, err
 	}
-	if err = s.Save(&copy); err != nil {
-		return nil, err
-	}
 	return &copy, nil
 }
 

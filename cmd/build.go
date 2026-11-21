@@ -23,6 +23,8 @@ import (
 	"github.com/abdorrahmani/phelix/internal/ops"
 	phelixport "github.com/abdorrahmani/phelix/internal/port"
 	"github.com/abdorrahmani/phelix/internal/project"
+	"github.com/abdorrahmani/phelix/internal/server"
+	"github.com/abdorrahmani/phelix/internal/supplychain"
 	"github.com/abdorrahmani/phelix/internal/toolchain"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -317,7 +319,9 @@ var BuildCmd = &cobra.Command{
 			deploy.DefaultRetention{Max: 5}, logger,
 		)
 		if verErr != nil {
-			fmt.Printf("  %s Warning: could not record version: %v\n", color.YellowString("⚠"), verErr)
+			tracker.Failed(verErr)
+			markBuildFailed(id)
+			return verErr
 		} else {
 			fmt.Printf("  %s Recorded version v%d\n", color.BlueString("→"), rec.Version)
 			tracker.SetTargetVersion(rec.Version)
@@ -562,6 +566,17 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 	buildCtx.Config.Output = progress.Output()
 	progress.Update(fmt.Sprintf("compiling %s", buildMgr.FormatLanguage(lang)), 0, 0)
 
+	securityCtx := buildCtx.Config.Context
+	if securityCtx == nil {
+		securityCtx = context.Background()
+	}
+	securityCtx, cancelSecurity := context.WithTimeout(securityCtx, builder.DefaultBuildTimeout)
+	defer cancelSecurity()
+	facts, captureErr := supplychain.Capture(securityCtx, supplychain.BuildFacts{AppID: id, AppName: appInfo.Name, Directory: projectRoot, Language: string(lang), Arguments: extraArgs, OutputPath: outputPath})
+	if captureErr != nil {
+		markBuildFailed(id)
+		return nil, captureErr
+	}
 	if err = buildMgr.ExecuteBuild(buildCtx); err != nil {
 		printFailedBuildSummary(lang, buildCtx.Config)
 		markBuildFailed(id)
@@ -576,6 +591,11 @@ func buildApplication(id string, extraArgs []string, buildMgr *builder.BuildMana
 		return nil, err
 	}
 
+	progress.Update("generating supply chain security", 0, 0)
+	if _, securityErr := supplychain.Generate(securityCtx, supplychain.NewStore(server.DataDir()), facts, outputPath); securityErr != nil {
+		markBuildFailed(id)
+		return nil, securityErr
+	}
 	report = newNativeBuildReport(lang, buildCtx.Config, outputPath)
 
 	progress.Finish("done")
@@ -649,7 +669,9 @@ func runMatrixMode(name string, projectRoot string, extraArgs []string, tag stri
 		return err
 	}
 
-	completeMatrixSession(run, tag)
+	if err := completeMatrixSession(run, tag); err != nil {
+		return err
+	}
 
 	switch {
 	case interrupted:

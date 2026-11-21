@@ -318,9 +318,14 @@ func VerifyApplicationPath(ctx context.Context, s *Store, path, appID, appName s
 	}
 	var versions struct {
 		Versions []struct {
-			Version  int     `json:"version"`
-			SHA256   string  `json:"sha256"`
-			Security *Report `json:"security"`
+			Version         int     `json:"version"`
+			SHA256          string  `json:"sha256"`
+			Security        *Report `json:"security"`
+			MatrixArtifacts []struct {
+				Binary   string  `json:"binary"`
+				SHA256   string  `json:"sha256"`
+				Security *Report `json:"security"`
+			} `json:"matrix_artifacts"`
 		} `json:"versions"`
 	}
 	if len(raw) > 0 {
@@ -336,6 +341,24 @@ func VerifyApplicationPath(ctx context.Context, s *Store, path, appID, appName s
 		return errors.New("artifact security metadata belongs to a different application")
 	}
 	for _, v := range versions.Versions {
+		for _, artifact := range v.MatrixArtifacts {
+			if artifact.Binary == "" || filepath.Clean(artifact.Binary) != filepath.Clean(path) {
+				continue
+			}
+			if artifact.SHA256 != "" {
+				hash, _, err := SHA256File(path)
+				if err != nil || hash != artifact.SHA256 {
+					return errors.New("matrix artifact differs from recorded version digest")
+				}
+			}
+			if artifact.Security != nil {
+				copy := *artifact.Security
+				if copy.AppName != appName || (appID != "" && copy.AppID != appID) {
+					return errors.New("matrix artifact security metadata belongs to a different application")
+				}
+				return Verify(ctx, s, &copy, path)
+			}
+		}
 		if sidecar != nil && v.Version == sidecar.Version {
 			hash, _, err := SHA256File(path)
 			if err != nil {

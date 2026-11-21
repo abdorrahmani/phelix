@@ -127,6 +127,41 @@ func TestMatrixReporter_NativeRunLifecycle(t *testing.T) {
 	}
 }
 
+func TestMatrixReporterConcurrentEmissionKeepsSequenceOrder(t *testing.T) {
+	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
+	rec := recordMatrixEvents(t)
+	SetMatrixEventInterceptor(func(ev *pb.MatrixEvent) {
+		if ev.GetSeq() == 1 {
+			time.Sleep(10 * time.Millisecond)
+		}
+		rec.mu.Lock()
+		rec.events = append(rec.events, ev)
+		rec.mu.Unlock()
+	})
+	reporter := NewMatrixReporter("req-concurrent", "mx_concurrent", "example", MatrixModeNative)
+	var workers sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 64; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			reporter.emit(&pb.MatrixEvent{Event: MatrixEventCombinationStarted})
+		}()
+	}
+	close(start)
+	workers.Wait()
+	events := rec.all()
+	if len(events) != 64 {
+		t.Fatalf("concurrent emission lost events: %d", len(events))
+	}
+	for i, event := range events {
+		if event.GetSeq() != int64(i+1) {
+			t.Fatalf("event %d arrived out of sequence: %d", i, event.GetSeq())
+		}
+	}
+}
+
 func TestMatrixReporter_ResumedAndInterrupted(t *testing.T) {
 	t.Setenv("PHELIX_DATA_DIR", t.TempDir())
 	rec := recordMatrixEvents(t)

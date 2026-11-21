@@ -123,6 +123,13 @@ var cgoPattern = regexp.MustCompile(`(?m)^\s*import\s+"C"`)
 //	  go build -v -o /out/<name> .
 func (g *GoMatrixBuilder) Build(ctx context.Context, c Combination) *Result {
 	result := &Result{Combination: c}
+	facts, securityErr := captureSecurity(ctx, g.ProjectRoot, g.AppName, "go", c, g.ExtraArgs)
+	if securityErr != nil {
+		result.Status = "failed"
+		result.Error = securityErr
+		return result
+	}
+	defer finishSecurity(ctx, facts, result)
 
 	logLine := func(format string, args ...any) {
 		if g.Debug {
