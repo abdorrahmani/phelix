@@ -54,6 +54,17 @@ func validateControlCommand(root *cobra.Command, cfg controller.Config, request 
 	}
 	if command.Name() == "build" || command.Name() == "dockerize" || command.Name() == "rebuild" || command.Name() == "deploy" || command.Name() == "apply" || command.Name() == "retry" {
 		source, err := cfg.SourcePath(request.Directory)
+		if command.Name() == "deploy" || command.Name() == "rebuild" {
+			for _, arg := range request.Argv[1:] {
+				if strings.HasPrefix(arg, "-") {
+					continue
+				}
+				if item, lookupErr := GetAppInfo(arg); lookupErr == nil {
+					source, err = cfg.SourcePath(item.Directory)
+					break
+				}
+			}
+		}
 		if err != nil {
 			return false, err
 		}

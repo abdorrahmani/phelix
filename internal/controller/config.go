@@ -81,9 +81,18 @@ func loadConfig(path string) (Config, error) {
 	if c.MaxOperations < 1 || c.MaxOperations > 128 {
 		return c, fmt.Errorf("max_operations must be between 1 and 128")
 	}
-	for _, mount := range c.Sources {
+	for i, mount := range c.Sources {
 		if !filepath.IsAbs(mount.Host) || !filepath.IsAbs(mount.Controller) {
 			return c, fmt.Errorf("source mounts must use absolute host and controller paths")
+		}
+		for _, earlier := range c.Sources[:i] {
+			for _, left := range []string{mount.Host, mount.Controller} {
+				for _, right := range []string{earlier.Host, earlier.Controller} {
+					if withinSource(left, right) || withinSource(right, left) {
+						return c, fmt.Errorf("source mounts overlap: %q and %q", left, right)
+					}
+				}
+			}
 		}
 	}
 	return c, nil
@@ -127,4 +136,9 @@ func (c Config) SourcePath(path string) (string, error) {
 		return "", fmt.Errorf("source %q unavailable in Controller; configure a workspace bind mount", mapped)
 	}
 	return mapped, nil
+}
+
+func withinSource(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
