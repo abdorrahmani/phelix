@@ -301,8 +301,12 @@ func (m *AppManager) StatusApplication(identifier string) (AppStatus, error) {
 	status.Language = app.Language
 	status.Watching = app.Watching
 
-	if app.Status == "running" {
-		ramUsage, cpuUsage, err := m.getProcessMetrics(app.PID)
+	if app.Status == "running" || app.Status == "degraded" {
+		metrics := app.RuntimeMetrics
+		if metrics == nil {
+			metrics = func() (uint64, float64, error) { return m.getProcessMetrics(app.PID) }
+		}
+		ramUsage, cpuUsage, err := metrics()
 		if err != nil {
 			return status, phelixerr.Wrap(phelixerr.CodeProcessFailed, "failed to get process metrics", err)
 		}

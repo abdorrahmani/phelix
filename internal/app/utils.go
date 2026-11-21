@@ -8,7 +8,7 @@ import (
 
 // calculateUptime calculates the uptime of an application
 func (m *AppManager) calculateUptime(app *AppInfo) string {
-	if app.Status != "running" {
+	if (app.Status != "running" && app.Status != "degraded") || app.Start.IsZero() {
 		return "N/A"
 	}
 	duration := time.Since(app.Start)

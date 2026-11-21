@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	stateFile string
-	logDir    string
-	fileMutex sync.Mutex
+	stateFile         string
+	logDir            string
+	fileMutex         sync.Mutex
+	ObserveDeployment func(*AppInfo) error
 )
 
 // init initializes the package by setting up state file and log directory paths
@@ -313,6 +314,12 @@ func (m *AppManager) loadStateLocked() error {
 			// output, a zombie PID may remain visible in /proc indefinitely when
 			// its parent does not reap it.
 			appInfo.PID = 0
+		}
+
+		if ObserveDeployment != nil {
+			if err := ObserveDeployment(appInfo); err != nil {
+				return err
+			}
 		}
 
 		// Only update timestamp if status changed

@@ -89,7 +89,8 @@ type AppInfo struct {
 	Logging AppLoggingConfig
 	// Storage holds the disk-layout configuration for this app
 	// (volumes, data dir, temp dir).
-	Storage AppStorageConfig
+	Storage        AppStorageConfig
+	RuntimeMetrics func() (uint64, float64, error)
 }
 
 // AppProcessConfig describes how Phelix launches and supervises a managed app.
