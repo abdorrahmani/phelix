@@ -81,6 +81,7 @@ type DeployConfig struct {
 // launcher, proxy, network attach, blue-green and rollback are identical
 // regardless of strategy.
 type DockerRuntimeConfig struct {
+	Volumes []DockerVolume `yaml:"volumes,omitempty"`
 	// Build is the image-build strategy: "dockerfile" (default — generate or
 	// reuse a Dockerfile and docker-build it, today's behavior) or "compose"
 	// (build the named compose service with its own build config, then tag the
@@ -92,6 +93,11 @@ type DockerRuntimeConfig struct {
 	// Service is the compose service whose build config produces this app's
 	// image. Required when Build == "compose".
 	Service string `yaml:"service,omitempty"`
+}
+
+type DockerVolume struct {
+	Name   string `yaml:"name"`
+	Target string `yaml:"target"`
 }
 
 // Docker image-build strategies for deploy.docker.build.
@@ -789,6 +795,16 @@ func (c *Config) validate() error {
 				return phelixerr.Newf(phelixerr.CodeConfiguration,
 					"configuration error: deploy.docker.build: compose requires deploy.docker.service\nHint: name the compose service that builds this app's image (e.g. service: app)")
 			}
+			if len(c.Deploy.Docker.Volumes) > 16 {
+				return phelixerr.New(phelixerr.CodeConfiguration, "deploy.docker.volumes supports at most 16 named volumes")
+			}
+			targets := make(map[string]bool)
+			for _, volume := range c.Deploy.Docker.Volumes {
+				if !validDockerVolumeName(volume.Name) || !filepath.IsAbs(volume.Target) || filepath.Clean(volume.Target) != volume.Target || volume.Target == "/" || strings.ContainsAny(volume.Target, ",:\x00\r\n") || targets[volume.Target] {
+					return phelixerr.New(phelixerr.CodeConfiguration, "deploy.docker.volumes requires valid names and distinct absolute mount paths")
+				}
+				targets[volume.Target] = true
+			}
 		}
 		if c.Deploy.Replicas > 0 && s != StrategyRolling && !c.IsWorker() {
 			return phelixerr.Newf(phelixerr.CodeConfiguration,
@@ -854,6 +870,20 @@ func (c *Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// validDockerVolumeName accepts Docker named volumes without mount syntax.
+func validDockerVolumeName(name string) bool {
+	if len(name) < 2 || len(name) > 255 {
+		return false
+	}
+	for i, char := range name {
+		if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || i > 0 && strings.ContainsRune("_.-", char) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // validate checks the rollout section against the declared strategy. Every
