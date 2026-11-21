@@ -60,6 +60,26 @@ phelix list
 phelix status myapp
 ```
 
+Running `phelix status` or `phelix remove` without an app argument in a terminal
+opens an app selector. The CLI reads the Controller's application list and sends
+the selected app ID to the Controller. Names and IDs appear together so apps
+with the same name remain distinguishable. Press Ctrl+C to cancel. Scripts
+without terminal input must supply an app name or ID.
+
+For a shell inside the Controller container, retain terminal input:
+
+```bash
+docker compose exec controller phelix status
+docker compose exec controller phelix remove
+```
+
+For Docker applications, `list` and the top `status` row use the serving
+deployment's live status, recorded host PID and start time. The status row reads
+memory and CPU from Docker. A partially running replica set appears as
+`degraded`; a stopped deployment has PID zero and no uptime. Unknown start times
+appear as `N/A`. The menu for `status --json` goes to stderr so stdout remains
+JSON.
+
 Use the same state path and service account for upgrades. Do not run a second
 Controller against that directory. The persistent `controller.lock` uses an OS
 file lock, which releases after the Controller and any surviving adapters exit.
