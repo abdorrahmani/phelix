@@ -167,6 +167,8 @@ func TestControlAppSelectionCoversApplicationCommands(t *testing.T) {
 		{path: "plan create rebuild", use: "rebuild [ID|AppName]", want: []string{"app-id"}},
 		{path: "job run", use: "run <NAME>", want: []string{"app-id"}},
 		{path: "context", use: "context [ID|AppName]", want: []string{"app-id"}},
+		{path: "controller runtime", use: "runtime <application>", want: []string{"app-id"}},
+		{path: "webhook history", use: "history <app>", want: []string{"billing"}},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			command := selectionCommand(tc.path, tc.use)

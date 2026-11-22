@@ -35,7 +35,7 @@ func RouteControl(root *cobra.Command) {
 		for _, child := range command.Commands() {
 			visit(child)
 		}
-		if !managedCommand(command) || command.RunE == nil {
+		if !managedCommand(command) || command.RunE == nil || command == matrixInitCmd {
 			return
 		}
 		command.RunE = runControlClient
@@ -48,7 +48,7 @@ func controlArguments(command *cobra.Command, args []string) []string {
 	argv := append([]string{}, path[1:]...)
 	argv = append(argv, args...)
 	command.Flags().Visit(func(flag *pflag.Flag) {
-		if flag.Name == "help" {
+		if flag.Name == "help" || !flag.Changed {
 			return
 		}
 		if value, ok := flag.Value.(pflag.SliceValue); ok {
@@ -74,19 +74,16 @@ func runControlClient(command *cobra.Command, args []string) error {
 		return phelixerr.Wrap(phelixerr.CodeConnection, "Controller unavailable", err)
 	}
 	defer conn.Close()
-	if IsInteractive() {
-		args, err = selectControlApp(command, args, client, PromptSelect)
-		if err != nil {
-			return err
-		}
-	}
 	directory, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 	var input []byte
 	if command.Name() == "set" && strings.Contains(command.CommandPath(), "secrets") {
-		input, err = io.ReadAll(io.LimitReader(command.InOrStdin(), (1<<20)+1))
+		fromFile, _ := command.Flags().GetString("from-file")
+		if fromFile == "" {
+			input, err = io.ReadAll(io.LimitReader(command.InOrStdin(), (1<<20)+1))
+		}
 		if err != nil {
 			return err
 		}
@@ -240,10 +237,13 @@ func wizardAppArgument(command *cobra.Command) (int, bool) {
 	if family.Name() == "security" || family.Name() == "log" || family.Name() == "auth" {
 		return -1, false
 	}
+	if family.Name() == "env" {
+		return 1, false
+	}
 	for index, argument := range wizardPositionals(command) {
 		name := strings.Trim(argument, "[]<>")
-		if name == "ID|AppName" || name == "AppName" || (family.Name() == "job" && name == "NAME") {
-			return index, name == "AppName"
+		if name == "ID|AppName" || name == "AppName" || name == "application" || name == "app" || (family.Name() == "job" && name == "NAME") {
+			return index, name == "AppName" || name == "app"
 		}
 	}
 	if command.Parent() == command.Root() && (command.Name() == "status" || command.Name() == "remove") {
@@ -255,6 +255,9 @@ func wizardAppArgument(command *cobra.Command) (int, bool) {
 // wizardPositionals reads the choices shown before any flags in the command's help text.
 func wizardPositionals(command *cobra.Command) []string {
 	fields := strings.Fields(command.Use)
+	if len(fields) == 0 {
+		return nil
+	}
 	var arguments []string
 	for _, field := range fields[1:] {
 		if strings.HasPrefix(strings.TrimLeft(field, "["), "-") {

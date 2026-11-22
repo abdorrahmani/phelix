@@ -11,16 +11,12 @@ import (
 	"golang.org/x/term"
 )
 
-// IsInteractive reports whether stdin is connected to a terminal. The wizard
-// only prompts when this is true; otherwise commands fall back to their normal
-// missing-argument errors so the CLI stays scriptable in pipes/CI.
+// IsInteractive reports whether the user is working in a terminal.
 func IsInteractive() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
-// PromptString asks for a free-form value, pre-filling def as the default
-// (survey shows it in [brackets]). Returns an empty result only if def was
-// empty and the user hit enter.
+// PromptString asks for text and offers the supplied default.
 func PromptString(msg, def string) (string, error) {
 	ans := def
 	prompt := &survey.Input{
@@ -67,9 +63,7 @@ func PromptConfirm(msg string, def bool) (bool, error) {
 	return ans, nil
 }
 
-// PromptSelect presents a single-choice menu from opts. The first option is
-// preselected. Passes no Default to survey so the menu always renders — a
-// non-matching Default makes survey error out before painting the list.
+// PromptSelect presents the available choices in a searchable menu.
 func PromptSelect(msg string, opts []string) (string, error) {
 	if len(opts) == 0 {
 		return "", phelixerr.Newf(phelixerr.CodeInvalidArgument, "no options to choose from")
@@ -85,16 +79,13 @@ func PromptSelect(msg string, opts []string) (string, error) {
 	return ans, nil
 }
 
-// PromptApp lists locally-managed applications as "Name (ID)" and returns the
-// chosen app name. When allowAll is true, "All applications" is prepended so
-// callers (e.g. start) can offer a multi-app choice. Returns a clear error if
-// no apps exist yet.
+// PromptApp asks which local application to use, optionally offering all applications.
 func PromptApp(allowAll bool, msg string) (string, error) {
 	apps := app.Manager.ListApplications()
 	if len(apps) == 0 {
 		return "", phelixerr.Newf(
 			phelixerr.CodeNotFound,
-			"no applications found — build one first with 'phelix build <NAME>'",
+			"no applications found; build one first with 'phelix build <NAME>'",
 		)
 	}
 
@@ -126,4 +117,13 @@ func PromptEnvAction() (string, error) {
 		"Which environment action?",
 		[]string{"set", "get", "list", "unset", "check"},
 	)
+}
+
+// PromptPassword asks for a private value without displaying what the user types.
+func PromptPassword(msg string) (string, error) {
+	var value string
+	if err := survey.AskOne(&survey.Password{Message: msg}, &value); err != nil {
+		return "", phelixerr.Wrap(phelixerr.CodeInvalidArgument, "input cancelled", err)
+	}
+	return value, nil
 }
