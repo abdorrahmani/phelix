@@ -100,3 +100,23 @@ func TestControllerEndpointFailureDoesNotRouteCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEndpointRecoveryRejectsUnreachableNetworksAndCancellation(t *testing.T) {
+	t.Setenv("PHELIX_CONTROLLER_MODE", "container")
+	t.Setenv("PHELIX_CONTROLLER_NETWORK", "shared")
+	run := func(context.Context, ...string) (string, error) {
+		t.Fatal("Docker inspection ran for an invalid endpoint request")
+		return "", nil
+	}
+	if _, _, err := dockerEndpoint(context.Background(), run, "container", "other"); err == nil {
+		t.Fatal("an endpoint on an unreachable network was accepted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := RefreshInstanceEndpoints(ctx, &DeployState{Runtime: RuntimeDocker}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, _, err := dockerEndpoint(ctx, run, "container", "shared"); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}

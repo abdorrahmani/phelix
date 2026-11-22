@@ -1,9 +1,6 @@
 services:
-  controller:
-    image: phelix-controller:local
-    build:
-      context: ../..
-      dockerfile: Dockerfile.controller
+  phelix:
+    image: ${PHELIX_IMAGE:?Run setup.sh with a published version first}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - state:/var/lib/phelix
@@ -16,7 +13,7 @@ services:
     networks: [backend]
     ports: ["127.0.0.1:8080:8080"]
     restart: unless-stopped
-    stop_grace_period: 45s
+    stop_grace_period: 120s
     mem_limit: 512m
     cpus: 2
     healthcheck:

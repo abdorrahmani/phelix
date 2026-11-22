@@ -46,6 +46,9 @@ func init() {
 }
 
 func runUpdate() error {
+	if os.Getenv("PHELIX_CONTROLLER_MODE") == "container" && !updateCheckOnly {
+		return phelixerr.New(phelixerr.CodeConfiguration, "upgrade a container Controller by pulling its image and recreating the Compose service; back up persistent state first")
+	}
 	baseURL, err := releaseBaseURL()
 	if err != nil {
 		return err

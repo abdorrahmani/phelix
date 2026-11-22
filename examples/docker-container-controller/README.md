@@ -1,6 +1,6 @@
 # Container Mode with a shared Docker Controller
 
-The host runs only the Phelix CLI. Compose runs one Controller, Redis and
+The host CLI is optional. Compose runs one Controller, Redis and
 PostgreSQL. Phelix builds and owns the sample application containers on the same
 Docker host. Application images contain only the Go application.
 
@@ -10,7 +10,7 @@ Use a Linux Docker host with Compose. Install the host CLI using the one-line
 installer:
 
 ```bash
-curl -fsSL https://phelix.anophel.com/install.sh | bash
+curl -fsSL https://phelix.anophel.com/install.sh | bash -s -- --no-service
 ```
 
 If the installer started `phelix.service`, stop that host service before starting
@@ -20,16 +20,18 @@ the Controller container. This example runs its Controller inside Docker:
 sudo systemctl stop phelix
 ```
 
-From the repository root:
+Use the standalone `docker-container-controller.tar.gz` release asset, or open
+this example directory in a source checkout. From a source checkout:
 
 ```bash
 cd examples/docker-container-controller
-./setup.sh
-docker compose build controller
+PHELIX_VERSION="$(curl -fsSL https://phelix.anophel.com/releases/latest/version)"
+./setup.sh "$PHELIX_VERSION"
+docker compose pull phelix
 docker compose up -d --wait
 export PHELIX_CONTROL_SOCKET="$PWD/run/control.sock"
-phelix controller health
-phelix controller info
+phelix phelix health
+phelix phelix info
 ```
 
 The health response contains `ready: true`. `setup.sh` writes Controller
@@ -56,8 +58,8 @@ curl --fail http://127.0.0.1:8080/health
 curl --fail http://127.0.0.1:8080/
 phelix status container-example
 phelix logs container-example --no-follow --lines=20
-phelix controller runtime container-example
-phelix controller metrics container-example
+phelix phelix runtime container-example
+phelix phelix metrics container-example
 ```
 
 If metrics report `Unavailable` immediately after deployment, retry after five
@@ -82,9 +84,9 @@ your firewall deliberately when exposing application traffic externally.
 sed -i 's/var version = "v1"/var version = "v2"/' main.go
 phelix deploy container-example --strategy=blue-green
 curl --fail http://127.0.0.1:8080/
-phelix controller versions container-example
+phelix phelix versions container-example
 phelix rollback container-example --to=v1 --reason=example --verify=5s
-phelix controller history container-example
+phelix phelix history container-example
 ```
 
 Rolling can use `--strategy=rolling --replicas=2`. Canary and progressive use
@@ -93,13 +95,13 @@ deployment engine as Host Mode. The sample handles SIGTERM for graceful drain.
 
 ## Recreation and upgrades
 
-Record `phelix controller info`, then recreate only the Controller:
+Record `phelix phelix info`, then recreate only the Controller:
 
 ```bash
 cd ..
-docker compose up -d --force-recreate controller
-phelix controller health
-phelix controller info
+docker compose up -d --force-recreate phelix
+phelix phelix health
+phelix phelix info
 curl --fail http://127.0.0.1:8080/health
 ```
 
@@ -112,11 +114,11 @@ and restores proxy routes. A Controller outage interrupts proxy traffic until
 recovery, even though application containers remain running.
 
 For an upgrade, back up the entire state volume with the Controller stopped,
-build the new Controller image from reviewed code, and recreate the Controller
+pull the chosen published Controller image, and recreate the Controller
 with the same volumes. Update the host CLI to the same version. Never run old and
 new Controllers together against one state volume. Do not remove the state volume
 or regenerate identity to upgrade. Backend login, if needed, runs with
-`docker compose exec controller phelix auth login` so credentials persist there.
+`docker compose exec phelix phelix auth login` so credentials persist there.
 
 ## Cleanup and security
 
@@ -139,6 +141,20 @@ infrastructure services; it must never simultaneously own application containers
 Phelix deploys. The only Phelix installation and identity inside Docker is the
 Controller.
 
-Use matching CLI and Controller versions with Controller support. The installer
-downloads a published release, while Compose builds the Controller from this
-checkout; unpublished local changes are not included in the installed CLI.
+Use matching CLI and Controller versions. A release archive includes `VERSION`,
+so `./setup.sh` selects that release without a repository checkout. `.env` retains
+its selected image on repeated setup; change `PHELIX_IMAGE` there deliberately
+for an upgrade. The main Compose file pulls the official image.
+
+To use the CLI inside the Controller:
+
+```bash
+docker compose exec -T -w /workspace/app phelix phelix build container-example
+docker compose exec -T phelix phelix deploy container-example
+docker compose exec phelix phelix status
+docker compose exec phelix phelix remove
+```
+
+For local development from a Phelix checkout, use `compose.build.yaml` as an
+additional Compose file. The [installation guide](../../docs/guides/container-installation.md)
+covers system installation, backup, upgrades and migration.

@@ -18,7 +18,7 @@ import (
 type controlMCPServices struct{}
 
 func callControlMCP(ctx context.Context, argv []string) (*machine.Envelope, error) {
-	cfg, err := controller.LoadConfig()
+	cfg, err := controller.LoadClientConfig()
 	if err != nil {
 		return nil, err
 	}

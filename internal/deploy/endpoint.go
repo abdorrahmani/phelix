@@ -27,6 +27,9 @@ func InstanceEndpoint(instance *Instance) string {
 }
 
 func dockerEndpoint(ctx context.Context, run dockerRunner, id, network string) (string, int, error) {
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
 	if os.Getenv("PHELIX_CONTROLLER_MODE") != "container" {
 		port, err := dockerPublishedPort(ctx, run, id, dockerInternalPort)
 		return hostPort(port), port, err
@@ -36,6 +39,9 @@ func dockerEndpoint(ctx context.Context, run dockerRunner, id, network string) (
 	}
 	if network == "" {
 		return "", 0, fmt.Errorf("container mode requires a shared Docker network")
+	}
+	if configured := os.Getenv("PHELIX_CONTROLLER_NETWORK"); configured != "" && network != configured {
+		return "", 0, fmt.Errorf("application network %q differs from Controller network %q", network, configured)
 	}
 	format := "{{(index .NetworkSettings.Networks " + strconv.Quote(network) + ").IPAddress}}"
 	output, err := run(ctx, "inspect", "--format", format, id)
@@ -53,10 +59,13 @@ func RefreshInstanceEndpoints(ctx context.Context, state *DeployState) error {
 	if state == nil || state.Runtime != RuntimeDocker {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	changed := false
 	for _, group := range []map[string]*Instance{state.Slots, state.Replicas} {
 		for _, instance := range group {
-			if instance == nil || instance.ContainerID == "" || !InstanceAlive(instance) {
+			if instance == nil || instance.ContainerID == "" || !InstanceAliveContext(ctx, instance) {
 				continue
 			}
 			endpoint, port, err := dockerEndpoint(ctx, dockerIdentityRunner, instance.ContainerID, state.Network)

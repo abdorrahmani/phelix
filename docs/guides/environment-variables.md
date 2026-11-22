@@ -15,6 +15,12 @@ phelix env check  MyApp DATABASE_URL      # exit-status friendly existence check
 Encrypted values are injected into the app process at start, and snapshotted
 alongside each versioned build so a rollback restores the matching env.
 
+Pass multiple `KEY=VALUE` arguments to import an application's environment in
+one command. A watched, authenticated application reports one `env_change`
+event after the update, including when earlier keys were saved before a later
+argument failed. An update that saves no keys reports no event. Dashboard
+reporting keeps its existing delivery timeout and does not expose values.
+
 Keys containing `SECRET`, `KEY`, `TOKEN`, or `PASSWORD` are automatically masked
 in logs and command output.
 

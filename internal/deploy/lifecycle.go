@@ -189,7 +189,7 @@ func decideLifecycle(state *DeployState, alive func(*Instance) bool) LifecycleDe
 		if !alive(inst) {
 			continue
 		}
-		if d.PID == 0 {
+		if d.Alive == 0 {
 			d.PID = inst.PID
 			d.StartTicks = inst.StartTicks
 			d.StartedAt = inst.StartedAt

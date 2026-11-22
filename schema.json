@@ -221,6 +221,20 @@
             "service": {
               "description": "Compose service that builds this app's image. Required when build is compose.",
               "type": "string"
+            },
+            "volumes": {
+              "items": {
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
             }
           },
           "type": "object"

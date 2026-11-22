@@ -1,6 +1,6 @@
 # Installation
 
-Phelix ships as a single binary. The installer detects your OS and architecture
+Phelix ships as a host binary and an official Docker Controller image. The installer detects your OS and architecture
 and downloads a matching prebuilt binary, so you do **not** need a Go or Rust
 toolchain just to install Phelix (those are only needed to *build your apps*).
 
@@ -32,6 +32,20 @@ Verify the install:
 phelix version              # verify the install
 sudo systemctl status phelix   # Linux: Controller service running?
 ```
+
+## Container Controller
+
+For Docker applications, run the same Controller inside Docker. Docker Engine
+and Compose must already be installed. Host CLI installation is optional:
+
+```bash
+curl -fsSL https://phelix.anophel.com/install.sh | bash -s -- --docker --with-cli --proxy-port 8080
+```
+
+This creates persistent state, a shared private socket, explicit read-only project
+mounts and a configured Docker network. Native applications retain Host Mode.
+See [Container installation](../guides/container-installation.md) for all options,
+source preparation, backup, upgrades and the reviewed migration workflow.
 
 ## Beta releases and pinned versions
 

@@ -33,18 +33,17 @@ func ownedDockerContainer(ctx context.Context, run dockerRunner, id string) (boo
 	if labels[DockerLabelController] != "" {
 		return labels[DockerLabelController] == owner, nil
 	}
-	for _, item := range app.Manager.ListApplications() {
-		if item.Name != labels[DockerLabelApp] {
-			continue
-		}
-		state, err := Load(item.Name)
-		if err != nil {
-			return false, err
-		}
-		for _, known := range KnownContainerIDs(state) {
-			if known == id {
-				return true, nil
-			}
+	name := labels[DockerLabelApp]
+	if _, registered := app.AppDirectories()[name]; !registered {
+		return false, nil
+	}
+	state, err := Load(name)
+	if err != nil {
+		return false, err
+	}
+	for _, known := range KnownContainerIDs(state) {
+		if known == id {
+			return true, nil
 		}
 	}
 	return false, nil

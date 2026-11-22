@@ -121,7 +121,9 @@ Examples:
 				}
 
 				fmt.Printf("✓ Set '%s' for application '%s'\n", key, appName)
-				phelixgrpc.ReportEvent(appID, appName, "env_change", true, "", 0, "", "")
+				if i == 2 {
+					defer phelixgrpc.ReportEvent(appID, appName, "env_change", true, "", 0, "", "")
+				}
 			}
 
 		case "get":

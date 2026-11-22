@@ -2,16 +2,20 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"time"
+
+	"github.com/abdorrahmani/phelix/internal/app"
 	"github.com/abdorrahmani/phelix/internal/controlapi"
 	pb "github.com/abdorrahmani/phelix/internal/controlapi/proto"
 	"github.com/abdorrahmani/phelix/internal/controller"
+	"github.com/abdorrahmani/phelix/internal/deploy"
 	"github.com/abdorrahmani/phelix/internal/proxy"
 	"github.com/abdorrahmani/phelix/internal/server"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
-	"os"
-	"time"
 )
 
 var ControllerCmd = &cobra.Command{
@@ -21,7 +25,7 @@ var ControllerCmd = &cobra.Command{
 	RunE:  runController,
 }
 
-func runController(command *cobra.Command, args []string) error {
+func runController(command *cobra.Command, args []string) (errRet error) {
 	if err := os.Setenv("PHELIX_DATA_DIR", server.DataDir()); err != nil {
 		return err
 	}
@@ -39,10 +43,19 @@ func runController(command *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer owner.Close()
-	os.Setenv("PHELIX_CONTROLLER_MODE", cfg.Mode)
-	os.Setenv("PHELIX_CONTROLLER_NETWORK", cfg.Network)
-	os.Setenv("PHELIX_CONTROLLER_ID", owner.Identity)
+	defer func() { errRet = errors.Join(errRet, owner.Close()) }()
+	for _, setting := range [][2]string{
+		{"PHELIX_CONTROLLER_MODE", cfg.Mode},
+		{"PHELIX_CONTROLLER_NETWORK", cfg.Network},
+		{"PHELIX_CONTROLLER_ID", owner.Identity},
+	} {
+		if err := os.Setenv(setting[0], setting[1]); err != nil {
+			return err
+		}
+	}
+	if err := validateControllerApps(cfg); err != nil {
+		return err
+	}
 	proxySocket, err := proxy.DefaultSocketPath()
 	if err != nil {
 		return err
@@ -63,10 +76,33 @@ func runController(command *cobra.Command, args []string) error {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		ownedProxy.Shutdown(ctx)
+		errRet = errors.Join(errRet, ownedProxy.Shutdown(ctx))
 	}()
 
 	return runMonitorContext(command.Context(), func() (func(), error) { return startControlService(command, owner) })
+}
+
+func validateControllerApps(cfg controller.Config) error {
+	if cfg.Mode != "container" {
+		return nil
+	}
+	for _, item := range app.Manager.ListApplications() {
+		info, err := GetAppInfo(item.ID)
+		if err != nil {
+			return err
+		}
+		if !info.AutoStart {
+			continue
+		}
+		state, err := deploy.Load(item.Name)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if state == nil || !deploy.IsDockerRuntime(state.Runtime) {
+			return fmt.Errorf("application %q requires Host Mode; stop native applications before migrating to a container Controller", item.Name)
+		}
+	}
+	return nil
 }
 
 func init() {
@@ -86,7 +122,7 @@ func init() {
 }
 
 func controllerQuery(command *cobra.Command, args []string) error {
-	cfg, err := controller.LoadConfig()
+	cfg, err := controller.LoadClientConfig()
 	if err != nil {
 		return err
 	}

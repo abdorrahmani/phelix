@@ -77,7 +77,7 @@ func syncAppInfoWithDeploy(info *app.AppInfo, state *deploy.DeployState) error {
 		info.Status = "stopped"
 		info.PID = 0
 	}
-	if info.Status == before.Status && info.PID == before.PID && info.StartTicks == before.StartTicks {
+	if info.Status == before.Status && info.PID == before.PID && info.StartTicks == before.StartTicks && info.AutoStart == before.AutoStart && info.Port == before.Port && info.Start.Equal(before.Start) {
 		return nil // nothing drifted — no write, no timestamp churn
 	}
 	info.UpdatedAt = time.Now()

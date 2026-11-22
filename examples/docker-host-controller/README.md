@@ -21,7 +21,8 @@ foreground Controller with its separate state directory:
 sudo systemctl stop phelix
 ```
 
-From the repository root:
+Use the standalone `docker-host-controller.tar.gz` release asset, or open this
+example in a source checkout. From a source checkout:
 
 ```bash
 cd examples/docker-host-controller

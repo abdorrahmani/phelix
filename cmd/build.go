@@ -217,6 +217,10 @@ var BuildCmd = &cobra.Command{
 			return runDockerInitialBuild(cmd, projCfg, name, buildPort, currentDir, lang, op)
 		}
 
+		if err := app.ValidateNativeRuntime(); err != nil {
+			return err
+		}
+
 		fmt.Printf("  %s Checking toolchain...\n", color.BlueString("→"))
 		if err := toolchain.EnsureTool(lang, Confirm); err != nil {
 			return phelixerr.Wrap(phelixerr.CodeToolchainNotFound, "toolchain check failed", err)

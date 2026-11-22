@@ -1,5 +1,10 @@
 # Phelix
 
+Phelix supports a host Controller and an official Docker Controller image. Both
+use the same local API and deployment engine. See the
+[Container installation guide](docs/guides/container-installation.md) for image
+installation, optional host CLI setup, source mounts and migration.
+
 A single-binary CLI for building, running, versioning, and **zero-downtime
 deploying Go and Rust applications** on a host, with encrypted environment
 variables, health checks, Docker workflows, and optional multi-server monitoring

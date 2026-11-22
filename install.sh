@@ -42,6 +42,14 @@ INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="phelix"
 NO_SERVICE=0
 UNINSTALL=0
+DOCKER_MODE=0
+WITH_CLI=0
+CONTROLLER_CONFIG_DIR=/etc/phelix
+CONTROLLER_DATA_DIR=/var/lib/phelix
+CONTROLLER_SOCKET_DIR=/var/run/phelix
+PROJECTS_DIR=/srv/phelix/projects
+CONTROLLER_NETWORK=phelix
+PROXY_PORTS=()
 
 # ---------------------------------------------------------------------------
 # Pretty output (disabled when stdout is not a TTY, e.g. piped)
@@ -442,12 +450,146 @@ UNIT
     fail "${SERVICE_NAME}.service failed to start. See diagnostics above."
 }
 
+# install_container prepares a fresh Container Mode installation without replacing existing state.
+install_container() {
+    [ "$OS" = linux ] || fail "Container Mode requires a Linux Docker host"
+    case "$ARCH" in amd64|arm64) ;; *) fail "Controller images support linux/amd64 and linux/arm64 only" ;; esac
+    need_cmd docker
+    docker info >/dev/null || fail "Docker Engine is unavailable; install or start it before continuing"
+    docker compose version >/dev/null || fail "Docker Compose is required"
+    if have_cmd systemctl && { systemctl is-active --quiet phelix.service || systemctl is-enabled --quiet phelix.service; }; then
+        fail "A host Controller is active or enabled. Follow the backup and migration guide before switching modes"
+    fi
+    local sudo_cmd="" operator_uid operator_gid
+    operator_uid="$(id -u "${SUDO_USER:-$(id -un)}")"
+    operator_gid="$(id -g "${SUDO_USER:-$(id -un)}")"
+    if [ "$(id -u)" -ne 0 ]; then
+        need_cmd sudo
+        sudo -v || fail "sudo authentication failed"
+        sudo_cmd=sudo
+    fi
+    local path
+    for path in "$CONTROLLER_CONFIG_DIR" "$CONTROLLER_DATA_DIR" "$CONTROLLER_SOCKET_DIR" "$PROJECTS_DIR"; do
+        [[ "$path" == /* && "$path" != / && "$path" != *$'\n'* && "$path" != *$'\r'* && "$path" != *'$'* && "$path" != *"'"* && "$path" != *'/../'* && "$path" != */.. ]] \
+            || fail "Controller directories must be absolute paths without traversal, quotes, dollar signs or line breaks"
+        [ ! -L "$path" ] || fail "Controller directories must not be symlinks: $path"
+    done
+    [[ "$CONTROLLER_NETWORK" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || fail "Invalid Docker network name"
+    [ "$CONTROLLER_CONFIG_DIR" != "$CONTROLLER_DATA_DIR" ] && [ "$CONTROLLER_DATA_DIR" != "$CONTROLLER_SOCKET_DIR" ] && [ "$CONTROLLER_CONFIG_DIR" != "$CONTROLLER_SOCKET_DIR" ] && [ "$PROJECTS_DIR" != "$CONTROLLER_DATA_DIR" ] && [ "$PROJECTS_DIR" != "$CONTROLLER_SOCKET_DIR" ] && [ "$PROJECTS_DIR" != "$CONTROLLER_CONFIG_DIR" ] || fail "Configuration, state, socket and project directories must differ"
+    local config_path="$CONTROLLER_CONFIG_DIR/controller.yaml" compose_path="$CONTROLLER_CONFIG_DIR/compose.yaml"
+    if ${sudo_cmd} test -e "$config_path" || ${sudo_cmd} test -e "$compose_path"; then
+        fail "Container installation already exists. Use the documented upgrade workflow; configuration was left unchanged"
+    fi
+    if ${sudo_cmd} test -d "$CONTROLLER_DATA_DIR"; then
+        local contents
+        contents="$(${sudo_cmd} ls -A "$CONTROLLER_DATA_DIR")"
+        [ -z "$contents" ] || fail "Existing Controller state detected. Use the documented backup and migration workflow"
+    fi
+    local port
+    for port in "${PROXY_PORTS[@]}"; do
+        [[ "$port" =~ ^[0-9]{1,5}$ ]] && ((10#$port >= 1 && 10#$port <= 65535)) || fail "Proxy ports must be between 1 and 65535"
+    done
+    if [ "$WITH_CLI" -eq 1 ] && ${sudo_cmd} test -e /etc/phelix/client.yaml; then
+        fail "Existing host CLI endpoint configuration was preserved; review /etc/phelix/client.yaml before installing"
+    fi
+    local image="ghcr.io/abdorrahmani/phelix:${VERSION//+/_}"
+    docker pull "$image" || fail "Could not pull $image; confirm that this release has a validated Controller image"
+    [ "$(docker run --rm "$image" version --short)" = "$VERSION" ] || fail "Image version does not match the selected release"
+    ${sudo_cmd} install -d -m 0755 "$CONTROLLER_CONFIG_DIR"
+    ${sudo_cmd} install -d -m 0700 "$CONTROLLER_DATA_DIR" "$CONTROLLER_SOCKET_DIR"
+    if [ ! -d "$PROJECTS_DIR" ]; then
+        ${sudo_cmd} install -d -m 0750 -o "$operator_uid" -g "$operator_gid" "$PROJECTS_DIR"
+    fi
+    cat > "$TMPDIR_WORK/controller.yaml" <<CONFIG
+mode: container
+network: $CONTROLLER_NETWORK
+socket: /run/phelix/control.sock
+socket_uid: $operator_uid
+sources:
+  - host: '$PROJECTS_DIR'
+    controller: /projects
+CONFIG
+    cat > "$TMPDIR_WORK/compose.yaml" <<COMPOSE
+name: phelix
+services:
+  phelix:
+    image: $image
+    restart: unless-stopped
+    stop_grace_period: 120s
+    environment:
+      PHELIX_CONTROLLER_CONFIG: /etc/phelix/controller.yaml
+      PHELIX_CONTROL_SOCKET: /run/phelix/control.sock
+    volumes:
+      - type: bind
+        source: '$CONTROLLER_DATA_DIR'
+        target: /var/lib/phelix
+      - type: bind
+        source: '$CONTROLLER_SOCKET_DIR'
+        target: /run/phelix
+      - type: bind
+        source: '$config_path'
+        target: /etc/phelix/controller.yaml
+        read_only: true
+      - type: bind
+        source: '$PROJECTS_DIR'
+        target: /projects
+        read_only: true
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    networks: [applications]
+COMPOSE
+    if [ "${#PROXY_PORTS[@]}" -gt 0 ]; then
+        printf '    ports:\n' >> "$TMPDIR_WORK/compose.yaml"
+        for port in "${PROXY_PORTS[@]}"; do
+            printf '      - "127.0.0.1:%s:%s"\n' "$port" "$port" >> "$TMPDIR_WORK/compose.yaml"
+        done
+    fi
+    cat >> "$TMPDIR_WORK/compose.yaml" <<COMPOSE
+networks:
+  applications:
+    name: $CONTROLLER_NETWORK
+COMPOSE
+    docker compose -f "$TMPDIR_WORK/compose.yaml" config --quiet
+    ${sudo_cmd} install -m 0600 "$TMPDIR_WORK/controller.yaml" "$config_path"
+    ${sudo_cmd} install -m 0644 "$TMPDIR_WORK/compose.yaml" "$compose_path"
+    if ! docker compose -f "$compose_path" up -d --wait --wait-timeout 90; then
+        docker compose -f "$compose_path" logs --tail=50 phelix >&2
+        fail "Controller did not become ready. State and configuration were retained for diagnosis"
+    fi
+    docker compose -f "$compose_path" exec -T phelix phelix controller health
+    docker compose -f "$compose_path" exec -T phelix phelix controller info
+    if [ "$WITH_CLI" -eq 1 ]; then
+        install_binary "$OS" "$ARCH"
+        printf "socket: '%s/control.sock'\n" "$CONTROLLER_SOCKET_DIR" > "$TMPDIR_WORK/client.yaml"
+        ${sudo_cmd} install -d -m 0755 /etc/phelix
+        if ${sudo_cmd} test -e /etc/phelix/client.yaml; then
+            fail "Existing host CLI endpoint configuration was preserved; review /etc/phelix/client.yaml before connecting"
+        fi
+        ${sudo_cmd} install -m 0644 "$TMPDIR_WORK/client.yaml" /etc/phelix/client.yaml
+        "${INSTALL_DIR}/phelix" controller health
+    fi
+    success "Container Controller is ready. Projects: $PROJECTS_DIR"
+    info "Compose file: $compose_path"
+    info "Prepare phelix.yaml, Dockerfile and .dockerignore before using the read-only project mount"
+    info "Inside a project: docker compose -f '$compose_path' exec -T -w /projects/my-app phelix phelix build my-app"
+    info "Publish app proxy ports with --proxy-port during installation, or edit the Compose file and recreate only the Controller"
+}
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
+            --docker) DOCKER_MODE=1; shift ;;
+            --with-cli) WITH_CLI=1; shift ;;
+            --config-dir) CONTROLLER_CONFIG_DIR="${2:?--config-dir requires a path}"; shift 2 ;;
+            --data-dir) CONTROLLER_DATA_DIR="${2:?--data-dir requires a path}"; shift 2 ;;
+            --socket-dir) CONTROLLER_SOCKET_DIR="${2:?--socket-dir requires a path}"; shift 2 ;;
+            --projects-dir) PROJECTS_DIR="${2:?--projects-dir requires a path}"; shift 2 ;;
+            --network) CONTROLLER_NETWORK="${2:?--network requires a name}"; shift 2 ;;
+            --proxy-port) PROXY_PORTS+=("${2:?--proxy-port requires a port}"); shift 2 ;;
             --channel)
                 CHANNEL="${2:?--channel requires a value (stable or beta)}"
                 shift 2
@@ -480,6 +622,14 @@ Options (pass after `bash -s --`):
   --version <v>      Pin a release version (e.g. 1.2.3). Default: latest.
   --install-dir <p>  Binary install directory. Default: /usr/local/bin.
   --no-service       Do not create/enable the systemd service.
+  --docker           Pull and start the official Container Controller.
+  --with-cli         Also install the host CLI in Container Mode.
+  --config-dir <p>   Container configuration directory. Default: /etc/phelix.
+  --data-dir <p>     Persistent container state. Default: /var/lib/phelix.
+  --socket-dir <p>   Shared socket directory. Default: /var/run/phelix.
+  --projects-dir <p> Project source root. Default: /srv/phelix/projects.
+  --network <n>     Shared Docker network. Default: phelix.
+  --proxy-port <p>  Publish a proxy port on host loopback. May be repeated.
   --uninstall        Remove Phelix (leaves ~/.phelix state in place).
   --help             Show this help.
 
@@ -502,6 +652,7 @@ HELP
 # ---------------------------------------------------------------------------
 main() {
     parse_args "$@"
+    [ "$DOCKER_MODE" -eq 0 ] || [ "$UNINSTALL" -eq 0 ] || fail "Use Compose and Phelix remove for Container Mode cleanup"
 
     need_cmd uname
     need_cmd install   # coreutils; also provided by mktemp above
@@ -541,6 +692,12 @@ BANNER
 
     VERSION="$(resolve_version "${VERSION}")"
 
+    if [ "$DOCKER_MODE" -eq 1 ]; then
+        [ "$UNINSTALL" -eq 0 ] || fail "Use Compose and Phelix remove for Container Mode cleanup"
+        install_container
+        return
+    fi
+    [ "$WITH_CLI" -eq 0 ] || fail "--with-cli requires --docker"
     install_binary "${OS}" "${ARCH}"
 
     # systemd auto-start is Linux-only.

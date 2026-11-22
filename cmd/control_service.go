@@ -52,8 +52,26 @@ func validateControlCommand(root *cobra.Command, cfg controller.Config, request 
 	if request.Directory == "" {
 		request.Directory = server.DataDir()
 	}
+	originalDirectory := request.Directory
+	resolveSource := func(path string) (string, error) {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(originalDirectory, path)
+		}
+		return cfg.SourcePath(path)
+	}
 	if command.Name() == "build" || command.Name() == "dockerize" || command.Name() == "rebuild" || command.Name() == "deploy" || command.Name() == "apply" || command.Name() == "retry" {
 		source, err := cfg.SourcePath(request.Directory)
+		if command.Name() == "deploy" || command.Name() == "rebuild" {
+			for _, arg := range request.Argv[1:] {
+				if strings.HasPrefix(arg, "-") {
+					continue
+				}
+				if item, lookupErr := GetAppInfo(arg); lookupErr == nil {
+					source, err = cfg.SourcePath(item.Directory)
+					break
+				}
+			}
+		}
 		if err != nil {
 			return false, err
 		}
@@ -65,7 +83,7 @@ func validateControlCommand(root *cobra.Command, cfg controller.Config, request 
 	}
 	for i, arg := range request.Argv {
 		if strings.HasPrefix(arg, "--source-dir=") {
-			source, err := cfg.SourcePath(strings.TrimPrefix(arg, "--source-dir="))
+			source, err := resolveSource(strings.TrimPrefix(arg, "--source-dir="))
 			if err != nil {
 				return false, err
 			}
@@ -75,7 +93,7 @@ func validateControlCommand(root *cobra.Command, cfg controller.Config, request 
 			if i+1 >= len(request.Argv) {
 				return false, fmt.Errorf("--source-dir requires a path")
 			}
-			source, err := cfg.SourcePath(request.Argv[i+1])
+			source, err := resolveSource(request.Argv[i+1])
 			if err != nil {
 				return false, err
 			}

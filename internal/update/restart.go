@@ -11,6 +11,9 @@ import (
 // involved, and --no-block lets this process send its accepted result before
 // systemd stops it. Non-systemd hosts and hosts without the unit fail closed.
 func (s Systemd) RequestRestart() error {
+	if os.Getenv("PHELIX_CONTROLLER_MODE") == "container" {
+		return phelixerr.New(phelixerr.CodeUnimplemented, "restart a container Controller through Docker Compose on its host")
+	}
 	if !s.Available() {
 		return phelixerr.New(phelixerr.CodeUnimplemented,
 			"monitor restart is only supported on systemd hosts")

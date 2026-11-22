@@ -17,6 +17,7 @@ import (
 	"github.com/abdorrahmani/phelix/internal/app"
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
 	"github.com/abdorrahmani/phelix/internal/logs"
+	"github.com/abdorrahmani/phelix/internal/project"
 	"github.com/abdorrahmani/phelix/internal/secrets"
 )
 
@@ -123,8 +124,12 @@ func redactDockerArgs(args []string) string {
 // attached to (so the app resolves compose backing services by DNS name); ""
 // keeps the default bridge (no --network).
 func DockerLauncherForApp(appName, network string) InstanceLauncher {
-	launch := newDockerLauncher(appName, "", network, execDockerRunner)
 	return func(ctx context.Context, imageRef string, env []string) (Process, int, error) {
+		volumes, err := dockerVolumesForApp(appName)
+		if err != nil {
+			return nil, 0, err
+		}
+		launch := newDockerLauncher(appName, "", network, execDockerRunner, volumes...)
 		proc, port, err := launch(ctx, imageRef, env)
 		if err != nil {
 			return nil, 0, err
@@ -152,6 +157,27 @@ func DockerLauncherForApp(appName, network string) InstanceLauncher {
 	}
 }
 
+// dockerVolumesForApp resolves persistent mounts declared by the application.
+func dockerVolumesForApp(appName string) ([]project.DockerVolume, error) {
+	for _, item := range app.Manager.ListApplications() {
+		if item.Name != appName || item.Directory == "" {
+			continue
+		}
+		cfg, err := project.Load(item.Directory)
+		if phelixerr.IsCode(err, phelixerr.CodeNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, phelixerr.Wrap(phelixerr.CodeConfiguration, "could not load application volume configuration", err)
+		}
+		if cfg.Deploy != nil && cfg.Deploy.Docker != nil {
+			return cfg.Deploy.Docker.Volumes, nil
+		}
+		break
+	}
+	return nil, nil
+}
+
 // captureDockerOutput sends container output through the same detached drain as native apps.
 func captureDockerOutput(proc Process, imageRef string, port int, env []string) error {
 	file, err := openDockerLog(containerIDOf(proc))
@@ -167,7 +193,7 @@ func captureDockerOutput(proc Process, imageRef string, port int, env []string) 
 // the app label alone is enough to reclaim containers, and the slot label is
 // enriched opportunistically. network is the user-defined Docker network to
 // attach to, or "" for the default bridge.
-func newDockerLauncher(appName, slot, network string, run dockerRunner) InstanceLauncher {
+func newDockerLauncher(appName, slot, network string, run dockerRunner, volumes ...project.DockerVolume) InstanceLauncher {
 	if run == nil {
 		run = execDockerRunner
 	}
@@ -180,6 +206,12 @@ func newDockerLauncher(appName, slot, network string, run dockerRunner) Instance
 		args := []string{"run", "-d",
 			"--label", DockerLabelManaged + "=true",
 			"--label", DockerLabelApp + "=" + appName,
+		}
+		for _, volume := range volumes {
+			if _, err := run(ctx, "volume", "inspect", volume.Name); err != nil {
+				return nil, 0, phelixerr.Wrap(phelixerr.CodeConfiguration, "configured application volume is unavailable; create it before deployment", err)
+			}
+			args = append(args, "--mount", "type=volume,source="+volume.Name+",target="+volume.Target)
 		}
 		if owner := os.Getenv("PHELIX_CONTROLLER_ID"); owner != "" {
 			args = append(args, "--label", DockerLabelController+"="+owner)
