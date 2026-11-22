@@ -165,12 +165,16 @@ func runControlClient(command *cobra.Command, args []string) error {
 	}
 }
 
+// selectControlApp asks the controller which applications are available and keeps the selected target unambiguous.
 func selectControlApp(command *cobra.Command, args []string, client pb.ControlClient, choose func(string, []string) (string, error)) ([]string, error) {
-	if len(args) > 0 || command.Parent() != command.Root() || (command.Name() != "status" && command.Name() != "remove") {
+	index, byName := wizardAppArgument(command)
+	if index < 0 || len(args) != index {
 		return args, nil
 	}
-	if workspace, _ := command.Flags().GetBool("workspace"); workspace {
-		return args, nil
+	for _, flag := range []string{"workspace", "all"} {
+		if enabled, _ := command.Flags().GetBool(flag); enabled {
+			return args, nil
+		}
 	}
 	if json, _ := command.Flags().GetBool("json"); json {
 		restore := machine.EnterJSON()
@@ -193,27 +197,72 @@ func selectControlApp(command *cobra.Command, args []string, client pb.ControlCl
 		return a.Name < b.Name
 	})
 	options := make([]string, 0, len(response.Applications))
+	allowAll := command.Parent() == command.Root() && command.Name() == "start"
+	if allowAll {
+		options = append(options, "All applications")
+	}
+	targets := make(map[string]string, len(response.Applications))
 	for _, application := range response.Applications {
 		label := application.Id
 		if application.Name != "" {
 			label = fmt.Sprintf("%s (%s)", application.Name, application.Id)
 		}
 		options = append(options, label)
+		target := application.Id
+		if byName && application.Name != "" {
+			target = application.Name
+		}
+		targets[label] = target
 	}
-	message := "Select application to inspect"
-	if command.Name() == "remove" {
-		message = "Select application to remove"
+	action := strings.TrimPrefix(command.CommandPath(), command.Root().Name()+" ")
+	if action == "status" {
+		action = "inspect"
 	}
-	selected, err := choose(message, options)
+	selected, err := choose("Select application to "+action, options)
 	if err != nil {
 		return nil, err
 	}
-	for i, option := range options {
-		if option == selected {
-			return []string{response.Applications[i].Id}, nil
-		}
+	if allowAll && selected == "All applications" {
+		return args, nil
+	}
+	if target, ok := targets[selected]; ok {
+		return append(append([]string{}, args...), target), nil
 	}
 	return nil, phelixerr.New(phelixerr.CodeInvalidArgument, "selected application was not found")
+}
+
+// wizardAppArgument identifies the application choice in a command's help text.
+func wizardAppArgument(command *cobra.Command) (int, bool) {
+	family := command
+	for family.Parent() != nil && family.Parent() != command.Root() {
+		family = family.Parent()
+	}
+	if family.Name() == "security" || family.Name() == "log" || family.Name() == "auth" {
+		return -1, false
+	}
+	for index, argument := range wizardPositionals(command) {
+		name := strings.Trim(argument, "[]<>")
+		if name == "ID|AppName" || name == "AppName" || (family.Name() == "job" && name == "NAME") {
+			return index, name == "AppName"
+		}
+	}
+	if command.Parent() == command.Root() && (command.Name() == "status" || command.Name() == "remove") {
+		return 0, false
+	}
+	return -1, false
+}
+
+// wizardPositionals reads the choices shown before any flags in the command's help text.
+func wizardPositionals(command *cobra.Command) []string {
+	fields := strings.Fields(command.Use)
+	var arguments []string
+	for _, field := range fields[1:] {
+		if strings.HasPrefix(strings.TrimLeft(field, "["), "-") {
+			break
+		}
+		arguments = append(arguments, field)
+	}
+	return arguments
 }
 
 type controlOperationError struct{ result *pb.Operation }

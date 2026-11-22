@@ -138,3 +138,97 @@ func TestControlAppSelectionStopsOnErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestControlAppSelectionCoversApplicationCommands(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		use  string
+		args []string
+		want []string
+	}{
+		{path: "rebuild", use: "rebuild [ID|AppName] --port <PORT>", want: []string{"app-id"}},
+		{path: "deploy", use: "deploy [ID|AppName]", want: []string{"app-id"}},
+		{path: "start", use: "start [ID|AppName]", want: []string{"app-id"}},
+		{path: "stop", use: "stop [ID|AppName]", want: []string{"app-id"}},
+		{path: "restart", use: "restart [ID|AppName]", want: []string{"app-id"}},
+		{path: "watch", use: "watch <ID|AppName>", want: []string{"app-id"}},
+		{path: "scale", use: "scale [ID|AppName] --replicas N", want: []string{"app-id"}},
+		{path: "rollback", use: "rollback [AppName]", want: []string{"billing"}},
+		{path: "rollback history", use: "history [AppName]", want: []string{"billing"}},
+		{path: "deploy unlock", use: "unlock [AppName]", want: []string{"billing"}},
+		{path: "dockerize", use: "dockerize <AppName> [--tag v1]", want: []string{"billing"}},
+		{path: "build-report", use: "build-report [AppName]", want: []string{"billing"}},
+		{path: "deployment-report", use: "deployment-report [AppName]", want: []string{"billing"}},
+		{path: "health add", use: "add [ID|AppName]", want: []string{"app-id"}},
+		{path: "autoscale enable", use: "enable [ID|AppName]", want: []string{"app-id"}},
+		{path: "hooks inspect", use: "inspect <execution-id> [ID|AppName]", args: []string{"execution-id"}, want: []string{"execution-id", "app-id"}},
+		{path: "secrets set", use: "set NAME [ID|AppName]", args: []string{"TOKEN"}, want: []string{"TOKEN", "app-id"}},
+		{path: "inspect deployment", use: "deployment [ID|AppName]", want: []string{"app-id"}},
+		{path: "plan create rebuild", use: "rebuild [ID|AppName]", want: []string{"app-id"}},
+		{path: "job run", use: "run <NAME>", want: []string{"app-id"}},
+		{path: "context", use: "context [ID|AppName]", want: []string{"app-id"}},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			command := selectionCommand(tc.path, tc.use)
+			client := &selectionClient{response: &pb.QueryResponse{Applications: []*pb.Application{{Id: "app-id", Name: "billing"}}}}
+			args, err := selectControlApp(command, tc.args, client, func(_ string, options []string) (string, error) {
+				return options[len(options)-1], nil
+			})
+			if err != nil || !reflect.DeepEqual(args, tc.want) || client.queries != 1 {
+				t.Fatalf("selection = %v, %v; queries = %d", args, err, client.queries)
+			}
+		})
+	}
+}
+
+func TestControlAppSelectionExcludesSecurityAndLog(t *testing.T) {
+	for _, path := range []string{"security scan", "security supply-chain verify", "log"} {
+		command := selectionCommand(path, strings.Fields(path)[len(strings.Fields(path))-1]+" [ID|AppName]")
+		client := &selectionClient{}
+		_, err := selectControlApp(command, nil, client, func(string, []string) (string, error) {
+			t.Fatal("excluded command prompted")
+			return "", nil
+		})
+		if err != nil || client.queries != 0 {
+			t.Fatalf("excluded command queried applications: %v", err)
+		}
+	}
+}
+
+func TestControlAppSelectionPreservesAllApplications(t *testing.T) {
+	command := selectionCommand("start", "start [ID|AppName]")
+	client := &selectionClient{response: &pb.QueryResponse{Applications: []*pb.Application{{Id: "app-id"}}}}
+	args, err := selectControlApp(command, nil, client, func(_ string, options []string) (string, error) {
+		return options[0], nil
+	})
+	if err != nil || len(args) != 0 {
+		t.Fatalf("start all = %v, %v", args, err)
+	}
+	for _, flag := range []string{"all", "workspace"} {
+		command := selectionCommand("rebuild", "rebuild [ID|AppName]")
+		command.Flags().Bool(flag, true, "")
+		client := &selectionClient{}
+		_, err := selectControlApp(command, nil, client, func(string, []string) (string, error) {
+			t.Fatal("workspace operation prompted")
+			return "", nil
+		})
+		if err != nil || client.queries != 0 {
+			t.Fatalf("workspace operation queried applications: %v", err)
+		}
+	}
+}
+
+func selectionCommand(path, use string) *cobra.Command {
+	root := &cobra.Command{Use: "phelix"}
+	parent := root
+	parts := strings.Fields(path)
+	for _, name := range parts[:len(parts)-1] {
+		child := &cobra.Command{Use: name}
+		parent.AddCommand(child)
+		parent = child
+	}
+	command := &cobra.Command{Use: use}
+	parent.AddCommand(command)
+	command.SetContext(context.Background())
+	return command
+}
