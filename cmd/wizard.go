@@ -46,9 +46,6 @@ func runWizardMenu(command *cobra.Command, choose func(string, []string) (string
 			continue
 		}
 		label := child.Name()
-		if child.Short != "" {
-			label += ": " + child.Short
-		}
 		options = append(options, label)
 		choices[label] = child
 	}
