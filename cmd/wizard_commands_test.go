@@ -431,3 +431,31 @@ func TestWizardCheckpointCollectsMissingDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWizardMenusKeepJSONStdoutClean(t *testing.T) {
+	root := &cobra.Command{Use: "phelix"}
+	group := &cobra.Command{Use: "autoscale"}
+	group.PersistentFlags().Bool("json", false, "")
+	leaf := &cobra.Command{Use: "list", RunE: func(c *cobra.Command, _ []string) error {
+		if os.Stdout == os.Stderr {
+			t.Fatal("result stdout remained redirected after the menu")
+		}
+		json, _ := c.Flags().GetBool("json")
+		if !json {
+			t.Fatal("JSON flag was lost")
+		}
+		return nil
+	}}
+	group.AddCommand(leaf)
+	root.AddCommand(group)
+	configureWizards(root, func() bool { return true }, func(_ string, options []string) (string, error) {
+		if os.Stdout != os.Stderr {
+			t.Fatal("JSON menu was printed to stdout")
+		}
+		return "list", nil
+	}, rejectWizardInput(t), rejectWizardPassword(t))
+	root.SetArgs([]string{"autoscale", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+}

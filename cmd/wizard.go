@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	phelixerr "github.com/abdorrahmani/phelix/internal/errors"
+	"github.com/abdorrahmani/phelix/internal/machine"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +50,13 @@ func runWizardMenu(command *cobra.Command, choose func(string, []string) (string
 		options = append(options, label)
 		choices[label] = child
 	}
-	selected, err := choose("Choose a "+command.Name()+" task", options)
+	selected, err := func() (string, error) {
+		if enabled, _ := command.Flags().GetBool("json"); enabled {
+			restore := machine.EnterJSON()
+			defer restore()
+		}
+		return choose("Choose a "+command.Name()+" task", options)
+	}()
 	if err != nil {
 		return err
 	}
