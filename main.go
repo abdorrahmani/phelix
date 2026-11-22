@@ -138,6 +138,7 @@ func main() {
 		os.Exit(exit)
 	}
 	cmd.RouteControl(rootCmd)
+	cmd.ConfigureWizards(rootCmd)
 	err = rootCmd.Execute()
 	if err != nil {
 		os.Exit(cmd.RenderError(err, cmd.Debug))
